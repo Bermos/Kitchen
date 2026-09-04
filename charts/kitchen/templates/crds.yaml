@@ -2259,6 +2259,81 @@ spec:
                       singleton:
                         type: boolean
                     type: object
+                  volumes:
+                    description: |-
+                      Volumes are the persistent volumes the commit says it needs: which
+                      claim, mounted where, by which process.
+
+                      **They are a requirement, not a request.** Everything else in this
+                      file describes the code and the file may set it; a volume claim is
+                      the project asking the platform for storage — for a bound volume,
+                      for storage the platform did not create and does not own — and that
+                      is the project's standing rather than a fact about the commit. A file
+                      that could make one would let a pull request mount somebody's NAS
+                      export into its own preview, which is the "no credential, ever" rule
+                      wearing a different hat.
+
+                      So the file declares what the code needs and the build checks it: a
+                      declaration the project has no claim for fails the build naming the
+                      claim to make, and one whose process or mount path disagrees with the
+                      claim fails naming both. That catches the failure this is actually
+                      for — the code writes to /data and the claim mounts /var/data, which
+                      otherwise deploys green and loses everything on restart.
+                    items:
+                      description: |-
+                        RepoVolume is one entry of kitchen.json's `volumes`: a volume claim the
+                        commit needs, as the commit understands it.
+                      properties:
+                        accessMode:
+                          description: |-
+                            AccessMode is how the commit expects to mount it — the same values a
+                            bound claim declares. Empty declares no opinion; a value that
+                            disagrees with the claim fails the build, since read-only and
+                            read-write are the difference between an application that works and
+                            one that fails on its first write.
+                          enum:
+                          - ReadOnlyMany
+                          - ReadWriteOnce
+                          - ReadWriteMany
+                          type: string
+                        mountPath:
+                          type: string
+                        name:
+                          description: |-
+                            Name is the resource claim's name, which is what ties the
+                            declaration to the thing the project actually has.
+                          type: string
+                        process:
+                          description: |-
+                            Process is the project's process that mounts it, and MountPath where
+                            it appears in that process's container — the two facts about a volume
+                            that really are about the code, and the two worth checking a claim
+                            against.
+                          type: string
+                        source:
+                          allOf:
+                          - enum:
+                            - provision
+                            - bind
+                          - enum:
+                            - provision
+                            - bind
+                          description: |-
+                            Source is provision or bind, where the file wants to say which. Empty
+                            declares no opinion and matches either; a value that disagrees with
+                            the claim fails the build, because a commit written against twelve
+                            terabytes of existing media and a claim that cut a fresh empty disk
+                            are not the same application.
+                          type: string
+                      required:
+                      - mountPath
+                      - name
+                      - process
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                 type: object
               detectedFramework:
                 description: Framework detected by the auto strategy (e.g. nextjs,
@@ -11554,17 +11629,65 @@ spec:
                 properties:
                   accessMode:
                     description: |-
-                      AccessMode is what the StorageClass was detected to support:
-                      ReadWriteOnce, which caps the process at one replica and forces a
-                      recreate on every deploy, or ReadWriteMany, which lifts both. It is
-                      detected from the class's provisioner and its annotations, never
-                      assumed; AccessModeReason says what decided it.
+                      AccessMode is how the volume is mounted: for a provisioned volume
+                      what the StorageClass was detected to support, and for a bound one
+                      what the claim declared. ReadWriteOnce caps the process at one
+                      replica and forces a recreate on every deploy; ReadOnlyMany and
+                      ReadWriteMany lift both. For a provisioned volume it is detected from
+                      the class's provisioner and its annotations, never assumed;
+                      AccessModeReason says what decided it either way.
                     enum:
+                    - ReadOnlyMany
                     - ReadWriteOnce
                     - ReadWriteMany
                     type: string
                   accessModeReason:
                     type: string
+                  bound:
+                    description: |-
+                      Bound is the volume a bound claim mounts, once the reconciler has
+                      found it. Empty for a provisioned volume, and for a bound claim that
+                      has not resolved yet — a claim naming a volume the cluster does not
+                      have is Failed with the name it could not find.
+                    properties:
+                      capacity:
+                        type: string
+                      identity:
+                        description: |-
+                          Identity is what the volume points at — "nfs://nas.lan/export/media",
+                          "csi://driver/handle" — which is what tells two PersistentVolumes
+                          serving one export apart from two serving different ones. Two claims
+                          that would write the same identity are the refusal this exists for.
+                        type: string
+                      named:
+                        description: |-
+                          Named is what the claim named to get here: the PersistentVolume's own
+                          name, or the PersistentVolumeClaim whose volume it is.
+                        type: string
+                      persistentVolume:
+                        description: |-
+                          PersistentVolume is the volume itself, and Capacity what it holds —
+                          reported rather than asked for, since the platform did not make it.
+                        type: string
+                      sharedWith:
+                        description: |-
+                          SharedWith are the other claims mounting the same volume, as
+                          "project/claim", every one of them a reader. It is on the status
+                          because sharing a filesystem between projects is the kind of fact
+                          that must not have to be discovered: whoever is looking at this claim
+                          can see who else is holding the same data.
+                        items:
+                          type: string
+                        type: array
+                      writable:
+                        description: |-
+                          Writable says this claim's process may change what is on the volume,
+                          which follows from the declared access mode. At most one claim in the
+                          cluster is writable for a given Identity.
+                        type: boolean
+                    required:
+                    - persistentVolume
+                    type: object
                   claimName:
                     description: |-
                       ClaimName is the production PersistentVolumeClaim, in the project's
@@ -11619,10 +11742,25 @@ spec:
                       Both echo the claim's config, so a reader of the status does not have
                       to decode spec.config to know what the environment reconciler does.
                     type: string
+                  source:
+                    allOf:
+                    - enum:
+                      - provision
+                      - bind
+                    - enum:
+                      - provision
+                      - bind
+                    description: |-
+                      Source is where the volume came from — provision or bind — echoed
+                      from the claim so that every reader of the status knows which of the
+                      two shapes below it is looking at without decoding spec.config.
+                    type: string
                   storageClass:
                     description: |-
                       StorageClass is the class the volume was actually cut from: the one
-                      the claim named, or the cluster's default at the time.
+                      the claim named, or the cluster's default at the time. A bound volume
+                      reports the class it carries, where it carries one, and nothing where
+                      it does not — a statically written PersistentVolume usually has none.
                     type: string
                 required:
                 - accessMode

@@ -326,3 +326,23 @@ func TestMountsAreThePodSpecsHalf(t *testing.T) {
 		t.Error("no mounts is nil, so a pod spec without volumes stays without them")
 	}
 }
+
+// A volume mounted read-only is read-only on the pod, not on the honour
+// system: the flag goes on the pod's volume and on the mount both, because
+// that is what makes handing an existing export to a preview safe at all.
+func TestAReadOnlyMountIsWrittenOnThePod(t *testing.T) {
+	mounts := []mountedVolume{
+		{claim: "media", process: "web", claimName: "media-volume", mountPath: "/media", readOnly: true},
+	}
+	volumes, volumeMounts := podVolumes(mountsFor(mounts, "web"))
+	if len(volumes) != 1 || !volumes[0].PersistentVolumeClaim.ReadOnly {
+		t.Errorf("the pod's volume is read-only: %+v", volumes)
+	}
+	if len(volumeMounts) != 1 || !volumeMounts[0].ReadOnly {
+		t.Errorf("the mount is read-only: %+v", volumeMounts)
+	}
+	// Read by many at once, so neither the cap nor the recreate applies.
+	if attachesOnce(mountsFor(mounts, "web")) || capReplicas(3, mountsFor(mounts, "web")) != 3 {
+		t.Error("a volume many copies may read at once caps nothing")
+	}
+}

@@ -224,9 +224,11 @@ block:
 | Field | Default | What it does |
 |---|---|---|
 | `volume.process` | required | The one process that mounts it: `web` for the web process, or the name of one of the project's processes. A claim naming none, or a process the project does not have, is refused here with the list |
-| `volume.size` | required | A Kubernetes quantity — `"10Gi"`. Set when the volume is created; it is not shrunk |
+| `volume.source` | `provision` | Where the volume comes from: `provision` cuts a new one, `bind` mounts one that already exists. It is declared rather than inferred from which fields are set, and each source is refused the other's fields |
+| `volume.size` | required on `provision` | A Kubernetes quantity — `"10Gi"`. Set when the volume is created; it is not shrunk. **Refused on `bind`** |
 | `volume.mountPath` | required | The absolute path inside that process's container the volume appears at |
-| `volume.storageClass` | the cluster's default | The class the volume is cut from; one the cluster does not have fails the claim, naming the ones it has |
+| `volume.storageClass` | the cluster's default | The class the volume is cut from; one the cluster does not have fails the claim, naming the ones it has. **Refused on `bind`** |
+| `volume.bind` | required on `bind` | Which existing volume, and how this project mounts it — [Binding a volume the platform did not create](#binding-a-volume-the-platform-did-not-create). **Refused on `provision`** |
 
 **Detecting `ReadWriteMany`.** Kubernetes records nothing about access modes
 on a StorageClass, so the platform reads the evidence it has and never
@@ -277,6 +279,96 @@ beside the databases the platform runs. And a process pinned to one replica
 under `Recreate` cannot be restarted for a secret rotation without a brief
 outage — the [rotation restart](secrets.md#what-rolls-and-what-does-not) meets
 the same gap every deploy does, and says so in the entry it leaves.
+
+### Binding a volume the platform did not create
+
+Everything above is `volume.source: provision` — the platform cuts a disk.
+The other half of what a persistent workload is, is the data that was already
+there: twelve terabytes on a NAS that existed before the cluster did, an SMB
+share, a CSI volume somebody attached by hand. `volume.source: bind` mounts
+one of those and **provisions nothing**.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "media", "project": "plex", "type": "volume",
+       "volume": {"source": "bind", "process": "web", "mountPath": "/media",
+                  "bind": {"persistentVolume": "nas-media", "accessMode": "ReadOnlyMany"}}}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+| Field | Default | What it does |
+|---|---|---|
+| `volume.bind.persistentVolume` | one of the two | The cluster PersistentVolume to mount — the object an operator writes for an NFS export, an SMB share or a CSI volume |
+| `volume.bind.persistentVolumeClaim` | one of the two | An existing PersistentVolumeClaim **in this project's own application namespace**. That namespace and no other: a PersistentVolumeClaim is namespaced and a pod may only mount one of its own, so naming somebody else's would name a volume this project's pods cannot reach. A volume that lives elsewhere is bound by naming the PersistentVolume behind it |
+| `volume.bind.accessMode` | required | How **this project** mounts it: `ReadOnlyMany`, `ReadWriteOnce` or `ReadWriteMany`. It is declared rather than read off the volume, because what the volume can do and what this project may do with it are different questions — and only the second decides whether another project may write it. A mode the volume does not offer fails the claim, naming the modes it does |
+
+The claim's answer carries `volume.bind` echoed back, and — once the
+reconciler has looked — `volume.bound`: the `persistentVolume` it resolved
+to, its `capacity`, the `identity` of the storage behind it, whether this
+claim is `writable`, and `sharedWith`, the other claims holding the same
+data.
+
+**The replica cap and `Recreate` follow from the access mode, exactly as they
+do for a provisioned volume.** `ReadWriteOnce` attaches to one pod at a time,
+so the process is capped at one replica and deployed by recreation, with a
+gap in serving. `ReadOnlyMany` and `ReadWriteMany` lift both — many pods may
+read one filesystem at once, and `volume.accessModeReason` says what the
+volume offered.
+
+**Two projects may read one volume; one may write it.** Reading is the easy
+half and most of the value: any number of claims may mount one volume
+read-only, in any number of projects, and the platform mounts it read-only on
+the pod rather than trusting the application to behave. Writing is the
+decision, and it is **refused for the second writer**: two projects writing
+one filesystem means one project's deploy can break another's, which is the
+opposite of Kitchen owning what it deploys. The refusal names the claim that
+holds it — `the volume nfs://nas.lan/export/media is already written by the
+claim media in project sonarr` — and the reasoning is written where the
+claim is validated, in `internal/controller/resourceclaim_volume_bind.go`,
+not only here. The oldest writing claim is the one that keeps it, so a claim
+that has been writing since yesterday is never displaced by one created a
+moment ago.
+
+The comparison is on **what the volumes point at**, not on their names. Two
+projects reach one export through two PersistentVolumes — a PersistentVolume
+binds to exactly one claim, so there is no other way — and comparing names
+would call two objects over one twelve-terabyte filesystem unrelated. The
+platform derives an identity from the volume's source (`nfs://server/export`,
+`csi://driver/handle`, and so on), which is what `volume.bound.identity`
+reports.
+
+**What a preview gets.** The same volume, **mounted read-only** — which is
+the default rather than something to opt into, because a preview of an
+application whose data is the point of it needs to read what production
+reads, and a read-only mount can neither take the volume from production nor
+change a byte of it. The `fresh, empty volume` a provisioned claim gives a
+preview is exactly wrong here: a preview of a media server with an empty
+media directory is a preview of nothing. Where the claim's own access mode is
+`ReadWriteOnce` the volume attaches to one pod at a time and production has
+it, so previews get **nothing** and the claim says why on
+`previewMode`/`previewReason`; asking for `shared` there is refused at the
+door.
+
+**`deletionPolicy: Delete` is refused outright.** The volume existed before
+the claim, the platform neither provisioned it nor owns it, and destroying
+somebody else's data is not something this API offers. The request is refused
+with `400` at the door, and a claim written another way is `Failed` with the
+same sentence rather than acted on. Deleting a bound claim removes only the
+PersistentVolumeClaim the platform created to reach the volume — and not even
+that, where the claim named a PersistentVolumeClaim that was already there.
+Teardown unmounts; it never deletes.
+
+**A volume that is not there is a refusal, not a wait.** A claim naming a
+PersistentVolume the cluster does not have is `Failed` with the name it could
+not find, because no amount of waiting conjures an NFS export. A
+PersistentVolumeClaim that exists but has not bound to a volume yet is the
+one case that really does resolve on its own, and that one waits
+(`VolumeNotBound`).
+
+**What is bindable** is answered by [`GET
+/claim-volumes`](#what-a-volume-claim-could-bind), so that a name is chosen
+rather than typed from memory.
+
 **`inngest`** asks a Connection with the `backgroundJobs` capability — an
 Inngest Cloud API key — for the keys a worker connects to Inngest with, so
 that the application gets retries, sleeps, fan-out, concurrency limits and
@@ -822,6 +914,60 @@ nothing (`none`) parks nothing whatever its provider can do: there is no
 resource of the preview's own, and an idle preview must never be able to take
 production's down.
 
+### What a volume claim could bind
+
+`GET /claim-volumes` answers what is actually in the cluster, for the moment
+somebody is writing a `volume.source: bind` claim. A bound volume is *named*
+— the whole point is that it existed before the cluster did — and a name
+typed from memory is the failure this route removes.
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/claim-volumes
+```
+
+```json
+{
+  "persistentVolumes": [
+    {
+      "name": "nas-media",
+      "capacity": "12Ti",
+      "accessModes": ["ReadOnlyMany", "ReadWriteMany"],
+      "phase": "Available",
+      "identity": "nfs://nas.lan/export/media",
+      "heldBy": ["sonarr/media"],
+      "writable": false,
+      "readable": true,
+      "note": "another project already writes this storage, and one filesystem has one writer. Mount it read-only, or ask for a volume of its own"
+    }
+  ],
+  "persistentVolumeClaims": [
+    { "name": "plex-config", "project": "plex", "capacity": "50Gi",
+      "accessModes": ["ReadWriteOnce"], "phase": "Bound",
+      "persistentVolume": "pvc-8f2c…", "managedByKitchen": true }
+  ]
+}
+```
+
+`writable` and `readable` are the two questions that decide whether a claim
+can be written against a volume at all, answered before the claim is made
+rather than as a refusal afterwards; `note` is why a mount is refused where
+one is, in the words the claim would answer with. A volume that cannot be
+bound is still listed, with the reason — a name somebody was told to use must
+not simply fail to appear.
+
+**It is a list of storage, not a list of anybody's data**, which is why it is
+not the operator's alone: a PersistentVolume is cluster-scoped and holds no
+credential, and a developer who cannot see it cannot write the claim that
+mounts it. What it does not leak is *whose* it is — a volume held by a
+project the caller cannot see is listed as held by `another project`, and the
+holding claim is named only where the caller could have read that claim
+anyway. The `persistentVolumeClaims` half is narrower still: only the
+application namespaces of projects this caller can see, because a project's
+own namespace is the only one whose claims it may bind.
+
+The CLI reaches it with `kitchen api GET /claim-volumes`.
+
 ### What can be claimed
 
 `GET /claim-types` answers this table for the dashboard, with the same rows.
@@ -838,6 +984,7 @@ with the body above.
 | `oidcClient` | `kitchen` | `shared` — every environment signs in through the project's one client; the operator keeps its redirect list in step as previews come and go, and a client holds no data | unaffected | **stays as it is** — an OAuth client is a record at the issuer and runs nothing, so an idle preview parks nothing here — and the client is the project's, shared by every environment | unaffected |
 | `objectStore` | `s3` | `fresh` — a new, empty bucket of the preview's own with its own credential, versioned when production's is and torn down with the preview: the branch declares provenance synthetic | unaffected | **stays as it is** — a bucket is storage and no compute, so there is nothing to park: an idle preview's bucket costs what its objects cost and not a byte more | unaffected |
 | `volume` | `storageClass` | `fresh` — a new, empty volume of the same size and class, never a copy of production's: the preview declares provenance synthetic | unaffected | **stays as it is** — a PersistentVolumeClaim is storage and no compute, so there is nothing to park: an idle preview's volume costs its capacity and nothing else | **recreate, with downtime** — a ReadWriteOnce volume attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one — a rolling update would leave the new pod waiting in Multi-Attach for a volume the old pod never releases. Every deploy of that process has a gap in serving; a StorageClass detected to support ReadWriteMany lifts both |
+| `volume` | `boundVolume` | `shared` — the same volume, mounted read-only: a preview of an application whose data is the point of it reads exactly what production reads and cannot change any of it. A ReadWriteOnce volume gives previews nothing instead — production has it, and it attaches to one pod at a time | unaffected | **stays as it is** — the volume is not the platform's to park: it existed before the claim and outlives it, and an idle preview mounting it read-only costs nothing either way | **recreate, with downtime** — a volume mounted ReadWriteOnce attaches to one pod at a time, so the process mounting it runs one replica and is deployed by stopping the old pod before starting the new one. The claim declares its own access mode, and ReadOnlyMany or ReadWriteMany lifts both |
 | `inngest` | `inngest` | `branch` — an Inngest branch environment of the preview's own — its own event stream, function set and run history, empty rather than a copy of production's, selected by INNGEST_ENV on the account's shared branch keys; archived, not deleted, when the preview goes | **blocked** — a connect worker holds an outbound WebSocket to Inngest's gateway that never crosses the interceptor, so nothing can tell when it is idle — and scale to zero is a project-level policy, so every environment of the project keeps its pods, previews included | **stays as it is** — the branch environment is Inngest's to run and this platform has no lever on it; the worker that reads it never idles either, for the reason beside this one | unaffected |
 | `redis` | `valkey` | `fresh` — a new, empty instance of the preview's own, configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | **parks with it** — a preview's instance is scaled to no pods with it and back up on wake; a queue's volume survives the park, and a cache holds nothing it cannot recompute | unaffected |
 | `redis` | `redis` | `fresh` — a logical database of the preview's own at the same server, allocated to it alone and handed back when the preview closes: the branch declares provenance synthetic — it never holds production's keys, though a server the platform does not run cannot be emptied, so a database is handed out again only once every untouched one is gone | unaffected | **stays as it is** — a logical database at a server this platform does not run: there is no process of the preview's own to park, and the server stays up for every other claim on it | unaffected |

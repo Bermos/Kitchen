@@ -97,6 +97,62 @@ type RepoConfig struct {
 	// +listType=map
 	// +listMapKey=name
 	Files []ConfigFile `json:"files,omitempty"`
+
+	// Volumes are the persistent volumes the commit says it needs: which
+	// claim, mounted where, by which process.
+	//
+	// **They are a requirement, not a request.** Everything else in this
+	// file describes the code and the file may set it; a volume claim is
+	// the project asking the platform for storage — for a bound volume,
+	// for storage the platform did not create and does not own — and that
+	// is the project's standing rather than a fact about the commit. A file
+	// that could make one would let a pull request mount somebody's NAS
+	// export into its own preview, which is the "no credential, ever" rule
+	// wearing a different hat.
+	//
+	// So the file declares what the code needs and the build checks it: a
+	// declaration the project has no claim for fails the build naming the
+	// claim to make, and one whose process or mount path disagrees with the
+	// claim fails naming both. That catches the failure this is actually
+	// for — the code writes to /data and the claim mounts /var/data, which
+	// otherwise deploys green and loses everything on restart.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Volumes []RepoVolume `json:"volumes,omitempty"`
+}
+
+// RepoVolume is one entry of kitchen.json's `volumes`: a volume claim the
+// commit needs, as the commit understands it.
+type RepoVolume struct {
+	// Name is the resource claim's name, which is what ties the
+	// declaration to the thing the project actually has.
+	Name string `json:"name"`
+
+	// Process is the project's process that mounts it, and MountPath where
+	// it appears in that process's container — the two facts about a volume
+	// that really are about the code, and the two worth checking a claim
+	// against.
+	Process   string `json:"process"`
+	MountPath string `json:"mountPath"`
+
+	// Source is provision or bind, where the file wants to say which. Empty
+	// declares no opinion and matches either; a value that disagrees with
+	// the claim fails the build, because a commit written against twelve
+	// terabytes of existing media and a claim that cut a fresh empty disk
+	// are not the same application.
+	// +kubebuilder:validation:Enum=provision;bind
+	// +optional
+	Source VolumeSource `json:"source,omitempty"`
+
+	// AccessMode is how the commit expects to mount it — the same values a
+	// bound claim declares. Empty declares no opinion; a value that
+	// disagrees with the claim fails the build, since read-only and
+	// read-write are the difference between an application that works and
+	// one that fails on its first write.
+	// +kubebuilder:validation:Enum=ReadOnlyMany;ReadWriteOnce;ReadWriteMany
+	// +optional
+	AccessMode string `json:"accessMode,omitempty"`
 }
 
 // RepoBuildConfig is the build half of kitchen.json. It is deliberately not
@@ -244,6 +300,12 @@ func (c *RepoConfig) Declares() []string {
 	for _, file := range c.Files {
 		fields = append(fields, "files."+file.Name)
 	}
+	// A volume is named one by one too: each is a requirement checked
+	// against one claim, so "the file declared this one" is the fact beside
+	// the row rather than a count.
+	for _, vol := range c.Volumes {
+		fields = append(fields, "volumes."+vol.Name)
+	}
 	if len(c.Processes) > 0 {
 		fields = append(fields, "processes")
 	}
@@ -269,6 +331,16 @@ func (c *RepoConfig) DeclaresFile(name string) bool {
 		return false
 	}
 	return slices.ContainsFunc(c.Files, func(f ConfigFile) bool { return f.Name == name })
+}
+
+// DeclaresVolume reports whether the file declared the named volume claim,
+// which is what the dashboard reads to mark a claim as one the repository
+// says it needs rather than one somebody added by hand.
+func (c *RepoConfig) DeclaresVolume(name string) bool {
+	if c == nil {
+		return false
+	}
+	return slices.ContainsFunc(c.Volumes, func(v RepoVolume) bool { return v.Name == name })
 }
 
 // String names the file and what it set, for a log line or an audit detail.

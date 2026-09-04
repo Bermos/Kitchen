@@ -105,6 +105,10 @@ func TestTheTwoShippedProvidersDeclareWhatTheIssueSays(t *testing.T) {
 	if !ok || vol.Preview != contract.PreviewFresh || !vol.ForcesRecreate {
 		t.Errorf("a volume gives a preview a fresh, empty volume and forces a recreate; it declares %+v", vol)
 	}
+	bound, ok := Lookup(kitchenv1alpha1.ClaimTypeVolume, volume.BoundProviderName)
+	if !ok || bound.Preview != contract.PreviewShared || !bound.SharedIsReadOnly {
+		t.Errorf("a bound volume gives a preview the same volume read-only; it declares %+v", bound)
+	}
 	if _, ok := Lookup(kitchenv1alpha1.ClaimTypePostgres, "mainframe"); ok {
 		t.Error("a provider nothing declares for must not be found")
 	}
@@ -138,5 +142,25 @@ func TestSpliceRefusesAPageWithoutMarkers(t *testing.T) {
 	}
 	if out != "before\n"+BeginMarker+"\n"+Matrix()+EndMarker+"\nafter\n" {
 		t.Errorf("the block between the markers was not replaced:\n%s", out)
+	}
+}
+
+// A kubebuilder marker cannot read a Go constant, so the CRD's enum for a
+// volume's source is written out by hand next to the field. This is what
+// holds the two spellings together: a value renamed in one place and not the
+// other would be a claim the API server admits and the provider does not
+// know, or the reverse.
+func TestTheVolumeSourcesAreSpelledOneWay(t *testing.T) {
+	pairs := map[volume.Source]kitchenv1alpha1.VolumeSource{
+		volume.SourceProvision: kitchenv1alpha1.VolumeProvision,
+		volume.SourceBind:      kitchenv1alpha1.VolumeBind,
+	}
+	if len(pairs) != len(volume.Sources) {
+		t.Fatalf("every source is held against the API's: %v", volume.Sources)
+	}
+	for provider, api := range pairs {
+		if string(provider) != string(api) {
+			t.Errorf("the provider says %q and the CRD says %q", provider, api)
+		}
 	}
 }

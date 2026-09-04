@@ -1882,13 +1882,81 @@ export interface NewDomain {
  * every deploy; ReadWriteMany lifts both) and the claim behind it. */
 export interface ClaimVolume {
   process: string;
-  size: string;
+  /** Where the volume comes from: "provision" cuts a new one, "bind" mounts
+   * one that already existed. Answered rather than inferred from which of
+   * the fields below are set. */
+  source: string;
+  size?: string;
   storageClass?: string;
   mountPath: string;
   accessMode?: string;
   accessModeReason?: string;
   claimName?: string;
   persistentVolume?: string;
+  /** bind only: what the claim named, echoed back. */
+  bind?: ClaimVolumeBind;
+  /** bind only: the volume it resolved to, once the reconciler has looked. */
+  bound?: ClaimBoundVolume;
+}
+
+/** Which existing volume a bound claim names, and how this project mounts it.
+ * The access mode is declared rather than read off the volume: what the
+ * volume can do and what this project may do with it are different
+ * questions, and only the second decides whether another project may write
+ * it. */
+export interface ClaimVolumeBind {
+  persistentVolume?: string;
+  persistentVolumeClaim?: string;
+  accessMode: string;
+}
+
+/** The volume a bound claim resolved to: what it is, how much of it there is,
+ * whether this project may write it, and who else holds the same data.
+ * `identity` is what the volume points at — the NFS export, the CSI handle —
+ * which is what tells two PersistentVolumes over one filesystem apart from
+ * two over different ones. */
+export interface ClaimBoundVolume {
+  persistentVolume: string;
+  capacity?: string;
+  named?: string;
+  identity?: string;
+  writable: boolean;
+  sharedWith?: string[];
+}
+
+/** One existing PersistentVolume a claim could bind, as GET /claim-volumes
+ * answers it: what it is, who already holds it, and whether a new claim could
+ * read or write it. A volume that cannot be bound is still listed, with the
+ * reason — a name somebody was told to use must not simply fail to appear. */
+export interface BindableVolume {
+  name: string;
+  capacity?: string;
+  accessModes: string[];
+  storageClass?: string;
+  phase?: string;
+  identity?: string;
+  heldBy?: string[];
+  writable: boolean;
+  readable: boolean;
+  note?: string;
+}
+
+/** One PersistentVolumeClaim a project may bind by name — one of its own,
+ * since a pod may only mount a claim in its own namespace. */
+export interface BindableVolumeClaim {
+  name: string;
+  project: string;
+  capacity?: string;
+  accessModes: string[];
+  phase?: string;
+  persistentVolume?: string;
+  managedByKitchen: boolean;
+}
+
+/** What a volume claim could bind. */
+export interface BindableVolumes {
+  persistentVolumes: BindableVolume[];
+  persistentVolumeClaims: BindableVolumeClaim[];
 }
 
 /** The database a postgres claim asked for: which Postgres, what it has to be
@@ -2076,6 +2144,11 @@ export interface ClaimProvider {
   previewMode: string;
   previewNote: string;
   previewChoices: string[];
+  /** Whether what a preview shares here it cannot write. It is what makes
+   * sharing production's own resource this provider's default rather than a
+   * choice to opt into: a read-only mount takes nothing from production and
+   * changes nothing on it. */
+  sharedIsReadOnly?: boolean;
   keepsPodsRunning?: boolean;
   forcesRecreate?: boolean;
   workloadNote?: string;
@@ -2115,9 +2188,18 @@ export interface NewClaim {
   /** objectStore only: versioning, public reads and a size for the bucket. */
   objectStore?: ClaimObjectStore;
   /** volume only, and required there: the process that mounts it ("web", or
-   * one of the project's processes), its size, the mount path, and
-   * optionally the storage class. */
-  volume?: { process: string; size: string; mountPath: string; storageClass?: string };
+   * one of the project's processes), the mount path, and then whichever half
+   * the source asks for — a size and optionally a storage class to cut a new
+   * volume, or a `bind` block naming one that already exists. Each source is
+   * refused the other's fields. */
+  volume?: {
+    process: string;
+    source?: string;
+    size?: string;
+    mountPath: string;
+    storageClass?: string;
+    bind?: { persistentVolume?: string; persistentVolumeClaim?: string; accessMode: string };
+  };
   /** inngest only: the app ID the worker connects as (empty takes the
    * claim's name), the Inngest environment production reads (empty means
    * production), and the mode — connect is the only one provisioned. */
@@ -4193,6 +4275,10 @@ export const api = {
   deleteDomain: (name: string) => request<Domain>("DELETE", `/domains/${name}`),
   claims: list<Claim>("/claims"),
   claimTypes: () => request<ClaimType[]>("GET", "/claim-types"),
+  // What a volume claim could bind. A bound volume is named, not chosen from
+  // something the platform filled in — it existed before the cluster did —
+  // so the form offers what is actually there rather than an empty field.
+  claimVolumes: () => request<BindableVolumes>("GET", "/claim-volumes"),
   createClaim: (claim: NewClaim) => request<Claim>("POST", "/claims", claim),
   // Answers 202: the operator's finalizer finishes the teardown — branches,
   // binding secrets and, under deletionPolicy Delete, the database itself.

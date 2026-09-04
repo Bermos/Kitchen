@@ -35,6 +35,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/declarations"
+	"github.com/Bermos/Kitchen/internal/provider/volume"
 )
 
 // The resource claim write surface: asking a database-capable Connection to
@@ -85,8 +86,10 @@ type createClaimRequest struct {
 	// claim as a refusal naming what it could not supply.
 	ObjectStore *kitchenv1alpha1.ObjectStoreConfig `json:"objectStore,omitempty"`
 	// Volume is what a volume claim asks for: the process that mounts it,
-	// the size, the StorageClass and the mount path. The process is checked
-	// against the project here; the class and what it supports are the
+	// the mount path, and then whichever half its source asks for — a size
+	// and a StorageClass to cut a new volume, or a binding naming one that
+	// already exists. The process and the shape are checked against the
+	// project here; the class, the volume and what either supports are the
 	// cluster's answer, and land on the claim.
 	Volume *kitchenv1alpha1.VolumeConfig `json:"volume,omitempty"`
 
@@ -412,7 +415,8 @@ func (s *Server) withPreviewMode(
 		return nil, false
 	}
 	// The provider is the connection's; for a type the platform provisions
-	// itself it is the one provider the declarations list for the type.
+	// itself it is the one platformProviderFor picks out of the
+	// declarations, which for a volume is the claim's own source.
 	provider := ""
 	if ref != nil {
 		conn := &kitchenv1alpha1.Connection{}
@@ -422,19 +426,20 @@ func (s *Server) withPreviewMode(
 		}
 		provider = conn.Spec.Provider
 	} else {
-		for _, d := range declarations.All() {
-			if d.Type == claimType.Name {
-				provider = d.Provider
-				break
-			}
-		}
+		provider = platformProviderFor(claimType, body)
 	}
 	declaration, declared := declarations.Lookup(claimType.Name, provider)
-	if choice == contract.PreviewShared && declared && declaration.ForcesRecreate {
+	if choice == contract.PreviewShared && declared && declaration.ForcesRecreate && !declaration.SharedIsReadOnly {
 		// A resource that attaches to one pod at a time cannot be shared
 		// between production and a preview without taking it from
 		// production: the reconciler would give previews nothing, and this
 		// is the layer that can say so before the claim exists.
+		//
+		// Unless what it shares cannot be written, which takes nothing from
+		// production and changes nothing on it — a bound volume mounted
+		// read-only. Its own refusal is narrower and lives with the volume:
+		// it is the *claim's* access mode, not the provider's conservative
+		// declaration, that decides whether the volume attaches once.
 		badRequest(w, "previewMode \"shared\" is refused for a %s claim: %s declares that its %s attaches to "+
 			"one pod at a time, so a preview mounting production's would take it from production. Ask for "+
 			"%s — %s — or for none", claimType.Name, provider, claimType.Resource, declaration.Preview,
@@ -468,6 +473,27 @@ func (s *Server) withPreviewMode(
 		return nil, false
 	}
 	return &runtime.RawExtension{Raw: raw}, true
+}
+
+// platformProviderFor is the provider of a claim type the platform
+// provisions itself — the first one the declarations list, since there is no
+// Connection to name one.
+//
+// The volume type is the exception, and the only one: it has two providers,
+// and which of them is answering is the claim's own `volume.source` rather
+// than a Connection's. Cutting a disk and mounting one somebody already has
+// declare opposite things about previews, so reading the first would judge
+// a bound volume against a provisioning volume's rules.
+func platformProviderFor(claimType kitchenv1alpha1.ClaimType, body *createClaimRequest) string {
+	if claimType.Name == kitchenv1alpha1.ClaimTypeVolume && body.Volume != nil && body.Volume.Bound() {
+		return volume.BoundProviderName
+	}
+	for _, d := range declarations.All() {
+		if d.Type == claimType.Name {
+			return d.Provider
+		}
+	}
+	return ""
 }
 
 func joinModes(modes []contract.PreviewMode) string {

@@ -103,7 +103,9 @@ func claimContractFor(claim *kitchenv1alpha1.ResourceClaim) (kitchenv1alpha1.Cla
 //   - No choice takes the provider's declaration — unless that is shared
 //     and the type holds data, because a preview reading production's data
 //     is never a default: previews then get nothing, and the reason names
-//     the choice that would accept it.
+//     the choice that would accept it. A provider whose shared mode is
+//     read-only (SharedIsReadOnly) is exempt: a preview that cannot write
+//     what it shares is not the thing that refusal is about.
 //   - shared is always available and always explicit; none is always
 //     available.
 //   - The provider's own mode by name is that mode; any other mode is one
@@ -153,7 +155,7 @@ func resolvePreviewMode(
 	}
 	switch contract.PreviewMode(choice) {
 	case "":
-		if declaration.Preview == contract.PreviewShared && claimType.HoldsData {
+		if declaration.Preview == contract.PreviewShared && claimType.HoldsData && !declaration.SharedIsReadOnly {
 			return contract.PreviewNone, fmt.Sprintf("%s gives a preview environment production's %s itself (%s). "+
 				"A preview reading production data is never a default: set previewMode: shared on the claim to "+
 				"accept it, or previewMode: none to say previews get nothing", provider, claimType.Resource,
@@ -161,6 +163,13 @@ func resolvePreviewMode(
 		}
 		return declaration.Preview, declaration.PreviewNote
 	case contract.PreviewShared:
+		if declaration.SharedIsReadOnly {
+			// What a preview shares here it cannot write. Neither refusal
+			// applies: it takes nothing from production and changes
+			// nothing on it.
+			return contract.PreviewShared, fmt.Sprintf("the claim asks previews to bind production's %s "+
+				"itself: %s", claimType.Resource, declaration.PreviewNote)
+		}
 		if declaration.ForcesRecreate {
 			// A resource that attaches to one pod at a time cannot be
 			// shared between production and a preview without taking it

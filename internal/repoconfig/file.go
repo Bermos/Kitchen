@@ -45,6 +45,30 @@ type File struct {
 	PreviewEnv map[string]Value    `json:"previewEnv,omitempty"`
 	Processes  []appconfig.Process `json:"processes,omitempty"`
 	Files      []FileConfigFile    `json:"files,omitempty"`
+	Volumes    []FileVolume        `json:"volumes,omitempty"`
+}
+
+// FileVolume is one entry of `volumes`: a volume claim the commit says it
+// needs, mounted where the commit expects it.
+//
+// It declares a requirement and never makes one. A volume claim is the
+// project asking the platform for storage — and for a bound volume, for
+// storage the platform did not create and does not own — which is the
+// project's standing rather than a fact about the code, and this file is
+// written by anybody who can open a pull request. `size`, `storageClass`
+// and `bind` are here only so that they can be refused by name: they are
+// the first things somebody will reach for, and "unknown field" would be a
+// true answer that explains nothing.
+type FileVolume struct {
+	Name       string `json:"name"`
+	Process    string `json:"process"`
+	MountPath  string `json:"mountPath"`
+	Source     string `json:"source,omitempty"`
+	AccessMode string `json:"accessMode,omitempty"`
+
+	Size         *string          `json:"size,omitempty"`
+	StorageClass *string          `json:"storageClass,omitempty"`
+	Bind         *json.RawMessage `json:"bind,omitempty"`
 }
 
 // FileConfigFile is one entry of `files`: a configuration file the commit
@@ -177,7 +201,100 @@ func (f File) config() (*kitchenv1alpha1.RepoConfig, error) {
 	}
 	config.Files = files
 
+	volumes, err := f.volumesConfig()
+	if err != nil {
+		return nil, err
+	}
+	config.Volumes = volumes
+
 	return config, nil
+}
+
+// volumesConfig validates the `volumes` list: every entry names a claim, a
+// process and a mount path, and none of them asks for a volume to be made.
+//
+// Whether the project actually has the claim is checked at the build, where
+// the project can be read; this layer checks that the declaration is one the
+// platform could act on at all.
+func (f File) volumesConfig() ([]kitchenv1alpha1.RepoVolume, error) {
+	if len(f.Volumes) == 0 {
+		return nil, nil
+	}
+	volumes := make([]kitchenv1alpha1.RepoVolume, 0, len(f.Volumes))
+	seen := map[string]bool{}
+	for _, declared := range f.Volumes {
+		name := strings.TrimSpace(declared.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%w: every entry of volumes names the resource claim it is about, and one "+
+				"of them names none", ErrInvalid)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("%w: volumes[%q] is declared twice — one claim is one mount", ErrInvalid, name)
+		}
+		seen[name] = true
+		for _, refused := range []struct {
+			field string
+			set   bool
+		}{
+			{"size", declared.Size != nil},
+			{"storageClass", declared.StorageClass != nil},
+			{"bind", declared.Bind != nil},
+		} {
+			if !refused.set {
+				continue
+			}
+			return nil, fmt.Errorf(
+				"%w: volumes[%q] sets %s — %s declares the volumes this commit needs and never asks for one to "+
+					"be made. Which volume the platform cuts, or whose existing volume it mounts, is the "+
+					"project's standing rather than a fact about the code, and this file is committed to a "+
+					"repository anybody who can open a pull request may write. Make the claim in the "+
+					"dashboard or with `kitchen api POST /claims`, and declare it here by name",
+				ErrInvalid, name, refused.field, FileName)
+		}
+		process := strings.TrimSpace(declared.Process)
+		mountPath := strings.TrimSpace(declared.MountPath)
+		if process == "" || mountPath == "" {
+			return nil, fmt.Errorf("%w: volumes[%q] declares which process mounts the volume and where — "+
+				"process and mountPath, the two facts about a volume that are about the code. It has %s",
+				ErrInvalid, name, missingOf(process, mountPath))
+		}
+		source := kitchenv1alpha1.VolumeSource(strings.TrimSpace(declared.Source))
+		switch source {
+		case "", kitchenv1alpha1.VolumeProvision, kitchenv1alpha1.VolumeBind:
+		default:
+			return nil, fmt.Errorf("%w: volumes[%q] sets source %q, which is neither %s nor %s", ErrInvalid,
+				name, declared.Source, kitchenv1alpha1.VolumeProvision, kitchenv1alpha1.VolumeBind)
+		}
+		mode := strings.TrimSpace(declared.AccessMode)
+		switch corev1.PersistentVolumeAccessMode(mode) {
+		case "", corev1.ReadOnlyMany, corev1.ReadWriteOnce, corev1.ReadWriteMany:
+		default:
+			return nil, fmt.Errorf("%w: volumes[%q] sets accessMode %q, which is not one of %s, %s or %s",
+				ErrInvalid, name, declared.AccessMode, corev1.ReadOnlyMany, corev1.ReadWriteOnce,
+				corev1.ReadWriteMany)
+		}
+		volumes = append(volumes, kitchenv1alpha1.RepoVolume{
+			Name:       name,
+			Process:    process,
+			MountPath:  mountPath,
+			Source:     source,
+			AccessMode: mode,
+		})
+	}
+	return volumes, nil
+}
+
+// missingOf names which of the two required halves of a volume declaration
+// is absent, for the message above.
+func missingOf(process, mountPath string) string {
+	switch {
+	case process == "" && mountPath == "":
+		return "neither"
+	case process == "":
+		return "no process"
+	default:
+		return "no mountPath"
+	}
 }
 
 // filesConfig validates the `files` list. The workload names it may mention

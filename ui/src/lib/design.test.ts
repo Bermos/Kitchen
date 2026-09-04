@@ -120,6 +120,18 @@ const OPERATOR_WORDS = [
   "replicaset",
   "configmap",
   "etcd",
+  // The storage nouns. A volume claim may bind one that already exists
+  // (#346), which puts the operator's whole vocabulary within reach of a
+  // developer's form — so a screen offering that says "storage" and names
+  // the object only behind the gate.
+  "persistentvolume",
+  "persistentvolumes",
+  "persistentvolumeclaim",
+  "persistentvolumeclaims",
+  "storageclass",
+  "storageclasses",
+  "pvc",
+  "pvcs",
 ];
 
 /**

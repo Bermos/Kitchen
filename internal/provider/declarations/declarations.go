@@ -82,8 +82,11 @@ func Lookup(claimType, provider string) (contract.Declaration, bool) {
 		declaration, ok := objectstore.Declarations[provider]
 		return declaration, ok
 	case kitchenv1alpha1.ClaimTypeVolume:
-		if provider == volume.ProviderName {
+		switch provider {
+		case volume.ProviderName:
 			return volume.Declaration, true
+		case volume.BoundProviderName:
+			return volume.BoundDeclaration, true
 		}
 	case kitchenv1alpha1.ClaimTypeInngest:
 		declaration, ok := inngest.Declarations[provider]
@@ -107,7 +110,7 @@ func providersOf(claimType string) []string {
 	case kitchenv1alpha1.ClaimTypeObjectStore:
 		return []string{objectstore.ProviderS3}
 	case kitchenv1alpha1.ClaimTypeVolume:
-		return []string{volume.ProviderName}
+		return []string{volume.ProviderName, volume.BoundProviderName}
 	case kitchenv1alpha1.ClaimTypeInngest:
 		return []string{inngest.ProviderCloud}
 	case kitchenv1alpha1.ClaimTypeRedis:

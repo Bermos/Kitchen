@@ -639,12 +639,24 @@ function claimRequirements(claim: Claim): string[] {
   // the platform has looked — whether it attaches to one copy or many.
   if (claim.volume) {
     const volume = claim.volume;
+    // A bound volume asked for no size and no class — it was there before
+    // the claim was — so what it says instead is that it was bound, what it
+    // holds, and whether this project may write it.
+    if (volume.source === "bind") {
+      return [
+        `${volume.process}:${volume.mountPath}`,
+        "bound",
+        volume.bound?.capacity,
+        volume.accessMode,
+        volume.bound && !volume.bound.writable ? "read-only" : undefined,
+      ].filter((badge): badge is string => Boolean(badge));
+    }
     return [
       `${volume.process}:${volume.mountPath}`,
       volume.size,
-      ...(volume.storageClass ? [volume.storageClass] : []),
-      ...(volume.accessMode ? [volume.accessMode] : []),
-    ];
+      volume.storageClass,
+      volume.accessMode,
+    ].filter((badge): badge is string => Boolean(badge));
   }
   if (claim.redis) {
     // What it is for leads, because it is the fact that decides whether the
@@ -715,6 +727,9 @@ function claimDeletionOutcome(claim: Claim): string {
       : "The instance is kept, with whatever is in it.";
   }
   if (claim.type === "volume") {
+    if (claim.volume?.source === "bind") {
+      return "The storage is unmounted and nothing on it is touched: it was never the platform's to delete.";
+    }
     return claim.deletionPolicy === "Delete"
       ? "The volume and the data on it are being deleted."
       : "The volume is kept; a claim of the same name binds to it again.";
@@ -728,6 +743,9 @@ function claimDeletionOutcome(claim: Claim): string {
 // before asking for the click — for the kind of resource this claim is.
 function claimDeletionWarning(claim: Claim): string {
   if (claim.type === "volume") {
+    if (claim.volume?.source === "bind") {
+      return "This claim binds storage the platform did not create: deleting it unmounts the storage and leaves every byte where it is. The process that mounted it deploys without it, and any other project holding the same storage is unaffected.";
+    }
     return claim.deletionPolicy === "Delete"
       ? "This claim's policy is Delete: the volume and ALL THE DATA ON IT are deleted. Preview volumes go too. There is no undo."
       : "This claim's policy is Retain: the volume and its data are kept, even if the project is later deleted, and a claim of the same name binds to it again. Preview volumes are removed, and the process that mounted it deploys without it until then.";
@@ -1294,6 +1312,22 @@ function host(url?: string): string {
                     <span :title="claim.volume.accessModeReason">
                       {{ claim.volume.mountPath }} on {{ claim.volume.process }}
                     </span>
+                    <!-- Two projects holding one filesystem is a fact that
+                         must not have to be discovered, so the claim says it
+                         where somebody is already looking at the claim. -->
+                    <span
+                      v-if="claim.volume.bound?.sharedWith?.length"
+                      class="block text-dimmed"
+                      :title="claim.volume.bound.sharedWith.join('\n')"
+                    >
+                      shared with {{ claim.volume.bound.sharedWith.join(", ") }}
+                    </span>
+                    <OperatorOnly>
+                      <span v-if="claim.volume.bound" class="block text-dimmed">
+                        PersistentVolume {{ claim.volume.bound.persistentVolume }}
+                        <template v-if="claim.volume.bound.identity"> · {{ claim.volume.bound.identity }}</template>
+                      </span>
+                    </OperatorOnly>
                   </template>
                   <template v-else-if="claim.redirectURIs?.length">
                     <span :title="claim.redirectURIs.join('\n')">

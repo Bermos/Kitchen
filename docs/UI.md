@@ -35,8 +35,9 @@ screens they use most, which is where this guide started.
 ### What operator content is
 
 Anything that names a Kubernetes object: a Pod, a Node, a namespace, a
-manifest, a `status.conditions` row, a cluster Event, a workload the platform
-runs on its own behalf. [docs/SCOPE.md](SCOPE.md) is the reason —
+manifest, a `status.conditions` row, a cluster Event, a PersistentVolume, a
+PersistentVolumeClaim, a StorageClass, a workload the platform runs on its own
+behalf. [docs/SCOPE.md](SCOPE.md) is the reason —
 
 > The developer should never need the words "namespace" or "Deployment".
 

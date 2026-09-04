@@ -61,6 +61,11 @@ type claimProviderView struct {
 	// name: the provider's own, shared and none. Shared is listed, never
 	// preselected — a preview reading production data is asked for.
 	PreviewChoices []string `json:"previewChoices"`
+	// SharedIsReadOnly says what a preview shares here it cannot write,
+	// which is what makes sharing production's own resource the provider's
+	// default rather than a thing to opt into. A bound volume is the one
+	// provider that says it.
+	SharedIsReadOnly bool `json:"sharedIsReadOnly,omitempty"`
 	// KeepsPodsRunning and ForcesRecreate are what the binding does to the
 	// workload that reads it; WorkloadNote is why, empty when neither.
 	KeepsPodsRunning bool   `json:"keepsPodsRunning,omitempty"`
@@ -96,7 +101,8 @@ func claimTypeViews() []claimTypeView {
 				Provider:         d.Provider,
 				PreviewMode:      string(d.Preview),
 				PreviewNote:      d.PreviewNote,
-				PreviewChoices:   previewChoices(d.Preview, d.ForcesRecreate),
+				PreviewChoices:   previewChoices(d.Declaration),
+				SharedIsReadOnly: d.SharedIsReadOnly,
 				KeepsPodsRunning: d.KeepsPodsRunning,
 				ForcesRecreate:   d.ForcesRecreate,
 				WorkloadNote:     d.WorkloadNote,
@@ -114,11 +120,15 @@ func claimTypeViews() []claimTypeView {
 // each once and in that order. A provider whose resource attaches to one pod
 // at a time is not offered shared: a preview mounting production's would
 // take it from production, and the API refuses the choice.
-func previewChoices(declared contract.PreviewMode, attachesOnce bool) []string {
+//
+// Unless what it shares is read-only, which takes nothing from production
+// and changes nothing on it — that provider offers shared however it
+// deploys, and declares it as its own mode.
+func previewChoices(d contract.Declaration) []string {
 	choices := []string{}
-	modes := []contract.PreviewMode{declared, contract.PreviewShared, contract.PreviewNone}
-	if attachesOnce {
-		modes = []contract.PreviewMode{declared, contract.PreviewNone}
+	modes := []contract.PreviewMode{d.Preview, contract.PreviewShared, contract.PreviewNone}
+	if d.ForcesRecreate && !d.SharedIsReadOnly {
+		modes = []contract.PreviewMode{d.Preview, contract.PreviewNone}
 	}
 	for _, mode := range modes {
 		if mode == "" {

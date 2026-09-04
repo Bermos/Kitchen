@@ -486,20 +486,111 @@ type VolumeConfig struct {
 	// process the project does not have, is refused.
 	Process string `json:"process"`
 
-	// Size is a Kubernetes quantity: "10Gi". Required — a volume has no
-	// sensible default size, and one that was defaulted is the one that
-	// fills up first.
-	Size string `json:"size"`
+	// Source is where the volume comes from: "provision", which cuts a new
+	// PersistentVolumeClaim from a StorageClass, or "bind", which mounts a
+	// volume that already exists and provisions nothing. Empty is
+	// provision, which is what every claim written before binding existed
+	// meant.
+	//
+	// It is declared rather than inferred from which fields are set,
+	// because the difference between the two is whether the platform is
+	// about to cut a disk or reach for data that was there before the
+	// cluster was, and that is not a thing to work out from the shape of a
+	// request. Each source is refused the other's fields.
+	// +kubebuilder:validation:Enum=provision;bind
+	// +optional
+	Source VolumeSource `json:"source,omitempty"`
+
+	// Size is a Kubernetes quantity: "10Gi". Required on a provisioned
+	// volume — one has no sensible default size, and one that was defaulted
+	// is the one that fills up first — and refused on a bound one, which
+	// has the capacity it was made with.
+	// +optional
+	Size string `json:"size,omitempty"`
 
 	// StorageClass the volume is cut from. Empty takes the cluster's
 	// default StorageClass, which Kitchen requires of every cluster anyway.
+	// Refused on a bound volume: a class is what a volume is cut from, and
+	// a bound one was cut before the claim existed.
 	// +optional
 	StorageClass string `json:"storageClass,omitempty"`
 
 	// MountPath is the absolute path inside the process's container the
 	// volume appears at: "/data".
 	MountPath string `json:"mountPath"`
+
+	// Bind is the volume a bound claim mounts. Required when Source is
+	// bind, refused otherwise.
+	// +optional
+	Bind *VolumeBinding `json:"bind,omitempty"`
 }
+
+// VolumeSource is where a volume claim's volume comes from. The values are
+// the ones internal/provider/volume declares; a test holds the two together,
+// since a kubebuilder marker cannot read a Go constant.
+// +kubebuilder:validation:Enum=provision;bind
+type VolumeSource string
+
+const (
+	// VolumeProvision cuts a new volume from a StorageClass.
+	VolumeProvision VolumeSource = "provision"
+	// VolumeBind mounts a volume that already exists.
+	VolumeBind VolumeSource = "bind"
+)
+
+// VolumeBinding is which volume a bound claim mounts, and how.
+//
+// **The platform never takes the volume over.** It creates a
+// PersistentVolumeClaim of its own in the application namespace and binds
+// the named volume to it; deleting the claim deletes that
+// PersistentVolumeClaim and nothing else. A deletionPolicy of Delete is
+// refused outright on a bound claim — see ClaimDeletionPolicy — because the
+// data was there before the platform was and destroying it is not the
+// platform's to offer.
+//
+// **Two projects, one volume.** Any number of claims may mount one volume
+// read-only; exactly one may write it. That is not a storage limit — two
+// PersistentVolumes can point at one export, and Kubernetes would let both
+// be written — it is the platform's own answer to what "Kitchen owns what
+// it deploys" means when two owners share a mount: one project's deploy
+// must not be able to break another's, and two writers on one filesystem is
+// exactly that. The reconciler compares what the volumes point at rather
+// than their names, and refuses the second writer by naming the first
+// claim and its project.
+type VolumeBinding struct {
+	// PersistentVolume names a cluster PersistentVolume to bind — the
+	// object an operator writes for an NFS export, an SMB share or a CSI
+	// volume that existed before the cluster did. Exactly one of this and
+	// PersistentVolumeClaim is set.
+	// +optional
+	PersistentVolume string `json:"persistentVolume,omitempty"`
+
+	// PersistentVolumeClaim names an existing PersistentVolumeClaim in the
+	// project's own application namespace.
+	//
+	// That namespace and no other: a PersistentVolumeClaim is namespaced
+	// and a pod may only mount one of its own, so a claim naming somebody
+	// else's would name a volume this project's pods cannot reach. A volume
+	// that lives elsewhere is bound by naming the PersistentVolume behind
+	// it, which is cluster-scoped and is what an export is anyway.
+	// +optional
+	PersistentVolumeClaim string `json:"persistentVolumeClaim,omitempty"`
+
+	// AccessMode is how this project mounts the volume: ReadOnlyMany to
+	// read it, ReadWriteOnce to write it as the only pod that has it, or
+	// ReadWriteMany to write it alongside others.
+	//
+	// It is declared rather than read off the volume because what the
+	// volume can do and what this project may do with it are different
+	// questions, and only the second decides whether another project may
+	// write the same volume. A mode the volume itself does not offer is
+	// refused, naming the modes it does.
+	// +kubebuilder:validation:Enum=ReadOnlyMany;ReadWriteOnce;ReadWriteMany
+	AccessMode string `json:"accessMode"`
+}
+
+// Bound reports whether the claim mounts a volume that already exists.
+func (c VolumeConfig) Bound() bool { return c.Source == VolumeBind }
 
 // WebProcessName is what a volume claim calls the web process — the one
 // process a Project has that is not in spec.processes, and the one name
@@ -752,20 +843,38 @@ type ClaimVolumeStatus struct {
 	Process   string `json:"process"`
 	MountPath string `json:"mountPath"`
 
+	// Source is where the volume came from — provision or bind — echoed
+	// from the claim so that every reader of the status knows which of the
+	// two shapes below it is looking at without decoding spec.config.
+	// +kubebuilder:validation:Enum=provision;bind
+	// +optional
+	Source VolumeSource `json:"source,omitempty"`
+
 	// StorageClass is the class the volume was actually cut from: the one
-	// the claim named, or the cluster's default at the time.
+	// the claim named, or the cluster's default at the time. A bound volume
+	// reports the class it carries, where it carries one, and nothing where
+	// it does not — a statically written PersistentVolume usually has none.
 	// +optional
 	StorageClass string `json:"storageClass,omitempty"`
 
-	// AccessMode is what the StorageClass was detected to support:
-	// ReadWriteOnce, which caps the process at one replica and forces a
-	// recreate on every deploy, or ReadWriteMany, which lifts both. It is
-	// detected from the class's provisioner and its annotations, never
-	// assumed; AccessModeReason says what decided it.
-	// +kubebuilder:validation:Enum=ReadWriteOnce;ReadWriteMany
+	// AccessMode is how the volume is mounted: for a provisioned volume
+	// what the StorageClass was detected to support, and for a bound one
+	// what the claim declared. ReadWriteOnce caps the process at one
+	// replica and forces a recreate on every deploy; ReadOnlyMany and
+	// ReadWriteMany lift both. For a provisioned volume it is detected from
+	// the class's provisioner and its annotations, never assumed;
+	// AccessModeReason says what decided it either way.
+	// +kubebuilder:validation:Enum=ReadOnlyMany;ReadWriteOnce;ReadWriteMany
 	AccessMode string `json:"accessMode"`
 	// +optional
 	AccessModeReason string `json:"accessModeReason,omitempty"`
+
+	// Bound is the volume a bound claim mounts, once the reconciler has
+	// found it. Empty for a provisioned volume, and for a bound claim that
+	// has not resolved yet — a claim naming a volume the cluster does not
+	// have is Failed with the name it could not find.
+	// +optional
+	Bound *ClaimBoundVolume `json:"bound,omitempty"`
 
 	// ClaimName is the production PersistentVolumeClaim, in the project's
 	// application namespace.
@@ -784,6 +893,44 @@ type ClaimVolumeStatus struct {
 	// preview.
 	// +optional
 	Previews []ClaimPreviewVolume `json:"previews,omitempty"`
+}
+
+// ClaimBoundVolume is the volume a bound claim mounts: what the claim
+// named, the PersistentVolume it resolved to, and what that volume is —
+// which is the thing two claims are compared on when one of them wants to
+// write it.
+type ClaimBoundVolume struct {
+	// PersistentVolume is the volume itself, and Capacity what it holds —
+	// reported rather than asked for, since the platform did not make it.
+	PersistentVolume string `json:"persistentVolume"`
+	// +optional
+	Capacity string `json:"capacity,omitempty"`
+
+	// Named is what the claim named to get here: the PersistentVolume's own
+	// name, or the PersistentVolumeClaim whose volume it is.
+	// +optional
+	Named string `json:"named,omitempty"`
+
+	// Identity is what the volume points at — "nfs://nas.lan/export/media",
+	// "csi://driver/handle" — which is what tells two PersistentVolumes
+	// serving one export apart from two serving different ones. Two claims
+	// that would write the same identity are the refusal this exists for.
+	// +optional
+	Identity string `json:"identity,omitempty"`
+
+	// Writable says this claim's process may change what is on the volume,
+	// which follows from the declared access mode. At most one claim in the
+	// cluster is writable for a given Identity.
+	// +optional
+	Writable bool `json:"writable,omitempty"`
+
+	// SharedWith are the other claims mounting the same volume, as
+	// "project/claim", every one of them a reader. It is on the status
+	// because sharing a filesystem between projects is the kind of fact
+	// that must not have to be discovered: whoever is looking at this claim
+	// can see who else is holding the same data.
+	// +optional
+	SharedWith []string `json:"sharedWith,omitempty"`
 }
 
 // ClaimPreviewVolume is one preview Environment's own volume.

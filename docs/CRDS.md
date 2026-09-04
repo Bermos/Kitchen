@@ -2029,10 +2029,11 @@ spec:
   config:
     previewMode: fresh                  # fresh (the default) or none; shared is refused
     volume:
+      source: provision                 # provision (the default) cuts a new one | bind mounts one that exists
       process: web                      # the ONE process that mounts it: web, or a spec.processes name
-      size: 10Gi                        # required; set at creation, never shrunk
+      size: 10Gi                        # required here; refused on a bound volume
       mountPath: /data                  # absolute, inside that process's container
-      storageClass: fast-ssd            # empty takes the cluster's default
+      storageClass: fast-ssd            # empty takes the cluster's default; refused on a bound volume
 status:
   phase: Bound
   # secretName stays empty: the binding is a mount, not a Secret
@@ -2041,6 +2042,7 @@ status:
   forcesRecreate: true                  # false where the class was detected ReadWriteMany
   volume:
     process: web
+    source: provision                   # echoed, so a reader knows which shape this is
     mountPath: /data
     storageClass: fast-ssd
     accessMode: ReadWriteOnce           # detected from the class, never assumed
@@ -2082,6 +2084,68 @@ the same name in the same project finds it by its labels, pre-binds a new PVC
 to it by name, and carries on with the data. `Delete` puts the reclaim policy
 back and deletes the PVC, and the volume follows. Preview volumes always go
 with their preview.
+
+#### `source: bind` — a volume that was already there
+
+The other half of what a persistent workload is: the data that predates the
+cluster. Twelve terabytes on a NAS, an SMB share, a CSI volume attached by
+hand. The platform mounts it and **provisions nothing**.
+
+```yaml
+  config:
+    volume:
+      source: bind
+      process: web
+      mountPath: /media                 # size and storageClass are refused here
+      bind:
+        persistentVolume: nas-media     # or persistentVolumeClaim, one of this project's own — never both
+        accessMode: ReadOnlyMany        # ReadOnlyMany | ReadWriteOnce | ReadWriteMany
+status:
+  previewMode: shared                   # the same volume, read-only; none where the mode is ReadWriteOnce
+  forcesRecreate: false                 # ReadWriteOnce would make it true, exactly as a cut volume does
+  volume:
+    source: bind
+    accessMode: ReadOnlyMany
+    claimName: media-volume             # the PVC the platform made to reach it, pre-bound by claimRef
+    bound:
+      persistentVolume: nas-media
+      capacity: 12Ti
+      named: nas-media                  # what the claim named to get here
+      identity: nfs://nas.lan/export/media
+      writable: false
+      sharedWith: [sonarr/media]        # the other claims holding this same storage
+```
+
+Reconcile: refuse `deletionPolicy: Delete` outright; find the volume, or fail
+(`VolumeNotFound`) naming what could not be found — no amount of waiting
+conjures an NFS export, and only a PersistentVolumeClaim that has not bound
+yet is a wait; refuse an access mode the volume does not offer, naming the
+ones it does; then create a PersistentVolumeClaim of the platform's own,
+pre-bound to the volume by `claimRef` so that it cannot match somebody else's.
+
+**Two projects may read one volume; one may write it.** Read-only sharing
+costs nothing and is most of what an existing export is for, so any number of
+claims may hold one. The second *writer* is refused (`VolumeWrittenElsewhere`)
+naming the claim and project that already writes it: two projects writing one
+filesystem is one project's deploy breaking another's, which is the opposite
+of Kitchen owning what it deploys. The comparison is on
+`status.volume.bound.identity` — what the volume *points at* — not on names,
+because two projects reach one export through two PersistentVolumes and a name
+comparison would call them unrelated. The oldest writing claim keeps it.
+
+**Previews mount the same volume, read-only**, which is why this provider is
+the one that declares `shared` as its own mode: a preview of an application
+whose data is the point of it must read what production reads, and a read-only
+mount takes nothing from production and changes nothing on it. The reconciler
+writes the read-only flag onto the pod's volume and its mount rather than
+trusting the application. Where the claim's own mode is `ReadWriteOnce` the
+volume attaches to one pod at a time and production has it: previews get
+`none`, with the reason on the claim.
+
+**Teardown unmounts and never deletes.** Deleting the claim removes only the
+PersistentVolumeClaim the platform created — and not even that where the claim
+named a PersistentVolumeClaim that was already in the namespace. The
+PersistentVolume, and every byte on it, stays.
 
 ---
 

@@ -1615,6 +1615,81 @@ spec:
                       singleton:
                         type: boolean
                     type: object
+                  volumes:
+                    description: |-
+                      Volumes are the persistent volumes the commit says it needs: which
+                      claim, mounted where, by which process.
+
+                      **They are a requirement, not a request.** Everything else in this
+                      file describes the code and the file may set it; a volume claim is
+                      the project asking the platform for storage — for a bound volume,
+                      for storage the platform did not create and does not own — and that
+                      is the project's standing rather than a fact about the commit. A file
+                      that could make one would let a pull request mount somebody's NAS
+                      export into its own preview, which is the "no credential, ever" rule
+                      wearing a different hat.
+
+                      So the file declares what the code needs and the build checks it: a
+                      declaration the project has no claim for fails the build naming the
+                      claim to make, and one whose process or mount path disagrees with the
+                      claim fails naming both. That catches the failure this is actually
+                      for — the code writes to /data and the claim mounts /var/data, which
+                      otherwise deploys green and loses everything on restart.
+                    items:
+                      description: |-
+                        RepoVolume is one entry of kitchen.json's `volumes`: a volume claim the
+                        commit needs, as the commit understands it.
+                      properties:
+                        accessMode:
+                          description: |-
+                            AccessMode is how the commit expects to mount it — the same values a
+                            bound claim declares. Empty declares no opinion; a value that
+                            disagrees with the claim fails the build, since read-only and
+                            read-write are the difference between an application that works and
+                            one that fails on its first write.
+                          enum:
+                          - ReadOnlyMany
+                          - ReadWriteOnce
+                          - ReadWriteMany
+                          type: string
+                        mountPath:
+                          type: string
+                        name:
+                          description: |-
+                            Name is the resource claim's name, which is what ties the
+                            declaration to the thing the project actually has.
+                          type: string
+                        process:
+                          description: |-
+                            Process is the project's process that mounts it, and MountPath where
+                            it appears in that process's container — the two facts about a volume
+                            that really are about the code, and the two worth checking a claim
+                            against.
+                          type: string
+                        source:
+                          allOf:
+                          - enum:
+                            - provision
+                            - bind
+                          - enum:
+                            - provision
+                            - bind
+                          description: |-
+                            Source is provision or bind, where the file wants to say which. Empty
+                            declares no opinion and matches either; a value that disagrees with
+                            the claim fails the build, because a commit written against twelve
+                            terabytes of existing media and a claim that cut a fresh empty disk
+                            are not the same application.
+                          type: string
+                      required:
+                      - mountPath
+                      - name
+                      - process
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                 type: object
               detectedFramework:
                 description: Framework detected by the auto strategy (e.g. nextjs,
