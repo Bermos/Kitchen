@@ -53,6 +53,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/k8sevents"
+	"github.com/Bermos/Kitchen/internal/notify"
 	"github.com/Bermos/Kitchen/internal/receiver"
 	"github.com/Bermos/Kitchen/internal/ui"
 	"github.com/Bermos/Kitchen/internal/usage"
@@ -370,6 +371,15 @@ func main() {
 		Client:    mgr.GetClient(),
 		Namespace: controller.PlatformNamespace,
 		Singleton: controller.KitchenSingletonName,
+		// Outbound notifications read the same stream (issue #77): a
+		// reconciler that records what it did notifies about it for free, and
+		// nothing is ever notified that is not also in the feed. The sink only
+		// queues delivery objects; the requests themselves are
+		// NotificationDeliveryReconciler's, off every reconcile path.
+		Sink: &notify.Notifier{
+			Client:    mgr.GetClient(),
+			Namespace: controller.PlatformNamespace,
+		},
 	}
 
 	// One audit recorder for the whole process, shared by every reconciler
@@ -506,6 +516,28 @@ func main() {
 		Audit:          auditor,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PlatformUpdate")
+		os.Exit(1)
+	}
+	if err = (&controller.NotificationSubscriptionReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NotificationSubscription")
+		os.Exit(1)
+	}
+	if err = (&controller.NotificationDeliveryReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "NotificationDelivery")
+		os.Exit(1)
+	}
+	if err = (&controller.SavedQueryReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Activity: recorder,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SavedQuery")
 		os.Exit(1)
 	}
 	setupLog.Info("self-update", "enabled", selfUpdate.Enabled(),

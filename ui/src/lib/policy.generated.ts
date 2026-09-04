@@ -121,8 +121,16 @@ export type Route =
   | "GET /api/v1/logs/patterns"
   | "GET /api/v1/logs/saved"
   | "POST /api/v1/logs/saved"
+  | "PATCH /api/v1/logs/saved/{name}"
   | "DELETE /api/v1/logs/saved/{name}"
   | "GET /api/v1/events"
+  | "GET /api/v1/notifications/subscriptions"
+  | "POST /api/v1/notifications/subscriptions"
+  | "GET /api/v1/notifications/subscriptions/{name}"
+  | "PATCH /api/v1/notifications/subscriptions/{name}"
+  | "DELETE /api/v1/notifications/subscriptions/{name}"
+  | "GET /api/v1/notifications/deliveries"
+  | "POST /api/v1/notifications/deliveries/{name}/retry"
   | "GET /api/v1/decisions"
   | "GET /api/v1/decisions/{id}"
   | "POST /api/v1/decisions/{id}/replay"
@@ -266,8 +274,16 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/logs/patterns": { kind: "visibleProjects" },
   "GET /api/v1/logs/saved": { kind: "visibleProjects" },
   "POST /api/v1/logs/saved": { kind: "authenticated" },
+  "PATCH /api/v1/logs/saved/{name}": { kind: "visibleProjects" },
   "DELETE /api/v1/logs/saved/{name}": { kind: "visibleProjects" },
   "GET /api/v1/events": { kind: "visibleProjects" },
+  "GET /api/v1/notifications/subscriptions": { kind: "visibleProjects" },
+  "POST /api/v1/notifications/subscriptions": { kind: "projectRole", role: "admin", doing: "subscribing to a project's notifications" },
+  "GET /api/v1/notifications/subscriptions/{name}": { kind: "projectRole", role: "viewer", doing: "reading a notification subscription" },
+  "PATCH /api/v1/notifications/subscriptions/{name}": { kind: "projectRole", role: "admin", doing: "changing a notification subscription" },
+  "DELETE /api/v1/notifications/subscriptions/{name}": { kind: "projectRole", role: "admin", doing: "deleting a notification subscription" },
+  "GET /api/v1/notifications/deliveries": { kind: "visibleProjects" },
+  "POST /api/v1/notifications/deliveries/{name}/retry": { kind: "projectRole", role: "admin", doing: "retrying a notification delivery" },
   "GET /api/v1/decisions": { kind: "visibleProjects" },
   "GET /api/v1/decisions/{id}": { kind: "visibleProjects" },
   "POST /api/v1/decisions/{id}/replay": { kind: "visibleProjects" },

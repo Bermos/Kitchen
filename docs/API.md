@@ -253,8 +253,16 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/logs/patterns` | The same selection's messages collapsed into templates | any account — filtered |
 | GET | `/logs/saved` | Saved queries — selections someone kept under a name | any account — filtered |
 | POST | `/logs/saved` | Keep the current selection under a name | any account |
+| PATCH | `/logs/saved/{name}` | Set, change or remove the standing alert on one — a threshold over a window, asked on a schedule. `alert: null` removes it. The selection itself is not editable | any account — filtered |
 | DELETE | `/logs/saved/{name}` | Forget one | any account — filtered |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter | any account — filtered |
+| GET | `/notifications/subscriptions` | Where the platform sends an account of itself. `?project=` filters; a platform subscription is the operator's alone | any account — filtered |
+| POST | `/notifications/subscriptions` | Subscribe an address to a project's events. Carries the signing key; echoes none of it. Naming no project asks for every project's events and needs `operator` | `admin` |
+| GET | `/notifications/subscriptions/{name}` | One subscription, its counters and its last outcome | `viewer` |
+| PATCH | `/notifications/subscriptions/{name}` | Change the address, the events, the bounds or the suspension — or rotate the signing key. The scope cannot be changed | `admin` |
+| DELETE | `/notifications/subscriptions/{name}` | Delete it, its signing key and its delivery history | `admin` |
+| GET | `/notifications/deliveries` | Every delivery, newest first, dead letters included. `?subscription=`, `?phase=` | any account — filtered |
+| POST | `/notifications/deliveries/{name}/retry` | Put a dead letter back on the queue. `202` | `admin` |
 | GET | `/access/identities` | Who holds what on the platform right now, one row per grant, with last activity and whether anything is still behind it | `operator` |
 | GET | `/access/reviews` | The recertification register, newest first. `?historical=true` adds the closed cycles | `operator` |
 | POST | `/access/reviews` | Open a recertification cycle out of cadence; the snapshot is frozen on the spot | `operator` |
@@ -351,6 +359,7 @@ such changes two changes to two different files.
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query
 - [Metrics, traffic and traces](api/telemetry.md) — the golden signals, the request rows behind them, and the spans
 - [The activity feed and the audit log](api/audit.md) — what the platform did, best-effort and tamper-evident
+- [Notifications](api/notifications.md) — subscribing an address to what the platform does, the signed payload it is sent, and the dead letters when it was not taken
 - [Policy decisions](api/decisions.md) — every verdict the policy engine reached, the bundles it evaluates, replaying a decision, and the drift view over them
 - [Promotions](api/promotions.md) — the staged pipeline: asking for a release to land, and what the policy decided
 - [Exceptions](api/exceptions.md) — break-glass: bounded, two-person, per-rule waivers, and the register of every one

@@ -166,6 +166,8 @@ rules:
   - environments
   - exceptions
   - kitchens
+  - notificationdeliveries
+  - notificationsubscriptions
   - platformupdates
   - projects
   - promotions
@@ -191,11 +193,14 @@ rules:
   - environments/status
   - exceptions/status
   - kitchens/status
+  - notificationdeliveries/status
+  - notificationsubscriptions/status
   - platformupdates/status
   - projects/status
   - promotions/status
   - releases/status
   - resourceclaims/status
+  - savedqueries/status
   verbs:
   - get
   - patch

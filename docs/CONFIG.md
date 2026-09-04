@@ -354,6 +354,11 @@ the project's standing in the platform.
 - **Not the root directory**, for the reason in [Where it goes](#where-it-goes).
 - **Not the git connection, the repository, the production branch or the
   registry.** A file cannot say which repository it is in.
+- **No notification subscription.** Where the platform sends an account of
+  what this project is doing — and the key those payloads are signed with — is
+  the project admin's, on a route that never reads the key back. A file that
+  could add one would be a pull request choosing where the project's activity
+  is posted. See [docs/api/notifications.md](api/notifications.md).
 
 **Nothing here is file-*only*, and that is deliberate.** Everything this file
 can set has a route as well — the build settings and the runtime on

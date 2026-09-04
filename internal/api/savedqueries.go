@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -42,10 +43,16 @@ import (
 // rather than by whoever has the link.
 //
 // A saved query is stored as a SavedQuery object because that is where the
-// platform's state lives, and it is the one write surface here with no
-// reconciler behind it — deliberately. The rule that a write waits for its
-// reconciler is about objects that do nothing until something acts on them; a
-// saved query has its whole effect by existing.
+// platform's state lives, and a saved query *without an alert* is the one
+// write surface here with no reconciler behind it — deliberately. The rule
+// that a write waits for its reconciler is about objects that do nothing until
+// something acts on them; a saved query has its whole effect by existing.
+//
+// An alert is the exception, and PATCH is the route that adds one (#77). A
+// standing question is not answered by existing: something has to ask it, on a
+// schedule, which is SavedQueryReconciler — so the write surface has its
+// reconciler after all, and the only thing that was ever true of a saved query
+// with no alert stays true of one.
 
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=savedqueries,verbs=get;list;watch;create;update;patch;delete
 
@@ -67,10 +74,31 @@ type savedQueryView struct {
 	IncludeCluster bool   `json:"includeCluster,omitempty"`
 	SavedBy        string `json:"savedBy,omitempty"`
 	CreatedAt      string `json:"createdAt"`
+
+	// Alert is the standing question this one has become, absent when it is
+	// only ever asked by a person opening it.
+	Alert *savedQueryAlertView `json:"alert,omitempty"`
+}
+
+// savedQueryAlertView is the alert and what it has observed, in one object:
+// the two are read together every time, and an alert whose last evaluation is
+// somewhere else is an alert nobody can tell is working.
+type savedQueryAlertView struct {
+	WindowMinutes   int32  `json:"windowMinutes"`
+	Threshold       int64  `json:"threshold"`
+	Comparison      string `json:"comparison"`
+	IntervalMinutes int32  `json:"intervalMinutes"`
+	Suspended       bool   `json:"suspended"`
+
+	Firing        bool   `json:"firing"`
+	FiringSince   string `json:"firingSince,omitempty"`
+	LastCount     int64  `json:"lastCount"`
+	LastEvaluated string `json:"lastEvaluatedAt,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 func newSavedQueryView(query *kitchenv1alpha1.SavedQuery) savedQueryView {
-	return savedQueryView{
+	view := savedQueryView{
 		Name:           query.Name,
 		Title:          query.Spec.Title,
 		Description:    query.Spec.Description,
@@ -83,6 +111,29 @@ func newSavedQueryView(query *kitchenv1alpha1.SavedQuery) savedQueryView {
 		SavedBy:        query.Spec.SavedBy,
 		CreatedAt:      query.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
+	if alert := query.Spec.Alert; alert != nil {
+		comparison := alert.Comparison
+		if comparison == "" {
+			comparison = alertComparisonAbove
+		}
+		view.Alert = &savedQueryAlertView{
+			WindowMinutes:   alert.WindowMinutes,
+			Threshold:       alert.Threshold,
+			Comparison:      comparison,
+			IntervalMinutes: alert.Interval(),
+			Suspended:       alert.Suspended,
+			Firing:          query.Status.Firing,
+			LastCount:       query.Status.LastCount,
+			Message:         query.Status.Message,
+		}
+		if at := query.Status.FiringSince; at != nil {
+			view.Alert.FiringSince = at.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if at := query.Status.LastEvaluationTime; at != nil {
+			view.Alert.LastEvaluated = at.UTC().Format("2006-01-02T15:04:05Z")
+		}
+	}
+	return view
 }
 
 // hiddenFrom reports whether a saved query is one this caller must not be
@@ -167,6 +218,69 @@ type saveQueryRequest struct {
 	Limit          int32  `json:"limit,omitempty"`
 	View           string `json:"view,omitempty"`
 	IncludeCluster bool   `json:"includeCluster,omitempty"`
+
+	// Alert makes it a standing question at the moment it is saved, which is
+	// usually when somebody knows they want one — they are looking at the
+	// lines that made them want it.
+	Alert *alertRequest `json:"alert,omitempty"`
+}
+
+// alertRequest is a threshold over a window, asked on a schedule. It is the
+// same shape on create and on patch, and on patch it replaces the alert whole:
+// an alert is five numbers, and a patch that merged them would let a request
+// that says `{"threshold": 0}` mean two different things.
+type alertRequest struct {
+	WindowMinutes   int32  `json:"windowMinutes,omitempty"`
+	Threshold       int64  `json:"threshold"`
+	Comparison      string `json:"comparison,omitempty"`
+	IntervalMinutes int32  `json:"intervalMinutes,omitempty"`
+	Suspended       bool   `json:"suspended,omitempty"`
+}
+
+const (
+	alertComparisonAbove = kitchenv1alpha1.AlertComparisonAbove
+	alertComparisonBelow = kitchenv1alpha1.AlertComparisonBelow
+	// maxAlertMinutes bounds both the window and the interval, and is a day:
+	// past that the question is about a trend rather than about now, and the
+	// answer is a chart somebody reads rather than a message somebody is sent.
+	maxAlertMinutes = 1440
+)
+
+// alertSpec validates an alert request and turns it into the spec, refusing
+// what the CRD would refuse later — at the moment somebody could still fix it.
+func alertSpec(request *alertRequest) (*kitchenv1alpha1.SavedQueryAlert, error) {
+	if request == nil {
+		return nil, nil
+	}
+	if request.WindowMinutes < 1 || request.WindowMinutes > maxAlertMinutes {
+		return nil, fmt.Errorf("alert.windowMinutes must be between 1 and %d — how far back each "+
+			"evaluation counts (got %d)", maxAlertMinutes, request.WindowMinutes)
+	}
+	if request.Threshold < 0 {
+		return nil, fmt.Errorf("alert.threshold must not be negative (got %d)", request.Threshold)
+	}
+	if request.IntervalMinutes < 0 || request.IntervalMinutes > maxAlertMinutes {
+		return nil, fmt.Errorf("alert.intervalMinutes must be between 1 and %d; 0 means the "+
+			"default of %d (got %d)", maxAlertMinutes, kitchenv1alpha1.DefaultAlertIntervalMinutes,
+			request.IntervalMinutes)
+	}
+	comparison := request.Comparison
+	switch comparison {
+	case "":
+		comparison = alertComparisonAbove
+	case alertComparisonAbove, alertComparisonBelow:
+	default:
+		return nil, fmt.Errorf("alert.comparison must be %q — more matching lines than the "+
+			"threshold — or %q, which is the heartbeat: a service that logs every minute and has "+
+			"stopped (got %q)", alertComparisonAbove, alertComparisonBelow, request.Comparison)
+	}
+	return &kitchenv1alpha1.SavedQueryAlert{
+		WindowMinutes:   request.WindowMinutes,
+		Threshold:       request.Threshold,
+		Comparison:      comparison,
+		IntervalMinutes: request.IntervalMinutes,
+		Suspended:       request.Suspended,
+	}, nil
 }
 
 func (s *Server) createSavedQuery(w http.ResponseWriter, req *http.Request) {
@@ -228,6 +342,12 @@ func (s *Server) createSavedQuery(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	alert, err := alertSpec(body.Alert)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+
 	caller, _ := CallerFrom(ctx)
 	saved := &kitchenv1alpha1.SavedQuery{
 		ObjectMeta: metav1.ObjectMeta{Name: body.Name, Namespace: s.Namespace},
@@ -241,6 +361,7 @@ func (s *Server) createSavedQuery(w http.ResponseWriter, req *http.Request) {
 			View:           body.View,
 			IncludeCluster: body.IncludeCluster,
 			SavedBy:        callerName(caller),
+			Alert:          alert,
 		},
 	}
 	if err := s.Client.Create(ctx, saved); err != nil {
@@ -255,6 +376,100 @@ func (s *Server) createSavedQuery(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, newSavedQueryView(saved))
+}
+
+// patchSavedQueryRequest is the alert and nothing else.
+//
+// The selection itself is not patchable, and that is not an omission: a saved
+// query is a link with a name on it, so changing what it asks is saving a
+// different question. Editing one in place would move it under everybody who
+// had already found it — including, once it has an alert, whoever is being
+// woken by it.
+//
+// `alert` is a raw message so that the three cases stay three: absent changes
+// nothing, `null` removes the alert, and an object replaces it. (A pointer
+// would not: encoding/json reads a `null` into one by setting it to nil, which
+// is the same as absent.)
+//
+// The selection's own fields are named here only so that sending one is
+// answered with the reason rather than with the decoder's "unknown field".
+type patchSavedQueryRequest struct {
+	Alert json.RawMessage `json:"alert,omitempty"`
+
+	Title        json.RawMessage `json:"title,omitempty"`
+	Query        json.RawMessage `json:"query,omitempty"`
+	Where        json.RawMessage `json:"where,omitempty"`
+	RangeMinutes json.RawMessage `json:"rangeMinutes,omitempty"`
+}
+
+// patchSavedQuery sets, changes or removes the standing alert on a saved
+// query — the second trigger onto the notification path (#77).
+//
+// It is the same requirement as deleting one, for the same reason: a saved
+// query belongs to the platform rather than to whoever saved it, and this
+// route can only make it ask itself on a schedule. What that crossing *does*
+// is a notification subscription's, and writing one of those is an admin's
+// (see docs/api/notifications.md).
+func (s *Server) patchSavedQuery(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	saved := &kitchenv1alpha1.SavedQuery{}
+	if err := s.get(ctx, req.PathValue("name"), saved); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if hiddenFrom(scopeFrom(ctx), saved) {
+		s.writeError(w, apierrors.NewNotFound(
+			schema.GroupResource{Group: kitchenv1alpha1.GroupVersion.Group, Resource: "savedqueries"},
+			saved.Name))
+		return
+	}
+
+	body := patchSavedQueryRequest{}
+	if err := decodeBody(req, &body); err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
+	if body.Title != nil || body.Query != nil || body.Where != nil || body.RangeMinutes != nil {
+		badRequest(w, "a saved query's selection is not editable — save the question you meant "+
+			"instead, so that a link somebody already has keeps asking what it asked. This route "+
+			"changes the alert and nothing else")
+		return
+	}
+	if body.Alert == nil {
+		badRequest(w, "nothing to change: send alert to set one, or alert: null to remove it")
+		return
+	}
+
+	if string(body.Alert) == "null" {
+		if saved.Spec.Alert == nil {
+			badRequest(w, "this query has no alert")
+			return
+		}
+		saved.Spec.Alert = nil
+	} else {
+		request := alertRequest{}
+		if err := json.Unmarshal(body.Alert, &request); err != nil {
+			badRequest(w, "alert is not an object: %s", err.Error())
+			return
+		}
+		alert, err := alertSpec(&request)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		saved.Spec.Alert = alert
+	}
+
+	if err := s.Client.Update(ctx, saved); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	// The status is the last evaluation's and stays as it was until the next
+	// one: an alert that has just been widened has not been asked yet, and
+	// saying it is firing on the old threshold's answer would be a lie the
+	// reconciler corrects a minute later.
+	writeJSON(w, http.StatusOK, newSavedQueryView(saved))
 }
 
 func (s *Server) deleteSavedQuery(w http.ResponseWriter, req *http.Request) {

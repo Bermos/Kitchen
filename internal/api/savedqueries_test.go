@@ -199,3 +199,109 @@ func TestASavedQueryIsSharedAndUnowned(t *testing.T) {
 		t.Fatalf("want 200, got %d: %s", res.Code, res.Body.String())
 	}
 }
+
+// The alert is the second trigger onto the notification path (#77), and the
+// route that adds one is the reason a saved query now has a reconciler.
+
+func TestAnAlertCanBeAddedToASavedQueryAndTakenOffAgain(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	created := h.do(t, http.MethodPost, "/api/v1/logs/saved",
+		`{"title":"Checkout 500s","query":"level:error service:shop","rangeMinutes":60}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("POST /logs/saved = %d: %s", created.Code, created.Body.String())
+	}
+	if decode[savedQueryView](t, created).Alert != nil {
+		t.Errorf("a query nobody asked to be alerted on carries no alert")
+	}
+
+	res := h.do(t, http.MethodPatch, "/api/v1/logs/saved/checkout-500s",
+		`{"alert":{"windowMinutes":10,"threshold":25}}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", res.Code, res.Body.String())
+	}
+	alert := decode[savedQueryView](t, res).Alert
+	if alert == nil {
+		t.Fatal("the alert did not survive")
+	}
+	if alert.WindowMinutes != 10 || alert.Threshold != 25 {
+		t.Errorf("the alert did not survive whole: %+v", alert)
+	}
+	// The two defaults, applied where the caller said nothing: `above` is the
+	// usual question, and five minutes is how often it is asked.
+	if alert.Comparison != alertComparisonAbove ||
+		alert.IntervalMinutes != kitchenv1alpha1.DefaultAlertIntervalMinutes {
+		t.Errorf("want the defaults filled in, got %+v", alert)
+	}
+
+	off := h.do(t, http.MethodPatch, "/api/v1/logs/saved/checkout-500s", `{"alert":null}`)
+	if off.Code != http.StatusOK {
+		t.Fatalf("removing an alert = %d: %s", off.Code, off.Body.String())
+	}
+	if decode[savedQueryView](t, off).Alert != nil {
+		t.Errorf("the alert was not removed")
+	}
+}
+
+// A saved query is a link with a name on it, so changing what it asks is
+// saving a different question — not editing this one under everybody who has
+// already found it.
+func TestASavedQuerysSelectionIsNotPatchable(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	if res := h.do(t, http.MethodPost, "/api/v1/logs/saved", `{"title":"Checkout 500s"}`); res.Code != http.StatusCreated {
+		t.Fatalf("POST /logs/saved = %d: %s", res.Code, res.Body.String())
+	}
+	res := h.do(t, http.MethodPatch, "/api/v1/logs/saved/checkout-500s", `{"query":"level:warn"}`)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "not editable") {
+		t.Errorf("the refusal should say so, got %s", res.Body.String())
+	}
+}
+
+func TestAnAlertThatCouldNeverBeEvaluatedIsRefused(t *testing.T) {
+	cases := map[string]struct{ body, wants string }{
+		"no window":          {`{"alert":{"threshold":1}}`, "windowMinutes must be between"},
+		"a window of a week": {`{"alert":{"windowMinutes":10080,"threshold":1}}`, "windowMinutes must be between"},
+		"a negative threshold": {
+			`{"alert":{"windowMinutes":10,"threshold":-1}}`, "threshold must not be negative"},
+		"a comparison nobody has heard of": {
+			`{"alert":{"windowMinutes":10,"threshold":1,"comparison":"sideways"}}`, "comparison must be"},
+		"an interval of a week": {
+			`{"alert":{"windowMinutes":10,"threshold":1,"intervalMinutes":10080}}`, "intervalMinutes must be between"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, nil, fixtures()...)
+			if res := h.do(t, http.MethodPost, "/api/v1/logs/saved",
+				`{"title":"Checkout 500s"}`); res.Code != http.StatusCreated {
+				t.Fatalf("POST /logs/saved = %d: %s", res.Code, res.Body.String())
+			}
+			res := h.do(t, http.MethodPatch, "/api/v1/logs/saved/checkout-500s", tc.body)
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", res.Code, res.Body.String())
+			}
+			if !strings.Contains(res.Body.String(), tc.wants) {
+				t.Errorf("the refusal should say %q, got %s", tc.wants, res.Body.String())
+			}
+		})
+	}
+}
+
+// An alert saved with the query is the everyday case: somebody asks for one
+// while they are looking at the lines that made them want it.
+func TestAQueryCanBeSavedWithItsAlert(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	res := h.do(t, http.MethodPost, "/api/v1/logs/saved",
+		`{"title":"Checkout 500s","query":"level:error","alert":{"windowMinutes":15,"threshold":0,"comparison":"below"}}`)
+	if res.Code != http.StatusCreated {
+		t.Fatalf("POST /logs/saved = %d: %s", res.Code, res.Body.String())
+	}
+	alert := decode[savedQueryView](t, res).Alert
+	if alert == nil || alert.Comparison != alertComparisonBelow || alert.WindowMinutes != 15 {
+		t.Errorf("the alert did not survive the save: %+v", alert)
+	}
+}

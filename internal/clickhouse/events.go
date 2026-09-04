@@ -73,6 +73,21 @@ const (
 	EventExceptionGranted  = "exception.granted"
 	EventExceptionResolved = "exception.resolved"
 
+	// An environment that stopped being healthy without anybody deploying
+	// anything: a failed deploy task, or a workload that was available and
+	// stopped being available while running the release it already had.
+	//
+	// It is edge-triggered — recorded on the transition, not on every
+	// reconcile that observes the state — because a feed that repeated it
+	// every ten seconds would be a feed with one entry in it.
+	EventEnvironmentUnhealthy = "environment.unhealthy"
+
+	// A saved query whose alert crossed its threshold. It is in this feed
+	// rather than only in a notification for the same reason everything else
+	// is: what somebody was told about, and why, should be answerable from
+	// one place.
+	EventAlertFiring = "alert.firing"
+
 	// The platform's own upgrades. They name no project, environment or
 	// release because they are about the installation itself — which is
 	// precisely why they are worth reading in the same feed: an app that

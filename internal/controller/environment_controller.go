@@ -1203,6 +1203,12 @@ func (r *EnvironmentReconciler) updateStatus(
 ) (ctrl.Result, error) {
 	scheme := platformScheme(kitchen)
 
+	// What the last reconcile left, read before this one overwrites it. It is
+	// the whole of how `environment.unhealthy` is edge-triggered: the
+	// difference between these two and what is written below is the
+	// transition, and a transition is the only thing worth announcing.
+	wasPhase, wasRelease := env.Status.Phase, env.Status.ObservedRelease
+
 	deploy := &appsv1.Deployment{}
 	available := false
 	parked := false
@@ -1289,6 +1295,7 @@ func (r *EnvironmentReconciler) updateStatus(
 	}
 
 	r.reportDeployStatus(ctx, env, project, release, protected)
+	r.recordHealthEdge(ctx, env, wasPhase, wasRelease, readyMessage(env))
 
 	if err := r.Status().Update(ctx, env); err != nil {
 		return ctrl.Result{}, err
@@ -1297,6 +1304,61 @@ func (r *EnvironmentReconciler) updateStatus(
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// recordHealthEdge announces an environment that has just stopped being
+// healthy, and only the transition into it (issue #77).
+//
+// Two shapes count, and between them they are what "went unhealthy on its own"
+// means:
+//
+//   - it went **Degraded**, which on this platform is a deploy task that
+//     failed — the migration that did not run;
+//   - it was **Live** and stopped being available *while running the release
+//     it was already running*. The release check is what keeps an ordinary
+//     deploy quiet: an environment rolling out a new release is unavailable
+//     for a moment on purpose, and nobody wants to hear about it.
+//
+// It is recorded rather than notified: the activity feed is where every
+// account of what the platform did goes, and internal/notify reads that feed.
+// A subscription is what turns it into somebody's afternoon.
+func (r *EnvironmentReconciler) recordHealthEdge(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	wasPhase kitchenv1alpha1.EnvironmentPhase,
+	wasRelease string,
+	why string,
+) {
+	now := env.Status.Phase
+	if now == wasPhase {
+		return
+	}
+	degraded := now == kitchenv1alpha1.EnvironmentDegraded
+	stalled := wasPhase == kitchenv1alpha1.EnvironmentLive &&
+		now != kitchenv1alpha1.EnvironmentLive &&
+		wasRelease == env.Status.ObservedRelease
+	if !degraded && !stalled {
+		return
+	}
+	if why == "" {
+		why = "the environment is no longer healthy"
+	}
+	r.Activity.Record(ctx, clickhouse.Event{
+		Type:        clickhouse.EventEnvironmentUnhealthy,
+		Project:     env.Spec.ProjectRef.Name,
+		Environment: env.Name,
+		Release:     env.Status.ObservedRelease,
+		Message:     fmt.Sprintf("%s is %s: %s", env.Name, strings.ToLower(string(now)), why),
+	})
+}
+
+// readyMessage is why an environment is not ready, in the words the Ready
+// condition already put there.
+func readyMessage(env *kitchenv1alpha1.Environment) string {
+	if condition := meta.FindStatusCondition(env.Status.Conditions, condReady); condition != nil {
+		return condition.Message
+	}
+	return ""
 }
 
 // reportDeployStatus posts the deployment — and a preview's URL, onto its
@@ -1437,6 +1499,7 @@ func (r *EnvironmentReconciler) awaitingDeployTasks(
 	r.recordRuns(ctx, env, tasks.statuses)
 	env.Status.Processes = mergeProcessStatuses(env.Status.Processes, tasks.statuses)
 
+	wasPhase, wasRelease := env.Status.Phase, env.Status.ObservedRelease
 	env.Status.Phase = kitchenv1alpha1.EnvironmentDeploying
 	if tasks.failed {
 		env.Status.Phase = kitchenv1alpha1.EnvironmentDegraded
@@ -1453,6 +1516,7 @@ func (r *EnvironmentReconciler) awaitingDeployTasks(
 	// somebody is waiting on a green tick for.
 	r.reportDeployStatus(ctx, env, project, release,
 		env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected())
+	r.recordHealthEdge(ctx, env, wasPhase, wasRelease, tasks.message)
 
 	if err := r.Status().Update(ctx, env); err != nil {
 		return ctrl.Result{}, err

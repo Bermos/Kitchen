@@ -5,6 +5,7 @@ import { loadConfig, platformVersion } from "../lib/config";
 import { versionLabel } from "../lib/updates";
 import { useAsync } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
+import NotificationsPanel from "../components/NotificationsPanel.vue";
 import OperatorsPanel from "../components/OperatorsPanel.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PageSection from "../components/PageSection.vue";
@@ -252,6 +253,11 @@ const strategies = [
 
         <div class="space-y-6">
           <RetentionPanel />
+
+          <!-- Every address this installation posts its activity to,
+               project-scoped ones included: "who is being told what" is one
+               question, and this is the screen it is asked on. -->
+          <NotificationsPanel />
 
           <PlatformUpdatePanel />
         </div>

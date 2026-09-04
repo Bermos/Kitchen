@@ -99,6 +99,8 @@ rules:
       - resourceclaims/status
       - savedqueries
       - savedqueries/status
+      - notificationsubscriptions
+      - notificationsubscriptions/status
       - exceptions
       - exceptions/status
       - accessreviews

@@ -1,0 +1,188 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: notificationdeliveries.kitchen.bermos.dev
+spec:
+  group: kitchen.bermos.dev
+  names:
+    kind: NotificationDelivery
+    listKind: NotificationDeliveryList
+    plural: notificationdeliveries
+    singular: notificationdelivery
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.event
+      name: Event
+      type: string
+    - jsonPath: .spec.subscriptionRef.name
+      name: Subscription
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.attempts
+      name: Attempts
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: NotificationDelivery is the Schema for the notificationdeliveries
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              NotificationDeliverySpec is one event on its way to one subscription.
+
+              The payload is stored as the exact bytes that will be sent, not as fields to
+              be re-marshalled per attempt. That is what makes the signature reproducible:
+              a receiver verifies an HMAC over the body it received, and a body whose key
+              order changed between attempt one and attempt four would verify on one and
+              not the other.
+            properties:
+              event:
+                description: |-
+                  Event is what happened, and EventID identifies it. The id is the
+                  receiver's idempotency key: every attempt of this delivery carries the
+                  same one, and at-least-once means a receiver will see a repeat.
+                enum:
+                - build.failed
+                - deploy.succeeded
+                - preview.created
+                - preview.destroyed
+                - environment.unhealthy
+                - alert.firing
+                type: string
+              eventId:
+                minLength: 1
+                type: string
+              payload:
+                description: Payload is the JSON body, verbatim.
+                maxLength: 16384
+                type: string
+              project:
+                description: |-
+                  Project is what the event was about, empty for a platform event. It is
+                  duplicated out of the payload because it is what the API filters a
+                  caller's view of the deliveries by, and parsing every payload to
+                  answer one list request is not a filter.
+                type: string
+              subscriptionRef:
+                description: |-
+                  SubscriptionRef is the subscription this is for. The object is also
+                  this delivery's owner, so the reference cannot dangle for long.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - event
+            - eventId
+            - payload
+            - subscriptionRef
+            type: object
+          status:
+            description: NotificationDeliveryStatus is how it is getting on.
+            properties:
+              attempted:
+                items:
+                  description: |-
+                    NotificationDeliveryAttempt is one attempt, kept so that "it failed" can be
+                    read as "it failed like this, four times, over nine minutes".
+                  properties:
+                    durationMillis:
+                      description: DurationMillis is how long the attempt took.
+                      format: int64
+                      type: integer
+                    error:
+                      description: |-
+                        Error is why it failed, empty on the one that did not. It is the
+                        transport's message or the receiver's status line — never the
+                        receiver's body, which is somebody else's data and may be anything.
+                      type: string
+                    number:
+                      format: int32
+                      type: integer
+                    statusCode:
+                      description: StatusCode is the receiver's, or 0 when there was
+                        no response at all.
+                      format: int32
+                      type: integer
+                    time:
+                      format: date-time
+                      type: string
+                  required:
+                  - number
+                  - time
+                  type: object
+                maxItems: 10
+                type: array
+              attempts:
+                description: |-
+                  Attempts is how many have been made, and Attempted the last few of
+                  them. The list is bounded (maxDeliveryAttemptRecords) because the
+                  ladder is bounded; it is the whole ladder in practice.
+                format: int32
+                type: integer
+              completedTime:
+                description: |-
+                  CompletedTime is when it was delivered or dead-lettered, and what the
+                  pruner ages a finished delivery from.
+                format: date-time
+                type: string
+              lastError:
+                description: |-
+                  LastError and LastStatusCode are the most recent attempt's, lifted out
+                  of the list so that a printer column and a list row can show why
+                  without reading it.
+                type: string
+              lastStatusCode:
+                format: int32
+                type: integer
+              nextAttemptTime:
+                description: |-
+                  NextAttemptTime is when the next attempt is due. It is the backoff,
+                  made explicit: the reconciler requeues to it rather than sleeping, so a
+                  restart resumes the ladder instead of restarting it.
+                format: date-time
+                type: string
+              phase:
+                description: NotificationDeliveryPhase is where one delivery has got
+                  to.
+                enum:
+                - Pending
+                - Delivered
+                - DeadLettered
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -22,6 +22,10 @@ graph LR
     RC -->|bound to| P
     PU[PlatformUpdate<br/><i>the platform's own upgrades</i>] -.->|upgrades| K
     SQ[SavedQuery<br/><i>a log question worth keeping</i>]
+    NS[NotificationSubscription<br/><i>where to send an account of this</i>]
+    ND[NotificationDelivery<br/><i>one event, on its way</i>] -->|owned by| NS
+    SQ -.->|alert fires| ND
+    E -.->|deploy, health| ND
 ```
 
 The chain is the product: **webhook → Build → Release → Environment → running pods + URL.**
@@ -2146,15 +2150,162 @@ spec:
   savedBy: grace@example.com
 ```
 
-It has **no status and no reconciler**, and that is the point rather than an omission.
-The rule that a write surface waits for its reconciler is about objects that do nothing
-until something acts on them — a `Domain` is not routed and a `ResourceClaim` is not
-provisioned until their controllers run. A saved query has its whole effect by existing:
-reading it back is the feature.
+A saved query **with no alert has no status and no reconciler**, and that is the point
+rather than an omission. The rule that a write surface waits for its reconciler is about
+objects that do nothing until something acts on them — a `Domain` is not routed and a
+`ResourceClaim` is not provisioned until their controllers run. A saved query has its
+whole effect by existing: reading it back is the feature.
 
 The window is a duration and never an absolute range. "The spike last Tuesday" stops
 being a question and becomes a screenshot, and the retention deletes it out from under
 its own name.
+
+### `spec.alert` — the standing question
+
+An alert is the one exception above, because a standing question is not answered by
+existing: something has to ask it. `SavedQueryReconciler` does, and a crossing is the
+second trigger onto the [notification path](#notificationsubscription-namespaced-kitchen-system).
+
+```yaml
+spec:
+  alert:
+    windowMinutes: 10                   # how far back each evaluation counts, 1..1440
+    threshold: 25                       # the number of matching lines it is compared to
+    comparison: above                   # above | below — below is the heartbeat
+    intervalMinutes: 5                  # how often it is asked; a floor, not a promise
+    suspended: false                    # stop evaluating without deleting anything
+status:
+  lastEvaluationTime: 2026-09-04T02:10:00Z
+  lastCount: 63
+  firing: true
+  firingSince: 2026-09-04T02:05:00Z
+  message: 63 line(s) in the last 10 minute(s); the alert fires above 25
+```
+
+The alert lives on the saved query rather than in an object of its own because the query
+*is* its definition — an alert whose question cannot be opened in the observability view,
+tuned and saved again is an alert nobody can tune. `windowMinutes` is separate from
+`rangeMinutes` for the same reason both exist: an alert wants a short window it can
+evaluate often, and the same question is usually worth reading over a longer one.
+
+It is **edge-triggered**. Crossing records an `alert.firing` activity event — exactly the
+way a reconciler records a deploy — and staying crossed records nothing further, so a
+threshold that is met all afternoon is one message rather than one every five minutes.
+`status.lastCount` and `status.message` are what a person reads in the meantime, and
+`status.message` is also where an evaluation that could not be made (no telemetry store,
+a store that refused the query) says so — otherwise indistinguishable from an alert that
+has simply never fired.
+
+---
+
+## `NotificationSubscription` (namespaced: kitchen-system)
+
+Where the platform sends an account of itself. One address, the events it wants, and the
+key every payload to it is signed with.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: NotificationSubscription
+metadata:
+  name: shop-relay
+spec:
+  url: https://relay.example.com/kitchen    # absolute, and https
+  events:                                   # at least one; an empty list is refused
+    - deploy.succeeded
+    - build.failed
+  projectRef: {name: shop}                  # absent is the platform scope: every project
+  secretRef: {name: kitchen-notify-shop-relay}   # holds `secret`; written by the API, never read back
+  description: into #shop-deploys
+  suspended: false
+  maxAttempts: 5                            # 1..10
+  timeoutSeconds: 10                        # 1..30
+  createdBy: grace@example.com              # a byline
+status:
+  conditions: [{type: Ready, status: "True", reason: Subscribed}]
+  delivered: 412
+  failed: 3
+  deadLettered: 0
+  lastDeliveryTime: 2026-09-04T01:59:12Z
+  lastResult: delivered                     # delivered | failed
+  lastStatusCode: 204
+```
+
+The vocabulary is the platform's rather than the reconcilers': `deploy.succeeded` is a
+promotion, an auto-deploy on a push and a rollback alike, because all three are one fact
+— what is serving changed. A relay somebody wrote in an afternoon should not have to
+learn that they are three code paths. The events are `deploy.succeeded`, `build.failed`,
+`environment.unhealthy`, `preview.created`, `preview.destroyed` and `alert.firing`.
+
+An empty `events` is refused at admission rather than read as "everything": a subscription
+that silently widened when the platform learned a new event type is one that starts
+paging somebody at 03:00 because of an upgrade.
+
+`https` only. A signed payload over plain HTTP is one anybody on the path can read, and
+the signature proves only that it was not changed on the way. The signing key is supplied
+by the caller and never answered with — see
+[docs/api/notifications.md](api/notifications.md), which is also the payload and signature
+contract a receiver is written against.
+
+`NotificationSubscriptionReconciler` says whether the subscription can deliver (the URL,
+and whether the signing key is still there) and bounds how much delivery history one
+subscription keeps. Everything else about it is the deliveries'.
+
+---
+
+## `NotificationDelivery` (namespaced: kitchen-system)
+
+One event on its way to one subscription. Created by `internal/notify` when an event
+matches, and owned by the subscription, so deleting one takes its whole history with it.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: NotificationDelivery
+metadata:
+  generateName: shop-relay-
+  labels:
+    kitchen.bermos.dev/subscription: shop-relay
+    kitchen.bermos.dev/event: build.failed
+spec:
+  subscriptionRef: {name: shop-relay}
+  event: build.failed
+  eventId: 9f1c0b7e5d3a4f628a1c0d9e8b7a6f54   # the receiver's idempotency key
+  payload: '{"version":"v1","id":"9f1c…"}'    # the exact bytes that will be sent
+  project: shop
+status:
+  phase: DeadLettered                         # Pending | Delivered | DeadLettered
+  attempts: 5
+  attempted: [{number: 5, time: 2026-09-04T02:09:41Z, statusCode: 502,
+               error: receiver answered 502 Bad Gateway, durationMillis: 41}]
+  nextAttemptTime: null
+  completedTime: 2026-09-04T02:09:41Z
+  lastStatusCode: 502
+  lastError: receiver answered 502 Bad Gateway
+```
+
+It is a separate object for three reasons, and each is a requirement rather than a
+preference:
+
+- **A failing notification must never affect what it reports on.** Deciding to notify
+  happens on a reconcile path — the Build controller's, the Environment controller's —
+  and talking to somebody else's HTTP server must not. Creating this object is the whole
+  of what that path does, off its own goroutine, and even that is best-effort.
+- **At-least-once has to survive a restart.** A queue in the operator's memory loses
+  what is in flight when the pod moves, which is exactly the moment a platform is most
+  worth hearing from. The delivery is in etcd before the first attempt.
+- **The dead letter has to be visible.** "It was never delivered" is a thing a person has
+  to be able to see, and a ring buffer in a status would be either too small to be useful
+  or too large to belong in one.
+
+`spec.payload` holds the bytes rather than the fields they were built from: the signature
+is an HMAC over the body, and a body whose key order changed between attempt one and
+attempt four would verify on one and not the other. It is also what makes a dead letter
+retryable — `POST /notifications/deliveries/{name}/retry` re-sends exactly what would
+have been sent, under the same event id.
+
+The backoff is `status.nextAttemptTime` and a requeue rather than a sleep, so a ladder
+interrupted by a restart is picked up where it was. A delivered notification is pruned
+after an hour, a dead letter after seven days, and a subscription keeps at most 200
+deliveries — nothing still pending is ever dropped.
 
 ---
 
