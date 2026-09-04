@@ -236,7 +236,8 @@ EvidenceExport.`),
 			Note: "the documents are on disk at `file` and `signature`; `digest` is computed " +
 				"from the bytes that were written, not taken from the platform's header",
 		},
-		Needs: needs{Auth: true, Project: true},
+		Needs: needs{Auth: true, Project: true,
+			Platform: onlyInTheDashboard("Platform → Audit, under Audit pack", "/platform/audit")},
 		Examples: []example{
 			{"A quarter of one project, into the current directory",
 				"kitchen audit-pack --project shop --from 2026-01-01 --to 2026-04-01 --json"},
