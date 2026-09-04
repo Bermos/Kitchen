@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/Bermos/Kitchen/internal/provider/naming"
@@ -244,6 +245,57 @@ func (v *Valkey) Deprovision(ctx context.Context, instanceID string) error {
 // DeleteBranch removes a preview's instance.
 func (v *Valkey) DeleteBranch(ctx context.Context, _, branchID string) error {
 	return v.deleteInstance(ctx, branchID)
+}
+
+// IdleBranch parks a preview's instance at no pods while the preview it
+// belongs to is parked (#294). The Service, the Secret and — for a queue —
+// the volume its jobs are on all stay: this is the StatefulSet's replica
+// count and nothing else, so waking it is the same write in reverse and what
+// was on disk is still there.
+//
+// A cache holds nothing it cannot recompute, so parking one costs a cold
+// cache. A queue's jobs are on the volume, and a queue whose producers are
+// idle with it has nobody enqueuing anything — but a project whose workers
+// must keep draining says so with `spec.runtime.notRequestDriven`, and then
+// nothing about the environment idles in the first place.
+func (v *Valkey) IdleBranch(ctx context.Context, branchID string) error {
+	return v.scale(ctx, branchID, 0)
+}
+
+// WakeBranch brings it back to its one replica. It returns once the
+// StatefulSet has been asked, not once Valkey answers: the claim's own
+// readiness path is what reports that.
+func (v *Valkey) WakeBranch(ctx context.Context, branchID string) error {
+	return v.scale(ctx, branchID, 1)
+}
+
+// scale writes an instance's replica count, treating an instance that is
+// already there as done and one that is gone as nothing to do. Parking must
+// never be able to wedge a reconcile: the worst case is a preview that keeps
+// running, which is what the platform did before this existed.
+func (v *Valkey) scale(ctx context.Context, instanceID string, replicas int32) error {
+	namespace, name, err := splitID(instanceID)
+	if err != nil {
+		return err
+	}
+	if namespace == "" {
+		namespace = v.Namespace
+	}
+	set := &appsv1.StatefulSet{}
+	if err := v.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, set); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if set.Spec.Replicas != nil && *set.Spec.Replicas == replicas {
+		return nil
+	}
+	set.Spec.Replicas = ptr.To(replicas)
+	if err := v.Client.Update(ctx, set); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // settings is one instance's resolved configuration: everything the objects

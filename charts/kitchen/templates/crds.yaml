@@ -3770,6 +3770,18 @@ spec:
                   type: object
                 maxItems: 10
                 type: array
+              idle:
+                description: |-
+                  Idle says this Environment is parked: it is allowed to scale to zero,
+                  and the autoscaler has taken its web Deployment to no pods at all.
+
+                  It is observed, not decided. The ScaleToZero condition says the
+                  environment *may* idle; this says it *is* idling, which is a different
+                  question and the one the claim reconciler acts on — a preview nobody
+                  has visited takes its dedicated backing services down with it (#294),
+                  and this field is the signal it does that on. The Deployment watch is
+                  what refreshes it, so the transition costs no polling.
+                type: boolean
               observedRelease:
                 description: Release the running workload was last reconciled to.
                 type: string
@@ -5767,6 +5779,46 @@ spec:
                         type: string
                     type: object
                 type: object
+              previews:
+                default: {}
+                description: |-
+                  Previews is the platform's ceiling on preview environments, which is
+                  the one resource dimension a pull request moves without anybody
+                  choosing a number (#294).
+
+                  It sits beside Builds deliberately: the two are the same kind of
+                  statement — how much of this cluster a project may take by pushing —
+                  and reading either on its own answers half the question.
+
+                  The empty-object default is what gives an installation that predates
+                  the field a ceiling at all: structural defaulting only descends into
+                  objects that are present.
+                properties:
+                  maxPerProject:
+                    default: 5
+                    description: |-
+                      MaxPerProject is how many preview Environments one Project may have
+                      live at once. A pull request that would exceed it gets no preview: a
+                      commit status and the preview comment say so and name this field,
+                      which is the whole point — the alternative is a preview that succeeds
+                      and lets the node sort it out.
+
+                      Production environments and anything promoted are never counted: the
+                      ceiling is on the ephemeral half, because the ephemeral half is what
+                      multiplies.
+
+                      Five is the default because Kitchen is built for single-node clusters,
+                      where five previews of a project with a database and a cache claim is
+                      already ten backing deployments. `0` is no ceiling at all, which is
+                      the installation with room to spare saying so.
+
+                      It is a pointer because that zero is a setting: an int32 with
+                      `omitempty` serializes 0 as an absent field, so the default would be
+                      applied back over it and clearing the ceiling would be unsayable.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
               registry:
                 default: {}
                 description: |-
@@ -7248,6 +7300,27 @@ spec:
                       serialized object, and the API server then applies the default, so
                       turning previews off would be silently undone on every write.
                     type: boolean
+                  max:
+                    description: |-
+                      Max is this Project's own ceiling on live preview Environments,
+                      overriding the platform's `spec.previews.maxPerProject`. A pull
+                      request that would exceed it gets no preview, and says so on the
+                      request rather than on the node (#294).
+
+                      Unset inherits the platform's, which is what almost every project
+                      should do: the ceiling is a fact about the cluster, and a project
+                      raising its own is a project taking room from its neighbours. It is
+                      here because "almost" is doing real work in that sentence — the one
+                      project a platform exists for, with twelve reviewers and no claims, is
+                      exactly the project whose ceiling should differ from the estate's.
+
+                      `0` is no ceiling at all for this project. Nil is the platform's, and
+                      the two are told apart by the pointer for the reason every other
+                      clearable number here is a pointer: an int32 with `omitempty`
+                      serializes 0 as an absent field.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   protected:
                     default: true
                     description: |-
@@ -8744,6 +8817,69 @@ spec:
                     type: string
                 required:
                 - name
+                type: object
+              previews:
+                description: |-
+                  Previews is what the preview ceiling (#294) is doing to this project:
+                  how many previews are live, what the ceiling in force is, and which
+                  pull requests were refused one while the project sat at it.
+
+                  It is on the status because a refusal that only exists as a comment on
+                  a pull request is a refusal the dashboard, the CLI and the next person
+                  to ask "why has this request no preview" cannot see.
+                properties:
+                  live:
+                    description: |-
+                      Live is how many preview Environments of this project exist and are
+                      not being torn down. Production and promoted environments are not
+                      counted — the ceiling is on the ephemeral half.
+                    format: int32
+                    type: integer
+                  max:
+                    description: |-
+                      Max is the ceiling in force: the project's own `spec.previews.max`, or
+                      the platform's `spec.previews.maxPerProject`. `0` is no ceiling.
+                    format: int32
+                    type: integer
+                  refused:
+                    description: |-
+                      Refused are the pull requests that asked for a preview while the
+                      project was at its ceiling, oldest first.
+
+                      It is a record, not a queue. Nothing here is retried on a timer: a
+                      refused request gets its preview on its next push, once a slot has
+                      been freed by another preview closing. A queue would have the platform
+                      deploy a commit nobody asked it to deploy, minutes or days after the
+                      push, which is worse than the wait.
+                    items:
+                      description: RefusedPreview is one pull request that was refused
+                        a preview environment.
+                      properties:
+                        at:
+                          description: |-
+                            At is when the refusal was recorded, refreshed on every push that is
+                            refused again.
+                          format: date-time
+                          type: string
+                        commit:
+                          description: |-
+                            Commit is the revision that was refused, so that a push after the
+                            refusal is visibly a different one.
+                          type: string
+                        pullRequest:
+                          description: PullRequest is the request's number at the
+                            git provider.
+                          format: int32
+                          type: integer
+                      required:
+                      - at
+                      - pullRequest
+                      type: object
+                    maxItems: 20
+                    type: array
+                required:
+                - live
+                - max
                 type: object
               productionEnvironmentRef:
                 description: The Project's production Environment, once created.
@@ -10563,6 +10699,16 @@ spec:
                     id:
                       description: ID is the provider-side branch identifier.
                       type: string
+                    idle:
+                      description: |-
+                        Idle says this branch is parked because the preview reading it is:
+                        the provider has been asked to take it down to no compute, and will
+                        be asked to bring it back when the preview wakes (#294).
+
+                        The data is untouched either way — idling a branch is not deleting
+                        it, and a preview that wakes finds what it left. A provider whose
+                        declaration says it cannot idle never sets this.
+                      type: boolean
                     provenance:
                       description: |-
                         Provenance is the provider's declaration of what this branch's data
@@ -10587,6 +10733,18 @@ spec:
                   - secretName
                   type: object
                 type: array
+              canIdle:
+                description: |-
+                  CanIdle is the provider's declaration that a preview's own resource
+                  parks when the preview does: the platform asks it for no compute while
+                  the environment is idle and asks for it back on wake, so an open pull
+                  request nobody is looking at costs storage rather than a running
+                  database (#294).
+
+                  False is the honest answer for a provider with nothing to park — a
+                  bucket, an OAuth client — and for one that parks itself. The reason
+                  beside it says which.
+                type: boolean
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -10665,6 +10823,13 @@ spec:
                   on every deploy. The environment reconciler reads it and sets the
                   strategy.
                 type: boolean
+              idleReason:
+                description: |-
+                  IdleReason is the provider's own sentence about the field above: what
+                  it does when a preview idles, or why it does nothing. It is what the
+                  claim's screen and `kitchen` show, so that "this preview's database is
+                  still running" is a statement somebody can read rather than infer.
+                type: string
               instanceID:
                 description: |-
                   InstanceID is the provider-side identifier of the provisioned resource,

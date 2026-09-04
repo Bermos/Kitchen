@@ -226,6 +226,31 @@ type Provisioner interface {
 	DeleteBranch(ctx context.Context, instanceID, branchID string) error
 }
 
+// IdlingProvisioner is a Provisioner that can park a preview's own resource
+// while the preview environment reading it is parked, and bring it back when
+// the preview wakes (#294).
+//
+// It is an optional interface for the reason CapableProvisioner is one: it is
+// a real difference between implementations rather than a method every one of
+// them has to fake. A provider that cannot park declares CanIdle false and is
+// never asked; the claim's status says so in the provider's own words.
+//
+// Both operations are idempotent and tolerant of absence: idling something
+// already idle, or waking something already awake, is success, and so is
+// either against a branch that is no longer there — the reconcile that
+// notices it is gone is the one that tears it down.
+type IdlingProvisioner interface {
+	Provisioner
+	// IdleBranch takes a preview's own resource down to no compute. The
+	// data behind it is untouched: this is a park, not a teardown.
+	IdleBranch(ctx context.Context, branchID string) error
+	// WakeBranch brings it back. It returns when the resource has been asked
+	// for, not when it is serving — the claim's own readiness path is what
+	// reports that, and blocking a reconcile on a database starting up would
+	// hold every other claim of the project behind it.
+	WakeBranch(ctx context.Context, branchID string) error
+}
+
 // Requirements are what a claim asks of its instance beyond a name.
 type Requirements struct {
 	// Usage decides the eviction policy and whether anything is written to
@@ -286,6 +311,9 @@ var Declarations = map[string]contract.Declaration{
 		Preview: contract.PreviewFresh,
 		PreviewNote: "a new, empty instance of the preview's own, configured like production's and torn " +
 			"down with the preview: the branch declares provenance synthetic",
+		CanIdle: true,
+		IdleNote: "a preview's instance is scaled to no pods with it and back up on wake; a queue's volume " +
+			"survives the park, and a cache holds nothing it cannot recompute",
 	},
 	ProviderRedis: {
 		Preview: contract.PreviewFresh,
@@ -293,6 +321,8 @@ var Declarations = map[string]contract.Declaration{
 			"handed back when the preview closes: the branch declares provenance synthetic — it never holds " +
 			"production's keys, though a server the platform does not run cannot be emptied, so a database is " +
 			"handed out again only once every untouched one is gone",
+		IdleNote: "a logical database at a server this platform does not run: there is no process of the " +
+			"preview's own to park, and the server stays up for every other claim on it",
 	},
 }
 

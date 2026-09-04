@@ -203,7 +203,7 @@ that nobody administers.
 optional and absent ones keep their value:
 
 ```json
-{"productionBranch": "trunk", "previews": true, "previewsProtected": false,
+{"productionBranch": "trunk", "previews": true, "previewsProtected": false, "previewsMax": 3,
  "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "dockerfileTarget": "web", "rootDirectory": "apps/shop",
  "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi"}
 ```
@@ -217,6 +217,44 @@ nothing for one more. An empty `dockerfileTarget` clears
 the target, which is the file's last stage again. The
 repository and the two connections are deliberately not editable: rebinding a
 project to another repository is a different project.
+
+### The preview ceiling
+
+`previewsMax` is how many preview environments this project may have **live at
+once**, overriding the platform's
+[`previewsMaxPerProject`](./settings.md). Leaving it unset takes the
+platform's, which is what almost every project should do — the ceiling is a
+fact about the cluster, and a project raising its own is a project taking room
+from its neighbours. It is here because "almost" is doing real work in that
+sentence: the one project a platform exists for, with twelve reviewers and no
+claims, is exactly the project whose ceiling should differ from the estate's.
+
+`0` is no ceiling for this project. A **negative** number clears the override,
+so the project takes the platform's again — 0 is a setting here and cannot also
+mean "unset", the same way an empty string clears a text field that can also be
+meaningfully empty.
+
+A pull request that would exceed the ceiling **gets no preview**, and is told
+so on the request: a commit status under `kitchen/<project>/preview` and the
+preview comment, written under the marker the preview itself would have used.
+A preview that already exists is never refused — the ceiling bounds how many
+previews a project may have, not how many times each may be deployed to.
+Production environments and anything promoted are never counted.
+
+`GET /projects/{name}` answers what the ceiling is doing:
+
+```json
+{"previewsMax": 3,
+ "previewCapacity": {"live": 3, "max": 3,
+                     "refused": [{"pullRequest": 61, "commit": "ab12cd34ef56", "at": "2026-09-03T18:04:00Z"}]}}
+```
+
+`previewCapacity` is what the operator last measured. `refused` is the pull
+requests that asked for a preview while the project sat at the ceiling, oldest
+first and bounded at twenty. **It is a record, not a queue**: each gets its
+preview on its next push, once another preview has closed and freed a slot.
+The project also carries a `PreviewCapacity` condition, absent where there is
+no ceiling.
 
 `notRequestDriven` declares that this workload does work nobody asked for, and
 turns idling off for every one of the project's environments — previews

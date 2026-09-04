@@ -337,9 +337,14 @@ the project's standing in the platform.
   it applies and does not.
 - **Nothing about the project's standing.** Criticality, data classification,
   residency, RTO and RPO, access grants, promotion stages, `requirePullRequest`,
-  whether previews exist and whether they are protected: all of it is the
-  project's owners' and the operator's. A repository arguing about them is the
-  argument this rule exists to refuse.
+  whether previews exist, whether they are protected and **how many of them may
+  be live at once**: all of it is the project's owners' and the operator's. A
+  repository arguing about them is the argument this rule exists to refuse —
+  and the preview ceiling most of all, since a file that could raise it would
+  be a pull request voting on how much of the cluster its own preview may take.
+  It is `previews.max` on the project and `previews.maxPerProject` on the
+  platform; [docs/api/projects.md](api/projects.md) and
+  [docs/api/settings.md](api/settings.md) carry both.
 - **No secret configuration file.** [`files`](#files) declares a file and its
   content; it cannot mark one `secret`, which is refused by name. Whether the
   platform holds a credential for this project is the project's standing

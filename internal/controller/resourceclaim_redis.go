@@ -280,6 +280,19 @@ func (b cacheBrancher) deleteBranch(ctx context.Context, instanceID, branchID st
 	return b.provisioner.DeleteBranch(ctx, instanceID, branchID)
 }
 
+// idler is the in-cluster half of the redis contract: a preview's own Valkey
+// scales to no pods with its preview and back up on wake. A server somebody
+// else runs is not an IdlingProvisioner and answers nil — there is no process
+// of the preview's own to park, and the server stays up for every other claim
+// on it.
+func (b cacheBrancher) idler() claimIdler {
+	idling, ok := b.provisioner.(cache.IdlingProvisioner)
+	if !ok {
+		return nil
+	}
+	return branchIdler{idle: idling.IdleBranch, wake: idling.WakeBranch}
+}
+
 // cacheProvisionerFor builds the cache provisioner for a Connection.
 //
 // A Connection that names no credentials secret is not an error here: the

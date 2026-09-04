@@ -315,6 +315,25 @@ func claimRequirements(claim *kitchenv1alpha1.ResourceClaim) database.Requiremen
 type claimBrancher interface {
 	createBranch(ctx context.Context, instanceID, name string) (claimBranchResult, error)
 	deleteBranch(ctx context.Context, instanceID, branchID string) error
+	// idler is the optional parking half (#294): a preview's own resource
+	// taken down to no compute while the preview is parked and brought back
+	// on wake. nil for a contract with nothing to park — a bucket, an OAuth
+	// client — and for a provisioner whose implementation cannot.
+	//
+	// It is a method on the brancher rather than a type assertion at the
+	// call site because a contract with two provisioners has two answers:
+	// a CloudNativePG branch parks and a Neon one suspends itself, and only
+	// the adapter holding the provisioner knows which it has.
+	idler() claimIdler
+}
+
+// claimIdler parks and unparks one preview's resource. Both operations are
+// idempotent and tolerant of a resource that is no longer there: a park that
+// fails is a preview that keeps running, which is the state the platform was
+// in before any of this existed, and never a reason to wedge a claim.
+type claimIdler interface {
+	idleBranch(ctx context.Context, branchID string) error
+	wakeBranch(ctx context.Context, branchID string) error
 }
 
 // claimBranchResult is what a contract answers for a preview's resource:
@@ -343,6 +362,33 @@ func (b databaseBrancher) createBranch(ctx context.Context, instanceID, name str
 
 func (b databaseBrancher) deleteBranch(ctx context.Context, instanceID, branchID string) error {
 	return b.provisioner.DeleteBranch(ctx, instanceID, branchID)
+}
+
+// idler is the CloudNativePG half of the postgres contract: a preview's own
+// Cluster hibernates with its preview. Neon is not an IdlingProvisioner and
+// answers nil — its compute suspends itself, so there is nothing to ask for.
+func (b databaseBrancher) idler() claimIdler {
+	idling, ok := b.provisioner.(database.IdlingProvisioner)
+	if !ok {
+		return nil
+	}
+	return branchIdler{idle: idling.IdleBranch, wake: idling.WakeBranch}
+}
+
+// branchIdler is one provisioner's two parking methods as claimIdler. It is a
+// pair of functions rather than another adapter type per contract because the
+// two signatures are identical across every provider package and an interface
+// per package would be five copies of one idea.
+type branchIdler struct {
+	idle func(ctx context.Context, branchID string) error
+	wake func(ctx context.Context, branchID string) error
+}
+
+func (b branchIdler) idleBranch(ctx context.Context, branchID string) error {
+	return b.idle(ctx, branchID)
+}
+func (b branchIdler) wakeBranch(ctx context.Context, branchID string) error {
+	return b.wake(ctx, branchID)
 }
 
 // databaseBindingData is a database binding as its Secret carries it. The
@@ -423,6 +469,16 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 			claim.Status.Branches = kept
 			return r.branchesNotReady(claim, branchReason(err), err)
 		}
+		// A preview that has parked takes its own infrastructure down with
+		// it, and a preview that has woken brings it back (#294). It is done
+		// after the branch is in hand so that a branch created while the
+		// environment was already parked is parked on the same pass rather
+		// than running until something else moves.
+		if err := parkBranch(ctx, brancher.idler(), env, &branch); err != nil {
+			kept = append(kept, branch)
+			claim.Status.Branches = kept
+			return r.branchesNotReady(claim, "BranchParkFailed", err)
+		}
 		kept = append(kept, branch)
 		delete(previous, env.Name)
 		if !existed {
@@ -489,6 +545,50 @@ func (r *ResourceClaimReconciler) ensureBranch(
 		SecretName:  secretName,
 		Provenance:  branch.Provenance,
 	}, nil
+}
+
+// parkBranch keeps a preview's own resource in step with the preview that
+// reads it: parked while the environment is parked, running while it is
+// awake (#294).
+//
+// The signal is the Environment's own `status.idle`, which the environment
+// reconciler observes from the Deployment the autoscaler moves — so the
+// database goes down on the same event the web process does, and comes back
+// on the same one. There is no second timer and no second policy: an
+// installation that does not idle environments idles nothing here either.
+//
+// A provider with nothing to park answers a nil idler and the branch is
+// recorded as awake, whatever the environment is doing. That is the honest
+// record: `status.idleReason` on the claim is where the provider says why.
+//
+// Waking is deliberately not blocking. The application's first request is
+// what woke the environment and it may well arrive before Postgres is
+// accepting connections — which is the ordinary cold start every scale-to-zero
+// platform has, and the application's own retry is the answer to it. Holding
+// the reconcile open until the database answered would hold every other claim
+// of the project behind it.
+func parkBranch(
+	ctx context.Context,
+	idler claimIdler,
+	env *kitchenv1alpha1.Environment,
+	branch *kitchenv1alpha1.ClaimBranch,
+) error {
+	if idler == nil {
+		branch.Idle = false
+		return nil
+	}
+	if env.Status.Idle == branch.Idle {
+		return nil
+	}
+	if env.Status.Idle {
+		if err := idler.idleBranch(ctx, branch.ID); err != nil {
+			return fmt.Errorf("parking the resource behind preview %s: %w", env.Name, err)
+		}
+	} else if err := idler.wakeBranch(ctx, branch.ID); err != nil {
+		return fmt.Errorf("waking the resource behind preview %s: %w", env.Name, err)
+	}
+	branch.Idle = env.Status.Idle
+	return nil
 }
 
 // deleteBranch removes one branch at the provider and its binding Secret. A

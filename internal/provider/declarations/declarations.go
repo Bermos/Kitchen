@@ -120,19 +120,23 @@ func providersOf(claimType string) []string {
 // carries, between its generated markers.
 func Matrix() string {
 	var b strings.Builder
-	b.WriteString("| Type | Provider | Previews get | Scale to zero | Deploys |\n")
-	b.WriteString("|---|---|---|---|---|\n")
+	b.WriteString("| Type | Provider | Previews get | Scale to zero | An idle preview's own | Deploys |\n")
+	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, d := range All() {
 		idling := "unaffected"
 		if d.KeepsPodsRunning {
 			idling = "**blocked** — " + d.WorkloadNote
 		}
+		parks := "**stays as it is** — " + d.IdleNote
+		if d.CanIdle {
+			parks = "**parks with it** — " + d.IdleNote
+		}
 		deploys := "unaffected"
 		if d.ForcesRecreate {
 			deploys = "**recreate, with downtime** — " + d.WorkloadNote
 		}
-		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` — %s | %s | %s |\n",
-			d.Type, d.Provider, d.Preview, d.PreviewNote, idling, deploys)
+		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` — %s | %s | %s | %s |\n",
+			d.Type, d.Provider, d.Preview, d.PreviewNote, idling, parks, deploys)
 	}
 	return b.String()
 }

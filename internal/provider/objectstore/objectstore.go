@@ -222,6 +222,8 @@ var Declarations = map[string]contract.Declaration{
 		Preview: contract.PreviewFresh,
 		PreviewNote: "a new, empty bucket of the preview's own with its own credential, versioned when " +
 			"production's is and torn down with the preview: the branch declares provenance synthetic",
+		IdleNote: "a bucket is storage and no compute, so there is nothing to park: an idle preview's " +
+			"bucket costs what its objects cost and not a byte more",
 	},
 }
 

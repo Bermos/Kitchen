@@ -130,6 +130,13 @@ spec:
     # manifest HEAD per watched reference per interval, and the acquisition a
     # moved tag produces. A pinned digest is never asked about; `0` is off.
     imagePollInterval: {{ .Values.kitchen.builds.imagePollInterval | quote }}
+  previews:
+    # How many preview environments one project may have live at once. It is
+    # beside the build ceiling because it is the same kind of statement: a
+    # pull request is a running environment, and a project with claims
+    # materializes a backing service per claim per preview. Production and
+    # anything promoted are never counted. `0` is no ceiling at all.
+    maxPerProject: {{ int .Values.kitchen.previews.maxPerProject }}
   appNamespaces:
     # The Pod Security level the operator labels each project's namespace
     # with. Set rather than inherited: the cluster default decides whether

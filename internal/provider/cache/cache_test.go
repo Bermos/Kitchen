@@ -35,11 +35,15 @@ import (
 	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
+// shopProject is the project every claim in these tests belongs to, and what
+// each instance records as its owner.
+const shopProject = "shop"
+
 // The two claims these tests provision for, both of project "shop": the
 // instance's name is kitchen-<project>-<claim>.
 var (
-	shopCache = naming.Resource{Project: "shop", Claim: "cache"}
-	shopJobs  = naming.Resource{Project: "shop", Claim: "jobs"}
+	shopCache = naming.Resource{Project: shopProject, Claim: "cache"}
+	shopJobs  = naming.Resource{Project: shopProject, Claim: "jobs"}
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -292,8 +296,8 @@ func TestDeprovisionRemovesTheVolumeToo(t *testing.T) {
 // one shared by accident.
 func TestLongNamesDoNotCollide(t *testing.T) {
 	long := strings.Repeat("a", 60)
-	first := naming.Resource{Project: "shop", Claim: long + "-one"}.Qualified(maxInstanceName)
-	second := naming.Resource{Project: "shop", Claim: long + "-two"}.Qualified(maxInstanceName)
+	first := naming.Resource{Project: shopProject, Claim: long + "-one"}.Qualified(maxInstanceName)
+	second := naming.Resource{Project: shopProject, Claim: long + "-two"}.Qualified(maxInstanceName)
 	if first == second {
 		t.Fatalf("two claims collided on %q", first)
 	}
@@ -331,7 +335,7 @@ func TestAnInstanceCarriesTheProjectThatClaimedIt(t *testing.T) {
 	if err := c.Get(ctx, key, set); err != nil {
 		t.Fatal(err)
 	}
-	if got := set.Labels[naming.LabelProject]; got != "shop" {
+	if got := set.Labels[naming.LabelProject]; got != shopProject {
 		t.Fatalf("the instance records project %q", got)
 	}
 
@@ -372,7 +376,7 @@ func TestAnInstanceNamedBeforeTheProjectIsRefusedUntilItIsHandedOver(t *testing.
 		t.Errorf("the refusal does not say how to hand it over: %v", err)
 	}
 
-	handed := naming.Resource{Project: "shop", Claim: "cache", HandOver: "kitchen-cache"}
+	handed := naming.Resource{Project: shopProject, Claim: "cache", HandOver: "kitchen-cache"}
 	if _, err := provisioner.Provision(ctx, handed); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("want the handed-over instance, still starting, got %v", err)
 	}
@@ -381,7 +385,87 @@ func TestAnInstanceNamedBeforeTheProjectIsRefusedUntilItIsHandedOver(t *testing.
 	if err := c.Get(ctx, key, adopted); err != nil {
 		t.Fatal(err)
 	}
-	if got := adopted.Labels[naming.LabelProject]; got != "shop" {
+	if got := adopted.Labels[naming.LabelProject]; got != shopProject {
 		t.Fatalf("the handed-over instance records project %q", got)
+	}
+}
+
+// A preview's own instance parks with its preview and comes back on wake.
+// It is the StatefulSet's replica count and nothing else, so the Service, the
+// Secret and a queue's volume all survive the park: waking is the same write
+// in reverse and what was on disk is still there.
+func TestValkeyParksAPreviewsInstanceAndBringsItBack(t *testing.T) {
+	provisioner, cluster := newValkey(t)
+	ctx := context.Background()
+
+	settings, err := provisioner.resolve(Requirements{Usage: UsageQueue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.project = shopProject
+	if _, err := provisioner.ensureInstance(ctx, "kitchen-shop-jobs-pr-41", settings); err != nil &&
+		!errors.Is(err, ErrNotReady) {
+		t.Fatal(err)
+	}
+	id := provisioner.Namespace + "/kitchen-shop-jobs-pr-41"
+
+	replicas := func() int32 {
+		t.Helper()
+		set := &appsv1.StatefulSet{}
+		key := types.NamespacedName{Namespace: provisioner.Namespace, Name: "kitchen-shop-jobs-pr-41"}
+		if err := cluster.Get(ctx, key, set); err != nil {
+			t.Fatal(err)
+		}
+		if set.Spec.Replicas == nil {
+			t.Fatal("a StatefulSet with no replica count at all")
+		}
+		return *set.Spec.Replicas
+	}
+
+	if err := provisioner.IdleBranch(ctx, id); err != nil {
+		t.Fatalf("idling: %v", err)
+	}
+	if got := replicas(); got != 0 {
+		t.Fatalf("a parked preview's instance runs %d pods", got)
+	}
+	// The park is the replica count and nothing else — the Service the
+	// binding points at is still there, so a woken preview reaches the same
+	// address it was handed.
+	if err := cluster.Get(ctx, types.NamespacedName{
+		Namespace: provisioner.Namespace, Name: "kitchen-shop-jobs-pr-41",
+	}, &corev1.Service{}); err != nil {
+		t.Fatalf("parking took the preview's Service with it: %v", err)
+	}
+
+	if err := provisioner.IdleBranch(ctx, id); err != nil {
+		t.Fatalf("idling an idle instance: %v", err)
+	}
+	if err := provisioner.WakeBranch(ctx, id); err != nil {
+		t.Fatalf("waking: %v", err)
+	}
+	if got := replicas(); got != 1 {
+		t.Fatalf("a woken preview's instance runs %d pods", got)
+	}
+}
+
+// An instance that is already gone is nothing to park: the reconcile that
+// notices it is gone is the one that tears the branch down.
+func TestValkeyParkingAnInstanceThatIsGoneIsNothingToDo(t *testing.T) {
+	provisioner, _ := newValkey(t)
+	id := provisioner.Namespace + "/kitchen-shop-jobs-pr-99"
+	if err := provisioner.IdleBranch(context.Background(), id); err != nil {
+		t.Fatalf("idling: %v", err)
+	}
+	if err := provisioner.WakeBranch(context.Background(), id); err != nil {
+		t.Fatalf("waking: %v", err)
+	}
+}
+
+// The in-cluster provider can be asked; a server somebody else runs cannot,
+// and the claim reconciler tells them apart by exactly this assertion.
+func TestOnlyTheInClusterCacheIsAnIdlingProvisioner(t *testing.T) {
+	var _ IdlingProvisioner = &Valkey{}
+	if _, ok := any(&External{}).(IdlingProvisioner); ok {
+		t.Error("a logical database at somebody else's server has no process of its own to park")
 	}
 }

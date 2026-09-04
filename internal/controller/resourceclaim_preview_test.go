@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -94,5 +95,95 @@ func TestDeclareRecordsTheProviderOnTheClaim(t *testing.T) {
 	oidc, _ := client.Type()
 	if mode := declare(client, oidc, oidcclient.ProviderName); mode != contract.PreviewShared {
 		t.Fatalf("every environment signs in through the one client, got %s", mode)
+	}
+}
+
+// fakeIdler records what the branch machinery asked of a provider that can
+// park.
+type fakeIdler struct{ idled, woken []string }
+
+func (f *fakeIdler) idleBranch(_ context.Context, branchID string) error {
+	f.idled = append(f.idled, branchID)
+	return nil
+}
+
+func (f *fakeIdler) wakeBranch(_ context.Context, branchID string) error {
+	f.woken = append(f.woken, branchID)
+	return nil
+}
+
+// A preview's own infrastructure follows the preview: parked when it parks,
+// running when it wakes, and asked for nothing when it has not moved.
+func TestParkBranchFollowsTheEnvironment(t *testing.T) {
+	env := &kitchenv1alpha1.Environment{}
+	branch := &kitchenv1alpha1.ClaimBranch{Environment: "shop-pr-41", ID: "kitchen-databases/br-41"}
+	idler := &fakeIdler{}
+
+	// Awake and recorded awake: nothing to ask.
+	if err := parkBranch(context.Background(), idler, env, branch); err != nil {
+		t.Fatal(err)
+	}
+	if len(idler.idled)+len(idler.woken) != 0 {
+		t.Fatalf("an environment that has not moved asked the provider for something: %+v", idler)
+	}
+
+	env.Status.Idle = true
+	if err := parkBranch(context.Background(), idler, env, branch); err != nil {
+		t.Fatal(err)
+	}
+	if len(idler.idled) != 1 || idler.idled[0] != branch.ID || !branch.Idle {
+		t.Fatalf("a parked preview did not park its own resource: %+v %+v", idler, branch)
+	}
+
+	// Parked and recorded parked: nothing to ask again.
+	if err := parkBranch(context.Background(), idler, env, branch); err != nil {
+		t.Fatal(err)
+	}
+	if len(idler.idled) != 1 {
+		t.Fatalf("the same park was asked for twice: %+v", idler)
+	}
+
+	env.Status.Idle = false
+	if err := parkBranch(context.Background(), idler, env, branch); err != nil {
+		t.Fatal(err)
+	}
+	if len(idler.woken) != 1 || idler.woken[0] != branch.ID || branch.Idle {
+		t.Fatalf("a woken preview did not wake its own resource: %+v %+v", idler, branch)
+	}
+}
+
+// A provider with nothing to park is never asked, and its branches read as
+// awake whatever the environment is doing — which is the honest record: the
+// claim's own idleReason is where the provider says why.
+func TestParkBranchAsksNothingOfAProviderThatCannot(t *testing.T) {
+	env := &kitchenv1alpha1.Environment{}
+	env.Status.Idle = true
+	branch := &kitchenv1alpha1.ClaimBranch{Environment: "shop-pr-41", ID: "br-41", Idle: true}
+	if err := parkBranch(context.Background(), nil, env, branch); err != nil {
+		t.Fatal(err)
+	}
+	if branch.Idle {
+		t.Error("a branch nothing can park must not be recorded as parked")
+	}
+}
+
+// What a claim says about idling is the provider's declaration read against
+// the preview mode in force: a claim whose previews bind production's
+// resource parks nothing, whatever its provider can do.
+func TestResolveIdlingIsTheDeclarationAgainstThePreviewMode(t *testing.T) {
+	parks := contract.Declaration{CanIdle: true, IdleNote: "the Cluster hibernates"}
+	cannot := contract.Declaration{IdleNote: "Neon suspends its own compute"}
+
+	if canIdle, reason := resolveIdling(parks, contract.PreviewFresh); !canIdle ||
+		!strings.Contains(reason, "hibernates") {
+		t.Fatalf("a preview's own resource parks: %v %q", canIdle, reason)
+	}
+	if canIdle, reason := resolveIdling(parks, contract.PreviewShared); canIdle ||
+		!strings.Contains(reason, "rather than a resource of their own") {
+		t.Fatalf("a shared preview must not park production's: %v %q", canIdle, reason)
+	}
+	if canIdle, reason := resolveIdling(cannot, contract.PreviewBranch); canIdle ||
+		!strings.Contains(reason, "suspends its own compute") {
+		t.Fatalf("a provider that cannot park says why: %v %q", canIdle, reason)
 	}
 }

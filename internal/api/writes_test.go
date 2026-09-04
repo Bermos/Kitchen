@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/controller"
@@ -50,6 +51,51 @@ func getSecret(t *testing.T, h *harness, name string) (*corev1.Secret, error) {
 	err := h.server.Client.Get(context.Background(),
 		types.NamespacedName{Namespace: testNamespace, Name: name}, secret)
 	return secret, err
+}
+
+// The project's own preview ceiling has three states and the API has to be
+// able to write all three: the platform's (unset), a number, and none at all
+// (0). A negative number is what clears it back to the platform's, since 0 is
+// a setting here and cannot also mean "unset".
+func TestAProjectsOwnPreviewCeilingHasThreeStates(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.Previews.Max != nil {
+		t.Fatalf("a project starts on the platform's ceiling: %+v", stored.Spec.Previews)
+	}
+
+	for _, testCase := range []struct {
+		name string
+		body string
+		want *int32
+	}{
+		{"a ceiling of its own", `{"previewsMax": 3}`, ptr.To(int32(3))},
+		{"no ceiling for this project", `{"previewsMax": 0}`, ptr.To(int32(0))},
+		{"back to the platform's", `{"previewsMax": -1}`, nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", testCase.body)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			view := decode[projectView](t, recorder)
+			if (view.PreviewsMax == nil) != (testCase.want == nil) ||
+				(testCase.want != nil && *view.PreviewsMax != *testCase.want) {
+				t.Fatalf("the answer does not echo the ceiling: %+v", view.PreviewsMax)
+			}
+			if err := h.server.get(context.Background(), "shop", stored); err != nil {
+				t.Fatal(err)
+			}
+			if (stored.Spec.Previews.Max == nil) != (testCase.want == nil) ||
+				(testCase.want != nil && *stored.Spec.Previews.Max != *testCase.want) {
+				t.Fatalf("the ceiling did not stick: %+v", stored.Spec.Previews)
+			}
+		})
+	}
 }
 
 func TestPatchingAProjectsSettings(t *testing.T) {

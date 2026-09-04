@@ -391,6 +391,27 @@ spec:
                       serialized object, and the API server then applies the default, so
                       turning previews off would be silently undone on every write.
                     type: boolean
+                  max:
+                    description: |-
+                      Max is this Project's own ceiling on live preview Environments,
+                      overriding the platform's `spec.previews.maxPerProject`. A pull
+                      request that would exceed it gets no preview, and says so on the
+                      request rather than on the node (#294).
+
+                      Unset inherits the platform's, which is what almost every project
+                      should do: the ceiling is a fact about the cluster, and a project
+                      raising its own is a project taking room from its neighbours. It is
+                      here because "almost" is doing real work in that sentence — the one
+                      project a platform exists for, with twelve reviewers and no claims, is
+                      exactly the project whose ceiling should differ from the estate's.
+
+                      `0` is no ceiling at all for this project. Nil is the platform's, and
+                      the two are told apart by the pointer for the reason every other
+                      clearable number here is a pointer: an int32 with `omitempty`
+                      serializes 0 as an absent field.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   protected:
                     default: true
                     description: |-
@@ -1887,6 +1908,69 @@ spec:
                     type: string
                 required:
                 - name
+                type: object
+              previews:
+                description: |-
+                  Previews is what the preview ceiling (#294) is doing to this project:
+                  how many previews are live, what the ceiling in force is, and which
+                  pull requests were refused one while the project sat at it.
+
+                  It is on the status because a refusal that only exists as a comment on
+                  a pull request is a refusal the dashboard, the CLI and the next person
+                  to ask "why has this request no preview" cannot see.
+                properties:
+                  live:
+                    description: |-
+                      Live is how many preview Environments of this project exist and are
+                      not being torn down. Production and promoted environments are not
+                      counted — the ceiling is on the ephemeral half.
+                    format: int32
+                    type: integer
+                  max:
+                    description: |-
+                      Max is the ceiling in force: the project's own `spec.previews.max`, or
+                      the platform's `spec.previews.maxPerProject`. `0` is no ceiling.
+                    format: int32
+                    type: integer
+                  refused:
+                    description: |-
+                      Refused are the pull requests that asked for a preview while the
+                      project was at its ceiling, oldest first.
+
+                      It is a record, not a queue. Nothing here is retried on a timer: a
+                      refused request gets its preview on its next push, once a slot has
+                      been freed by another preview closing. A queue would have the platform
+                      deploy a commit nobody asked it to deploy, minutes or days after the
+                      push, which is worse than the wait.
+                    items:
+                      description: RefusedPreview is one pull request that was refused
+                        a preview environment.
+                      properties:
+                        at:
+                          description: |-
+                            At is when the refusal was recorded, refreshed on every push that is
+                            refused again.
+                          format: date-time
+                          type: string
+                        commit:
+                          description: |-
+                            Commit is the revision that was refused, so that a push after the
+                            refusal is visibly a different one.
+                          type: string
+                        pullRequest:
+                          description: PullRequest is the request's number at the
+                            git provider.
+                          format: int32
+                          type: integer
+                      required:
+                      - at
+                      - pullRequest
+                      type: object
+                    maxItems: 20
+                    type: array
+                required:
+                - live
+                - max
                 type: object
               productionEnvironmentRef:
                 description: The Project's production Environment, once created.

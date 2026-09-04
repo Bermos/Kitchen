@@ -24,7 +24,7 @@ things the reconcilers decided on their own, and `value` carries the one
 number some events have (a finished build's duration in seconds, a scheduled
 run's). Types:
 `build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
-`preview.created`, `preview.removed`, `project.created`, `project.deleted`,
+`preview.created`, `preview.removed`, `preview.refused`, `project.created`, `project.deleted`,
 `claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`,
 `run.started`, `run.succeeded`, `run.failed`, `secret.rotated`.
 

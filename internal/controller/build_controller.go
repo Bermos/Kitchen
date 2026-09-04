@@ -1583,6 +1583,10 @@ func (r *BuildReconciler) routePreview(
 		return nil
 	}
 	envName := PreviewEnvironmentName(project.Name, pullRequest)
+	allowed, err := r.previewAllowed(ctx, build, project, envName, pullRequest)
+	if err != nil || !allowed {
+		return err
+	}
 	preview := &kitchenv1alpha1.PreviewInfo{
 		PullRequest: pullRequest,
 		Branch:      build.Spec.Git.Branch,
@@ -1592,7 +1596,57 @@ func (r *BuildReconciler) routePreview(
 		return err
 	}
 	build.Status.Preview = envName
-	return nil
+	// The request had been refused and now has its preview: take it off the
+	// project's refusal list, so the list is what is still waiting rather
+	// than what ever waited.
+	return r.clearPreviewRefusal(ctx, project, pullRequest)
+}
+
+// previewAllowed is the preview ceiling applied to one pull request (#294):
+// false means the platform is deliberately not creating this preview and has
+// said so on the request.
+//
+// A preview that already exists is never refused. The ceiling bounds how many
+// previews a project may have, not how many times each may be deployed to —
+// refusing a push to a preview that is already running would leave a stale
+// environment serving a commit nobody can update, which is worse than the
+// resource it is holding.
+func (r *BuildReconciler) previewAllowed(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	envName string,
+	pullRequest int32,
+) (bool, error) {
+	existing := &kitchenv1alpha1.Environment{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: build.Namespace, Name: envName}, existing)
+	if err == nil {
+		return true, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return false, err
+	}
+
+	capacity, err := previewCapacityOf(ctx, r.Client, project, platformPreviewMax(ctx, r.Client))
+	if err != nil {
+		return false, err
+	}
+	if !capacity.Reached() {
+		return true, nil
+	}
+
+	refusal := previewRefusalMessage(project, capacity)
+	logf.FromContext(ctx).Info("refused a preview environment at the project's ceiling",
+		"project", project.Name, "pullRequest", pullRequest,
+		"live", capacity.Live, "max", capacity.Max)
+	r.git().reportPreviewRefused(ctx, project, build, pullRequest, envName, refusal)
+	r.Activity.Record(ctx, clickhouse.Event{
+		Type:    clickhouse.EventPreviewRefused,
+		Project: project.Name,
+		Build:   build.Name,
+		Message: refusal,
+	})
+	return false, r.recordPreviewRefusal(ctx, project, capacity, pullRequest, build.Spec.Git.SHA)
 }
 
 // adoptLatePreview gives a finished build the preview environment it would

@@ -165,6 +165,68 @@ func (g gitReporting) reportBuild(
 	log.V(1).Info("posted commit status", "project", project.Name, "sha", build.Spec.Git.SHA, "state", state)
 }
 
+// reportPreviewRefused tells the pull request that it is not getting a
+// preview environment, and why (#294).
+//
+// It says it twice on purpose, because the two readers are different people.
+// The commit status is what a reviewer sees in the checks list without opening
+// anything, under a context of its own so that it cannot overwrite the build's
+// verdict — the build succeeded, and a refused preview must not read as a
+// failed build. The comment is what somebody who wants to know what to do
+// about it reads, and it is the same comment a preview would have had: written
+// under the same marker, so a preview that appears on the next push rewrites
+// this in place rather than leaving the refusal underneath it.
+//
+// It is best effort like everything else here: nothing about the refusal
+// depends on the provider hearing it, and the Project's own status carries it
+// either way.
+func (g gitReporting) reportPreviewRefused(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+	pullRequest int32,
+	envName string,
+	reason string,
+) {
+	reporter, ok := g.reporterFor(ctx, project)
+	if !ok {
+		return
+	}
+	log := logf.FromContext(ctx)
+	repo := project.Spec.Source.GitSource().Repo
+
+	status := gitprovider.CommitStatus{
+		SHA:     build.Spec.Git.SHA,
+		State:   gitprovider.CommitFailure,
+		Context: previewStatusContext(project.Name),
+		// A commit status description is short at every provider, so it
+		// carries the fact and the comment carries the sentence.
+		Description: "no preview: the project is at its preview ceiling",
+	}
+	if kitchen := g.platform(ctx); kitchen != nil {
+		status.TargetURL = dashboardURL(kitchen, "projects", project.Name)
+	}
+	if err := reporter.SetCommitStatus(ctx, repo, status); err != nil {
+		log.Error(err, "failed to post the refused-preview status", "project", project.Name,
+			"sha", build.Spec.Git.SHA)
+	}
+
+	comment := previewComment{
+		Environment: envName,
+		Project:     project.Name,
+		Refused:     reason,
+		Revision:    build.Spec.Git,
+	}
+	if _, err := reporter.UpsertComment(ctx, repo, gitprovider.Comment{
+		PullRequest: pullRequest,
+		Marker:      comment.marker(),
+		Body:        comment.body(),
+	}); err != nil {
+		log.Error(err, "failed to write the refused-preview comment", "project", project.Name,
+			"pullRequest", pullRequest)
+	}
+}
+
 // reportEnvironment publishes the environment's deployment, and for a preview
 // also the pull request comment carrying its URL. It returns the report to
 // record in status — including the failure, when the provider refused it.
@@ -335,6 +397,14 @@ func commitStatusContext(projectName string) string {
 	return "kitchen/" + projectName
 }
 
+// previewStatusContext names the preview's own check, beside the build's
+// rather than over it. A build that produced an image did produce an image
+// whether or not the platform had room to preview it, and one context
+// carrying both verdicts would have a refused preview read as a failed build.
+func previewStatusContext(projectName string) string {
+	return "kitchen/" + projectName + "/preview"
+}
+
 // dashboardURL points at a page of the dashboard, which is served from the
 // same origin as the API.
 func dashboardURL(kitchen *kitchenv1alpha1.Kitchen, section, name string) string {
@@ -385,6 +455,11 @@ type previewComment struct {
 	Protected bool
 	// Removed turns the comment into the record of a preview that is gone.
 	Removed bool
+	// Refused turns it into the record of a preview the platform declined to
+	// create, carrying the sentence that says why and where to change it
+	// (#294). It is the same comment under the same marker, so the preview
+	// this pull request gets on a later push rewrites it in place.
+	Refused string
 }
 
 // marker identifies the platform's own comment. It is per environment rather
@@ -402,6 +477,13 @@ func (c previewComment) body() string {
 
 	if c.Removed {
 		fmt.Fprintf(&b, "The preview environment `%s` has been removed.\n", c.Environment)
+		return b.String()
+	}
+
+	if c.Refused != "" {
+		fmt.Fprintf(&b, "**No preview environment for this pull request.** %s.\n\n", c.Refused)
+		b.WriteString("Nothing is queued: push again once a slot is free and this pull request " +
+			"gets its preview then.\n")
 		return b.String()
 	}
 

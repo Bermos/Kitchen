@@ -100,6 +100,23 @@ type Declaration struct {
 	// rollout hangs.
 	ForcesRecreate bool
 
+	// CanIdle says the provisioner can park a preview's own resource when
+	// the preview parks, and bring it back on wake — the second half of
+	// #294, and the half where the c × e multiplication actually costs.
+	//
+	// A provider declares it false when it has nothing to park (a bucket, a
+	// logical database at somebody else's server, an OAuth client) or when
+	// it parks itself without being asked. Either way the claim says which
+	// through IdleNote, because "this preview's database is still running"
+	// is otherwise invisible until the node notices.
+	CanIdle bool
+
+	// IdleNote is the sentence behind CanIdle — what idling a preview does
+	// to what this provider gave it. It is required either way: a provider
+	// that idles has to say what survives, and one that does not has to say
+	// why. The test in internal/provider/declarations enforces that.
+	IdleNote string
+
 	// WorkloadNote is the sentence behind either of the two flags above,
 	// empty when neither is set.
 	WorkloadNote string

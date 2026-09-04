@@ -56,6 +56,12 @@ const (
 	// for one with no repository says why it cannot.
 	condPreviews = "Previews"
 
+	// condPreviewCapacity says whether the project has room for another one
+	// under the preview ceiling (#294), and names what to change when it does
+	// not. It is absent on a project with no ceiling and on one that gets no
+	// previews at all.
+	condPreviewCapacity = "PreviewCapacity"
+
 	// reasonNoRepository is a repository's answer asked of a project that has
 	// none, because its source is an image somebody else built (#307).
 	reasonNoRepository = "NoRepository"
@@ -170,6 +176,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		err               error
 	)
 	r.setPreviewsCondition(project, setCond)
+	if err := r.measurePreviewCapacity(ctx, project, setCond); err != nil {
+		return ctrl.Result{}, err
+	}
 	if project.Spec.Source.HasRepository() {
 		sourceConn, err = r.checkConnection(ctx, project, project.Spec.Source.GitSource().ConnectionRef.Name,
 			kitchenv1alpha1.CapabilityGitSource, condSourceConnected, setCond)

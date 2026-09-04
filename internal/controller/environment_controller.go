@@ -1205,13 +1205,23 @@ func (r *EnvironmentReconciler) updateStatus(
 
 	deploy := &appsv1.Deployment{}
 	available := false
+	parked := false
 	if err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: env.Name}, deploy); err == nil {
 		for _, c := range deploy.Status.Conditions {
 			if c.Type == appsv1.DeploymentAvailable && c.Status == corev1.ConditionTrue {
 				available = true
 			}
 		}
+		// While an environment idles the replica count belongs to the
+		// autoscaler, so a zero here is its verdict and not the
+		// reconciler's — which is exactly what makes it the signal to read.
+		parked = deploy.Spec.Replicas != nil && *deploy.Spec.Replicas == 0
 	}
+	// Idle is "allowed to park, and parked", which is a different question
+	// from the ScaleToZero condition's "allowed to park". It is what the
+	// claim reconciler takes a preview's own backing services down on (#294),
+	// and the Deployment watch is what refreshes it.
+	env.Status.Idle = parked && idleCond != nil && idleCond.Status == metav1.ConditionTrue
 
 	// The release the workload ran until now stops being current here. The
 	// spec writers (auto-promotion, the API) record the move themselves with

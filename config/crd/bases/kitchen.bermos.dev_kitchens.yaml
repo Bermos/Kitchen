@@ -1414,6 +1414,46 @@ spec:
                         type: string
                     type: object
                 type: object
+              previews:
+                default: {}
+                description: |-
+                  Previews is the platform's ceiling on preview environments, which is
+                  the one resource dimension a pull request moves without anybody
+                  choosing a number (#294).
+
+                  It sits beside Builds deliberately: the two are the same kind of
+                  statement — how much of this cluster a project may take by pushing —
+                  and reading either on its own answers half the question.
+
+                  The empty-object default is what gives an installation that predates
+                  the field a ceiling at all: structural defaulting only descends into
+                  objects that are present.
+                properties:
+                  maxPerProject:
+                    default: 5
+                    description: |-
+                      MaxPerProject is how many preview Environments one Project may have
+                      live at once. A pull request that would exceed it gets no preview: a
+                      commit status and the preview comment say so and name this field,
+                      which is the whole point — the alternative is a preview that succeeds
+                      and lets the node sort it out.
+
+                      Production environments and anything promoted are never counted: the
+                      ceiling is on the ephemeral half, because the ephemeral half is what
+                      multiplies.
+
+                      Five is the default because Kitchen is built for single-node clusters,
+                      where five previews of a project with a database and a cache claim is
+                      already ten backing deployments. `0` is no ceiling at all, which is
+                      the installation with room to spare saying so.
+
+                      It is a pointer because that zero is a setting: an int32 with
+                      `omitempty` serializes 0 as an absent field, so the default would be
+                      applied back over it and clearing the ceiling would be unsayable.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
               registry:
                 default: {}
                 description: |-

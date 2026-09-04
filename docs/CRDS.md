@@ -109,6 +109,15 @@ spec:
                                         # reference, never a pull. A reference pinned to a digest is never
                                         # asked about; pinning is how a project opts out of moving. 0 is off,
                                         # and anything else has a floor of one minute
+  previews:
+    maxPerProject: 5                    # preview environments one project may have live at once. It is beside
+                                        # the build ceiling because it is the same statement about a different
+                                        # thing: how much of this cluster a project may take by pushing. A pull
+                                        # request past it gets a commit status and a comment naming the setting
+                                        # rather than an environment, and its preview on the next push once a
+                                        # slot frees — nothing is queued. Production and anything promoted are
+                                        # never counted; a project may set its own (previews.max below); 0 is
+                                        # no ceiling at all
   appNamespaces:
     podSecurity: privileged             # privileged | baseline | restricted — the Pod Security level the
                                         # operator labels every kitchen-<project> namespace with. Set rather
@@ -605,6 +614,10 @@ spec:
   previews:
     enabled: true
     protected: true                     # gate preview URLs behind platform login (default)
+    max: 3                              # this project's own ceiling on live previews, overriding the
+                                        # platform's previews.maxPerProject. Unset takes the platform's,
+                                        # which is what almost every project should do; 0 is no ceiling
+                                        # for this project
     ttlAfterClosed: 1h                  # grace period before teardown
   dataClass: confidential               # public | internal | confidential | strictlyConfidential;
                                         # absent = unclassified, shown as such and never defaulted.
@@ -714,13 +727,22 @@ spec:
       secret: true                      # and no response ever reads back, so
                                         # `content` is refused here
 status:
-  conditions: [...]                     # Ready, Previews, SourceConnected, RegistryConnected,
-                                        # WebhookRegistered, InitialBuild. The middle three
-                                        # belong to a repository and are absent without one
+  conditions: [...]                     # Ready, Previews, PreviewCapacity, SourceConnected,
+                                        # RegistryConnected, WebhookRegistered, InitialBuild. The
+                                        # last three belong to a repository and are absent without
+                                        # one; PreviewCapacity is absent where there is no ceiling
   productionEnvironmentRef: { name: my-shop-production }
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
   initialBuildRef: { name: my-shop-bld-8f3a2c1 }   # the build the platform made
                                         # itself, once, when the project was new
+  previews:                             # the preview ceiling, as the operator last measured it
+    live: 5
+    max: 5                              # the ceiling in force — this project's own, or the
+                                        # platform's. 0 is none, and the condition is then absent
+    refused:                            # pull requests refused a preview at the ceiling, oldest
+      - pullRequest: 61                 # first. It is a record, not a queue: each gets its preview
+        commit: ab12cd34ef56            # on its next push once a slot is free. Bounded at 20
+        at: "2026-09-03T18:04:00Z"
   imagePoll:                            # the digest poll's own record, for a project with
     lastPolledAt: ...                   # vendored references. Absent for everything else
     message: ""                         # why the registry could not be asked, when it could not.
@@ -1392,6 +1414,10 @@ status:
   phase: Live                           # Pending | Deploying | Live | Degraded | Terminating
   url: https://my-shop-pr-42.apps.example.com
   observedRelease: my-shop-rel-000042
+  idle: true                            # parked: allowed to scale to zero, and scaled to zero. It is
+                                        # observed from the Deployment the autoscaler moves, not decided
+                                        # here — and it is the signal a claim's preview infrastructure
+                                        # parks and wakes on
   history:                              # how past releases stopped being current,
     - release: my-shop-rel-000041       # newest first, last 10
       from: "2026-08-13T09:12:00Z"      # when it became / stopped being current
@@ -1651,11 +1677,15 @@ status:
   residency: aws-eu-central-1           # where the provider reported the resource actually is
   previewMode: fresh                    # what previews bind to, resolved: branch | fresh | shared | none
   previewReason: a new, empty database… # the provider's own words, or why previews get nothing
+  canIdle: true                         # a preview's own resource parks when the preview parks, and comes
+  idleReason: a preview's Cluster is…   # back on wake. The reason is answered either way: a provider that
+                                        # parks nothing has to say why an open pull request keeps paying
   branches:                             # one per preview Environment, under branch or fresh
     - environment: my-shop-pr-41
       id: br-def456
       secretName: shop-db-binding-my-shop-pr-41
       provenance: production            # a branch of a production database is production-derived
+      idle: true                        # parked, because the preview reading it is. The data is untouched
   recovery:                             # what this claim can be recovered to, and what has been
     available: true                     # its provider can do it AND reports a window with something in it
     reason: neon can reconstruct…       # the provider's own account, and why not when it cannot
@@ -1694,6 +1724,16 @@ name; `none` binds them to nothing, and the Environment says so rather than
 failing. `status.keepsPodsRunning` and `status.forcesRecreate` are the
 provider's declarations about the workload, which the Environment reconciler
 acts on. [docs/api/claims.md](api/claims.md) carries the matrix.
+
+**A preview that idles takes its own infrastructure down with it**, where the
+provider can (#294). The signal is the Environment's `status.idle` — allowed
+to scale to zero, and scaled to zero — so the database goes down on the same
+event the web process does and comes back on the same one; there is no second
+timer and no second policy. CloudNativePG hibernates the preview's Cluster
+(pods gone, volume kept) and the in-cluster Valkey scales its StatefulSet to
+zero; a provider that cannot park says so in `status.idleReason` and keeps
+running. `status.branches[].idle` is what each preview's own resource is
+doing.
 
 **`config.postgres` is the claim saying which Postgres it means**, because
 "Postgres" is not one thing: an application that needs PostGIS, pgvector or a

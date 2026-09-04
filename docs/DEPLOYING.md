@@ -282,13 +282,21 @@ hostnames, so do not serve anything there.
 If your previews are meant to be shown to people who will never have an
 account, turning protection off is a project setting and a deliberate one.
 
-Two things worth knowing about a preview that looks slow or gone:
+Three things worth knowing about a preview that looks slow, missing or gone:
 
 - **A preview idles to zero when nobody is looking at it**, by default, and
   the next request wakes it. The first one after a quiet spell pays a cold
-  start. If your application does work nobody asked for — a poller, an ingest
-  loop — say so with `runtime.notRequestDriven` in `kitchen.json`, or its
-  data will have gaps in it that mean something it did not do.
+  start — a little longer where the project claims a database or a cache,
+  because a preview's own backing services park with it and are woken by the
+  same request. If your application does work nobody asked for — a poller, an
+  ingest loop — say so with `runtime.notRequestDriven` in `kitchen.json`, or
+  its data will have gaps in it that mean something it did not do.
+- **A project may have only so many previews live at once.** A pull request
+  past that ceiling gets no environment, and says so on the request: a failed
+  `kitchen/<project>/preview` check and a comment naming the setting. Nothing
+  is queued — close another pull request and push again, and this one gets
+  its preview. The number is the operator's, and a project admin can raise
+  the project's own.
 - **It is torn down as soon as its pull request closes**, not after a grace
   period. `previews.ttlAfterClosed` is on the project and is not honoured
   yet; do not plan around it.

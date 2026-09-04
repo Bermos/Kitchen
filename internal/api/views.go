@@ -42,6 +42,41 @@ type conditionView struct {
 	LastTransitionTime time.Time `json:"lastTransitionTime"`
 }
 
+// previewCapacityView is the preview ceiling (#294) as a project reports it:
+// what is live, what the ceiling is, and which pull requests are waiting on a
+// slot. `max` is 0 for a project with no ceiling at all.
+type previewCapacityView struct {
+	Live int32 `json:"live"`
+	Max  int32 `json:"max"`
+	// Refused are the pull requests that asked for a preview at the ceiling,
+	// oldest first. Nothing is queued: each gets its preview on its next
+	// push once a slot is free, which is what the dashboard says next to
+	// this list.
+	Refused []refusedPreviewView `json:"refused,omitempty"`
+}
+
+// refusedPreviewView is one such pull request.
+type refusedPreviewView struct {
+	PullRequest int32     `json:"pullRequest"`
+	Commit      string    `json:"commit,omitempty"`
+	At          time.Time `json:"at"`
+}
+
+func newPreviewCapacityView(status *kitchenv1alpha1.PreviewCapacityStatus) *previewCapacityView {
+	if status == nil {
+		return nil
+	}
+	view := &previewCapacityView{Live: status.Live, Max: status.Max}
+	for _, refused := range status.Refused {
+		view.Refused = append(view.Refused, refusedPreviewView{
+			PullRequest: refused.PullRequest,
+			Commit:      refused.Commit,
+			At:          refused.At.Time,
+		})
+	}
+	return view
+}
+
 func conditionViews(conditions []metav1.Condition) []conditionView {
 	if len(conditions) == 0 {
 		return nil
@@ -125,8 +160,19 @@ type projectView struct {
 	RequirePullRequest bool             `json:"requirePullRequest"`
 	Previews           bool             `json:"previews"`
 	PreviewsProtected  bool             `json:"previewsProtected"`
-	BuildStrategy      string           `json:"buildStrategy,omitempty"`
-	DockerfilePath     string           `json:"dockerfilePath,omitempty"`
+	// PreviewsMax is this project's own ceiling on live preview
+	// environments, absent when it takes the platform's
+	// (`previewsMaxPerProject` on GET /settings). `0` is no ceiling for
+	// this project — which is why it is a pointer, and why absent has to
+	// stay tellable from zero.
+	PreviewsMax *int32 `json:"previewsMax,omitempty"`
+	// PreviewCapacity is the ceiling as the operator last measured it: how
+	// many previews are live, the ceiling in force, and the pull requests
+	// refused one while the project sat at it. Absent until a reconcile has
+	// looked.
+	PreviewCapacity *previewCapacityView `json:"previewCapacity,omitempty"`
+	BuildStrategy   string               `json:"buildStrategy,omitempty"`
+	DockerfilePath  string               `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile this project
 	// ships. Absent is the file's last stage.
 	DockerfileTarget string       `json:"dockerfileTarget,omitempty"`
@@ -235,6 +281,8 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		RequirePullRequest: project.Spec.Source.GitSource().RequirePullRequest,
 		Previews:           project.Spec.Previews.IsEnabled(),
 		PreviewsProtected:  project.Spec.Previews.IsProtected(),
+		PreviewsMax:        project.Spec.Previews.Max,
+		PreviewCapacity:    newPreviewCapacityView(project.Status.Previews),
 		BuildStrategy:      string(project.Spec.Build.Strategy),
 		DockerfilePath:     project.Spec.Build.DockerfilePath,
 		DockerfileTarget:   project.Spec.Build.DockerfileTarget,
@@ -1452,6 +1500,13 @@ type claimView struct {
 	// deployed by recreation with a gap in serving. Absent means neither.
 	KeepsPodsRunning bool `json:"keepsPodsRunning,omitempty"`
 	ForcesRecreate   bool `json:"forcesRecreate,omitempty"`
+	// CanIdle and IdleReason are what an idle preview does to this claim
+	// (#294): whether the preview's own resource parks with the preview and
+	// comes back on wake, and the provider's own sentence about it. The
+	// reason is answered either way — a provider that parks nothing has to
+	// say why an open pull request keeps paying for it.
+	CanIdle    bool   `json:"canIdle,omitempty"`
+	IdleReason string `json:"idleReason,omitempty"`
 	// Redis is what a redis claim asked its instance to be — the usage, the
 	// memory limit, the version. Absent when it asked for nothing in
 	// particular.
@@ -1529,6 +1584,8 @@ func newClaimView(claim *kitchenv1alpha1.ResourceClaim) claimView {
 		PreviewReason:    claim.Status.PreviewReason,
 		PreviewChoice:    claim.PreviewChoice(),
 		KeepsPodsRunning: claim.Status.KeepsPodsRunning,
+		CanIdle:          claim.Status.CanIdle,
+		IdleReason:       claim.Status.IdleReason,
 		ForcesRecreate:   claim.Status.ForcesRecreate,
 		DataClass:        string(claim.Spec.DataClass),
 		DataProvenance:   claim.Status.DataProvenance,
