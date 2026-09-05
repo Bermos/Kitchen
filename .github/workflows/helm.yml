@@ -1389,8 +1389,12 @@ jobs:
               clickhouse-client --secure --accept-invalid-certificate "$@"
           }
           # The credentials in the secret are the ones ClickHouse actually took.
+          # No `--database kitchen` here: since #414 the operator creates that
+          # database (the image's entrypoint no longer does), so naming it
+          # races the first reconcile; that the database exists is proved
+          # further down by TelemetrySchemaReady.
           answer=$(ch --user kitchen --password "${password}" \
-            --database kitchen --query 'SELECT 1')
+            --query 'SELECT 1')
           [ "${answer}" = 1 ] || {
             echo "::error::ClickHouse rejected the credentials in the secret"
             exit 1
