@@ -109,6 +109,19 @@ const (
 	// it writes *to*. "Every address this platform sends its activity to, and
 	// who added each" is one query, and it is the one an auditor asks.
 	KindNotificationSubscription = "NotificationSubscription"
+
+	// KindPersistentVolume is the seventh, and the one Kubernetes kind here
+	// the platform writes without a CRD of its own in front of it (#406): a
+	// volume an operator wrote for storage that existed before the cluster
+	// did, so that a claim can bind it without anybody reaching for kubectl.
+	//
+	// It is recorded for the reason the connection kinds are. The object is
+	// cluster-scoped and points at somebody's data, and "who told the
+	// platform this NAS export exists, and who removed the record" is a
+	// question the log has to be able to answer on its own — the reclaim
+	// policy means no data is ever destroyed either way, which is exactly
+	// why the record is the only trace left.
+	KindPersistentVolume = "PersistentVolume"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of

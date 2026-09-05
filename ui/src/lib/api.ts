@@ -2019,6 +2019,10 @@ export interface BindableVolume {
   writable: boolean;
   readable: boolean;
   note?: string;
+  /** The platform wrote this one itself, and so can vouch for what it points
+   * at and for its reclaim policy. They come first in the listing — the
+   * ordering is the API's, not the form's. */
+  managedByKitchen: boolean;
 }
 
 /** One PersistentVolumeClaim a project may bind by name — one of its own,
@@ -2037,6 +2041,57 @@ export interface BindableVolumeClaim {
 export interface BindableVolumes {
   persistentVolumes: BindableVolume[];
   persistentVolumeClaims: BindableVolumeClaim[];
+}
+
+/** One volume the platform wrote for storage that existed before the cluster
+ * did — an NFS export, a volume a storage appliance's driver hands out. It is
+ * the object a bound volume claim mounts, and the platform is accountable for
+ * exactly the ones it wrote itself.
+ *
+ * `reclaimPolicy` is always `Retain` and is reported rather than implied:
+ * removing one of these removes the record, and never a byte of the data. */
+export interface PlatformWrittenVolume {
+  name: string;
+  capacity?: string;
+  accessModes: string[];
+  phase?: string;
+  reclaimPolicy: string;
+  /** `nfs` or `csi`. */
+  type?: string;
+  /** What it points at — `nfs://server/export`, `csi://driver/handle` — which
+   * is what tells two volumes over one filesystem apart from two over
+   * different ones. */
+  identity?: string;
+  nfs?: { server: string; path: string; readOnly?: boolean };
+  csi?: {
+    driver: string;
+    volumeHandle: string;
+    fsType?: string;
+    readOnly?: boolean;
+    volumeAttributes?: Record<string, string>;
+  };
+  /** The claims mounting it, as `project/claim`. Deleting is refused while
+   * there is one. */
+  heldBy?: string[];
+  createdAt?: string;
+  /** Bound to something that is not one of the platform's claims. */
+  claimedBy?: { namespace: string; name: string };
+}
+
+/** A volume to write. One of `nfs` or `csi`, never both, and never
+ * `hostPath`: the API refuses that in words. */
+export interface NewPlatformWrittenVolume {
+  name: string;
+  capacity: string;
+  accessModes: string[];
+  nfs?: { server: string; path: string; readOnly?: boolean };
+  csi?: {
+    driver: string;
+    volumeHandle: string;
+    fsType?: string;
+    readOnly?: boolean;
+    volumeAttributes?: Record<string, string>;
+  };
 }
 
 /** The database a postgres claim asked for: which Postgres, what it has to be
@@ -4370,6 +4425,18 @@ export const api = {
   // something the platform filled in — it existed before the cluster did —
   // so the form offers what is actually there rather than an empty field.
   claimVolumes: () => request<BindableVolumes>("GET", "/claim-volumes"),
+
+  // The volumes the platform wrote for storage that already existed, so that
+  // a bound claim has something to name. Every one of these is the
+  // operator's: the list is the platform's own record of what it wrote, not
+  // the picker next door.
+  platformWrittenVolumes: list<PlatformWrittenVolume>("/persistent-volumes"),
+  createPlatformWrittenVolume: (volume: NewPlatformWrittenVolume) =>
+    request<PlatformWrittenVolume>("POST", "/persistent-volumes", volume),
+  // Removes the record and nothing else — the reclaim policy is Retain, so
+  // the data is untouched. Refused while a claim mounts it, naming the claim.
+  deletePlatformWrittenVolume: (name: string) =>
+    request<void>("DELETE", `/persistent-volumes/${encodeURIComponent(name)}`),
   createClaim: (claim: NewClaim) => request<Claim>("POST", "/claims", claim),
   // Answers 202: the operator's finalizer finishes the teardown — branches,
   // binding secrets and, under deletionPolicy Delete, the database itself.

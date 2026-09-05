@@ -717,6 +717,27 @@ func (s *Server) routes() []route {
 		{"PATCH /api/v1/connections/{name}", s.patchConnection, operatorOnly("changing a connection")},
 		{"DELETE /api/v1/connections/{name}", s.deleteConnection, operatorOnly("deleting a connection")},
 
+		// The volumes an operator writes for storage that existed before the
+		// cluster did (#406), so that a `volume` claim can bind one without
+		// anybody reaching for kubectl. They sit beside connections because
+		// they have a connection's standing: cluster-scoped, bootstrap-
+		// adjacent, written once by whoever administers the installation, and
+		// pointed at by projects afterwards.
+		//
+		// Every one of the three is the operator's, including the read. That
+		// is not the same answer `GET /claim-volumes` gives next door, and
+		// the difference is what the two lists are *for*: the claim's list is
+		// what a developer can bind and is filtered on the way out, while
+		// this one is the platform's own record of what it wrote — the
+		// server, the export, the driver's handle — which is an operator's
+		// inventory of somebody's storage rather than a picker.
+		{"GET /api/v1/persistent-volumes", s.listPersistentVolumes,
+			operatorOnly("reading the volumes the platform wrote")},
+		{"POST /api/v1/persistent-volumes", s.createPersistentVolume,
+			operatorOnly("writing a volume for storage that already exists")},
+		{"DELETE /api/v1/persistent-volumes/{name}", s.deletePersistentVolume,
+			operatorOnly("removing a volume the platform wrote")},
+
 		// Domains belong to an environment, and so to its project.
 		{"GET /api/v1/domains", s.listDomains, acrossProjects()},
 		{"POST /api/v1/domains", s.createDomain,

@@ -236,10 +236,21 @@ async function loadBindableVolumes() {
 
 /** Every volume that can be bound, with what it holds and — where one cannot
  * be — why. A volume nothing can mount is listed disabled rather than left
- * out: a name somebody was told to use must not simply fail to appear. */
+ * out: a name somebody was told to use must not simply fail to appear.
+ *
+ * The ones the platform wrote itself come first and say so. That ordering is
+ * the API's rather than this form's, so that every caller of the endpoint
+ * gets it; what is added here is the mark, because "the platform knows what
+ * this points at" is the one thing that tells two identical-looking names
+ * apart. */
 const bindOptions = computed(() => [
   ...bindable.value.persistentVolumes.map((entry) => ({
-    label: [entry.name, entry.capacity, entry.note ?? (entry.heldBy?.length ? `shared with ${entry.heldBy.join(", ")}` : "")]
+    label: [
+      entry.name,
+      entry.capacity,
+      entry.managedByKitchen ? "written by the platform" : "",
+      entry.note ?? (entry.heldBy?.length ? `shared with ${entry.heldBy.join(", ")}` : ""),
+    ]
       .filter(Boolean)
       .join(" — "),
     value: `volume:${entry.name}`,
