@@ -132,6 +132,13 @@ a workload is built from this repository or it runs an image somebody else
 published, never both. --replicas 0 is a workload declared and parked, which is
 how one is turned off without losing its command.
 
+A workload's security posture has no flag here, for the reason the project's
+own posture has none: it is written with "kitchen api PATCH /projects/<name>",
+in kitchen.json, or on the dashboard. What this command does is send every
+workload's posture back exactly as it read it, so changing one workload cannot
+lose another's. "kitchen processes --json" reads what each of them actually
+runs under, and which of those fields the workload declared itself.
+
 **This is the whole surface for a project with no repository.** A project whose
 source is an image has no kitchen.json to declare workloads in, so this command
 and the dashboard are how its unit is described at all. On a project that has a

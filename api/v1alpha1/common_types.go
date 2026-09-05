@@ -332,14 +332,22 @@ type RuntimeSpec struct {
 	Health *HealthSpec `json:"health,omitempty"`
 
 	// Security is the posture every workload of this project runs under —
-	// the web process, its workers and its scheduled runs alike, because
-	// they are one image and a posture is a property of the image rather
-	// than of the command it is started with.
+	// the web process, its workers, its services and its scheduled runs
+	// alike — unless one of them declares its own, which is
+	// [ProcessSpec.Security] and is merged over this field by field (#399).
+	//
+	// It was every workload's outright while a unit was one image. Since
+	// #271 and #306 a unit is up to five, each with its own base, so a
+	// single `runAsUser` across four workloads is luck rather than design;
+	// this stayed the unit's declaration and the workload's own writes over
+	// as much of it as it needs to. The web process has no [ProcessSpec], so
+	// this is its posture and always was.
 	//
 	// A project that declares nothing still gets [SecuritySpec]'s default,
 	// which is the platform's and not the image's. Like the rest of
-	// RuntimeSpec it is snapshotted into the Release, so a rollback restores
-	// the posture that release ran under.
+	// RuntimeSpec it is snapshotted into the Release — with the process list
+	// beside it, so a rollback restores both halves of what each workload
+	// ran under.
 	// +optional
 	Security *SecuritySpec `json:"security,omitempty"`
 
@@ -566,6 +574,119 @@ func (s *SecuritySpec) Declared() []string {
 // is no.
 func (s *SecuritySpec) EscalationAllowed() bool {
 	return s != nil && s.AllowPrivilegeEscalation
+}
+
+// securityFields is the posture field by field: whether a declaration sets
+// one, and how it is written onto another.
+//
+// It is one table because two answers have to agree — the posture a workload
+// actually runs under, and which half of it the workload asked for itself —
+// and a second walk over the same fields is exactly how the resolved posture
+// and the markers beside it would come to disagree. The names are the ones
+// the API, the dashboard and kitchen.json all spell.
+//
+// **A field is set when it is not its zero value**, which is the reading
+// every field of [SecuritySpec] already has: an absent block and an empty one
+// are the same posture, so there is no third state for a workload to mean
+// "explicitly the platform's default". A workload therefore adds to the
+// unit's posture or redirects it, and cannot take a constraint off — a
+// constraint only some workloads can bear is declared on those workloads
+// rather than on the unit.
+var securityFields = []struct {
+	// Name is the field as every surface spells it.
+	Name string
+	// Set reports whether a declaration says anything about this field.
+	Set func(*SecuritySpec) bool
+	// Apply writes one declaration's answer onto another.
+	Apply func(onto, from *SecuritySpec)
+}{
+	{"runAsNonRoot",
+		func(s *SecuritySpec) bool { return s.RunAsNonRoot },
+		func(onto, from *SecuritySpec) { onto.RunAsNonRoot = from.RunAsNonRoot }},
+	{"runAsUser",
+		func(s *SecuritySpec) bool { return s.RunAsUser > 0 },
+		func(onto, from *SecuritySpec) { onto.RunAsUser = from.RunAsUser }},
+	{"runAsGroup",
+		func(s *SecuritySpec) bool { return s.RunAsGroup > 0 },
+		func(onto, from *SecuritySpec) { onto.RunAsGroup = from.RunAsGroup }},
+	{"fsGroup",
+		func(s *SecuritySpec) bool { return s.FSGroup > 0 },
+		func(onto, from *SecuritySpec) { onto.FSGroup = from.FSGroup }},
+	{"fsGroupChangePolicy",
+		func(s *SecuritySpec) bool { return s.FSGroupChangePolicy != "" },
+		func(onto, from *SecuritySpec) { onto.FSGroupChangePolicy = from.FSGroupChangePolicy }},
+	{"readOnlyRootFilesystem",
+		func(s *SecuritySpec) bool { return s.ReadOnlyRootFilesystem },
+		func(onto, from *SecuritySpec) { onto.ReadOnlyRootFilesystem = from.ReadOnlyRootFilesystem }},
+	{"allowPrivilegeEscalation",
+		func(s *SecuritySpec) bool { return s.AllowPrivilegeEscalation },
+		func(onto, from *SecuritySpec) { onto.AllowPrivilegeEscalation = from.AllowPrivilegeEscalation }},
+	{"dropCapabilities",
+		func(s *SecuritySpec) bool { return len(s.DropCapabilities) > 0 },
+		func(onto, from *SecuritySpec) {
+			onto.DropCapabilities = append([]string(nil), from.DropCapabilities...)
+		}},
+}
+
+// ResolveSecurity is the posture one workload of a unit runs under: the
+// unit's declaration with the workload's own written over it, field by field
+// (#399).
+//
+// A unit stopped being one image at #271 and #306 — up to five images, each
+// with its own base — and the posture was the last thing about them still
+// assumed to be uniform. A project pinning `runAsUser: 1000` across four
+// workloads, one of which is a distroless image whose own user is 65532, is
+// working by luck rather than by design.
+//
+// It is a merge rather than a whole-block override because that is the
+// friendlier half of the trade: a workload that only needs a different uid
+// says only that. The price is that the effective posture is a computation
+// rather than a value, which is why [SecurityOverrides] exists and why the
+// API reports the resolved answer beside the declaration rather than leaving
+// three clients to work it out.
+//
+// The web process has no [ProcessSpec], so its posture has nowhere to go but
+// `spec.runtime.security` — which is exactly where it already is. That
+// asymmetry is stated in the docs rather than modelled around.
+func ResolveSecurity(unit, workload *SecuritySpec) *SecuritySpec {
+	if workload == nil {
+		return unit
+	}
+	if unit == nil {
+		return workload
+	}
+	resolved := unit.DeepCopy()
+	for _, field := range securityFields {
+		if field.Set(workload) {
+			field.Apply(resolved, workload)
+		}
+	}
+	return resolved
+}
+
+// SecurityOverrides names the fields of a resolved posture that came from the
+// workload rather than from the unit, in the order [securityFields] lists
+// them. It is empty for a workload that declared nothing, which is the
+// ordinary case.
+//
+// It is the second half of what makes a merge readable: the resolved posture
+// says what the workload runs under, and this says which of it the workload
+// asked for — without which nobody could tell which of the two declarations
+// won.
+func SecurityOverrides(workload *SecuritySpec) []string {
+	if workload == nil {
+		return nil
+	}
+	overrides := make([]string, 0, len(securityFields))
+	for _, field := range securityFields {
+		if field.Set(workload) {
+			overrides = append(overrides, field.Name)
+		}
+	}
+	if len(overrides) == 0 {
+		return nil
+	}
+	return overrides
 }
 
 // ArgsFor is the argument list an environment of this type starts the

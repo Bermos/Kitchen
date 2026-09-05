@@ -289,6 +289,59 @@ func TestTheConfigDiffReportsTheRuntimeAndTheProcesses(t *testing.T) {
 	}
 }
 
+// A rollback that moved one worker from its own uid back to the unit's is a
+// change the runtime row cannot show — the unit's posture never moved (#399).
+func TestTheConfigDiffReportsThePostureEachWorkloadRunsUnder(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	unit := &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true, RunAsUser: 1000}
+	setSnapshot(t, h, testRelease, kitchenv1alpha1.ConfigSnapshot{
+		Runtime: kitchenv1alpha1.RuntimeSpec{Port: 3000, Security: unit},
+		Processes: []kitchenv1alpha1.ProcessSpec{{
+			Name: "mailer", Type: kitchenv1alpha1.ProcessWorker,
+			Security: &kitchenv1alpha1.SecuritySpec{RunAsUser: 65532},
+		}},
+	})
+	setSnapshot(t, h, testPreviousRelease, kitchenv1alpha1.ConfigSnapshot{
+		Runtime:   kitchenv1alpha1.RuntimeSpec{Port: 3000, Security: unit},
+		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "mailer", Type: kitchenv1alpha1.ProcessWorker}},
+	})
+
+	body := diffBody(t, h, configDiffPath)
+
+	runtime := map[string]fieldChangeView{}
+	for _, field := range body.Runtime {
+		runtime[field.Field] = field
+	}
+	if runtime["security"].Changed {
+		t.Errorf("the unit's posture did not move, and must not read as though it did: %+v", runtime["security"])
+	}
+
+	var mailer processChangeView
+	for _, process := range body.Processes {
+		if process.Name == "mailer" {
+			mailer = process
+		}
+	}
+	if mailer.Change != changeChanged {
+		t.Fatalf("a workload whose own posture moved reads as unchanged: %+v", mailer)
+	}
+	// The rollback target is the release with no override, so the move takes
+	// the mailer off its own uid and back onto the unit's.
+	if !strings.Contains(mailer.Security, "uid 1000") {
+		t.Errorf("want the posture the mailer would run under after the move, got %+v", mailer)
+	}
+	if !strings.Contains(mailer.AgainstSecurity, "uid 65532") {
+		t.Errorf("want the posture it runs under now, got %+v", mailer)
+	}
+	// Resolved, not declared: the constraint the workload inherits is in
+	// force whichever release is serving, and a diff that showed only the
+	// override would say the workload stops running as non-root.
+	if !strings.Contains(mailer.Security, "must not run as root") {
+		t.Errorf("the resolved posture does not carry the unit's half: %+v", mailer)
+	}
+}
+
 func TestTheConfigDiffRefusesAComparisonThatMeansNothing(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

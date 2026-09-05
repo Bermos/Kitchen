@@ -884,6 +884,131 @@ spec:
                             five-field form `batch/v1` takes, interpreted in UTC. Required for a
                             cron process and refused on a worker, both at admission.
                           type: string
+                        security:
+                          description: |-
+                            Security is this workload's own security posture, merged field by
+                            field over the unit's [RuntimeSpec.Security] at the point the pod is
+                            built: a field this workload sets wins, a field it leaves unset
+                            inherits the project's (#399).
+
+                            It exists because a unit is no longer one image. Since #271 and #306 a
+                            project ships up to five, each with its own base, and #300 already
+                            treats them as five artifacts with five sets of evidence for exactly
+                            that reason — the posture was the one thing about them still assumed
+                            to be uniform. Three `node:22-slim` images ending `USER node` beside a
+                            distroless one ending `USER nonroot` cannot say that one runs as 1000
+                            and another as 65532 while there is only one number.
+
+                            **Zero-means-inherit, not zero-means-root.** Every field of
+                            [SecuritySpec] already reads that way, so a workload adds to the
+                            unit's posture or redirects it and cannot take a constraint off. A
+                            constraint only some workloads can bear is declared on those
+                            workloads rather than on the unit.
+
+                            It is written whole every reconcile, like the posture it merges over,
+                            so a withdrawn override leaves the workload the way a withdrawn
+                            posture does: back to the unit's, never to yesterday's resolution.
+                          properties:
+                            allowPrivilegeEscalation:
+                              description: |-
+                                AllowPrivilegeEscalation puts back the one default the platform
+                                tightens on the container. Left alone, no process in the container can
+                                gain more privileges than its parent — `no_new_privs`, which is what
+                                stops a setuid binary being a way out of the user the container runs
+                                as. An image that legitimately needs one (`sudo`, a setuid helper) says
+                                so here rather than losing it silently.
+                              type: boolean
+                            dropCapabilities:
+                              description: |-
+                                DropCapabilities are the Linux capabilities taken away from the
+                                containers, in the kernel's own spelling without the `CAP_` prefix —
+                                `NET_RAW`, `SYS_ADMIN` — or the single entry `ALL`.
+
+                                There is deliberately no list of capabilities to *add*. The platform
+                                drops none by default, so nothing has to be given back, and a project
+                                that could add one would be able to grant its own container more than
+                                its image asked for.
+
+                                The spelling is checked here as well as at the API, since not
+                                everything writes through the API: a capability the kernel has never
+                                heard of reaches a container that then does not start.
+                              items:
+                                pattern: ^[A-Z][A-Z0-9_]*$
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            fsGroup:
+                              description: |-
+                                FSGroup is the supplementary group the volumes mounted into the
+                                containers are owned by. A freshly provisioned PersistentVolume comes
+                                up owned by `root:root`, so a workload that asked to run as anybody
+                                else is handed a volume it cannot write — it starts, reads as
+                                healthy, and fails on its first write. The kubelet chowns the volume
+                                to this gid before the container starts, which is the only thing that
+                                makes the two features — this posture and a volume claim — work
+                                together.
+
+                                It is a pod-level field, not a container-level one, so it lands
+                                beside RunAsNonRoot rather than in the per-container context. Zero is
+                                the same reading RunAsUser's is: the volume's own ownership left
+                                alone, not a request to own it as gid 0.
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            fsGroupChangePolicy:
+                              description: |-
+                                FSGroupChangePolicy is when the kubelet does that chown. Left alone
+                                it is Kubernetes' own default, `Always`, which walks the whole volume
+                                on every start — correct, and on a large volume slow enough to be the
+                                reason a pod takes minutes to come up. `OnRootMismatch` skips the
+                                walk when the volume's own root already has the right ownership,
+                                which is what a workload with a big persistent volume reaches for.
+
+                                The default is deliberately not moved: `OnRootMismatch` looks only at
+                                the top of the volume, so a subtree left behind by a previous uid
+                                stays unwritable and the failure arrives long after the change that
+                                caused it. That is a trade a project makes knowingly, not one the
+                                platform makes for it.
+
+                                It is meaningless without FSGroup and refused without one, rather
+                                than stored as a setting that does nothing.
+                              enum:
+                              - Always
+                              - OnRootMismatch
+                              type: string
+                            readOnlyRootFilesystem:
+                              description: |-
+                                ReadOnlyRootFilesystem mounts the container's own filesystem read
+                                only. An application that writes to a path it did not declare fails
+                                on the write rather than on the next node it lands on.
+
+                                It is off by default and that is the decision: an image that writes a
+                                temporary file, a cache or a socket into its own filesystem is
+                                ordinary, and a default that broke it would break it on upgrade with
+                                no warning anywhere.
+                              type: boolean
+                            runAsGroup:
+                              format: int64
+                              minimum: 0
+                              type: integer
+                            runAsNonRoot:
+                              description: |-
+                                RunAsNonRoot refuses to start a container whose image would run as
+                                uid 0. The kubelet checks it before the container starts, so an image
+                                that would have run as root fails at the pod rather than three layers
+                                into whatever it did with the privilege.
+                              type: boolean
+                            runAsUser:
+                              description: |-
+                                RunAsUser and RunAsGroup are the uid and gid the containers run as,
+                                overriding the image's own. Zero is not "run as root": it is the
+                                image's own user, left alone — an image that must run as root already
+                                does, and saying so again here would be a setting that changed
+                                nothing.
+                              format: int64
+                              minimum: 0
+                              type: integer
+                          type: object
                         singleton:
                           description: |-
                             Singleton says two of this worker must never run at once.
@@ -1367,14 +1492,22 @@ spec:
                       security:
                         description: |-
                           Security is the posture every workload of this project runs under —
-                          the web process, its workers and its scheduled runs alike, because
-                          they are one image and a posture is a property of the image rather
-                          than of the command it is started with.
+                          the web process, its workers, its services and its scheduled runs
+                          alike — unless one of them declares its own, which is
+                          [ProcessSpec.Security] and is merged over this field by field (#399).
+
+                          It was every workload's outright while a unit was one image. Since
+                          #271 and #306 a unit is up to five, each with its own base, so a
+                          single `runAsUser` across four workloads is luck rather than design;
+                          this stayed the unit's declaration and the workload's own writes over
+                          as much of it as it needs to. The web process has no [ProcessSpec], so
+                          this is its posture and always was.
 
                           A project that declares nothing still gets [SecuritySpec]'s default,
                           which is the platform's and not the image's. Like the rest of
-                          RuntimeSpec it is snapshotted into the Release, so a rollback restores
-                          the posture that release ran under.
+                          RuntimeSpec it is snapshotted into the Release — with the process list
+                          beside it, so a rollback restores both halves of what each workload
+                          ran under.
                         properties:
                           allowPrivilegeEscalation:
                             description: |-

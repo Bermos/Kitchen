@@ -1000,6 +1000,30 @@ type processHealth struct {
 	StartupFailureThreshold int32  `json:"startupFailureThreshold,omitempty"`
 }
 
+// securityWrite is a security posture as a settings PATCH takes it: the eight
+// fields somebody declares, and none of the three the platform derives.
+type securityWrite struct {
+	RunAsNonRoot             bool     `json:"runAsNonRoot,omitempty"`
+	RunAsUser                int64    `json:"runAsUser,omitempty"`
+	RunAsGroup               int64    `json:"runAsGroup,omitempty"`
+	FSGroup                  int64    `json:"fsGroup,omitempty"`
+	FSGroupChangePolicy      string   `json:"fsGroupChangePolicy,omitempty"`
+	ReadOnlyRootFilesystem   bool     `json:"readOnlyRootFilesystem,omitempty"`
+	AllowPrivilegeEscalation bool     `json:"allowPrivilegeEscalation,omitempty"`
+	DropCapabilities         []string `json:"dropCapabilities,omitempty"`
+}
+
+// securityPosture is one read back: the eight declared fields plus what the
+// platform fills in — the seccomp profile it applies to everything, the
+// posture in words, and, on a workload's *effective* posture, which of the
+// fields the workload declared itself rather than inheriting (#399).
+type securityPosture struct {
+	securityWrite
+	SeccompProfile string   `json:"seccompProfile,omitempty"`
+	Declared       []string `json:"declared,omitempty"`
+	Overrides      []string `json:"overrides,omitempty"`
+}
+
 type process struct {
 	Name     string   `json:"name"`
 	Type     string   `json:"type"`
@@ -1042,6 +1066,17 @@ type process struct {
 	// Health is the workload's own health check, absent for one that declared
 	// none — a worker is probed only where it asked to be.
 	Health *processHealth `json:"health,omitempty"`
+	// Security is what this workload *declared* about its security posture,
+	// absent where it declared nothing and inherits the project's whole.
+	// EffectiveSecurity is what it actually runs under — the project's with
+	// this merged over it field by field — and its `overrides` name which
+	// fields came from the workload.
+	//
+	// The declaration is what `processes set` sends back: writing the
+	// effective posture would copy the project's onto every workload, and
+	// four copies of one declaration stop moving when the project's does.
+	Security          *securityPosture `json:"security,omitempty"`
+	EffectiveSecurity *securityPosture `json:"effectiveSecurity,omitempty"`
 	// Previews is what the workload *declared* about preview environments,
 	// absent where it declared nothing and takes its type's default: off for a
 	// worker and a scheduled job, on for a service and a task. What this
@@ -1098,7 +1133,12 @@ type processWrite struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	Previews          *bool          `json:"previews,omitempty"`
 	Health            *processHealth `json:"health,omitempty"`
-	Init              []volumeInit   `json:"init,omitempty"`
+	// Security is this workload's own posture, merged over the project's
+	// field by field. It travels on every write for the reason a parked
+	// workload's `replicas: 0` does: the route replaces the whole list, so a
+	// declaration this command is not changing has to go back as it came.
+	Security *securityWrite `json:"security,omitempty"`
+	Init     []volumeInit   `json:"init,omitempty"`
 }
 
 // volumeInit is what one workload prepares inside one of the volumes it
@@ -1164,6 +1204,12 @@ func declaredProcessWrites(declared []process) []processWrite {
 			// dropped it would silently un-declare a workload's volume
 			// preparation every time somebody changed its replica count.
 			Init: workload.Init,
+		}
+		if declared := workload.Security; declared != nil {
+			// The declaration, never the effective posture: the eight fields
+			// this workload asked for, sent back exactly as they were read.
+			posture := declared.securityWrite
+			write.Security = &posture
 		}
 		if source := workload.ImageSource; source != nil {
 			write.Image = &imageWrite{

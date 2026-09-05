@@ -328,7 +328,11 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		}
 	}
 	for _, process := range project.Spec.Processes {
-		view.Processes = append(view.Processes, newProcessView(process, nil, ""))
+		// The project's own runtime posture is the unit half here: this is
+		// what the project declares *now*, so what each workload would run
+		// under is today's runtime with today's override, not a release's.
+		view.Processes = append(view.Processes,
+			newProcessView(process, nil, "", project.Spec.Runtime.Security))
 	}
 	// Without what the platform holds, so a secret file reads as declared
 	// and its digest is filled in by the routes that answer one project —

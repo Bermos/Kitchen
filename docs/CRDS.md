@@ -688,7 +688,8 @@ spec:
       startupFailureThreshold: 30       # x period = how long it has to come up
     security:                           # the posture every workload of this
       runAsNonRoot: true                # project runs under — web, workers,
-      runAsUser: 1001                   # services and scheduled runs alike
+      runAsUser: 1001                   # services and scheduled runs alike,
+                                        # unless one declares its own below
       runAsGroup: 1001                  # 0 = the image's own user left
       readOnlyRootFilesystem: true      # alone, not "run as root"
       fsGroup: 1001                     # owns the volumes it mounts: a fresh
@@ -746,6 +747,12 @@ spec:
     - name: cache                       # a workload running an image nobody here
       type: service                     # built: the third answer to what `build` asks
       port: 6379
+      security:                         # this workload's own posture, merged over
+        runAsUser: 65532                # runtime.security field by field: what is
+                                        # set here wins, what is left out is
+                                        # inherited. It is how a unit whose images
+                                        # have different bases says that three run
+                                        # as 1001 and this one runs as 65532
       image:                            # excludes `build`; a workload is one or the other
         repository: docker.io/library/redis
         tag: "7.4"                      # a tag or a digest, as above
@@ -1062,6 +1069,35 @@ ordinary and a default that broke it would break it on upgrade with nothing
 said. Every field is zero-means-the-default, the reading `health`'s timings
 have, so a posture is taken back off by clearing it.
 
+**The posture is per project *and* per workload (#399).** `runtime.security`
+is the unit's, and a `processes[].security` is that workload's own, merged
+over it **field by field**: a field the workload sets wins, a field it leaves
+unset inherits the project's. That is what a unit whose images no longer share
+a base needs — since a project ships up to five of them, each with its own
+base, a single `runAsUser` across four workloads is luck rather than design,
+and `fsGroup` has the same shape where two workloads mount two claims.
+
+Every field is zero-means-**inherit** there, on the same reading the unit's
+zero-means-the-default has, so a workload adds to the project's posture or
+points it somewhere else and **cannot take a constraint off**. A constraint
+only some workloads can bear is declared on those workloads rather than on the
+project. An empty `security` block is no override at all, which is how one is
+taken back off through an API that never distinguishes an absent key from a
+cleared one; a withdrawn override leaves the workload the way a withdrawn
+posture does, because both halves are written whole on every reconcile.
+
+**The web process has no entry in `processes`, so its posture is
+`runtime.security` — which is exactly where it already was.** That asymmetry
+is stated rather than modelled around: a second spelling of the web process
+would be a workload nothing routes to answering to the name of the one that is.
+
+Nothing is stored resolved. Both halves are snapshotted into the Release, so a
+rollback restores the resolution exactly by restoring the two declarations it
+was computed from, and `GET /releases/{name}/config-diff` reports the
+**resolved** posture per workload beside the unit's own row — a rollback that
+took one worker off its own uid is invisible on a diff that reported only a
+unit posture that never moved.
+
 It is snapshotted into the Release with the rest of the runtime, so a
 rollback restores the posture that release ran under, and a workload that
 cannot start under it says so on its Environment — `WorkloadAvailable=False`
@@ -1094,6 +1130,13 @@ the user it found and `runAsUser` as the fix. It is not refused at the API,
 because the same request is exactly right for an image whose `USER` is a
 number.
 
+That check is made **per workload**, against the posture that workload
+actually runs under: one whose own `runAsUser` is the right number for its
+image is left alone even where the unit names none, and one whose inherited
+`runAsNonRoot` has no uid behind it is refused naming that workload alone. The
+evidence is already per artifact (#300); this reads it against the declaration
+that applies to it.
+
 `runtime.init` and `processes[].init` are what a workload needs done inside the
 volumes it mounts before its own process starts (#348). A `volume` claim hands
 a workload an empty filesystem, and a good deal of vendored software will not
@@ -1118,11 +1161,13 @@ features still adding up to an application that does not start):
   first. A directory that is already there is left exactly as it is, mode and
   owner included; a seed is written only where the destination does not exist.
   A second deploy therefore never clobbers what the application wrote.
-- **It runs under the project's own posture.** The init container takes
-  `runtime.security` — the same user, the same dropped capabilities, the same
-  read-only root filesystem — so a directory it creates comes out owned by the
-  process that will use it. That is `fsGroup` doing the work, and it is why
-  there is no `owner` to declare here and no `chown` to run.
+- **It runs under the posture the workload itself runs under.** The init
+  container takes the same resolution the application's container does —
+  `runtime.security` with that workload's own `security` merged over it
+  (#399) — the same user, the same dropped capabilities, the same read-only
+  root filesystem, so a directory it creates comes out owned by the process
+  that will use it. That is `fsGroup` doing the work, and it is why there is
+  no `owner` to declare here and no `chown` to run.
 
 Every path is relative to the claim's own `mountPath`, and the pattern that
 validates one admits no leading slash and no `..` — so a step cannot reach out

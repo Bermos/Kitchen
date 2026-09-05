@@ -123,6 +123,20 @@ type processChangeView struct {
 	// worked out for themselves. Absent for a workload that runs the
 	// release's own image, which is what the release name already says.
 	Image string `json:"image,omitempty"`
+	// Security is the posture this workload runs under after the move, in
+	// words, and AgainstSecurity the one it runs under now — **resolved**,
+	// which is the only form of the answer worth showing: since #399 it is
+	// the unit's declaration with the workload's own merged over it, so
+	// neither half on its own says what changes. Empty on either side is the
+	// platform's default.
+	//
+	// It travels per workload for the reason the image does. The runtime's
+	// own `security` row above is the web process's, and a rollback that
+	// moved one worker from uid 1000 to the image's own would otherwise be
+	// invisible on a diff that reported the unit's posture as unchanged —
+	// which it was.
+	Security        string `json:"security,omitempty"`
+	AgainstSecurity string `json:"againstSecurity,omitempty"`
 }
 
 // configDiffBody is what GET /releases/{name}/config-diff answers with.
@@ -448,6 +462,14 @@ func diffRuntime(release, against kitchenv1alpha1.RuntimeSpec) []fieldChangeView
 	return out
 }
 
+// resolvedPosture is the posture one workload of one release runs under, in
+// the words the runtime row and an environment's condition already use: the
+// release's own `runtime.security` with this workload's merged over it.
+func resolvedPosture(release *kitchenv1alpha1.Release, process kitchenv1alpha1.ProcessSpec) string {
+	resolved := kitchenv1alpha1.ResolveSecurity(release.Spec.ConfigSnapshot.Runtime.Security, process.Security)
+	return strings.Join(resolved.Declared(), "; ")
+}
+
 // diffProcesses compares the two releases' workloads by name. One whose
 // command, schedule, port, build, concurrency or capacity moved reads as
 // changed; so does one whose own image moved, since a unit ships several and
@@ -499,6 +521,12 @@ func diffProcesses(release, against *kitchenv1alpha1.Release) []processChangeVie
 		view.Schedule = described.Schedule
 		if image := describing.ImageFor(name); image != describing.Spec.Image {
 			view.Image = image
+		}
+		if inHead {
+			view.Security = resolvedPosture(release, to)
+		}
+		if inBase {
+			view.AgainstSecurity = resolvedPosture(against, from)
 		}
 		out = append(out, view)
 	}

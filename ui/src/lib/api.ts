@@ -148,6 +148,10 @@ export interface Security {
    * which Kubernetes does not apply unless asked. */
   seccompProfile: string;
   declared?: string[];
+  /** On a workload's *effective* posture, the fields it declared itself —
+   * the rest are the project's. Absent on the project's own posture and on a
+   * workload's declaration, neither of which is an override of anything. */
+  overrides?: string[];
 }
 
 /** A security posture as a settings PATCH carries it. Every field is optional
@@ -1506,6 +1510,17 @@ export interface Process {
    * scheduled job, on for a service and a task. What an environment does with
    * it is `suspended`, which is a fact about that environment. */
   previews?: boolean;
+  /** What this workload *declared* about its security posture, absent where it
+   * declared nothing and inherits the project's whole. It is the declaration
+   * for the reason `previews` is: an editor has to be able to send back what
+   * it did not touch, and sending the effective posture would copy the
+   * project's onto every workload. */
+  security?: Security;
+  /** What it actually runs under: the project's `runtime.security` with the
+   * declaration above merged over it field by field, and `overrides` naming
+   * which fields came from the workload. Always present — every workload runs
+   * under a posture, and nothing there would read as "unconstrained". */
+  effectiveSecurity?: Security;
   workload?: string;
   suspended?: boolean;
   reason?: string;
@@ -1545,6 +1560,10 @@ export interface ProcessWrite {
    * default, which is what an absent declaration means. */
   previews?: boolean;
   health?: HealthSettings;
+  /** This workload's own posture, merged over the project's field by field: a
+   * field set here wins, a field left out inherits the project's. `{}` is no
+   * override at all, which is how one is taken back off. */
+  security?: SecuritySettings;
   /** What this workload prepares inside the volumes it mounts before its own
    * container starts. */
   init?: VolumeInit[];

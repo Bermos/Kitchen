@@ -59,12 +59,33 @@ type securityView struct {
 	// that asked for none. It is the same list an environment's condition
 	// names when a workload cannot start under it.
 	Declared []string `json:"declared,omitempty"`
+	// Overrides names the fields of this block the *workload* declared
+	// itself, where the rest are the unit's (#399). It is a workload's
+	// effective posture alone: a project's own posture is nobody's override,
+	// and a workload's declaration is all override, so neither carries it.
+	//
+	// It exists because a merge makes the effective posture a computation
+	// rather than a value. Without it a reader is shown one block and cannot
+	// tell which of the two declarations behind it won, which is the whole
+	// thing a per-workload posture is at risk of.
+	Overrides []string `json:"overrides,omitempty"`
 }
 
 // securityFromRequest validates one posture. It answers nil for a posture
 // that declares nothing, which is how a project takes one back off.
 func securityFromRequest(request securityRequest, subject string) (*kitchenv1alpha1.SecuritySpec, error) {
 	return appconfig.SecuritySpec(request, subject)
+}
+
+// newWorkloadSecurityView is the posture one workload runs under: the unit's
+// with the workload's own merged over it, and the names of the fields that
+// came from the workload (#399).
+func newWorkloadSecurityView(
+	unit, workload *kitchenv1alpha1.SecuritySpec,
+) *securityView {
+	view := newSecurityView(kitchenv1alpha1.ResolveSecurity(unit, workload))
+	view.Overrides = kitchenv1alpha1.SecurityOverrides(workload)
+	return view
 }
 
 // newSecurityView reports the posture a project's workloads run under. A

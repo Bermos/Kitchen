@@ -193,7 +193,12 @@ not reads `removed`, because that is what would happen.
     {"name": "NODE_ENV", "change": "unchanged", "source": "value", "againstSource": "value"}
   ],
   "runtime": [{"field": "replicas", "from": "3", "to": "2", "changed": true}],
-  "processes": [{"name": "nightly", "change": "changed", "type": "cron", "schedule": "0 2 * * *"}]
+  "processes": [
+    {"name": "nightly", "change": "changed", "type": "cron", "schedule": "0 2 * * *"},
+    {"name": "sidecar", "change": "changed", "type": "worker",
+     "security": "it must not run as root; it runs as uid 1000",
+     "againstSecurity": "it must not run as root; it runs as uid 65532"}
+  ]
 }
 ```
 
@@ -228,6 +233,14 @@ list too, rendered as their words joined by a space — arguments are
 configuration, and a rollback that restored the image but not the flags would
 have restored the wrong thing, which is exactly what this route exists to say
 first.
+
+A workload's `security` is the posture it would run under after the move, and
+`againstSecurity` the one it runs under now — **resolved**, which is the only
+form of the answer worth showing: the posture is the project's declaration with
+the workload's own merged over it (#399), so neither half alone says what
+changes. The runtime's own `security` row is the web process's, and a rollback
+that took one worker off its own uid is invisible on a diff that reported only
+a unit posture that never moved.
 
 A `task` in that list is the one entry that is an *action* rather than a
 difference: the release being moved to runs the work it declared before the

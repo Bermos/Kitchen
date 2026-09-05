@@ -64,37 +64,145 @@ func TestOnlyAPostureThatCannotBeHonouredIsRefused(t *testing.T) {
 		},
 	}}
 
+	// A worker's image, so that a posture declared on that workload alone can
+	// be asked about it (#399).
+	workerNamed := []kitchenv1alpha1.BuildArtifact{{
+		Workload: "worker",
+		Artifact: &kitchenv1alpha1.ArtifactStatus{
+			Repository: "gcr.io/distroless/static", Digest: "sha256:def", User: "nonroot",
+		},
+	}}
+	unit := func(security *kitchenv1alpha1.SecuritySpec) kitchenv1alpha1.ConfigSnapshot {
+		return kitchenv1alpha1.ConfigSnapshot{
+			Runtime: kitchenv1alpha1.RuntimeSpec{Security: security},
+		}
+	}
+
 	for name, tc := range map[string]struct {
-		security  *kitchenv1alpha1.SecuritySpec
+		snapshot  kitchenv1alpha1.ConfigSnapshot
 		artifacts []kitchenv1alpha1.BuildArtifact
 		want      int
 	}{
 		"a named user under runAsNonRoot with no uid": {
-			security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}, artifacts: named, want: 1,
+			snapshot: unit(&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}), artifacts: named, want: 1,
 		},
 		"the same, with the uid supplied": {
-			security:  &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true, RunAsUser: 1000},
+			snapshot:  unit(&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true, RunAsUser: 1000}),
 			artifacts: named,
 		},
 		"a project that asked for nothing": {artifacts: named},
 		"a numeric user, which needs no help": {
-			security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true},
+			snapshot: unit(&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}),
 			artifacts: []kitchenv1alpha1.BuildArtifact{{
 				Artifact: &kitchenv1alpha1.ArtifactStatus{Repository: "r", Digest: "sha256:a", User: "1001"},
 			}},
 		},
 		"an image whose user was never read": {
-			security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true},
+			snapshot: unit(&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}),
 			artifacts: []kitchenv1alpha1.BuildArtifact{{
 				Artifact: &kitchenv1alpha1.ArtifactStatus{Repository: "r", Digest: "sha256:a"},
 			}},
 		},
+		// The four cases the per-workload posture adds. The unit's answer is
+		// no longer the workload's, in either direction.
+		"a workload that supplied the uid the unit did not": {
+			snapshot: kitchenv1alpha1.ConfigSnapshot{
+				Runtime: kitchenv1alpha1.RuntimeSpec{
+					Security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true},
+				},
+				Processes: []kitchenv1alpha1.ProcessSpec{{
+					Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+					Security: &kitchenv1alpha1.SecuritySpec{RunAsUser: 65532},
+				}},
+			},
+			artifacts: workerNamed,
+		},
+		"a workload that inherits runAsNonRoot and supplies no uid": {
+			snapshot: kitchenv1alpha1.ConfigSnapshot{
+				Runtime: kitchenv1alpha1.RuntimeSpec{
+					Security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true},
+				},
+				Processes: []kitchenv1alpha1.ProcessSpec{{
+					Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+					Security: &kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true},
+				}},
+			},
+			artifacts: workerNamed,
+			want:      1,
+		},
+		"a workload that asked for runAsNonRoot the unit did not": {
+			snapshot: kitchenv1alpha1.ConfigSnapshot{
+				Processes: []kitchenv1alpha1.ProcessSpec{{
+					Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+					Security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true},
+				}},
+			},
+			artifacts: workerNamed,
+			want:      1,
+		},
+		"the unit's uid, which the workload never took off": {
+			snapshot: kitchenv1alpha1.ConfigSnapshot{
+				Runtime: kitchenv1alpha1.RuntimeSpec{
+					Security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true, RunAsUser: 1000},
+				},
+				Processes: []kitchenv1alpha1.ProcessSpec{{
+					Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+					Security: &kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true},
+				}},
+			},
+			artifacts: workerNamed,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := unverifiableImages(tc.security, tc.artifacts); len(got) != tc.want {
+			if got := unverifiableImages(tc.snapshot, tc.artifacts); len(got) != tc.want {
 				t.Fatalf("unverifiableImages found %d, want %d: %+v", len(got), tc.want, got)
 			}
 		})
+	}
+}
+
+// A unit whose workloads run under different postures is refused for the one
+// workload the combination cannot work on, and for no other (#399).
+func TestOnlyTheWorkloadWhoseOwnPostureCannotBeHonouredIsNamed(t *testing.T) {
+	snapshot := kitchenv1alpha1.ConfigSnapshot{
+		Runtime: kitchenv1alpha1.RuntimeSpec{
+			Security: &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true, RunAsUser: 1000},
+		},
+		Processes: []kitchenv1alpha1.ProcessSpec{
+			// This one takes the unit's uid off the table by asking for a
+			// posture of its own that names none: the merge leaves it with
+			// runAsNonRoot and uid 1000, which is fine.
+			{Name: "worker", Type: kitchenv1alpha1.ProcessWorker,
+				Security: &kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}},
+			// This one is the distroless image, and it declares a uid the
+			// unit does not have — 65532 — so it is fine as well.
+			{Name: "sidecar", Type: kitchenv1alpha1.ProcessWorker,
+				Security: &kitchenv1alpha1.SecuritySpec{RunAsUser: 65532}},
+		},
+	}
+	artifacts := []kitchenv1alpha1.BuildArtifact{
+		{Artifact: &kitchenv1alpha1.ArtifactStatus{Repository: "r", Digest: "sha256:a", User: "node"}},
+		{Workload: "worker", Artifact: &kitchenv1alpha1.ArtifactStatus{
+			Repository: "r", Digest: "sha256:b", User: "node"}},
+		{Workload: "sidecar", Artifact: &kitchenv1alpha1.ArtifactStatus{
+			Repository: "r", Digest: "sha256:c", User: "nonroot"}},
+	}
+	if found := unverifiableImages(snapshot, artifacts); len(found) != 0 {
+		t.Fatalf("nothing should be refused here: %+v", found)
+	}
+
+	// Now take the unit's uid away. The web process and the worker inherit a
+	// runAsNonRoot with nothing to verify it against; the sidecar keeps its
+	// own uid and is left alone.
+	snapshot.Runtime.Security = &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}
+	found := unverifiableImages(snapshot, artifacts)
+	if len(found) != 2 {
+		t.Fatalf("the web process and the worker should be refused, got %+v", found)
+	}
+	for i, want := range []string{kitchenv1alpha1.WebProcessName, "worker"} {
+		if found[i].Name() != want {
+			t.Fatalf("refusal %d names %q, want %q", i, found[i].Name(), want)
+		}
 	}
 }
 

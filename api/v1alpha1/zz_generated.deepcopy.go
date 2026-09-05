@@ -3335,6 +3335,11 @@ func (in *ProcessSpec) DeepCopyInto(out *ProcessSpec) {
 		*out = new(HealthSpec)
 		**out = **in
 	}
+	if in.Security != nil {
+		in, out := &in.Security, &out.Security
+		*out = new(SecuritySpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Timeout != nil {
 		in, out := &in.Timeout, &out.Timeout
 		*out = new(v1.Duration)

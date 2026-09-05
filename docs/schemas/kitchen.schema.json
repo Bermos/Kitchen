@@ -292,7 +292,7 @@
     "security": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The security posture every workload of this project runs under — the web process, its workers and its scheduled runs, since they are one image. An empty object is the platform's default, which every workload gets anyway: the runtime's own seccomp profile, and no privilege escalation. Everything else here is a tightening the application asks for, because an image that writes to its own filesystem or runs as root is ordinary and the platform will not break one silently.",
+      "description": "A security posture. On runtime it is the project's and every workload of it runs under one — the web process, its workers and its scheduled runs alike; on a process it is that workload's own, merged over the project's field by field, where what is set wins and what is left out is inherited. An empty object is the platform's default, which every workload gets anyway: the runtime's own seccomp profile, and no privilege escalation. Everything else here is a tightening the application asks for, because an image that writes to its own filesystem or runs as root is ordinary and the platform will not break one silently.",
       "properties": {
         "runAsNonRoot": {
           "type": "boolean",
@@ -423,6 +423,10 @@
           "description": "Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service and a task are on unless they say otherwise, because a preview missing one of its own services — or with a database branch nothing migrated — is a broken preview."
         },
         "health": { "$ref": "#/$defs/health" },
+        "security": {
+          "$ref": "#/$defs/security",
+          "description": "This workload's own security posture, merged over the project's runtime.security field by field: a field set here wins, a field left out inherits the project's. It is how a unit whose images have different bases says that three of them run as uid 1000 and the distroless one runs as 65532. Everything is zero-means-inherit, so a workload adds to the project's posture or points it somewhere else and cannot take a constraint off — a constraint only some workloads can bear is declared on those workloads rather than on the project. The web process has no entry here: its posture is runtime.security, which is where it already was."
+        },
         "init": {
           "type": "array",
           "items": { "$ref": "#/$defs/volumeInit" },

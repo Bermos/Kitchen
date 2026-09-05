@@ -75,24 +75,32 @@ var _ = Describe("Workers and scheduled jobs", func() {
 		}
 	}
 
-	// declare rewrites the Release's process list. A Release spec is immutable
-	// once written, so each case creates its own rather than editing one.
-	declare := func(processes []kitchenv1alpha1.ProcessSpec) {
+	// declareWith rewrites the Release's whole snapshot — the runtime and the
+	// process list — because since #399 the two halves together decide what a
+	// workload runs under. A Release spec is immutable once written, so each
+	// case creates its own rather than editing one.
+	declareWith := func(runtime kitchenv1alpha1.RuntimeSpec, processes []kitchenv1alpha1.ProcessSpec) {
 		release := &kitchenv1alpha1.Release{}
-		ExpectWithOffset(1, k8sClient.Get(ctx, releaseKey, release)).To(Succeed())
-		ExpectWithOffset(1, k8sClient.Delete(ctx, release)).To(Succeed())
-		ExpectWithOffset(1, k8sClient.Create(ctx, &kitchenv1alpha1.Release{
+		Expect(k8sClient.Get(ctx, releaseKey, release)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, release)).To(Succeed())
+		Expect(k8sClient.Create(ctx, &kitchenv1alpha1.Release{
 			ObjectMeta: metav1.ObjectMeta{Name: releaseName, Namespace: namespace},
 			Spec: kitchenv1alpha1.ReleaseSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "procshop-bld-1"},
 				Image:      image,
 				ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
-					Runtime:   kitchenv1alpha1.RuntimeSpec{Port: 8080},
+					Runtime:   runtime,
 					Processes: processes,
 				},
 			},
 		})).To(Succeed())
+	}
+
+	// declare rewrites the Release's process list alone, under the runtime
+	// every other case here uses.
+	declare := func(processes []kitchenv1alpha1.ProcessSpec) {
+		declareWith(kitchenv1alpha1.RuntimeSpec{Port: 8080}, processes)
 	}
 
 	// environment creates one of the two shapes and reconciles it twice: the
@@ -230,6 +238,46 @@ var _ = Describe("Workers and scheduled jobs", func() {
 		service := &corev1.Service{}
 		Expect(errors.IsNotFound(k8sClient.Get(ctx,
 			types.NamespacedName{Name: prodName + "-worker", Namespace: appNS}, service))).To(BeTrue())
+	})
+
+	// #399: a unit is up to five images with five bases, so the uid the
+	// project pinned for three of them is the wrong number for the fourth.
+	It("runs a worker under its own uid while the web process keeps the unit's", func() {
+		unit := &kitchenv1alpha1.SecuritySpec{
+			RunAsNonRoot: true, RunAsUser: 1000, DropCapabilities: []string{"ALL"},
+		}
+		withOverride := baseProcesses()
+		withOverride[0].Security = &kitchenv1alpha1.SecuritySpec{RunAsUser: 65532}
+		declareWith(kitchenv1alpha1.RuntimeSpec{Port: 8080, Security: unit}, withOverride)
+
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction)
+
+		worker, found := deployment(prodName + "-worker")
+		Expect(found).To(BeTrue())
+		Expect(*worker.Spec.Template.Spec.SecurityContext.RunAsUser).To(Equal(int64(65532)),
+			"the workload's own uid did not reach its pod")
+		Expect(*worker.Spec.Template.Spec.SecurityContext.RunAsNonRoot).To(BeTrue(),
+			"the unit's constraint was not inherited")
+		Expect(worker.Spec.Template.Spec.Containers[0].SecurityContext.Capabilities.Drop).
+			To(Equal([]corev1.Capability{"ALL"}), "the unit's dropped capabilities were not inherited")
+
+		By("leaving the web process on the unit's own")
+		web, found := deployment(prodName)
+		Expect(found).To(BeTrue())
+		Expect(*web.Spec.Template.Spec.SecurityContext.RunAsUser).To(Equal(int64(1000)))
+
+		By("and every other workload of the unit too")
+		cron, found := cronJob(prodName + "-nightly")
+		Expect(found).To(BeTrue())
+		Expect(*cron.Spec.JobTemplate.Spec.Template.Spec.SecurityContext.RunAsUser).To(Equal(int64(1000)))
+
+		By("putting the unit's back when the override is withdrawn")
+		declareWith(kitchenv1alpha1.RuntimeSpec{Port: 8080, Security: unit}, baseProcesses())
+		reconcileAgain(prodName)
+		worker, found = deployment(prodName + "-worker")
+		Expect(found).To(BeTrue())
+		Expect(*worker.Spec.Template.Spec.SecurityContext.RunAsUser).To(Equal(int64(1000)),
+			"a withdrawn override left yesterday's resolution on the workload")
 	})
 
 	It("keeps a worker and a scheduled run out of the environment's Service", func() {

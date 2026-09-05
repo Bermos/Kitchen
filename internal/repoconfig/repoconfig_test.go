@@ -488,6 +488,54 @@ func TestTheFileDeclaresTheSecurityPosture(t *testing.T) {
 	}
 }
 
+// The workload that needs a different posture from its siblings is the one
+// whose base image differs, and the commit that changes the base is the commit
+// that should say so — which is why a workload's own posture is a key of the
+// file as much as the project's is (#399).
+func TestTheFileDeclaresAWorkloadsOwnPosture(t *testing.T) {
+	config, err := Parse([]byte(`{
+	  "runtime": {"security": {"runAsNonRoot": true, "runAsUser": 1000, "dropCapabilities": ["ALL"]}},
+	  "processes": [
+	    {"name": "sidecar", "type": "worker", "security": {"runAsUser": 65532}},
+	    {"name": "worker", "type": "worker"}
+	  ]
+	}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sidecar := kitchenv1alpha1.FindProcess(config.Processes, "sidecar")
+	if sidecar == nil || sidecar.Security == nil || sidecar.Security.RunAsUser != 65532 {
+		t.Fatalf("the workload's own posture did not survive the file: %+v", config.Processes)
+	}
+	if sidecar.Security.RunAsNonRoot {
+		t.Fatalf("the workload's block is its own declaration, not the resolved posture: %+v", sidecar.Security)
+	}
+	if worker := kitchenv1alpha1.FindProcess(config.Processes, "worker"); worker == nil || worker.Security != nil {
+		t.Fatalf("a workload that declared nothing must declare nothing: %+v", worker)
+	}
+
+	// What each of them runs under: the unit's, with the sidecar's own uid
+	// written over it and everything else inherited.
+	resolved := kitchenv1alpha1.ResolveSecurity(config.Runtime.Security, sidecar.Security)
+	if resolved.RunAsUser != 65532 || !resolved.RunAsNonRoot || len(resolved.DropCapabilities) != 1 {
+		t.Fatalf("the merge did not resolve the way the file reads: %+v", resolved)
+	}
+
+	// The same validator refuses the same things one level down, and names
+	// the workload rather than the project.
+	_, err = Parse([]byte(`{"processes": [
+	  {"name": "worker", "type": "worker", "security": {"dropCapabilities": ["net-raw"]}}
+	]}`))
+	if err == nil || !strings.Contains(err.Error(), "worker") {
+		t.Fatalf("a bad capability on a workload was accepted or not attributed: %v", err)
+	}
+	if _, err := Parse([]byte(`{"processes": [
+	  {"name": "worker", "type": "worker", "security": {}}
+	]}`)); err != nil {
+		t.Fatalf("an empty posture should be no posture rather than a refusal: %v", err)
+	}
+}
+
 func TestRuntimeRefusesASingletonTheProjectRunsSeveralOf(t *testing.T) {
 	base := kitchenv1alpha1.RuntimeSpec{Replicas: ptr.To(int32(3))}
 	config, err := Parse([]byte(`{"runtime": {"singleton": true}}`))

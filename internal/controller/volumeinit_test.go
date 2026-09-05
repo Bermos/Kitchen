@@ -244,6 +244,48 @@ func TestTheInitContainerRunsUnderTheProjectsOwnPosture(t *testing.T) {
 	}
 }
 
+// A workload that declares its own posture runs its steps under that one, not
+// under the unit's (#399). The init container shares the pod with the process
+// that will read the tree it creates, and entering as a different user would
+// leave that tree owned by somebody the reader is not.
+func TestTheInitContainerRunsUnderTheWorkloadsOwnPosture(t *testing.T) {
+	release := initTestRelease(nil, []kitchenv1alpha1.ConfigFile{}, &kitchenv1alpha1.SecuritySpec{
+		RunAsNonRoot: true, RunAsUser: 1000, FSGroup: 1000,
+	})
+	release.Spec.ConfigSnapshot.Processes = []kitchenv1alpha1.ProcessSpec{{
+		Name: "worker",
+		Type: kitchenv1alpha1.ProcessWorker,
+		Init: []kitchenv1alpha1.VolumeInit{{
+			Volume:      "state",
+			Directories: []kitchenv1alpha1.VolumeInitDirectory{{Path: "queue"}},
+		}},
+		// A distroless image beside three `node:22-slim` ones: the unit's uid
+		// is the wrong number for it, which is the whole of #399.
+		Security: &kitchenv1alpha1.SecuritySpec{RunAsUser: 65532},
+	}}
+	mounts := []mountedVolume{{
+		claim: "state", process: "worker",
+		claimName: "shop-state", mountPath: "/state", attachOnce: true,
+	}}
+
+	inits, err := buildVolumeInits(release, mounts, "shop-production", testOperatorImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := inits["worker"].container.SecurityContext
+	if context == nil {
+		t.Fatal("the worker's init container runs under no posture at all")
+	}
+	if ptr.Deref(context.RunAsUser, 0) != 65532 {
+		t.Errorf("the worker's own user did not reach its init container: %+v", context.RunAsUser)
+	}
+	// The fields it left unset are still the unit's: an override adds to the
+	// posture or points it somewhere else, it does not replace it.
+	if !ptr.Deref(context.RunAsNonRoot, false) {
+		t.Error("the unit's runAsNonRoot was lost where the workload overrode only the user")
+	}
+}
+
 func TestADeclarationThatCannotBeHonouredIsRefusedBeforeAnyPodExists(t *testing.T) {
 	cases := []struct {
 		name   string

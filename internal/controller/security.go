@@ -191,7 +191,12 @@ func (r *EnvironmentReconciler) startFailure(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 	appNS string,
-	security *kitchenv1alpha1.SecuritySpec,
+	// snapshot is what the Release froze. Both halves of a posture are read
+	// off it, because since #399 the constraints a *worker* was started with
+	// are the unit's with that worker's own written over them, and naming the
+	// unit's alone would tell the reader about a declaration that is not the
+	// one in force.
+	snapshot kitchenv1alpha1.ConfigSnapshot,
 	// webAvailable says the web Deployment has its replicas. The refusal is
 	// looked for either way — a refused worker is a refused worker while the
 	// URL answers — and the crash-loop guess is not.
@@ -209,7 +214,6 @@ func (r *EnvironmentReconciler) startFailure(
 		return "", "", nil
 	}
 
-	declared := security.Declared()
 	now := time.Now()
 	for i := range pods.Items {
 		pod := &pods.Items[i]
@@ -225,7 +229,8 @@ func (r *EnvironmentReconciler) startFailure(
 				Message:   refusal.Sentence(),
 			}
 			return reasonContainerRefused,
-				refusalMessage(refused.Workload, refusal.Sentence(), declared),
+				refusalMessage(refused.Workload, refusal.Sentence(),
+					workloadSecurity(snapshot, refused.Workload).Declared()),
 				refused
 		}
 	}
@@ -263,12 +268,41 @@ func (r *EnvironmentReconciler) startFailure(
 		if !found || state.Waiting == nil {
 			continue
 		}
+		// The web process's posture is the unit's: it has no ProcessSpec, so
+		// there is nowhere else for one to be declared.
+		declared := snapshot.Runtime.Security.Declared()
 		if len(declared) > 0 && state.Waiting.Reason == reasonCrashLoop {
 			return reasonRestartingUnderPosture,
 				refusalMessage(kitchenv1alpha1.WebProcessName, crashLoopUnderPosture, declared), nil
 		}
 	}
 	return "", "", nil
+}
+
+// workloadSecurity is the posture one workload of a release runs under: the
+// unit's, with that workload's own written over it field by field (#399). It
+// is the one answer to that question in this package, because the pod it is
+// applied to, the sentence a refusal carries and the check a Release is
+// refused by all have to agree about which constraints are in force.
+//
+// The web process's is the unit's outright — it has no
+// [kitchenv1alpha1.ProcessSpec], so there is nowhere else for a declaration
+// to live, and the empty name means it too, which is how a build artifact
+// spells it. So is a workload the snapshot does not name, which is a pod
+// outliving the release that declared it and is exactly when the unit's
+// answer is the honest one.
+func workloadSecurity(
+	snapshot kitchenv1alpha1.ConfigSnapshot, workload string,
+) *kitchenv1alpha1.SecuritySpec {
+	unit := snapshot.Runtime.Security
+	if workload == "" || workload == kitchenv1alpha1.WebProcessName {
+		return unit
+	}
+	process := kitchenv1alpha1.FindProcess(snapshot.Processes, workload)
+	if process == nil {
+		return unit
+	}
+	return kitchenv1alpha1.ResolveSecurity(unit, process.Security)
 }
 
 // podRunsAJob reports whether a pod is one run of something rather than a
@@ -344,8 +378,16 @@ func refusalMessage(workload, kubelet string, declared []string) string {
 	if len(declared) == 0 {
 		return message
 	}
+	// Where to change it depends on whose declaration it is. The web process
+	// has only the unit's; every other workload runs the unit's with its own
+	// written over it, so the sentence names both rather than sending a
+	// reader to a field that is not the one in force.
+	where := "the project's settings (spec.runtime.security), or in kitchen.json"
+	if workload != kitchenv1alpha1.WebProcessName {
+		where = "the project's settings (spec.runtime.security), or on this workload alone " +
+			"(its own `security`, which is merged over the project's field by field), or in kitchen.json"
+	}
 	return fmt.Sprintf(
-		"%s. This project declares a security posture and the workload runs under it: %s. "+
-			"Change it in the project's settings (spec.runtime.security), or in kitchen.json, and redeploy",
-		message, strings.Join(declared, "; "))
+		"%s. This workload runs under a security posture: %s. Change it in %s, and redeploy",
+		message, strings.Join(declared, "; "), where)
 }

@@ -302,6 +302,31 @@ type ProcessSpec struct {
 	// +optional
 	Health *HealthSpec `json:"health,omitempty"`
 
+	// Security is this workload's own security posture, merged field by
+	// field over the unit's [RuntimeSpec.Security] at the point the pod is
+	// built: a field this workload sets wins, a field it leaves unset
+	// inherits the project's (#399).
+	//
+	// It exists because a unit is no longer one image. Since #271 and #306 a
+	// project ships up to five, each with its own base, and #300 already
+	// treats them as five artifacts with five sets of evidence for exactly
+	// that reason — the posture was the one thing about them still assumed
+	// to be uniform. Three `node:22-slim` images ending `USER node` beside a
+	// distroless one ending `USER nonroot` cannot say that one runs as 1000
+	// and another as 65532 while there is only one number.
+	//
+	// **Zero-means-inherit, not zero-means-root.** Every field of
+	// [SecuritySpec] already reads that way, so a workload adds to the
+	// unit's posture or redirects it and cannot take a constraint off. A
+	// constraint only some workloads can bear is declared on those
+	// workloads rather than on the unit.
+	//
+	// It is written whole every reconcile, like the posture it merges over,
+	// so a withdrawn override leaves the workload the way a withdrawn
+	// posture does: back to the unit's, never to yesterday's resolution.
+	// +optional
+	Security *SecuritySpec `json:"security,omitempty"`
+
 	// Schedule is the cron expression a scheduled process runs on, in the
 	// five-field form `batch/v1` takes, interpreted in UTC. Required for a
 	// cron process and refused on a worker, both at admission.
