@@ -18,6 +18,9 @@ package controller
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/accountsdb"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
@@ -42,6 +46,38 @@ const telemetryHost = "kitchen-clickhouse.kitchen-system.svc"
 
 // storeCertificateName is what the chart asks the operator to fill.
 const storeCertificateName = "kitchen-clickhouse-tls"
+
+// The same two facts for the accounts database, whose connection secret says
+// them in the same words — one vocabulary, so one controller issues for both.
+const (
+	accountsHost            = "kitchen-postgres.kitchen-system.svc"
+	accountsCertificateName = "kitchen-postgres-tls"
+)
+
+// Every bundled store's connection secret spells the two keys this controller
+// reads the same way, which is what lets one controller serve all of them and
+// the chart add a store by writing a secret. A rename on one side alone would
+// be a store that is silently never issued for.
+func TestEveryStoreSpeaksOneConnectionSecretVocabulary(t *testing.T) {
+	for _, spelling := range []struct{ what, key, want string }{
+		{"the telemetry store's host", clickhouse.SecretKeyHost, connectionSecretKeyHost},
+		{"the accounts database's host", accountsdb.SecretKeyHost, connectionSecretKeyHost},
+		{
+			"the telemetry store's certificate request",
+			clickhouse.SecretKeyCertificateSecret, connectionSecretKeyCertificateSecret,
+		},
+		{
+			"the accounts database's certificate request",
+			accountsdb.SecretKeyCertificateSecret, connectionSecretKeyCertificateSecret,
+		},
+	} {
+		if spelling.key != spelling.want {
+			t.Errorf("%s is spelled %q, and this controller reads %q: nothing would ever be "+
+				"issued for that store, and nothing would say so", spelling.what,
+				spelling.key, spelling.want)
+		}
+	}
+}
 
 // A certificate is issued for the address the client dialled, and for the
 // shortenings of it a cluster resolver also accepts — because verify-full
@@ -83,12 +119,31 @@ func TestServiceDNSNamesCoverEveryWayTheStoreIsAddressed(t *testing.T) {
 	}
 }
 
+// The operator writes a backup run's pod itself, so the path it mounts the CA
+// bundle at is a Go constant — and the path every connection secret names is
+// the chart's helper. A rename on one side alone is a scheduled backup that
+// cannot reach the accounts database, on a night nobody is watching.
+func TestTheCABundleIsMountedWhereTheChartSaysItIs(t *testing.T) {
+	path := filepath.Join("..", "..", "charts", "kitchen", "templates", "_helpers.tpl")
+	helpers, err := os.ReadFile(path) //nolint:gosec // a fixed path inside the repository
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	if !strings.Contains(string(helpers), `{{- "`+InternalCAMountPath+`" }}`) {
+		t.Errorf("the chart does not mount the CA bundle at %s, which is where every pod the "+
+			"operator writes looks for it", InternalCAMountPath)
+	}
+}
+
 var _ = Describe("The platform's internal CA", func() {
 	ctx := context.Background()
 
 	singletonKey := types.NamespacedName{Name: KitchenSingletonName}
 	caCertKey := types.NamespacedName{Name: InternalCACertificateName, Namespace: PlatformNamespace}
 	storeCertKey := types.NamespacedName{Name: storeCertificateName, Namespace: PlatformNamespace}
+	accountsCertKey := types.NamespacedName{
+		Name: accountsCertificateName, Namespace: PlatformNamespace,
+	}
 	bundleKey := types.NamespacedName{Name: InternalCAConfigMapName, Namespace: PlatformNamespace}
 
 	var reconciler *KitchenReconciler
@@ -99,11 +154,14 @@ var _ = Describe("The platform's internal CA", func() {
 	// controllers because the singleton is a Helm post-install hook and the
 	// store's pod waits for its certificate — one reconciler doing both would
 	// deadlock a first install.
-	issueOnce := func() {
+	issueFor := func(secretName string) {
 		_, err := tlsIssuer.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{
-			Namespace: PlatformNamespace, Name: telemetrySecretName,
+			Namespace: PlatformNamespace, Name: secretName,
 		}})
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	}
+	issueOnce := func() {
+		issueFor(telemetrySecretName)
 	}
 	reportOnce := func() {
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: singletonKey})
@@ -142,6 +200,17 @@ var _ = Describe("The platform's internal CA", func() {
 			},
 		}, "status", "conditions")).To(Succeed())
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, cert)).To(Succeed())
+	}
+
+	// accountsSecret is the identity provider's connection secret, which says
+	// the same two things about the accounts database in the same two keys.
+	accountsSecret := func(data map[string]string) {
+		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: accountsdb.DefaultSecretName, Namespace: PlatformNamespace,
+			},
+			StringData: data,
+		}))).To(Succeed())
 	}
 
 	// connectionSecret is what the chart writes: where the store is, and —
@@ -194,6 +263,10 @@ var _ = Describe("The platform's internal CA", func() {
 			}},
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 				Name: telemetrySecretName, Namespace: PlatformNamespace,
+			}},
+			certificate(accountsCertificateName),
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+				Name: accountsdb.DefaultSecretName, Namespace: PlatformNamespace,
 			}},
 			&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
 		} {
@@ -349,6 +422,168 @@ var _ = Describe("The platform's internal CA", func() {
 		for _, component := range kitchen.Status.Components {
 			Expect(component.Name).NotTo(Equal(internalCAComponentName))
 		}
+	})
+
+	It("issues the accounts database a certificate from the same CA", func() {
+		// Both stores, because the platform's report is about the namespace
+		// rather than about one store in it: a namespace with one encrypted
+		// store and one in the clear is a readable namespace.
+		connectionSecret(map[string]string{
+			clickhouse.SecretKeyHost:              telemetryHost,
+			clickhouse.SecretKeyHTTPPort:          "8443",
+			clickhouse.SecretKeyDatabase:          "kitchen",
+			clickhouse.SecretKeyUsername:          "kitchen",
+			clickhouse.SecretKeyPassword:          "hunter2",
+			clickhouse.SecretKeyScheme:            clickhouse.SchemeHTTPS,
+			clickhouse.SecretKeyCAFile:            "/etc/kitchen/internal-ca/ca.crt",
+			clickhouse.SecretKeyCertificateSecret: storeCertificateName,
+		})
+		accountsSecret(map[string]string{
+			accountsdb.SecretKeyHost:              accountsHost,
+			accountsdb.SecretKeyPort:              "5432",
+			accountsdb.SecretKeyDatabase:          "kitchen_auth",
+			accountsdb.SecretKeyUsername:          "kitchen",
+			accountsdb.SecretKeyPassword:          "hunter2",
+			accountsdb.SecretKeySSLMode:           accountsdb.SSLModeVerifyFull,
+			accountsdb.SecretKeyCAFile:            "/etc/kitchen/internal-ca/ca.crt",
+			accountsdb.SecretKeyCertificateSecret: accountsCertificateName,
+		})
+
+		By("building the CA once, however many stores ask for one")
+		issueFor(telemetrySecretName)
+		issueFor(accountsdb.DefaultSecretName)
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: InternalCASecretName, Namespace: PlatformNamespace},
+			Type:       corev1.SecretTypeTLS,
+			StringData: map[string]string{
+				"ca.crt":  "-- the platform's CA --",
+				"tls.crt": "-- the platform's CA --",
+				"tls.key": "-- the key nothing but cert-manager may hold --",
+			},
+		})).To(Succeed())
+		writeIssued(caCertKey)
+		issueFor(telemetrySecretName)
+		issueFor(accountsdb.DefaultSecretName)
+
+		By("issuing it for every name a client in the cluster reaches the Service by")
+		accounts := certificate(accountsCertificateName)
+		Expect(k8sClient.Get(ctx, accountsCertKey, accounts)).To(Succeed())
+		spec, found, err := unstructured.NestedMap(accounts.Object, "spec")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(spec).To(HaveKeyWithValue("secretName", accountsCertificateName))
+		Expect(spec).To(HaveKeyWithValue("dnsNames", []any{
+			accountsHost,
+			"kitchen-postgres.kitchen-system.svc.cluster.local",
+			"kitchen-postgres.kitchen-system",
+			"kitchen-postgres",
+		}))
+		Expect(spec).To(HaveKeyWithValue("issuerRef", map[string]any{
+			"name":  internalCAIssuerName,
+			"kind":  "Issuer",
+			"group": "cert-manager.io",
+		}))
+
+		By("holding the report back while either store's certificate is still coming")
+		writeIssued(storeCertKey)
+		reportOnce()
+		cond := conditionOn()
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("Issuing"))
+		Expect(cond.Message).To(ContainSubstring("accounts database"),
+			"a namespace is as encrypted as its weakest store, and the condition has to say "+
+				"which one is holding it up")
+
+		By("reporting the namespace encrypted once both are issued")
+		writeIssued(accountsCertKey)
+		reportOnce()
+		cond = conditionOn()
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("Issued"))
+		Expect(cond.Message).To(ContainSubstring(telemetryHost))
+		Expect(cond.Message).To(ContainSubstring(accountsHost))
+	})
+
+	It("says so when the accounts database is left in the clear beside an encrypted store", func() {
+		connectionSecret(map[string]string{
+			clickhouse.SecretKeyHost:              telemetryHost,
+			clickhouse.SecretKeyHTTPPort:          "8443",
+			clickhouse.SecretKeyDatabase:          "kitchen",
+			clickhouse.SecretKeyUsername:          "kitchen",
+			clickhouse.SecretKeyPassword:          "hunter2",
+			clickhouse.SecretKeyScheme:            clickhouse.SchemeHTTPS,
+			clickhouse.SecretKeyCertificateSecret: storeCertificateName,
+		})
+		// postgres.tls.enabled=false: a DSN with no sslmode, which for both
+		// drivers in front of this database is a connection in the clear.
+		accountsSecret(map[string]string{
+			accountsdb.SecretKeyHost:     accountsHost,
+			accountsdb.SecretKeyPort:     "5432",
+			accountsdb.SecretKeyDatabase: "kitchen_auth",
+			accountsdb.SecretKeyUsername: "kitchen",
+			accountsdb.SecretKeyPassword: "hunter2",
+		})
+
+		issueFor(telemetrySecretName)
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: InternalCASecretName, Namespace: PlatformNamespace},
+			Type:       corev1.SecretTypeTLS,
+			StringData: map[string]string{
+				"ca.crt": "-- the platform's CA --", "tls.crt": "-- the platform's CA --",
+				"tls.key": "-- the key nothing but cert-manager may hold --",
+			},
+		})).To(Succeed())
+		writeIssued(caCertKey)
+		issueFor(telemetrySecretName)
+		writeIssued(storeCertKey)
+		reportOnce()
+
+		cond := conditionOn()
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("StoreInTheClear"))
+		Expect(cond.Message).To(ContainSubstring("accounts database"),
+			"one encrypted store must not be allowed to speak for the namespace")
+		Expect(cond.Message).To(ContainSubstring(PlatformNamespace))
+
+		By("issuing nothing for it, because nothing asked")
+		Expect(k8sClient.Get(ctx, accountsCertKey,
+			certificate(accountsCertificateName))).NotTo(Succeed())
+
+		By("not holding the platform short of Ready over a choice somebody made")
+		kitchen := &kitchenv1alpha1.Kitchen{}
+		Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+		for _, component := range kitchen.Status.Components {
+			Expect(component.Name).NotTo(Equal(internalCAComponentName))
+		}
+	})
+
+	It("issues nothing for an accounts database whose certificate is somebody else's", func() {
+		// An external Postgres with `postgres.external.sslmode` set: verified
+		// against the host's roots, which the platform's CA is not in.
+		accountsSecret(map[string]string{
+			accountsdb.SecretKeyHost:     "postgres.databases.example.com",
+			accountsdb.SecretKeyPort:     "5432",
+			accountsdb.SecretKeyDatabase: "kitchen_auth",
+			accountsdb.SecretKeyUsername: "kitchen",
+			accountsdb.SecretKeyPassword: "hunter2",
+			accountsdb.SecretKeySSLMode:  accountsdb.SSLModeVerifyFull,
+		})
+		connectionSecret(map[string]string{
+			clickhouse.SecretKeyHost:     "clickhouse.telemetry.example.com",
+			clickhouse.SecretKeyHTTPPort: "8443",
+			clickhouse.SecretKeyDatabase: "kitchen",
+			clickhouse.SecretKeyUsername: "kitchen",
+			clickhouse.SecretKeyPassword: "hunter2",
+			clickhouse.SecretKeyScheme:   clickhouse.SchemeHTTPS,
+		})
+
+		reconcileOnce()
+
+		Expect(conditionOn()).To(BeNil(),
+			"neither store's certificate is the platform's, so there is nothing here it can "+
+				"say anything true about")
+		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).NotTo(Succeed())
 	})
 
 	It("issues nothing for a store whose certificate is somebody else's", func() {

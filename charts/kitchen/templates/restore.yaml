@@ -195,7 +195,27 @@ spec:
             - name: archive
               mountPath: {{ dir .Values.restore.path }}
               readOnly: true
+            {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+            # The CA the accounts database's certificate is verified against.
+            # A restore writes the identity provider's rows straight into that
+            # database, so it is as much a client of it as the service is.
+            #
+            # Required, not optional. On a first install with restore.enabled
+            # this Job is created before the operator has published the CA, and
+            # the two ways to wait are not equal: an empty directory is a run
+            # that fails at its first connection and is never retried
+            # (backoffLimit 0), where a required mount holds the pod until the
+            # bundle exists and then runs once, properly.
+            - name: internal-ca
+              mountPath: {{ include "kitchen.internalCAMountPath" . }}
+              readOnly: true
+            {{- end }}
       volumes:
+        {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+        - name: internal-ca
+          configMap:
+            name: {{ include "kitchen.internalCAConfigMapName" . }}
+        {{- end }}
         - name: archive
           {{- if .Values.restore.existingClaim }}
           persistentVolumeClaim:

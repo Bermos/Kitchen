@@ -160,6 +160,17 @@ jobs:
                  --set postgres.enabled=false \
                  --set postgres.external.host=postgres.databases.svc \
                  --set postgres.auth.password=hunter2
+          # The accounts database in the clear, which is the one way to run it
+          # that way and has to keep rendering (#382).
+          render ${CHART_BASE} ${CHART_ACME} --set postgres.tls.enabled=false
+          # And an external one asked for over TLS, whose certificate is
+          # somebody else's: the operator issues nothing, the clients still
+          # verify.
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set postgres.enabled=false \
+                 --set postgres.external.host=postgres.databases.svc \
+                 --set postgres.external.sslmode=verify-full \
+                 --set postgres.auth.password=hunter2
           # The bundled registry: on, off, and pointed somewhere else. In
           # tls.mode none it renders nothing at all — there is no certificate
           # a node would trust to pull over.
@@ -486,6 +497,90 @@ jobs:
             exit 1
           fi
 
+      - name: Check the accounts database does not answer in plaintext
+        run: |
+          set -euo pipefail
+          # #382, second store. Everything the identity provider holds —
+          # sessions, every OAuth client's secret, passkeys — used to cross
+          # kitchen-system readable, because the stock image ships with `ssl`
+          # off and its rules end in a plaintext `host` line.
+          accounts() {
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              ${CHART_BASE} ${CHART_ACME} "$@"
+          }
+
+          hba=$(accounts -s templates/postgres/tls-configmap.yaml)
+          # `ssl = on` alone only *offers* TLS: the image's own rules serve a
+          # plaintext client exactly as happily as an encrypted one, and every
+          # client keeps working, which is how that goes unnoticed.
+          echo "${hba}" | grep -qE '^ +hostssl all' || {
+            echo "::error::the accounts database admits no encrypted connection at all"
+            exit 1
+          }
+          if echo "${hba}" | grep -qE '^ +host +all'; then
+            echo "::error::the accounts database still carries a plaintext rule; a client that" \
+                 "will not do TLS is served rather than refused."
+            exit 1
+          fi
+          # The socket is not on the wire, and the image's entrypoint
+          # initialises the cluster over it before there is a password to give.
+          echo "${hba}" | grep -qE '^ +local +all' || {
+            echo "::error::the accounts database admits nothing on its Unix socket, so the" \
+                 "image cannot initialise it and pg_isready never answers."
+            exit 1
+          }
+
+          # And the server is told to serve TLS and to read those rules, rather
+          # than the copy initdb left in the data directory — which an
+          # installation that already exists would keep for ever.
+          sts=$(accounts -s templates/postgres/statefulset.yaml)
+          for argument in 'ssl=on' 'ssl_cert_file=' 'ssl_key_file=' 'hba_file='; do
+            echo "${sts}" | grep -q -- "${argument}" || {
+              echo "::error::the accounts database is started without ${argument}"
+              exit 1
+            }
+          done
+
+          # What every client is told, in the one place it is said.
+          secret=$(accounts -s templates/postgres/secret.yaml)
+          echo "${secret}" | grep -q 'sslmode: "verify-full"' || {
+            echo "::error::the connection secret does not ask for verify-full, which is the" \
+                 "only mode node-postgres and libpq read the same way."
+            exit 1
+          }
+          echo "${secret}" | grep -q 'sslmode=verify-full&sslrootcert=/etc/kitchen/internal-ca/ca.crt' || {
+            echo "::error::the DSN every client reads does not verify the database against the" \
+                 "platform's CA."
+            exit 1
+          }
+          echo "${secret}" | grep -q 'certificateSecret: "kitchen-postgres-tls"' || {
+            echo "::error::nothing asks the operator to issue the accounts database a" \
+                 "certificate, so its pod waits forever for a Secret nothing writes."
+            exit 1
+          }
+
+          # Off is the one way to run it in the clear, and it has to be the
+          # whole way: no certificate mount to wait on, no rules that refuse
+          # what the clients are no longer asked to do.
+          plain=$(accounts --set postgres.tls.enabled=false \
+            -s templates/postgres/secret.yaml -s templates/postgres/statefulset.yaml \
+            -s templates/auth/deployment.yaml)
+          if echo "${plain}" | grep -q 'sslmode'; then
+            echo "::error::postgres.tls.enabled=false still tells clients to demand TLS from a" \
+                 "database that no longer serves it."
+            exit 1
+          fi
+          if echo "${plain}" | grep -q 'kitchen-postgres-tls'; then
+            echo "::error::postgres.tls.enabled=false still mounts a certificate the operator" \
+                 "will never be asked to issue; the database's pod would never start."
+            exit 1
+          fi
+          if echo "${plain}" | grep -q 'kitchen-internal-ca'; then
+            echo "::error::postgres.tls.enabled=false still makes the identity provider wait" \
+                 "for a CA bundle it has nothing to verify with."
+            exit 1
+          fi
+
       - name: Check the collector is only rendered with somewhere to ship to
         run: |
           set -euo pipefail
@@ -658,6 +753,11 @@ jobs:
             expect_failure_with "${values} values are missing: upgrade with --reset-then-reuse-values" \
               kitchen-system ${CHART_BASE} ${CHART_ACME} --set-json "${values}=null"
           done
+          # The same, for the block that decides whether the accounts database
+          # serves TLS: a nil pointer is not an explanation, and silently
+          # leaving it in the clear would be worse than either.
+          expect_failure_with "postgres.tls values are missing: upgrade with --reset-then-reuse-values" \
+            kitchen-system ${CHART_BASE} ${CHART_ACME} --set-json 'postgres.tls=null'
           # No base domain for the Kitchen singleton.
           expect_failure kitchen-system
           # Installed outside the operator's platform namespace.
@@ -700,6 +800,16 @@ jobs:
           # External Postgres without a password.
           expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set postgres.enabled=false --set postgres.external.host=postgres.databases.svc
+          # A certificate the database could not read. Its key arrives owned by
+          # root and readable by the pod's fsGroup; without one, Postgres
+          # refuses to start on a key it cannot open, which is a StatefulSet
+          # that never comes up and says nothing about why.
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
+            --set-json 'postgres.podSecurityContext.fsGroup=null'
+          # An sslmode neither driver in front of that database recognises.
+          expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
+            --set postgres.enabled=false --set postgres.external.host=postgres.databases.svc \
+            --set postgres.auth.password=hunter2 --set postgres.external.sslmode=on
           # The preview gate without an identity provider to sign visitors in.
           expect_failure kitchen-system ${CHART_BASE} ${CHART_ACME} \
             --set auth.enabled=false --set postgres.enabled=false
@@ -1433,6 +1543,83 @@ jobs:
             exit 1
           }
 
+      - name: Verify the accounts database answers nothing in plaintext
+        run: |
+          set -euo pipefail
+          # #382, second store. The identity provider has just been proved to
+          # work, over a connection this checks is encrypted and verified —
+          # which is the end-to-end half: the service reaches the database by
+          # its Service name with sslmode=verify-full, and the database refuses
+          # anything else, so a working login is a verified connection.
+          password=$(kubectl -n kitchen-system get secret kitchen-postgres \
+            -o jsonpath='{.data.password}' | base64 -d)
+          # Over TCP, which is where the rules apply.
+          pg() {
+            kubectl -n kitchen-system exec sts/kitchen-postgres -- \
+              env PGPASSWORD="${password}" psql "$1" -tAc "$2"
+          }
+          # And over the Unix socket, which is the one connection the database
+          # still admits unencrypted — the image initialises the cluster over
+          # it and every probe uses it.
+          socket() {
+            kubectl -n kitchen-system exec sts/kitchen-postgres -- \
+              env PGPASSWORD="${password}" psql -U kitchen -d kitchen_auth -tAc "$1"
+          }
+          # From inside the pod, on the loopback address: what the rules do,
+          # rather than what they say. sslmode=disable is a client that will
+          # not do TLS, and it has to be refused rather than served.
+          if pg "postgresql://kitchen@127.0.0.1:5432/kitchen_auth?sslmode=disable" \
+            'SELECT 1' >/dev/null 2>&1; then
+            echo "::error::the accounts database still admits unencrypted connections; every" \
+                 "session and every OAuth client secret crosses kitchen-system readable."
+            exit 1
+          fi
+          # And the same connection encrypted is served. `require` rather than
+          # verify-full because 127.0.0.1 is a name no certificate carries;
+          # what the platform verifies is proved by its own clients below.
+          answer=$(pg "postgresql://kitchen@127.0.0.1:5432/kitchen_auth?sslmode=require" \
+            'SELECT 1' 2>&1 || true)
+          [ "${answer}" = 1 ] || {
+            echo "::error::the accounts database refused an encrypted connection too: ${answer}"
+            exit 1
+          }
+
+          # The certificate, from the same CA the telemetry store's comes from.
+          ready=$(kubectl -n kitchen-system get certificate kitchen-postgres-tls \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+          [ "${ready}" = True ] || {
+            kubectl -n kitchen-system describe certificate kitchen-postgres-tls || true
+            echo "::error::Certificate kitchen-postgres-tls is not ready"
+            exit 1
+          }
+
+          # Every connection on the wire right now is encrypted, and there is
+          # at least one — which is the identity provider's pool, connected by
+          # Service name against the platform's CA.
+          plaintext=$(socket "SELECT count(*) FROM pg_stat_activity a JOIN pg_stat_ssl s USING (pid)
+             WHERE a.client_addr IS NOT NULL AND NOT s.ssl" 2>&1 || true)
+          [ "${plaintext}" = 0 ] || {
+            echo "::error::${plaintext} connections to the accounts database are unencrypted"
+            exit 1
+          }
+          encrypted=$(socket "SELECT count(*) FROM pg_stat_activity a JOIN pg_stat_ssl s USING (pid)
+             WHERE a.client_addr IS NOT NULL AND s.ssl" 2>&1 || true)
+          [ "${encrypted}" -gt 0 ] 2>/dev/null || {
+            echo "::error::nothing is connected to the accounts database over TLS, so the" \
+                 "assertion above proves nothing."
+            exit 1
+          }
+
+          # And what the identity provider says it asked for. `verify-full` is
+          # the only mode node-postgres and libpq read the same way, and this
+          # is the service whose driver is the node one.
+          logs=$(kubectl -n kitchen-system logs deploy/kitchen-auth --tail=500)
+          grep -q '"sslmode":"verify-full"' <<<"${logs}" || {
+            echo "${logs}" | tail -20
+            echo "::error::the identity provider did not connect with sslmode=verify-full"
+            exit 1
+          }
+
       - name: Verify the preview gate
         run: |
           set -euo pipefail
@@ -1984,10 +2171,21 @@ jobs:
                     volumeMounts:
                       - name: archive
                         mountPath: /archive
+                      # The CA the accounts database's certificate is verified
+                      # against (#382). A run dumps that database, so it is a
+                      # client of it, and the DSN it reads names this file. The
+                      # CronJob the operator writes mounts the same ConfigMap;
+                      # this Job is the same run started by hand.
+                      - name: internal-ca
+                        mountPath: /etc/kitchen/internal-ca
+                        readOnly: true
                 volumes:
                   - name: archive
                     persistentVolumeClaim:
                       claimName: kitchen-backup-ci
+                  - name: internal-ca
+                    configMap:
+                      name: kitchen-internal-ca
           EOF
           wait_for_job kitchen-backup-ci 300 || {
             kubectl -n kitchen-system describe job kitchen-backup-ci

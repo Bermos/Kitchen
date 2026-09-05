@@ -185,12 +185,14 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if or .Values.extraVolumeMounts (eq (include "kitchen.clickhouseTLSEnabled" .) "true") }}
+          {{- if or .Values.extraVolumeMounts (eq (include "kitchen.internalTLSEnabled" .) "true") }}
           volumeMounts:
-            {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+            {{- if eq (include "kitchen.internalTLSEnabled" .) "true" }}
             # The platform's internal CA, which the operator and the REST API
-            # in this same process verify the telemetry store against. See the
-            # volume below for why it is mounted optional.
+            # in this same process verify the platform's own stores against —
+            # the telemetry store on every query, and the accounts database on
+            # the backup schedule. See the volume below for why it is mounted
+            # optional.
             - name: internal-ca
               mountPath: {{ include "kitchen.internalCAMountPath" . }}
               readOnly: true
@@ -199,19 +201,19 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- end }}
-      {{- if or .Values.extraVolumes (eq (include "kitchen.clickhouseTLSEnabled" .) "true") }}
+      {{- if or .Values.extraVolumes (eq (include "kitchen.internalTLSEnabled" .) "true") }}
       volumes:
-        {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+        {{- if eq (include "kitchen.internalTLSEnabled" .) "true" }}
         # The CA this operator mints itself, mounted back into it. Optional,
         # and it has to be: the ConfigMap does not exist until this process
         # has run at least once, so a required mount would be a deadlock — the
         # pod that creates the CA refusing to start until the CA is there.
         #
         # A kubelet fills the volume in place once the ConfigMap appears, and
-        # every telemetry client is built per use from the connection secret,
+        # every client of a store is built per use from its connection secret,
         # so the first reconcile after that picks the bundle up without a
-        # restart. Until then a query against the store fails naming the file
-        # it could not read, which is the loud half of never falling back to
+        # restart. Until then a query against a store fails naming the file it
+        # could not read, which is the loud half of never falling back to
         # plaintext.
         - name: internal-ca
           configMap:

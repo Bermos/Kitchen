@@ -21,9 +21,16 @@ spec:
       labels:
         {{- include "kitchen.postgresSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
-      {{- with .Values.postgres.podAnnotations }}
+      {{- if or .Values.postgres.podAnnotations (eq (include "kitchen.postgresTLSEnabled" .) "true") }}
       annotations:
+        {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+        # Postgres reads its host-based rules at startup, and this file is what
+        # decides whether a plaintext connection is refused.
+        checksum/tls-config: {{ include (print $.Template.BasePath "/postgres/tls-configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.postgres.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
@@ -39,6 +46,28 @@ spec:
         - name: postgres
           image: {{ printf "%s:%s" .Values.postgres.image.repository .Values.postgres.image.tag }}
           imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+          # The image's own command, plus what makes it serve TLS and refuse
+          # anything else. They are arguments rather than a postgresql.conf of
+          # our own because the image's entrypoint passes them to the temporary
+          # server it initialises the cluster with as well, so the first start
+          # and every start after it are configured the same way.
+          #
+          # `hba_file` moves the host-based rules out of the data directory,
+          # which is the only way an installation that already exists can be
+          # given new ones: initdb writes that file once and the volume keeps
+          # it. See templates/postgres/tls-configmap.yaml.
+          args:
+            - postgres
+            - -c
+            - ssl=on
+            - -c
+            - ssl_cert_file={{ include "kitchen.postgresTLSMountPath" . }}/tls.crt
+            - -c
+            - ssl_key_file={{ include "kitchen.postgresTLSMountPath" . }}/tls.key
+            - -c
+            - hba_file={{ include "kitchen.postgresHBAFile" . }}
+          {{- end }}
           env:
             # The entrypoint creates this database and user on first start.
             - name: POSTGRES_DB
@@ -84,9 +113,44 @@ spec:
             # The entrypoint writes here while initialising the cluster.
             - name: run
               mountPath: /var/run/postgresql
+            {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+            # The certificate, issued by the operator from the platform's
+            # internal CA. The pod does not start until the Secret exists,
+            # which on a first install is a wait and never a fallback: there is
+            # no configuration here under which this server admits a plaintext
+            # connection because its certificate was late.
+            - name: tls
+              mountPath: {{ include "kitchen.postgresTLSMountPath" . }}
+              readOnly: true
+            # And the rules that refuse plaintext. A sibling directory rather
+            # than a file inside the one above: the kubelet mounts in the order
+            # these are written, and neither of these two may end up under the
+            # other.
+            - name: hba
+              mountPath: {{ include "kitchen.postgresHBAMountPath" . }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: run
           emptyDir: {}
+        {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+        - name: tls
+          secret:
+            secretName: {{ include "kitchen.postgresTLSSecretName" . }}
+            # Postgres refuses to start on a private key anything but its owner
+            # and its group can read: 0600 when the file belongs to the server's
+            # own user, 0640 when it belongs to root. A Secret's files belong to
+            # root and to the pod's fsGroup, and the kubelet widens a read-only
+            # volume's mode to at least 0440 when there is an fsGroup — so 0600
+            # here arrives as root:70 0640, which is the second of those two
+            # cases. It is `postgres.podSecurityContext.fsGroup` that makes the
+            # file readable at all, and the chart refuses to render TLS without
+            # one.
+            defaultMode: 0600
+        - name: hba
+          configMap:
+            name: {{ include "kitchen.postgresFullname" . }}-tls-config
+        {{- end }}
         {{- if not .Values.postgres.persistence.enabled }}
         - name: data
           emptyDir: {}

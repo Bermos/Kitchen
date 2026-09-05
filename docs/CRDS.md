@@ -304,29 +304,34 @@ status:
     worstDriftMillis: 42
 ```
 
-`InternalCAReady` is the platform's report on its own encryption. There is no
-field for it on this object: whether the bundled telemetry store serves TLS is
-a chart value (`clickhouse.tls.enabled`), and what reaches the operator is the
-connection secret the chart writes — which either names a Secret for the
-store's certificate or does not. The condition says which, and it is written by
-reading cert-manager's own `Certificate` objects rather than by remembering
-what the last reconcile did:
+`InternalCAReady` is the platform's report on its own encryption, across every
+store it bundles: the telemetry store and the identity provider's accounts
+database. One condition rather than one each — the question is whether this
+namespace is readable, and the answer is as good as its weakest store.
 
-- **True** — the platform's internal CA is issued and the store serves a
-  certificate signed by it, and there is an `internal-ca` row in
+There is no field for it on this object: whether a bundled store serves TLS is
+a chart value (`clickhouse.tls.enabled`, `postgres.tls.enabled`), and what
+reaches the operator is the connection secret the chart writes — which either
+names a Secret for that store's certificate or does not. The condition says
+which, and it is written by reading cert-manager's own `Certificate` objects
+rather than by remembering what the last reconcile did:
+
+- **True** — the platform's internal CA is issued and every bundled store
+  serves a certificate signed by it, and there is an `internal-ca` row in
   `status.components` beside the workloads.
-- **False, `Issuing` or `CertManagerUnavailable`** — one of the two
-  certificates is not there yet, with cert-manager's own message. The store's
-  pod is waiting for it, so this is also the answer to "why is ClickHouse in
-  ContainerCreating".
-- **False, `StoreInTheClear`** — the store is reached over plain HTTP, because
-  somebody set `clickhouse.tls.enabled=false` or pointed the platform at an
-  external store that offers no TLS. It is a choice, so it does not hold the
-  platform short of `Ready`; it is said here because a platform quietly
-  shipping every log line and its own password across its namespace is exactly
-  the finding this exists to close.
-- **Absent** — there is no telemetry store, or it is an external one with a
-  certificate of its own. Neither is the internal CA's business.
+- **False, `Issuing` or `CertManagerUnavailable`** — the CA or one store's
+  certificate is not there yet, named, with cert-manager's own message. That
+  store's pod is waiting for it, so this is also the answer to "why is
+  ClickHouse — or Postgres — in ContainerCreating".
+- **False, `StoreInTheClear`** — a store is reached unencrypted, because
+  somebody set `clickhouse.tls.enabled=false` or `postgres.tls.enabled=false`,
+  or pointed the platform at an external store that offers no TLS. The message
+  names which store and what is readable in it. It is a choice, so it does not
+  hold the platform short of `Ready`; it is said here because a platform
+  quietly shipping every log line, every session and its own passwords across
+  its namespace is exactly the finding this exists to close.
+- **Absent** — there are no bundled stores, or every one of them is external
+  with a certificate of its own. Neither is the internal CA's business.
 
 The dependencies the operator installs that the chart cannot are **Addons**,
 one object each, and neither is a field here any more. KEDA's HTTP add-on ships

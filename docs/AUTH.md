@@ -49,7 +49,8 @@ Connections.
   wrong for it. The chart ships a single-node Postgres StatefulSet (same
   pattern and secret conventions as ClickHouse) with an `external.host`
   override for clusters that already run Postgres. SQLite-on-PVC was rejected:
-  it caps the auth service at one replica forever.
+  it caps the auth service at one replica forever. It is reached over TLS and
+  nothing else — see [How the database is reached](#how-the-database-is-reached).
 - **Kitchen UI/API**: the first OIDC client. The Go API verifies bearer JWTs
   via the issuer's JWKS endpoint — no session state in the operator.
 - **Apps**: ✅ Shipped. Opt in via a `ResourceClaim` of type `oidcClient`. The
@@ -763,6 +764,51 @@ spec:
 Because better-auth is mounted at the root of that hostname, the issuer is the
 origin: `https://auth.<baseDomain>/.well-known/openid-configuration`.
 
+### How the database is reached
+
+Everything in this document lives in that database: accounts, credentials,
+sessions, every OAuth client's secret, passkeys and API keys. Until #382 it was
+the stock Postgres image with `ssl` off, so all of it crossed `kitchen-system`
+in the clear — readable by anything that landed in the platform namespace, and
+by the node under it. The NetworkPolicy from #323 closed that namespace to
+applications; it did not encrypt what is inside it.
+
+Now (`postgres.tls.enabled`, on by default):
+
+- The operator issues the database a certificate from the platform's internal
+  CA — the same CA the telemetry store's comes from, minted through the
+  cert-manager the chart bundles — for every name a client in the cluster
+  reaches its Service by.
+- The server **refuses** plaintext rather than merely offering TLS. Its
+  host-based rules come from a ConfigMap the chart owns and are `hostssl` for
+  everything over TCP with no `host` line, so an unencrypted client is turned
+  away with *no pg_hba.conf entry … SSL off*. The Unix socket keeps a `local
+  … trust` line: it is inside the pod's own filesystem, it is how the image
+  initialises the cluster before there is a password to give, and it is what
+  `pg_isready` — all three of the pod's probes — connects over.
+- Every client verifies it, hostname and chain, against the CA bundle the
+  operator publishes as the ConfigMap `kitchen-internal-ca`: this service, the
+  operator (which dumps the database on the backup schedule), a scheduled
+  backup's pod, and the restore Job. It is said once, in the `dsn` key of
+  `<release>-postgres`, as `sslmode=verify-full&sslrootcert=…`.
+
+**`sslmode` does not mean the same thing to both drivers, which is why it is
+`verify-full`.** This service uses node-postgres, and `pg-connection-string`
+without `uselibpqcompat` — which node-postgres does not pass — treats `require`
+and `verify-ca` as aliases for `verify-full` (with a deprecation warning), and
+has a mode libpq has never heard of, `no-verify`, for connecting without
+verifying. The operator's driver is pgx, which is libpq's semantics, where
+`require` encrypts and verifies nothing. `verify-full` is the one mode that
+means the same thing to both, and `sslrootcert` is read the same way by both:
+node-postgres loads the file into `ssl.ca` when it parses the connection
+string, which is why `createPool` refuses to build a pool whose CA file is not
+there rather than letting an `ENOENT` surface from inside the first query.
+
+An external Postgres is somebody else's certificate to manage:
+`postgres.external.sslmode` is what clients ask of it, verified against the
+host's roots. Empty is a connection in the clear, and the Kitchen singleton
+says so — `InternalCAReady`, reason `StoreInTheClear`.
+
 Two credentials are generated into the secret `<release>-auth` on install and
 preserved across upgrades:
 
@@ -1120,6 +1166,13 @@ provider's own — `kitchen_auth` on `<release>-postgres` by default, or whereve
 ```sh
 kubectl -n kitchen-system exec -it <release>-postgres-0 -- psql -U kitchen kitchen_auth
 ```
+
+That connects over the Unix socket inside the pod, which is the one connection
+the database still admits unencrypted (see [How the database is
+reached](#how-the-database-is-reached)). Reaching it over TCP from anywhere
+else needs `sslmode=verify-full` and the CA — a plaintext client is refused
+with *no pg_hba.conf entry … SSL off*, which is the intended answer and not a
+fault.
 
 ```sql
 UPDATE account SET password = '<hash>', "updatedAt" = now()

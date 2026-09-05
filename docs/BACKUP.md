@@ -20,6 +20,15 @@ back. See
 | **The identity provider's Postgres** | Accounts, sessions, OAuth clients, passkeys, API keys | **Yes**, as a data dump |
 | **ClickHouse** | Logs, metrics, traces, flow data, the audit log | **No** |
 
+Both databases are reached over TLS and verified against the platform's own CA
+(#382), and a backup and a restore are clients of them like anything else: the
+pod a scheduled run happens in, and the restore Job the chart renders, mount
+the CA bundle the operator publishes as the ConfigMap `kitchen-internal-ca`.
+The connection string in `<release>-postgres` is what names it, so there is
+nothing to configure — but a run that cannot read that file fails saying so
+rather than connecting in the clear, which is the intended behaviour and not a
+fault to work around.
+
 **Telemetry is not backed up and is not expected to survive.** That is a
 decision, not an omission: it is analytics, it already expires on
 `spec.observability.clickhouse.retentionDays`, and an archive that carried it

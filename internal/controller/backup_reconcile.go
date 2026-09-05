@@ -90,6 +90,15 @@ const (
 	// operator creates is, so the staging directory is an emptyDir.
 	backupScratchPath = "/scratch"
 	backupScratchName = "scratch"
+
+	// InternalCAMountPath is where the platform's CA bundle is mounted in
+	// every pod that talks to one of its stores, and the path the connection
+	// secrets name. It is the chart's `kitchen.internalCAMountPath` — the
+	// operator's own pod, the telemetry agent and the identity provider all
+	// get it from there — and it is here because a backup run's pod is
+	// written by this operator rather than by the chart.
+	InternalCAMountPath = "/etc/kitchen/internal-ca"
+	internalCAVolume    = "internal-ca"
 )
 
 // reconcileBackup writes, updates or removes the CronJob, and reports what
@@ -203,6 +212,22 @@ func (r *KitchenReconciler) applyBackupCronJob(
 		job.Spec.Template.Spec.Volumes = []corev1.Volume{{
 			Name:         backupScratchName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}, {
+			// The CA the accounts database's certificate is verified against.
+			// A run dumps that database, so it is a client of it, and the DSN
+			// it reads out of the connection secret names this file.
+			//
+			// Optional, unlike the identity provider's: the same CronJob is
+			// written on an installation whose database is reached in the
+			// clear, where the ConfigMap does not exist and a required mount
+			// would be a scheduled backup that never runs. The DSN is what
+			// decides whether the file is needed, and a run that needs it and
+			// cannot read it fails naming it rather than connecting anyway.
+			Name: internalCAVolume,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: InternalCAConfigMapName},
+				Optional:             ptr.To(true),
+			}},
 		}}
 		job.Spec.Template.Spec.Containers = []corev1.Container{{
 			Name:    backupComponentName,
@@ -215,6 +240,8 @@ func (r *KitchenReconciler) applyBackupCronJob(
 			},
 			VolumeMounts: []corev1.VolumeMount{{
 				Name: backupScratchName, MountPath: backupScratchPath,
+			}, {
+				Name: internalCAVolume, MountPath: InternalCAMountPath, ReadOnly: true,
 			}},
 			// The run leaves its result here as JSON, and surveyBackup below
 			// reads it back — the same mechanism digestFromTerminationMessage
