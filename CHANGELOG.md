@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.33.1](https://github.com/Bermos/Kitchen/compare/v0.33.0...v0.33.1) (2026-09-05)
+
+
+### Bug fixes
+
+* **api:** make the log query's filter a compiled language, not raw SQL ([#434](https://github.com/Bermos/Kitchen/issues/434)) ([cebf823](https://github.com/Bermos/Kitchen/commit/cebf823e517f705cf93d8239c7a92396384b670b)), closes [#421](https://github.com/Bermos/Kitchen/issues/421)
+* **network:** serve the accounts database over TLS, and refuse anything else ([#420](https://github.com/Bermos/Kitchen/issues/420)) ([eb2c2ab](https://github.com/Bermos/Kitchen/commit/eb2c2ab2387aca85949832828854ef9a55d4965c))
+* **network:** serve the object store over TLS, and hand every binding the CA ([#433](https://github.com/Bermos/Kitchen/issues/433)) ([29ec9cd](https://github.com/Bermos/Kitchen/commit/29ec9cdc37a954858a09f23bbc19afe786dbb575)), closes [#382](https://github.com/Bermos/Kitchen/issues/382)
+* **network:** serve the telemetry store over TLS, verified against a CA the platform mints ([#414](https://github.com/Bermos/Kitchen/issues/414)) ([9bb4752](https://github.com/Bermos/Kitchen/commit/9bb4752f1fd57612f0d9f121df263e9183c1d27f))
+* **security:** close the low-severity findings of the 2026-09-03 review ([#432](https://github.com/Bermos/Kitchen/issues/432)) ([cf7ffce](https://github.com/Bermos/Kitchen/commit/cf7ffceb12ac06679292b19eb0924bff764663b6)), closes [#325](https://github.com/Bermos/Kitchen/issues/325)
+* **security:** give a pull request from a fork nothing by default ([#437](https://github.com/Bermos/Kitchen/issues/437)) ([11feb39](https://github.com/Bermos/Kitchen/commit/11feb39999c49d4ddfe689a8a90c202b21a1999a)), closes [#422](https://github.com/Bermos/Kitchen/issues/422)
+
 ## [0.33.0](https://github.com/Bermos/Kitchen/compare/v0.32.0...v0.33.0) (2026-09-05)
 
 
