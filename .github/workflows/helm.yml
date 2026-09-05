@@ -451,6 +451,21 @@ jobs:
             echo "::error::the telemetry agent verifies nothing about the store it writes to"
             exit 1
           }
+          # `server_name_override` is the key configtls.ClientConfig actually
+          # carries. The collector refuses a configuration with a key it does
+          # not know rather than ignoring it, so the obvious `server_name` is
+          # not a looser check — it is a collector that exits at startup on
+          # every node, which is exactly what it did once.
+          echo "${agent}" | grep -q 'server_name_override: "kitchen-clickhouse.kitchen-system.svc"' || {
+            echo "::error::the telemetry agent does not pin the name it checks the store's" \
+                 "certificate against under the key configtls reads."
+            exit 1
+          }
+          if echo "${agent}" | grep -qE '^ *server_name:'; then
+            echo "::error::the telemetry agent's exporter sets server_name, which configtls has" \
+                 "no key for; the collector refuses the whole configuration and never starts."
+            exit 1
+          fi
 
           # Off is the one way to run the store in the clear, and it has to be
           # the whole way: no certificate mount to wait on, and a connection
@@ -884,6 +899,13 @@ jobs:
               kubectl -n kitchen-system logs sts/kitchen-clickhouse --tail=100 || true
               kubectl -n kitchen-system logs sts/kitchen-postgres --tail=100 || true
               kubectl -n kitchen-system logs deploy/kitchen-auth --tail=100 || true
+              # The telemetry agent reads its whole configuration at startup
+              # and exits on anything it does not understand, so a mistake in
+              # it is a CrashLoopBackOff with the reason only in the previous
+              # container's log — which is why both are asked for here.
+              kubectl -n kitchen-system describe ds kitchen-collector || true
+              kubectl -n kitchen-system logs ds/kitchen-collector --tail=50 || true
+              kubectl -n kitchen-system logs ds/kitchen-collector --previous --tail=50 || true
               exit 1
             }
 

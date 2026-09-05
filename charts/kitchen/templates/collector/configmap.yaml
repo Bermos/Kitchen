@@ -430,9 +430,14 @@ data:
         # CA exists and fails to export until it does. That restart is the
         # ordering rather than a fault, and it is the same one the exporter
         # already has against a database the operator has not created yet.
+        # `server_name_override`, not `server_name`: that is the mapstructure
+        # key configtls.ClientConfig actually carries, and the collector
+        # refuses a configuration with a key it does not know rather than
+        # ignoring it — so the wrong spelling is not a connection that
+        # verifies loosely, it is a process that exits at startup.
         tls:
           ca_file: {{ include "kitchen.internalCAFile" . | quote }}
-          server_name: {{ include "kitchen.clickhouseHost" . | quote }}
+          server_name_override: {{ include "kitchen.clickhouseHost" . | quote }}
         {{- end }}
         database: {{ .Values.clickhouse.auth.database | quote }}
         username: {{ .Values.clickhouse.auth.username | quote }}

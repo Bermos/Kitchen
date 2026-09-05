@@ -123,10 +123,24 @@ func TestTheTelemetryAgentVerifiesTheStoreItWritesTo(t *testing.T) {
 		t.Error("the agent's exporter endpoint never asks for TLS: the exporter infers it from " +
 			"a https:// scheme alone, which on this exporter means the HTTP interface")
 	}
-	if !strings.Contains(config, "ca_file:") || !strings.Contains(config, "server_name:") {
-		t.Error("the agent's exporter names no CA and no server name, so its connection is " +
-			"encrypted and unverified — `require`, where the platform's own components " +
-			"can carry the CA and get `verify-full`")
+	if !strings.Contains(config, "ca_file:") {
+		t.Error("the agent's exporter names no CA, so its connection is encrypted and " +
+			"unverified — `require`, where the platform's own components can carry the " +
+			"CA and get `verify-full`")
+	}
+	// The spelling matters more than it looks. `server_name` is what the
+	// setting reads as, and it is not a key configtls.ClientConfig has — the
+	// tag is `server_name_override` — and the collector refuses a
+	// configuration carrying a key it does not know rather than ignoring it.
+	// So the obvious spelling is not a looser check, it is a collector that
+	// exits at startup on every node, which is what it did.
+	if !strings.Contains(config, "server_name_override:") {
+		t.Error("the agent's exporter does not set server_name_override, so nothing pins " +
+			"the name its certificate is checked against")
+	}
+	if strings.Contains(config, "\n          server_name:") {
+		t.Error("the agent's exporter sets `server_name`, which configtls has no key for; " +
+			"the collector refuses the whole configuration and never starts")
 	}
 	// The settings themselves, not the words: the block says in prose that
 	// neither is there, and a test that matched the prose would fail on the
