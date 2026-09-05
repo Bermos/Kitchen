@@ -1151,6 +1151,31 @@ postgres:
     # upgrades when empty. Set it explicitly if you render manifests with
     # `helm template`, which cannot read the existing secret back.
     password: ""
+  # TLS inside the platform namespace, for the identity provider's database.
+  #
+  # On by default. Until it existed this was the stock Postgres image with
+  # `ssl` off, so every session, every OAuth client secret and the database's
+  # own password crossed `kitchen-system` in the clear — readable by anything
+  # that lands in the namespace, and by the node. The NetworkPolicy
+  # `networkPolicy.enabled` renders closed the namespace to applications; it
+  # did not encrypt what is inside it.
+  #
+  # The certificate comes from the same CA the operator mints for the telemetry
+  # store, through the cert-manager this chart already bundles, and every
+  # client of the database verifies against it (`sslmode=verify-full`, hostname
+  # and chain). The server refuses plaintext outright: its host-based rules
+  # carry `hostssl` and no `host`, so a client that cannot do TLS is turned
+  # away rather than quietly served. Nothing here depends on
+  # `kitchen.tls.mode` — that decides how the platform is published to the
+  # internet, and this decides whether two pods in one namespace talk in the
+  # clear.
+  tls:
+    # -- Serve the accounts database over TLS, with a certificate the operator
+    # requests from the platform's internal CA, and refuse plaintext
+    # connections. Needs a cert-manager on the cluster — this chart bundles one
+    # — and both the database's pod and the identity provider's wait for their
+    # material rather than starting without it.
+    enabled: true
   service:
     type: ClusterIP
     port: 5432
@@ -1195,6 +1220,17 @@ postgres:
   external:
     host: ""
     port: 5432
+    # -- What clients ask of the connection to an external Postgres, appended
+    # to the DSN as `sslmode`. Empty asks for nothing, which is the platform
+    # connecting in the clear and is reported as such on the Kitchen
+    # singleton. **`verify-full` is the only value that means the same thing
+    # to both drivers in front of this database**: the operator's is libpq's
+    # (pgx), where `require` encrypts without verifying, while the identity
+    # provider's is node-postgres, where `require` verifies. Verification is
+    # against the host's roots — the platform's own CA is not in that path and
+    # there is nowhere here to mount another — so a database serving a private
+    # certificate needs its CA in the images' trust stores.
+    sslmode: ""
 
 # The identity provider: better-auth with its OAuth/OIDC provider plugin,
 # served at `auth.<baseDomain>`. One login for the Kitchen UI, the operator API

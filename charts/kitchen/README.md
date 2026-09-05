@@ -786,7 +786,8 @@ requires PKCE. Point it somewhere else, or add a development callback, with
 
 Accounts, sessions, OAuth clients and consents live in Postgres, with
 connection details in `<release>-postgres` (`host`, `port`, `database`,
-`username`, `password`, `dsn`). Point at an existing Postgres instead:
+`username`, `password`, `sslmode`, `caFile`, `dsn`). Point at an existing
+Postgres instead:
 
 ```sh
 --set postgres.enabled=false \
@@ -796,6 +797,63 @@ connection details in `<release>-postgres` (`host`, `port`, `database`,
 
 Install without an identity provider — no login for the UI, no issuer for apps
 — with `--set auth.enabled=false --set postgres.enabled=false`.
+
+### How the accounts database is reached
+
+`postgres.tls.enabled` (on by default) is what stops the identity provider's
+database answering in plaintext. Until it existed this was the stock Postgres
+image with `ssl` off, so every session, every OAuth client secret and the
+database's own password crossed `kitchen-system` readable — by anything that
+lands in the namespace, and by the node. [What the platform namespace
+accepts](#what-the-platform-namespace-accepts) closed that namespace to
+applications; it did not encrypt what is inside it.
+
+It is the same machinery as [the telemetry store's](#how-the-store-is-reached),
+and the same CA:
+
+- **The operator issues the database a certificate** from the platform's
+  internal CA, for every name a client in the cluster reaches its Service by,
+  and the pod mounts it. The chart asks for it by naming a Secret in the
+  connection secret's `certificateSecret`; the operator fills it.
+- **The server refuses plaintext**, rather than merely offering TLS. Its
+  host-based rules come from a ConfigMap this chart owns — `hostssl` for
+  everything over TCP and no `host` line at all — so a client that will not do
+  TLS is turned away with *no pg_hba.conf entry … SSL off*. The Unix socket
+  stays open and unencrypted: it is inside the pod's own filesystem, it is how
+  the image initialises the cluster, and it is what all three probes use. That
+  is also why `kubectl exec … psql -U kitchen kitchen_auth` still works.
+- **Every client verifies it** — hostname and chain — against the CA the
+  operator publishes as the ConfigMap `kitchen-internal-ca`: the identity
+  provider, the operator (which dumps this database on the backup schedule),
+  a scheduled backup's pod and the restore Job. The DSN says so once, in
+  `sslmode=verify-full&sslrootcert=…`, and they all read that same DSN.
+
+**`verify-full` and nothing weaker, on purpose.** Two drivers connect to this
+database and they do not agree about the weaker modes: the operator's is
+libpq's (pgx), where `require` encrypts without verifying anything, while the
+identity provider's is node-postgres, where `require`, `verify-ca` and
+`verify-full` all verify and only its own `no-verify` does not. `verify-full`
+is the one mode that means the same thing to both.
+
+**The pods wait for their material rather than starting without it.** On a
+first install Postgres sits in `ContainerCreating` until the operator has
+created the CA and cert-manager has issued from it, and the identity provider
+waits the same way for the CA bundle. Both are seconds. It is a wait rather
+than a fallback on purpose: there is no state in which this database admits an
+unencrypted connection because its certificate was late, and none in which the
+identity provider connects without verifying because the CA was.
+
+An **external** Postgres is somebody else's certificate to manage, so the
+operator issues nothing for it. `postgres.external.sslmode` is what its clients
+ask for — `verify-full` is the value that behaves the same under both drivers,
+and verification is then against the host's roots, since there is nowhere here
+to mount a CA of your own. Left empty, the connection is plaintext and the
+platform says so rather than pretending otherwise.
+
+**Turning it off is the one way to run the bundled database in plaintext**, and
+the platform will not be quiet about it: `postgres.tls.enabled=false` leaves
+`InternalCAReady` False on the Kitchen singleton with reason `StoreInTheClear`,
+naming what is readable.
 
 ### Who owns the platform
 
@@ -1694,6 +1752,34 @@ on the cluster, for instance — the store stays down and `InternalCAReady` says
 which of the two certificates is stuck. `--set clickhouse.tls.enabled=false` on
 the upgrade puts it back the way it was, in the clear.
 
+### Upgrading to an accounts database that speaks TLS
+
+The upgrade that adds `postgres.tls.enabled` restarts Postgres once, with a
+certificate, and rolls the identity provider onto a DSN that verifies it. In
+order:
+
+1. Helm applies the release, and the operator's Deployment rolls first in
+   practice — no volume to wait for. The new operator creates the CA (or finds
+   the one the telemetry store already uses) and requests the database's
+   certificate. cert-manager signs it in seconds, with nothing outside the
+   cluster involved.
+2. The Postgres StatefulSet rolls. Its new pod does not start until the
+   certificate Secret exists, so it never runs with `ssl = on` and no
+   certificate, and never refuses plaintext at a moment when nothing could
+   have done TLS: the refusal and the certificate arrive in the same process.
+3. The identity provider's Deployment rolls onto the new DSN. Its pods wait for
+   the CA bundle the same way; the old pods, which connect in the clear, are
+   refused by the new database from the moment it comes up, so this is one
+   rolling restart's worth of failed logins rather than a slow drift — and a
+   single-node Postgres restart already costs exactly that.
+4. **Nothing else in the platform notices.** Deployments, builds and routes do
+   not touch this database; what pauses is signing in.
+
+If the certificate never issues — no cert-manager on the cluster, for instance
+— the database stays down and `InternalCAReady` says which certificate is
+stuck. `--set postgres.tls.enabled=false` on the upgrade puts it back the way
+it was, in the clear.
+
 ### Upgrading from 0.1.0
 
 Releases at 0.1.0 cannot be upgraded in place. Their ClickHouse and Postgres
@@ -1941,11 +2027,13 @@ kubectl delete namespace kitchen-system
 | `postgres.image.repository` / `.tag` | `postgres` / `17.6-alpine` | |
 | `postgres.auth.database` / `.username` | `kitchen_auth` / `kitchen` | Created on first start. |
 | `postgres.auth.password` | `""` | Generated on install, preserved on upgrade. |
+| `postgres.tls.enabled` | `true` | Serve the accounts database over TLS with a certificate the operator requests from the platform's internal CA, and refuse plaintext connections. Off is the one way to run it in the clear; see [How the accounts database is reached](#how-the-accounts-database-is-reached). |
 | `postgres.service.type` / `.port` | `ClusterIP` / `5432` | |
 | `postgres.persistence.enabled` | `true` | PVC for the data directory. Accounts die with the pod without it. |
 | `postgres.persistence.size` / `.storageClass` / `.accessModes` | `8Gi` / cluster default / `[ReadWriteOnce]` | |
 | `postgres.resources` | 100m/256Mi → 1Gi | |
 | `postgres.external.host` / `.port` | `""` / `5432` | Point at an existing Postgres. |
+| `postgres.external.sslmode` | `""` | What clients ask of an external Postgres, appended to the DSN. `verify-full` is the only value both drivers read the same way; empty is a connection in the clear, and the platform says so. |
 | `auth.enabled` | `true` | Deploy the identity provider. Needs a Postgres. |
 | `auth.image.repository` / `.tag` / `.digest` | `ghcr.io/bermos/kitchen-auth` / `""` / `""` | Tag defaults to `appVersion`. |
 | `auth.replicaCount` | `1` | Stateless; state lives in Postgres. |

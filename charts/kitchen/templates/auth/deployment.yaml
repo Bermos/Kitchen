@@ -145,10 +145,34 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+            # The CA the accounts database's certificate is verified against.
+            # See the volume below for why this pod waits for it rather than
+            # starting without it.
+            - name: internal-ca
+              mountPath: {{ include "kitchen.internalCAMountPath" . }}
+              readOnly: true
+            {{- end }}
       volumes:
         # The root filesystem is read-only; Node still wants somewhere to write.
         - name: tmp
           emptyDir: {}
+        {{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+        # The platform's internal CA, published by the operator once
+        # cert-manager has issued it.
+        #
+        # Deliberately *not* optional, for the reason the telemetry agent's is
+        # not: node-postgres reads the file named by `sslrootcert` when it
+        # parses the DSN, so an optional mount — an empty directory while the
+        # ConfigMap is still on its way — is a service that crash-loops with a
+        # backoff that doubles to five minutes, long outliving the seconds it
+        # was waiting for. A required mount holds the pod in ContainerCreating
+        # instead and the kubelet starts it as soon as the ConfigMap appears.
+        # Either way it never connects in the clear: the database refuses that.
+        - name: internal-ca
+          configMap:
+            name: {{ include "kitchen.internalCAConfigMapName" . }}
+        {{- end }}
       {{- with .Values.auth.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

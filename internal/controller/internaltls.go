@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/accountsdb"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
@@ -107,6 +108,16 @@ const (
 
 	condInternalCAReady = "InternalCAReady"
 
+	// The two keys this controller reads out of a connection secret,
+	// whichever store the secret belongs to. Every bundled store's secret
+	// spells them the same way — clickhouse.SecretKeyHost and
+	// accountsdb.SecretKeyHost are these strings, and
+	// TestEveryStoreSpeaksOneConnectionSecretVocabulary holds them to it — so
+	// one controller issues for all of them and the chart adds a store by
+	// writing a secret rather than by teaching this file a name.
+	connectionSecretKeyHost              = "host"
+	connectionSecretKeyCertificateSecret = "certificateSecret"
+
 	// internalCAComponentName is the row this appears as in
 	// status.components, beside the workloads. A CA that never issued is
 	// exactly the kind of failure that is invisible everywhere else: the
@@ -166,7 +177,7 @@ func (r *InternalTLSReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	certSecret := strings.TrimSpace(string(secret.Data[clickhouse.SecretKeyCertificateSecret]))
+	certSecret := strings.TrimSpace(string(secret.Data[connectionSecretKeyCertificateSecret]))
 	if certSecret == "" {
 		// Either an external store, whose certificate is somebody else's, or
 		// one an installation has deliberately left in the clear. Both are
@@ -182,7 +193,7 @@ func (r *InternalTLSReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	names := serviceDNSNames(string(secret.Data[clickhouse.SecretKeyHost]))
+	names := serviceDNSNames(string(secret.Data[connectionSecretKeyHost]))
 	if len(names) == 0 {
 		log.Error(nil, "the connection secret's host is not a DNS name, so there is nothing "+
 			"a certificate could be issued for", "secret", req.NamespacedName)
@@ -244,13 +255,33 @@ func (r *InternalTLSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		if !ok || secret.Namespace != PlatformNamespace {
 			return false
 		}
-		return len(secret.Data[clickhouse.SecretKeyCertificateSecret]) > 0
+		return len(secret.Data[connectionSecretKeyCertificateSecret]) > 0
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("internaltls").
 		For(&corev1.Secret{}, builder.WithPredicates(
 			predicate.NewPredicateFuncs(asksForACertificate))).
 		Complete(r)
+}
+
+// internalTLSStore is one bundled store, as the singleton reports on it.
+//
+// Only stores with something to say end up here: one whose certificate the
+// platform issues, and one that is reached in the clear. A store whose
+// certificate is somebody else's — an external ClickHouse over TLS, an
+// external Postgres with an sslmode of its own — is not the internal CA's
+// business and contributes nothing, because a condition about a CA that is
+// not in the path would be noise in the one list this is said in.
+type internalTLSStore struct {
+	// certificate is the Secret the store's certificate is issued into, and
+	// empty for a store that is reached in the clear.
+	certificate string
+	// issued describes the finished state, for the condition's message.
+	issued string
+	// clear describes what is readable, for a store nobody asked to encrypt.
+	clear string
+	// what names the certificate while it is being waited for.
+	what string
 }
 
 // reconcileInternalTLS reports whether the platform namespace is encrypted.
@@ -260,62 +291,45 @@ func (r *InternalTLSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // half that belongs on the singleton — the one place an operator reads what
 // the platform thinks of itself — and a condition derived from live objects
 // cannot drift from what is actually true.
+//
+// One condition covers every bundled store, rather than one condition each.
+// The question an operator is asking is whether this namespace is readable,
+// and the answer is as good as its weakest store; a list of conditions that
+// all say the same thing on a healthy platform is a list nobody reads.
 func (r *KitchenReconciler) reconcileInternalTLS(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
 	setCond func(string, metav1.ConditionStatus, string, string),
 ) bool {
-	ref := kitchen.Spec.Observability.ClickHouse.SecretRef
-	if ref == nil {
-		// No telemetry store at all. There is nothing here to encrypt, and
-		// the CA is not created for its own sake.
+	stores := []internalTLSStore{}
+	if store, ok := r.telemetryStoreTLS(ctx, kitchen); ok {
+		stores = append(stores, store)
+	}
+	if store, ok := r.accountsDatabaseTLS(ctx, kitchen); ok {
+		stores = append(stores, store)
+	}
+	if len(stores) == 0 {
+		// Nothing the platform runs, or nothing whose certificate is the
+		// platform's. The CA is not created for its own sake.
 		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condInternalCAReady)
 		return true
 	}
 
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: PlatformNamespace, Name: ref.Name}
-	if err := r.Get(ctx, key, secret); err != nil {
-		// TelemetrySchemaReady already says the store cannot be reached at
-		// all, which is a bigger fact than its certificate. Saying it twice
-		// would put the same cause under two names in the list an operator
-		// reads.
-		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condInternalCAReady)
-		return true
-	}
-
-	certSecret := strings.TrimSpace(string(secret.Data[clickhouse.SecretKeyCertificateSecret]))
-	if certSecret == "" {
-		if scheme := string(secret.Data[clickhouse.SecretKeyScheme]); scheme == clickhouse.SchemeHTTPS {
-			// An external store with a certificate of its own. The platform's
-			// CA is not in that path and has nothing to report about it.
-			meta.RemoveStatusCondition(&kitchen.Status.Conditions, condInternalCAReady)
-			return true
+	requests := []struct{ name, what string }{}
+	for _, store := range stores {
+		if store.certificate != "" {
+			requests = append(requests, struct{ name, what string }{store.certificate, store.what})
 		}
-		// The store answers in the clear. That is a choice an installation is
-		// allowed to make — an external store that offers no TLS, or
-		// `clickhouse.tls.enabled=false` — and it is written down rather than
-		// left silent, because a platform quietly shipping every log line and
-		// its own password across the namespace is the finding this file
-		// exists for.
-		//
-		// It deliberately does not hold the platform short of Ready: nothing
-		// is broken, and a condition that never goes true would train an
-		// operator to ignore the one place this is said.
-		setCond(condInternalCAReady, metav1.ConditionFalse, "StoreInTheClear",
-			"the telemetry store is reached over plain HTTP, so its queries, its rows and its "+
-				"password are readable by anything that can watch traffic inside "+PlatformNamespace+
-				"; set clickhouse.tls.enabled to have the platform issue it a certificate")
-		return true
+	}
+	if len(requests) > 0 {
+		// The CA first: everything else is signed by it, and "the CA is not
+		// issued yet" is the more useful half of the same wait.
+		requests = append([]struct{ name, what string }{
+			{InternalCACertificateName, "the platform's internal CA"},
+		}, requests...)
 	}
 
-	for _, request := range []struct {
-		name string
-		what string
-	}{
-		{InternalCACertificateName, "the platform's internal CA"},
-		{certSecret, "the telemetry store's certificate"},
-	} {
+	for _, request := range requests {
 		cert := &unstructured.Unstructured{}
 		cert.SetGroupVersionKind(certManagerGVK("Certificate"))
 		key := types.NamespacedName{Namespace: PlatformNamespace, Name: request.name}
@@ -337,11 +351,126 @@ func (r *KitchenReconciler) reconcileInternalTLS(
 		}
 	}
 
+	// A store somebody left in the clear is said last, because it is the
+	// answer only once nothing is still being issued.
+	//
+	// It deliberately does not hold the platform short of Ready: nothing is
+	// broken, and a condition that could never go true would train an
+	// operator to ignore the one place this is said. It is said at all
+	// because a platform quietly shipping every log line, every session and
+	// its own passwords across its namespace is the finding this file exists
+	// for.
+	readable := []string{}
+	issued := []string{}
+	for _, store := range stores {
+		if store.certificate == "" {
+			readable = append(readable, store.clear)
+			continue
+		}
+		issued = append(issued, store.issued)
+	}
+	if len(readable) > 0 {
+		setCond(condInternalCAReady, metav1.ConditionFalse, "StoreInTheClear",
+			strings.Join(readable, "; and ")+
+				". Anything that can watch traffic inside "+PlatformNamespace+
+				", or the node under it, reads all of it")
+		return true
+	}
+
 	setCond(condInternalCAReady, metav1.ConditionTrue, "Issued",
-		"the platform's internal CA is issued, and the telemetry store serves "+
-			string(secret.Data[clickhouse.SecretKeyHost])+
-			" with a certificate signed by it")
+		"the platform's internal CA is issued, and "+strings.Join(issued, ", and "))
 	return true
+}
+
+// telemetryStoreTLS reads the telemetry store's connection secret, which is
+// what the chart says the store with rather than anything on this object:
+// whether the bundled ClickHouse serves TLS is a chart value, and what
+// reaches the operator is a secret that either names a Secret for the store's
+// certificate or does not.
+func (r *KitchenReconciler) telemetryStoreTLS(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) (internalTLSStore, bool) {
+	ref := kitchen.Spec.Observability.ClickHouse.SecretRef
+	if ref == nil {
+		// No telemetry store at all.
+		return internalTLSStore{}, false
+	}
+
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: PlatformNamespace, Name: ref.Name}
+	if err := r.Get(ctx, key, secret); err != nil {
+		// TelemetrySchemaReady already says the store cannot be reached at
+		// all, which is a bigger fact than its certificate. Saying it twice
+		// would put the same cause under two names in the list an operator
+		// reads.
+		return internalTLSStore{}, false
+	}
+
+	host := string(secret.Data[connectionSecretKeyHost])
+	certSecret := strings.TrimSpace(string(secret.Data[connectionSecretKeyCertificateSecret]))
+	if certSecret != "" {
+		return internalTLSStore{
+			certificate: certSecret,
+			what:        "the telemetry store's certificate",
+			issued:      "the telemetry store serves " + host + " with a certificate signed by it",
+		}, true
+	}
+	if scheme := string(secret.Data[clickhouse.SecretKeyScheme]); scheme == clickhouse.SchemeHTTPS {
+		// An external store with a certificate of its own. The platform's CA
+		// is not in that path and has nothing to report about it.
+		return internalTLSStore{}, false
+	}
+	return internalTLSStore{
+		clear: "the telemetry store is reached over plain HTTP, so its queries, its rows and " +
+			"its password are readable (set clickhouse.tls.enabled to have the platform issue " +
+			"it a certificate)",
+	}, true
+}
+
+// accountsDatabaseTLS reads the identity provider's connection secret, on the
+// same terms: `sslmode` is what every client of it asks for, and
+// `certificateSecret` is the chart asking the operator to issue one.
+//
+// The database holds every session, every OAuth client's secret and every
+// passkey on the platform, and the identity provider is the busiest client of
+// anything in this namespace — so it is the store where "readable inside
+// kitchen-system" costs the most.
+func (r *KitchenReconciler) accountsDatabaseTLS(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) (internalTLSStore, bool) {
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: PlatformNamespace, Name: accountsdb.SecretName(kitchen)}
+	if err := r.Get(ctx, key, secret); err != nil {
+		// An installation with no identity provider, or one whose secret is
+		// somebody else's to write. Either way there is nothing here the
+		// platform can say anything true about.
+		return internalTLSStore{}, false
+	}
+
+	host := string(secret.Data[connectionSecretKeyHost])
+	certSecret := strings.TrimSpace(string(secret.Data[connectionSecretKeyCertificateSecret]))
+	if certSecret != "" {
+		return internalTLSStore{
+			certificate: certSecret,
+			what:        "the accounts database's certificate",
+			issued: "the accounts database serves " + host +
+				" with a certificate signed by it, and refuses anything unencrypted",
+		}, true
+	}
+	// An external database asked for over TLS is verified against the host's
+	// roots rather than against this CA, so the platform has nothing to
+	// report — and nothing to be quiet about either.
+	switch strings.TrimSpace(string(secret.Data[accountsdb.SecretKeySSLMode])) {
+	case accountsdb.SSLModeVerifyFull, "verify-ca", "require":
+		return internalTLSStore{}, false
+	}
+	return internalTLSStore{
+		clear: "the accounts database is reached without TLS, so every session, every OAuth " +
+			"client's secret and the database's own password are readable (set " +
+			"postgres.tls.enabled, or postgres.external.sslmode for a database of your own)",
+	}, true
 }
 
 // serviceDNSNames turns the address the connection secret carries into every

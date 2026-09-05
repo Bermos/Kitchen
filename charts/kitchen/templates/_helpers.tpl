@@ -390,6 +390,79 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+TLS inside the platform namespace, for the accounts database.
+
+Same shape as `kitchen.clickhouseTLSEnabled`, and the same argument: it is the
+bundled database's property alone. An external Postgres serves whatever
+certificate its own operator gave it, and `postgres.external.sslmode` is how an
+installation says what its clients should ask of that.
+*/}}
+{{- define "kitchen.postgresTLSEnabled" -}}
+{{- if and .Values.postgres.enabled .Values.postgres.tls.enabled }}true{{ end }}
+{{- end }}
+
+{{/*
+Whether anything in this release is served with a certificate from the
+platform's internal CA. It is what decides whether the operator's own pod
+mounts the CA bundle: the operator is a client of both stores — it queries the
+telemetry store, and it dumps the accounts database on the backup schedule —
+so one store speaking TLS is enough for it to need the bundle.
+*/}}
+{{- define "kitchen.internalTLSEnabled" -}}
+{{- if or (eq (include "kitchen.clickhouseTLSEnabled" .) "true") (eq (include "kitchen.postgresTLSEnabled" .) "true") }}true{{ end }}
+{{- end }}
+
+{{/*
+The Secret the accounts database's certificate is issued into. The operator
+fills it, having been asked to by the `certificateSecret` key in the connection
+secret — see `kitchen.clickhouseTLSSecretName` for why the name is the chart's
+and the CA's is not.
+*/}}
+{{- define "kitchen.postgresTLSSecretName" -}}
+{{- printf "%s-postgres-tls" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{/*
+Where the certificate and the host-based authentication rules are mounted.
+
+Two sibling directories rather than one with the other inside it: the kubelet
+mounts a pod's volumes in the order they are written, and a directory mounted
+over the parent of another mount hides it — which for these two is a Postgres
+that either has no certificate or admits everything in the clear, and says
+nothing about either.
+*/}}
+{{- define "kitchen.postgresTLSMountPath" -}}
+{{- "/etc/kitchen/postgres/tls" }}
+{{- end }}
+
+{{- define "kitchen.postgresHBAMountPath" -}}
+{{- "/etc/kitchen/postgres/hba" }}
+{{- end }}
+
+{{- define "kitchen.postgresHBAFile" -}}
+{{- printf "%s/pg_hba.conf" (include "kitchen.postgresHBAMountPath" .) }}
+{{- end }}
+
+{{/*
+What every client of the accounts database asks of the connection, written into
+the connection secret and into the DSN so that the auth service, the operator,
+the backup and the restore cannot disagree about it.
+
+`verify-full` for the bundled database, which is the only mode that means the
+same thing to both drivers in front of it: libpq (the operator's pgx) and
+node-postgres, whose `require` verifies where libpq's does not. An external
+database gets whatever `postgres.external.sslmode` says, and nothing where it
+says nothing.
+*/}}
+{{- define "kitchen.postgresSSLMode" -}}
+{{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+{{- "verify-full" }}
+{{- else if not .Values.postgres.enabled }}
+{{- .Values.postgres.external.sslmode }}
+{{- end }}
+{{- end }}
+
+{{/*
 Auth service: names, the hostname it is published under and the two generated
 credentials. Both are read back from the cluster on upgrade — regenerating the
 signing secret would invalidate every session, and regenerating the service key
@@ -1060,6 +1133,19 @@ does not run in.
 {{- end }}
 {{- if and .Values.postgres.external.host (not .Values.postgres.auth.password) }}
 {{- fail "postgres.auth.password is required with an external Postgres: the chart would otherwise hand the auth service a password it invented." }}
+{{- end }}
+{{- if and .Values.postgres.enabled (not (get (default dict .Values.postgres) "tls")) }}
+{{- fail "postgres.tls values are missing: upgrade with --reset-then-reuse-values so new chart defaults are merged with existing overrides." }}
+{{- end }}
+{{- if eq (include "kitchen.postgresTLSEnabled" .) "true" }}
+{{- if not (dig "fsGroup" "" (default dict .Values.postgres.podSecurityContext)) }}
+{{- fail "postgres.tls.enabled needs postgres.podSecurityContext.fsGroup set to the image's postgres user: the certificate arrives as a Secret owned by root, and a server that cannot read its own private key refuses to start. Set it, or set postgres.tls.enabled=false and accept that the accounts database answers in the clear." }}
+{{- end }}
+{{- end }}
+{{- with .Values.postgres.external.sslmode }}
+{{- if not (has . (list "disable" "allow" "prefer" "require" "verify-ca" "verify-full")) }}
+{{- fail (printf "postgres.external.sslmode is %q, which is not one of libpq's modes: disable, allow, prefer, require, verify-ca, verify-full. It is passed through to every client of the accounts database, and a mode neither driver recognises is a connection that fails at the first query." .) }}
+{{- end }}
 {{- end }}
 {{- if .Values.auth.enabled }}
 {{- if and (not .Values.postgres.enabled) (not .Values.postgres.external.host) }}
