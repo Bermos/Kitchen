@@ -17,9 +17,13 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
@@ -171,7 +175,7 @@ func TestASavedQueryIsSharedAndUnowned(t *testing.T) {
 
 	// Somebody else's query, about nothing in particular.
 	created := h.do(t, http.MethodPost, "/api/v1/logs/saved",
-		`{"title":"Platform 5xx","where":"status >= 500"}`)
+		`{"title":"Platform 5xx","query":"http.status:>=500"}`)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("POST /logs/saved = %d: %s", created.Code, created.Body.String())
 	}
@@ -304,4 +308,110 @@ func TestAQueryCanBeSavedWithItsAlert(t *testing.T) {
 	if alert == nil || alert.Comparison != alertComparisonBelow || alert.WindowMinutes != 15 {
 		t.Errorf("the alert did not survive the save: %+v", alert)
 	}
+}
+
+// The second channel issue #421 names. `POST /logs/saved` is open to any
+// account and stored the same raw expression verbatim, which a reconciler then
+// evaluated on a schedule with nobody looking at it. It is refused here for the
+// same reason it is refused on the read routes, and the refusal names `q`.
+func TestASavedQueryCannotCarryTheRawExpression(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer, blogFixtures()...)
+
+	res := h.do(t, http.MethodPost, "/api/v1/logs/saved",
+		`{"title":"Anything at all","where":"(SELECT count() FROM otel_logs WHERE project='blog') > 0"}`)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "`q`") {
+		t.Errorf("the refusal should name the replacement, got %s", res.Body.String())
+	}
+
+	list := decode[struct {
+		Items []savedQueryView `json:"items"`
+	}](t, h.do(t, http.MethodGet, "/api/v1/logs/saved", "")).Items
+	if len(list) != 0 {
+		t.Errorf("nothing should have been stored, got %+v", list)
+	}
+}
+
+// An alert is asked by nobody, so what it may count over is written down at
+// the one moment somebody's token had just been checked.
+func TestASavedQueryRecordsTheScopeItsAuthorCouldSee(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer, blogFixtures()...)
+
+	if res := h.do(t, http.MethodPost, "/api/v1/logs/saved",
+		`{"title":"Checkout 500s","query":"level:error"}`); res.Code != http.StatusCreated {
+		t.Fatalf("POST /logs/saved = %d: %s", res.Code, res.Body.String())
+	}
+	saved := storedQuery(t, h, "checkout-500s")
+	scope := saved.Spec.Scope
+	if scope == nil || scope.Platform || len(scope.Projects) != 1 || scope.Projects[0] != feedProject {
+		t.Fatalf("want the author's own projects recorded, got %+v", scope)
+	}
+
+	// An operator's is the platform's whole store, said rather than implied.
+	operator := newHarness(t, nil, fixtures()...)
+	if res := operator.do(t, http.MethodPost, "/api/v1/logs/saved",
+		`{"title":"Platform errors","query":"level:error"}`); res.Code != http.StatusCreated {
+		t.Fatalf("POST /logs/saved = %d: %s", res.Code, res.Body.String())
+	}
+	platform := storedQuery(t, operator, "platform-errors")
+	if platform.Spec.Scope == nil || !platform.Spec.Scope.Platform {
+		t.Fatalf("want the platform's own scope recorded, got %+v", platform.Spec.Scope)
+	}
+}
+
+// `lastCount` is a number counted over somebody else's projects. The alert's
+// definition is everybody's — a window and a threshold say nothing about
+// anyone's lines — but its observations are only for a reader who could have
+// counted them.
+func TestAnAlertsCountIsOnlyShownToAReaderWhoCouldHaveCountedIt(t *testing.T) {
+	alerting := &kitchenv1alpha1.SavedQuery{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform-errors", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.SavedQuerySpec{
+			Title: "Platform errors",
+			Query: "level:error",
+			Scope: &kitchenv1alpha1.SavedQueryScope{Platform: true},
+			Alert: &kitchenv1alpha1.SavedQueryAlert{WindowMinutes: 10, Threshold: 25},
+		},
+		Status: kitchenv1alpha1.SavedQueryStatus{
+			LastCount: 9000, Firing: true, Message: "9000 line(s) in the last 10 minute(s)",
+		},
+	}
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer, alerting)
+
+	items := decode[struct {
+		Items []savedQueryView `json:"items"`
+	}](t, h.do(t, http.MethodGet, "/api/v1/logs/saved", "")).Items
+	if len(items) != 1 || items[0].Alert == nil {
+		t.Fatalf("the alert itself is not a secret: %+v", items)
+	}
+	alert := items[0].Alert
+	if alert.WindowMinutes != 10 || alert.Threshold != 25 {
+		t.Errorf("the alert's definition should be readable: %+v", alert)
+	}
+	if alert.LastCount != 0 || alert.Firing || alert.Message != "" {
+		t.Errorf("a count over projects this reader cannot see must not be shown: %+v", alert)
+	}
+
+	// The operator, who could have counted it, is shown all of it.
+	operator := newHarness(t, nil, append(fixtures(), alerting)...)
+	items = decode[struct {
+		Items []savedQueryView `json:"items"`
+	}](t, operator.do(t, http.MethodGet, "/api/v1/logs/saved", "")).Items
+	if len(items) != 1 || items[0].Alert == nil || items[0].Alert.LastCount != 9000 {
+		t.Fatalf("want the whole alert for a reader whose scope covers it: %+v", items)
+	}
+}
+
+// storedQuery reads a saved query back off the API's own client, which is
+// where the fields the view does not carry — the recorded scope — are.
+func storedQuery(t *testing.T, h *harness, name string) *kitchenv1alpha1.SavedQuery {
+	t.Helper()
+	saved := &kitchenv1alpha1.SavedQuery{}
+	key := types.NamespacedName{Namespace: testNamespace, Name: name}
+	if err := h.server.Client.Get(context.Background(), key, saved); err != nil {
+		t.Fatal(err)
+	}
+	return saved
 }

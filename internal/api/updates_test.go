@@ -316,7 +316,9 @@ func TestReadingAnUpdatesLogs(t *testing.T) {
 // where the API, the operator and the identity provider also write. So the
 // selection is composed from the update and cannot be added to: `q` and
 // `where` are not parameters of this endpoint, and a caller who sends them
-// gets the same lines as one who does not.
+// gets the same lines as one who does not. (`where` is not a parameter of any
+// endpoint any more — see query_logs_test.go — but this route ignored it
+// rather than refusing it, and still does.)
 func TestAnUpdatesLogsCannotBeWidenedByTheCaller(t *testing.T) {
 	h := newHarness(t, nil, startedUpdate(testUpdate, testUpdateJob))
 
@@ -325,8 +327,8 @@ func TestAnUpdatesLogsCannotBeWidenedByTheCaller(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if h.logs.lastFilter.Where != "" {
-		t.Fatalf("the caller reached the raw expression: %q", h.logs.lastFilter.Where)
+	if !h.logs.lastFilter.Scope.Platform {
+		t.Fatalf("the platform's own namespace is read as the platform: %+v", h.logs.lastFilter.Scope)
 	}
 	if !strings.Contains(h.logs.lastFilter.Query, "pod:"+testUpdateJob+"-*") {
 		t.Fatalf("the caller's query replaced the update's own: %q", h.logs.lastFilter.Query)

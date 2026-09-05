@@ -267,6 +267,10 @@ func assembleCrashReport(
 		LogSelection: clickhouse.LogSelection{
 			Query: fmt.Sprintf("project:%s environment:%s pod:%s container:%s",
 				project, env.Name, crash.Pod, crash.Container),
+			// The report is about one environment of one project, so that is
+			// the scope as well as the query: the names in the query narrow
+			// the answer, and the scope is what bounds what may be read.
+			Scope: clickhouse.LogScope{Projects: []string{project}},
 			Since: since,
 			Until: at,
 		},

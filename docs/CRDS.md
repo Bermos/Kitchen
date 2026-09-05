@@ -2502,14 +2502,29 @@ metadata:
 spec:
   title: Checkout 500s
   description: Errors from the checkout service
-  query: "level:error service:shop"     # Kitchen's log query language
-  where: ""                             # the ClickHouse escape hatch, if that is what was used
+  query: "level:error service:shop"     # Kitchen's log query language — the whole of the filter
+  scope:                                # what an alert on this may count over, recorded when it was saved
+    projects: [shop]                    # …or `platform: true` for one an operator saved
   rangeMinutes: 60                      # relative window; 0 means everything retained
   limit: 500
   view: patterns                        # which tab it is read in: lines | patterns
   includeCluster: false
   savedBy: grace@example.com
 ```
+
+`spec.where` is still on the type and is **no longer evaluated** (issue #421).
+It held a ClickHouse expression that went into the statement as written, bounded
+by a conjunct rather than by anything about what the statement could read, so it
+could reach the whole telemetry store. The API refuses it on the way in; the
+field stays so that a query saved before that change keeps saying what it was,
+which is what lets the dashboard tell whoever finds it why it no longer runs.
+Dropping the field would instead widen such a query silently — its remaining
+half selects everything the `where` used to narrow.
+
+`spec.scope` is written by the API from the caller's own visible projects, at
+the one moment a token had just been checked. It is not resolved later from
+`savedBy`, which is a byline rather than an identity: an address that changes
+when the account's does, and one nothing verified against a `sub`.
 
 A saved query **with no alert has no status and no reconciler**, and that is the point
 rather than an omission. The rule that a write surface waits for its reconciler is about
@@ -2556,6 +2571,12 @@ threshold that is met all afternoon is one message rather than one every five mi
 `status.message` is also where an evaluation that could not be made (no telemetry store,
 a store that refused the query) says so — otherwise indistinguishable from an alert that
 has simply never fired.
+
+An alert is counted **over `spec.scope` and never over the whole store**. A query with
+no scope recorded, one still carrying `spec.where`, and one whose `spec.query` no longer
+compiles are all not evaluated: the count goes to zero, the alert stops firing, and
+`status.message` says which of the three it is. Saving the question again — two clicks in
+the observability view — produces one that carries a scope, and the alert resumes.
 
 ---
 

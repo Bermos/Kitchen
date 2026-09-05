@@ -350,15 +350,20 @@ func TestALogSearchIsNarrowedToTheCallersProjects(t *testing.T) {
 	if recorder := h.do(t, http.MethodGet, "/api/v1/logs?q=level:error", ""); recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if want := "project IN ('shop')"; !strings.Contains(h.logs.lastFilter.Where, want) {
-		t.Fatalf("want the search narrowed with %q, got %q", want, h.logs.lastFilter.Where)
+	// Structurally, as the scope of the selection rather than as a conjunct
+	// composed onto anything the caller sent: the store compiles it into
+	// `project IN (…)` with every name bound as a parameter.
+	scope := h.logs.lastFilter.Scope
+	if scope.Platform || len(scope.Projects) != 1 || scope.Projects[0] != feedProject {
+		t.Fatalf("want the search scoped to the caller's projects, got %+v", scope)
 	}
 
-	// An operator's search is not narrowed at all.
+	// An operator's search is the platform's whole store, which is asked for
+	// rather than fallen into.
 	operator := newHarness(t, nil, fixtures()...)
 	operator.do(t, http.MethodGet, "/api/v1/logs?q=level:error", "")
-	if operator.logs.lastFilter.Where != "" {
-		t.Fatalf("want an unnarrowed search for an operator, got %q", operator.logs.lastFilter.Where)
+	if !operator.logs.lastFilter.Scope.Platform {
+		t.Fatalf("want an unnarrowed search for an operator, got %+v", operator.logs.lastFilter.Scope)
 	}
 }
 
@@ -369,7 +374,7 @@ func TestACallerWithNoProjectsIsAnsweredNothingWithoutAskingTheStore(t *testing.
 	if len(lines.Items) != 0 {
 		t.Fatalf("want no lines, got %+v", lines.Items)
 	}
-	if h.logs.lastFilter.Where != "" || h.logs.lastFilter.Limit != 0 {
+	if h.logs.lastFilter.Limit != 0 || len(h.logs.lastFilter.Scope.Projects) != 0 {
 		t.Fatalf("the store should not have been asked at all, got %+v", h.logs.lastFilter)
 	}
 }

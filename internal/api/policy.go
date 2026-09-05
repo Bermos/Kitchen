@@ -486,7 +486,12 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/logs/facets", s.logFacets, acrossProjects()},
 		{"GET /api/v1/logs/patterns", s.logPatterns, acrossProjects()},
 		{"GET /api/v1/logs/saved", s.listSavedQueries, acrossProjects()},
-		{"POST /api/v1/logs/saved", s.createSavedQuery, anyCaller()},
+		// Saving one asks the same of a caller as before — a valid token —
+		// but the handler now needs the scope as well as the identity: an
+		// alert on a saved query is evaluated by a reconciler, on a schedule,
+		// with nobody looking at it, so what it may ever count over is
+		// recorded from the caller here (issue #421).
+		{"POST /api/v1/logs/saved", s.createSavedQuery, acrossProjects()},
 		// Setting an alert on one is the same requirement as deleting it: the
 		// query belongs to the platform rather than to whoever saved it, and
 		// all this route can do is make it ask itself on a schedule. What a

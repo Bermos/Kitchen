@@ -35,8 +35,9 @@ func TestTheHistogramBucketsTheWindow(t *testing.T) {
 	}, "\n")
 
 	histogram, err := store.client(t).LogHistogram(context.Background(), LogHistogramQuery{
-		LogSelection: LogSelection{Query: "level:error", Since: since, Until: until},
-		Buckets:      60,
+		LogSelection: LogSelection{Query: "level:error", Since: since, Until: until,
+			Scope: LogScope{Platform: true}},
+		Buckets: 60,
 	})
 	if err != nil {
 		t.Fatalf("LogHistogram: %v", err)
@@ -101,7 +102,8 @@ func TestAnUnboundedHistogramAsksTheStoreForItsWindow(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = `{"first":"0","last":"0"}`
 
-	histogram, err := store.client(t).LogHistogram(context.Background(), LogHistogramQuery{})
+	histogram, err := store.client(t).LogHistogram(context.Background(),
+		LogHistogramQuery{LogSelection: LogSelection{Scope: LogScope{Platform: true}}})
 	if err != nil {
 		t.Fatalf("LogHistogram: %v", err)
 	}
@@ -122,7 +124,7 @@ func TestFacetsAreCountedOverTheWindow(t *testing.T) {
 	}, "\n")
 
 	facets, err := store.client(t).LogFacets(context.Background(), LogFacetQuery{
-		LogSelection: LogSelection{Query: "service:shop"},
+		LogSelection: LogSelection{Query: "service:shop", Scope: LogScope{Platform: true}},
 		Fields:       []string{"level", "stream"},
 	})
 	if err != nil {
@@ -149,7 +151,8 @@ func TestAFacetNothingHoldsIsEmptyRatherThanNull(t *testing.T) {
 	store.rows = `{"facet":"stream","value":"stderr","hits":"2"}`
 
 	facets, err := store.client(t).LogFacets(context.Background(), LogFacetQuery{
-		Fields: []string{"level", "stream"},
+		LogSelection: LogSelection{Scope: LogScope{Platform: true}},
+		Fields:       []string{"level", "stream"},
 	})
 	if err != nil {
 		t.Fatalf("LogFacets: %v", err)
@@ -177,7 +180,8 @@ func TestAFacetOnAnAttributeResolvesLikeAQuery(t *testing.T) {
 	store.rows = `{"facet":"http.status","value":"500","hits":"7"}`
 
 	if _, err := store.client(t).LogFacets(context.Background(), LogFacetQuery{
-		Fields: []string{"http.status"},
+		LogSelection: LogSelection{Scope: LogScope{Platform: true}},
+		Fields:       []string{"http.status"},
 	}); err != nil {
 		t.Fatalf("LogFacets: %v", err)
 	}
@@ -195,7 +199,7 @@ func TestPatternsCollapseTheVariableParts(t *testing.T) {
 		`"sample":"GET /works?page=7 200","first":"1786000000","last":"1786003600"}`
 
 	patterns, err := store.client(t).LogPatterns(context.Background(), LogPatternQuery{
-		LogSelection: LogSelection{Query: "service:shop"},
+		LogSelection: LogSelection{Query: "service:shop", Scope: LogScope{Platform: true}},
 	})
 	if err != nil {
 		t.Fatalf("LogPatterns: %v", err)
@@ -227,7 +231,8 @@ func TestAnalyticsBoundWhatTheyReturn(t *testing.T) {
 	store := newFakeLogStore(t)
 
 	if _, err := store.client(t).LogPatterns(context.Background(), LogPatternQuery{
-		Limit: 100000, Scan: 100000000,
+		LogSelection: LogSelection{Scope: LogScope{Platform: true}},
+		Limit:        100000, Scan: 100000000,
 	}); err != nil {
 		t.Fatalf("LogPatterns: %v", err)
 	}
@@ -238,7 +243,8 @@ func TestAnalyticsBoundWhatTheyReturn(t *testing.T) {
 		t.Fatalf("the scan should be capped at %d, got %q", MaxPatternScan, got)
 	}
 
-	if _, err := store.client(t).LogFacets(context.Background(), LogFacetQuery{Limit: 5000}); err != nil {
+	if _, err := store.client(t).LogFacets(context.Background(),
+		LogFacetQuery{LogSelection: LogSelection{Scope: LogScope{Platform: true}}, Limit: 5000}); err != nil {
 		t.Fatalf("LogFacets: %v", err)
 	}
 	if got := store.params.Get("param_facetLimit"); got != "20" {
@@ -250,7 +256,7 @@ func TestAnalyticsBoundWhatTheyReturn(t *testing.T) {
 // error is the caller's to fix.
 func TestAnalyticsRefuseAnUnparseableQuery(t *testing.T) {
 	store := newFakeLogStore(t)
-	selection := LogSelection{Query: "(level:error"}
+	selection := LogSelection{Query: "(level:error", Scope: LogScope{Platform: true}}
 
 	if _, err := store.client(t).LogHistogram(context.Background(),
 		LogHistogramQuery{LogSelection: selection}); err == nil {
@@ -280,7 +286,8 @@ func TestTheHistogramCountsSeverityCaseInsensitively(t *testing.T) {
 	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 
 	if _, err := store.client(t).LogHistogram(context.Background(), LogHistogramQuery{
-		LogSelection: LogSelection{Since: since, Until: since.Add(time.Hour)},
+		LogSelection: LogSelection{Since: since, Until: since.Add(time.Hour),
+			Scope: LogScope{Platform: true}},
 	}); err != nil {
 		t.Fatalf("LogHistogram: %v", err)
 	}
@@ -304,7 +311,8 @@ func TestTheHistogramCountsSeverityCaseInsensitively(t *testing.T) {
 // before.
 func TestPatternsNormaliseTheColumnNotTheAlias(t *testing.T) {
 	store := newFakeLogStore(t)
-	if _, err := store.client(t).LogPatterns(context.Background(), LogPatternQuery{}); err != nil {
+	if _, err := store.client(t).LogPatterns(context.Background(),
+		LogPatternQuery{LogSelection: LogSelection{Scope: LogScope{Platform: true}}}); err != nil {
 		t.Fatalf("LogPatterns: %v", err)
 	}
 	if !strings.Contains(store.query, "replaceRegexpAll("+logMessageColumn+",") {

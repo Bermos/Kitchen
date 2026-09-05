@@ -97,7 +97,15 @@ type savedQueryAlertView struct {
 	Message       string `json:"message,omitempty"`
 }
 
-func newSavedQueryView(query *kitchenv1alpha1.SavedQuery) savedQueryView {
+// newSavedQueryView renders a saved query for a reader.
+//
+// The alert's *definition* is everybody's — a window, a threshold and a
+// comparison say nothing about anyone's lines. Its *observations* are not:
+// `lastCount` is a number counted over the projects the query's author could
+// see, and a reader who could not have counted it themselves is shown the
+// alert without them (issue #421). That is the same rule the listing follows,
+// applied to the one field that carries a count rather than to the object.
+func newSavedQueryView(scope projectScope, query *kitchenv1alpha1.SavedQuery) savedQueryView {
 	view := savedQueryView{
 		Name:           query.Name,
 		Title:          query.Spec.Title,
@@ -122,15 +130,17 @@ func newSavedQueryView(query *kitchenv1alpha1.SavedQuery) savedQueryView {
 			Comparison:      comparison,
 			IntervalMinutes: alert.Interval(),
 			Suspended:       alert.Suspended,
-			Firing:          query.Status.Firing,
-			LastCount:       query.Status.LastCount,
-			Message:         query.Status.Message,
 		}
-		if at := query.Status.FiringSince; at != nil {
-			view.Alert.FiringSince = at.UTC().Format("2006-01-02T15:04:05Z")
-		}
-		if at := query.Status.LastEvaluationTime; at != nil {
-			view.Alert.LastEvaluated = at.UTC().Format("2006-01-02T15:04:05Z")
+		if covers(scope, query.Spec.Scope) {
+			view.Alert.Firing = query.Status.Firing
+			view.Alert.LastCount = query.Status.LastCount
+			view.Alert.Message = query.Status.Message
+			if at := query.Status.FiringSince; at != nil {
+				view.Alert.FiringSince = at.UTC().Format("2006-01-02T15:04:05Z")
+			}
+			if at := query.Status.LastEvaluationTime; at != nil {
+				view.Alert.LastEvaluated = at.UTC().Format("2006-01-02T15:04:05Z")
+			}
 		}
 	}
 	return view
@@ -140,12 +150,18 @@ func newSavedQueryView(query *kitchenv1alpha1.SavedQuery) savedQueryView {
 // shown, because it names a project they cannot see.
 //
 // A saved query is shared by everyone on the platform and carries no project
-// of its own: what it is about is inside its selection, as `project:billing`
-// or as a `where` naming the column. Rather than parse the query language a
-// second time here — which is how the parser and the guard end up disagreeing
-// — this looks for the names of the projects the caller cannot see, as whole
-// words in either half of the selection or in the title and description that
-// were written to describe them.
+// of its own: what it is about is inside its selection, as `project:billing`.
+// Rather than parse the query language a second time here — which is how the
+// parser and the guard end up disagreeing — this looks for the names of the
+// projects the caller cannot see, as whole words anywhere in the selection or
+// in the title and description that were written to describe them.
+//
+// The stored `where` is read too, though nothing may write one any more: a
+// query saved before #421 still carries what it carried, and the reason to
+// withhold it has not changed. That expression is also why this guard could
+// once be walked around — `project = concat('bil','ling')` names nothing a
+// word match can see — which is another thing that stops being true when the
+// only selection is one the platform compiles.
 //
 // It errs towards hiding: a query whose title happens to contain a word that
 // is also somebody else's project name is withheld from a caller who cannot
@@ -161,6 +177,37 @@ func hiddenFrom(scope projectScope, query *kitchenv1alpha1.SavedQuery) bool {
 		}
 	}
 	return false
+}
+
+// covers reports whether a reader may be shown what an alert on this query
+// counted: their own scope has to contain the scope the count was taken over.
+//
+// An operator is shown everything. A query whose scope is the platform's whole
+// store is therefore an operator's to read the numbers of, and a query saved
+// before scopes were recorded has none — nothing is counted over it, so there
+// is nothing to withhold and nothing to show.
+func covers(reader projectScope, recorded *kitchenv1alpha1.SavedQueryScope) bool {
+	if reader.all {
+		return true
+	}
+	if recorded == nil || recorded.Platform || len(recorded.Projects) == 0 {
+		return false
+	}
+	for _, project := range recorded.Projects {
+		if !reader.allows(project) {
+			return false
+		}
+	}
+	return true
+}
+
+// recordedScope is the scope a query is saved with: what its author could see
+// at the moment they saved it, which is what an alert on it may ever count.
+func recordedScope(scope projectScope) *kitchenv1alpha1.SavedQueryScope {
+	if scope.all {
+		return &kitchenv1alpha1.SavedQueryScope{Platform: true}
+	}
+	return &kitchenv1alpha1.SavedQueryScope{Projects: scope.names()}
 }
 
 // namesAny reports whether text contains any of these names as a whole word.
@@ -195,7 +242,7 @@ func (s *Server) listSavedQueries(w http.ResponseWriter, req *http.Request) {
 		if hiddenFrom(scope, &list.Items[i]) {
 			continue
 		}
-		views = append(views, newSavedQueryView(&list.Items[i]))
+		views = append(views, newSavedQueryView(scope, &list.Items[i]))
 	}
 	// By title, because that is what the sidebar shows and creation order is
 	// not an order anyone remembers.
@@ -293,11 +340,18 @@ func (s *Server) createSavedQuery(w http.ResponseWriter, req *http.Request) {
 	}
 	body.Title = strings.TrimSpace(body.Title)
 	body.Query = strings.TrimSpace(body.Query)
-	body.Where = strings.TrimSpace(body.Where)
 	body.Name = strings.TrimSpace(body.Name)
 
 	if body.Title == "" {
 		badRequest(w, "title is required: what this query is called")
+		return
+	}
+	// The same refusal the four query routes give, for the same reason: a
+	// saved query is a selection, and a selection is written in the query
+	// language. This one matters twice over — a stored `where` is evaluated
+	// later, by a reconciler, on a schedule, with nobody looking at it.
+	if strings.TrimSpace(body.Where) != "" {
+		badRequest(w, "%s", errRawWhere.Error())
 		return
 	}
 	// The query is compiled before it is stored. A saved query that cannot be
@@ -349,13 +403,17 @@ func (s *Server) createSavedQuery(w http.ResponseWriter, req *http.Request) {
 	}
 
 	caller, _ := CallerFrom(ctx)
+	scope := scopeFrom(ctx)
 	saved := &kitchenv1alpha1.SavedQuery{
 		ObjectMeta: metav1.ObjectMeta{Name: body.Name, Namespace: s.Namespace},
 		Spec: kitchenv1alpha1.SavedQuerySpec{
-			Title:          body.Title,
-			Description:    strings.TrimSpace(body.Description),
-			Query:          body.Query,
-			Where:          body.Where,
+			Title:       body.Title,
+			Description: strings.TrimSpace(body.Description),
+			Query:       body.Query,
+			// What an alert on this query may ever count: the projects this
+			// caller can see, written down now, while the token that says so
+			// has just been checked.
+			Scope:          recordedScope(scope),
 			RangeMinutes:   body.RangeMinutes,
 			Limit:          body.Limit,
 			View:           body.View,
@@ -375,7 +433,7 @@ func (s *Server) createSavedQuery(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, newSavedQueryView(saved))
+	writeJSON(w, http.StatusCreated, newSavedQueryView(scope, saved))
 }
 
 // patchSavedQueryRequest is the alert and nothing else.
@@ -469,7 +527,7 @@ func (s *Server) patchSavedQuery(w http.ResponseWriter, req *http.Request) {
 	// one: an alert that has just been widened has not been asked yet, and
 	// saying it is firing on the old threshold's answer would be a lie the
 	// reconciler corrects a minute later.
-	writeJSON(w, http.StatusOK, newSavedQueryView(saved))
+	writeJSON(w, http.StatusOK, newSavedQueryView(scopeFrom(ctx), saved))
 }
 
 func (s *Server) deleteSavedQuery(w http.ResponseWriter, req *http.Request) {
@@ -495,7 +553,7 @@ func (s *Server) deleteSavedQuery(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newSavedQueryView(saved))
+	writeJSON(w, http.StatusOK, newSavedQueryView(scopeFrom(ctx), saved))
 }
 
 // savedQueryName turns a title into the object name a caller does not have to

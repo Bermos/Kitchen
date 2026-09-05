@@ -38,8 +38,8 @@ import (
 //   - the patterns say *what is actually being said* — the lines collapsed to
 //     templates, so 14,021 lines become a handful of shapes.
 //
-// All three carry caller-written query text (the `where` escape hatch) and so
-// run under the same read-only settings and execution cap as the lines do.
+// All three are asked over the same compiled predicate and the same scope as
+// the lines are, and run under the same read-only settings and execution cap.
 
 // Histogram bucket counts, and the ladder of bucket widths a window is
 // quantised to. The ladder exists so that panning the window does not restripe
@@ -496,8 +496,10 @@ FORMAT JSONEachRow`,
 // knows, and an alert evaluating every minute on a busy install is exactly the
 // place not to spend either.
 //
-// Like every other analytic here it carries caller-written query text, so it
-// runs under the same read-only settings and execution cap.
+// Like every other analytic here it runs under the same read-only settings and
+// execution cap — and, like every other one, over a selection that has to say
+// which projects it may read. An alert evaluated over a selection that names
+// none counts nothing, which is what LogScope.condition refuses.
 func (c *Client) CountLogs(ctx context.Context, selection LogSelection) (uint64, error) {
 	where, params, err := selection.whereClause()
 	if err != nil {
@@ -518,8 +520,8 @@ FORMAT JSONEachRow`, quoteIdentifier(c.cfg.Database), quoteIdentifier(LogsTable)
 	return parseUint(rows[0]["hits"]), nil
 }
 
-// selectionRows runs an aggregate that carries caller-written query text and
-// reads its JSONEachRow answer as strings. Everything an analytic selects is
+// selectionRows runs an aggregate over a compiled selection and reads its
+// JSONEachRow answer as strings. Everything an analytic selects is
 // cast to String in the statement, so there is one decoding path and no
 // surprises about how ClickHouse renders a UInt64 into JSON.
 func (c *Client) selectionRows(ctx context.Context, statement string, params map[string]string) ([]map[string]string, error) {
