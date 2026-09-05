@@ -2622,14 +2622,13 @@ export interface LogLine {
 }
 
 /**
- * What an observability question is asked over. `q` is Kitchen's log query
- * language and the front door; `where` is a raw ClickHouse expression, the
- * escape hatch. Given both, they compose with AND — which is how the view
- * scopes the cluster's own pods out of an operator's hand-written SQL.
+ * What an observability question is asked over: Kitchen's log query language,
+ * and the window. It used to carry a raw ClickHouse expression beside it, which
+ * the API evaluated as written and bounded only with a conjunct — so it could
+ * read outside the caller's projects, and it is refused now (#421).
  */
 export interface LogSelection {
   q?: string;
-  where?: string;
   since?: string;
   until?: string;
 }
@@ -2682,6 +2681,10 @@ export interface SavedQuery {
   title: string;
   description?: string;
   query?: string;
+  /** The raw ClickHouse filter a query saved before #421 carries. It is no
+   * longer sent, accepted or evaluated; it is read back so that a query
+   * carrying one can say why it does not run rather than silently running
+   * without the half that narrowed it. */
   where?: string;
   /** The window it is asked over, relative to whenever it is opened. 0 means
    * everything retained. */
@@ -2699,7 +2702,6 @@ export interface NewSavedQuery {
   title: string;
   description?: string;
   query?: string;
-  where?: string;
   rangeMinutes?: number;
   limit?: number;
   view?: "lines" | "patterns";
@@ -4110,7 +4112,6 @@ export interface LogQuery {
 function selectionParams(selection: LogSelection): URLSearchParams {
   const params = new URLSearchParams();
   if (selection.q) params.set("q", selection.q);
-  if (selection.where) params.set("where", selection.where);
   if (selection.since) params.set("since", selection.since);
   if (selection.until) params.set("until", selection.until);
   return params;

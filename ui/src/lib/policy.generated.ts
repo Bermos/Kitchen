@@ -279,7 +279,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/logs/facets": { kind: "visibleProjects" },
   "GET /api/v1/logs/patterns": { kind: "visibleProjects" },
   "GET /api/v1/logs/saved": { kind: "visibleProjects" },
-  "POST /api/v1/logs/saved": { kind: "authenticated" },
+  "POST /api/v1/logs/saved": { kind: "visibleProjects" },
   "PATCH /api/v1/logs/saved/{name}": { kind: "visibleProjects" },
   "DELETE /api/v1/logs/saved/{name}": { kind: "visibleProjects" },
   "GET /api/v1/events": { kind: "visibleProjects" },

@@ -248,12 +248,12 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | PATCH | `/environments/{name}/requirements` | Change the bar it sets — the policy bundle, its parameters, its owners | `viewer` to reach; the handler admits only `spec.owners` and operators |
 | GET | `/environments/{name}/eligibility` | How a release measures up against that bar, from stored evidence alone | `viewer` |
 | GET | `/environments/{name}/objects` | The Kubernetes objects the operator materialized for it | `operator` |
-| GET | `/logs` | The whole logs table, filtered by a query. `?q=`, `?where=` | any account — filtered |
+| GET | `/logs` | The whole logs table, filtered by a query. `?q=` | any account — filtered |
 | GET | `/logs/histogram` | The same selection counted over time — the shape of the window | any account — filtered |
 | GET | `/logs/facets` | The same selection's distinct values per field, with counts | any account — filtered |
 | GET | `/logs/patterns` | The same selection's messages collapsed into templates | any account — filtered |
 | GET | `/logs/saved` | Saved queries — selections someone kept under a name | any account — filtered |
-| POST | `/logs/saved` | Keep the current selection under a name | any account |
+| POST | `/logs/saved` | Keep the current selection under a name, with the caller's project scope recorded on it | any account — filtered |
 | PATCH | `/logs/saved/{name}` | Set, change or remove the standing alert on one — a threshold over a window, asked on a schedule. `alert: null` removes it. The selection itself is not editable | any account — filtered |
 | DELETE | `/logs/saved/{name}` | Forget one | any account — filtered |
 | GET | `/events` | The platform's recent activity, newest first. `?project=` and `?limit=` filter | any account — filtered |

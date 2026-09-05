@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -121,14 +123,31 @@ func (r *SavedQueryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			"not evaluated: "+err.Error())
 	}
 
+	scope, refusal := evaluationScope(saved)
+	if refusal != "" {
+		// A query that can no longer be evaluated is not left standing on the
+		// last number it produced: that number was counted under the old
+		// rules, and an alert firing on it would go on firing on it forever.
+		// It is zeroed, unfired, and the reason is on the object.
+		return r.publish(ctx, saved, 0, false, now, "not evaluated: "+refusal)
+	}
+
 	window := time.Duration(alert.WindowMinutes) * time.Minute
 	count, err := counter.CountLogs(ctx, clickhouse.LogSelection{
 		Query: saved.Spec.Query,
-		Where: saved.Spec.Where,
+		Scope: scope,
 		Since: now.Add(-window),
 		Until: now,
 	})
 	if err != nil {
+		queryErr := &clickhouse.LogQueryError{}
+		if errors.As(err, &queryErr) {
+			// The query itself no longer compiles — a saved question the
+			// language has moved under. Nothing that happens later fixes it,
+			// so it is the same permanent refusal as the two above rather
+			// than a store that will be back in a minute.
+			return r.publish(ctx, saved, 0, false, now, "not evaluated: "+queryErr.Message)
+		}
 		return r.publish(ctx, saved, saved.Status.LastCount, saved.Status.Firing, now,
 			"not evaluated: "+err.Error())
 	}
@@ -149,6 +168,37 @@ func (r *SavedQueryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			"query", saved.Name, "count", count, "threshold", alert.Threshold)
 	}
 	return r.publish(ctx, saved, int64(count), firing, now, message)
+}
+
+// evaluationScope is what this alert may count over, or the reason it cannot be
+// evaluated at all.
+//
+// An alert is a question asked by nobody, on a schedule, whose answer is a
+// number published on the object and read back by anyone the query is listed
+// to. Until issue #421 it was asked with no scope whatsoever — the count was
+// over every line in the store, whoever saved it — and with the raw `where`
+// expression the saved query carried, which could reach any table the
+// platform's own database user can read. Both halves are refused here rather
+// than narrowed, because a saved query is data somebody wrote and the only
+// honest thing to do with a question that can no longer be asked safely is to
+// say so where its author will see it.
+//
+// A refused evaluation is not a broken alert to be repaired by the platform:
+// re-saving the query — which the observability view does in two clicks —
+// produces one carrying a scope, and it resumes on the next reconcile.
+func evaluationScope(saved *kitchenv1alpha1.SavedQuery) (clickhouse.LogScope, string) {
+	if strings.TrimSpace(saved.Spec.Where) != "" {
+		return clickhouse.LogScope{}, "this query was saved with the raw ClickHouse `where` filter, " +
+			"which is no longer evaluated (it could read the whole telemetry store rather than the " +
+			"projects its author could see). Save the question again in the query language and the " +
+			"alert resumes"
+	}
+	scope := saved.Spec.Scope
+	if scope == nil || (!scope.Platform && len(scope.Projects) == 0) {
+		return clickhouse.LogScope{}, "no project scope was recorded when this query was saved, so " +
+			"there is nothing it may be counted over. Save the question again and the alert resumes"
+	}
+	return clickhouse.LogScope{Platform: scope.Platform, Projects: scope.Projects}, ""
 }
 
 // publish writes the evaluation down and comes back when the next one is due.

@@ -164,6 +164,33 @@ spec:
                   than enforced: saved queries are the platform's, not a person's, and
                   this is a byline.
                 type: string
+              scope:
+                description: |-
+                  Scope is what an alert on this query may count: the projects whoever
+                  saved it could see, recorded at that moment.
+
+                  It is recorded rather than resolved at evaluation time because the only
+                  identity a saved query carries is `savedBy`, which is a byline — an
+                  address that changes when the account's does, and one nothing verified
+                  as belonging to a `sub`. Reconstructing a role from it would be a role
+                  nobody granted; a scope written down when a token had just been checked
+                  is one that was.
+
+                  A query carrying none — every query saved before this field existed —
+                  is not evaluated at all, and says so in status.message. That is the
+                  safe direction: an absent scope means nothing, never everything.
+                properties:
+                  platform:
+                    description: |-
+                      Platform is every line in the store. It is recorded for a query saved
+                      by an operator, who may read all of it.
+                    type: boolean
+                  projects:
+                    description: Projects names the projects the query may count over.
+                    items:
+                      type: string
+                    type: array
+                type: object
               title:
                 description: |-
                   Title is what the query is called in the dashboard. It is free text,
@@ -182,9 +209,18 @@ spec:
                 type: string
               where:
                 description: |-
-                  Where is a ClickHouse expression, the escape hatch the query bar can
-                  be switched into. A saved query may carry either or both, exactly as
-                  the view composes them.
+                  Where was a ClickHouse expression, the escape hatch the query bar could
+                  be switched into. **It is no longer evaluated, and no longer accepted**
+                  (issue #421): it was composed into the statement as written, bounded
+                  only by a conjunct, so it could read the whole telemetry store rather
+                  than the projects its author could see.
+
+                  The field stays on the type rather than being removed so that a query
+                  saved before that change keeps saying what it was, which is what lets
+                  the API and the dashboard tell whoever finds it why it no longer runs
+                  and what to write instead. Dropping the field would instead widen such
+                  a query silently — its remaining half selects everything the `where`
+                  used to narrow.
                 maxLength: 2000
                 type: string
             required:

@@ -116,14 +116,43 @@ the same parameters and are meant to be asked together.
 
 | Parameter | Meaning |
 |---|---|
-| `q` | Kitchen's log query language. The front door |
-| `where` | A ClickHouse boolean expression, evaluated as written. The escape hatch |
+| `q` | Kitchen's log query language, and the only filter there is |
 | `since` / `until` | RFC 3339 bounds on the window |
 
-Both query parameters are optional and compose with `AND`. **Asking for nothing
-selects everything in the window** — the window and the limit are the bounds,
-and there is no sentinel expression to type. (`where=1 = 1` used to be that
-sentinel, and it is gone.)
+`q` is optional. **Asking for nothing selects everything in the window** — the
+window, the caller's scope and the limit are the bounds, and there is no
+sentinel expression to type.
+
+### What changed: `where` is gone
+
+`where` used to take a ClickHouse expression and evaluate it as written. It is
+**refused with `400`** on all four routes and on `POST /logs/saved`, for every
+caller including an operator, and the refusal names `q`.
+
+It was not a narrower feature than it looked: the expression went into the
+statement as text, and a caller's projects were composed onto it with `AND`. A
+conjunct decides what a statement *returns* and nothing about what it may
+*read*, so a subquery inside the expression answered questions about every
+table the platform's own database user can see — one bit per request, which
+`substring()` turns into reading another project's lines a character at a time.
+`readonly=2` does not bound that either: it forbids writes and DDL, and permits
+`url()`, which wants `CREATE TEMPORARY TABLE` and gets it.
+
+If you had a `where`, it has a `q`:
+
+| Written as `where` | Written as `q` |
+|---|---|
+| `project = 'shop' AND stream = 'stderr'` | `project:shop stream:stderr` |
+| `Body ILIKE '%timeout%'` | `timeout` |
+| `match(Body, 'GET /works\?page=\d+')` | `message:/GET \/works\?page=\d+/` |
+| `SeverityText IN ('ERROR','FATAL')` | `level:error,fatal` |
+| `LogAttributes['http.status'] >= '500'` | `http.status:>=500` |
+| `pod LIKE 'shop-%'` | `pod:shop-*` |
+
+What the language cannot say — a join, an aggregate inside the predicate, a
+window function — is what it is not going to say. Those are questions about the
+store rather than about a project's logs, and the answer to them is a ClickHouse
+client and the operator's own credentials, not a route every account can reach.
 
 ```
 GET /logs?q=level:error service:shop&since=2026-08-13T10:00:00Z
@@ -163,8 +192,9 @@ Those are the query language's names, not the table's. The store is written by
 a stock OTel exporter whose column names are not Kitchen's to rename, so
 `level` and `message` read `SeverityText` and `Body` underneath; the
 translation lives in the operator rather than in `ALIAS` columns, which keeps
-the table the standard shape any OTel-aware tool expects. It only shows through
-in `where` below.
+the table the standard shape any OTel-aware tool expects. Nothing a caller
+writes ever names those columns: the translation is the compiler's, which is
+what makes the query language's vocabulary the whole vocabulary.
 
 `process` and `run` are a project's workloads besides its web one (see
 [Workloads](processes.md)). `run` is the Job a run produced — one firing of a
@@ -184,34 +214,43 @@ than being refused.
 
 Every value travels to ClickHouse as a bound parameter, never as query text.
 
-### The ClickHouse escape hatch
+### The boundary
 
-`where` is a real ClickHouse expression over the table's columns, evaluated as
-written — the query language is a front door, not a cage:
+The statement a request runs is written entirely by the platform: column
+expressions it chose, operators it recognised, and `{name:Type}` placeholders
+for everything the caller typed. A query cannot open a subquery, name a second
+table, call a function the compiler does not emit, or end the statement with a
+comment, because there is no path from the request into the statement's text —
+which is a boundary rather than a filter over what somebody sent.
 
+**The project scope is part of that statement rather than composed onto the
+caller's half of it.** Every read compiles to
+
+```sql
+WHERE (project IN ({scope0:String}, …)) AND (the caller's query) AND (the window)
 ```
-GET /logs?where=match(Body, 'GET /works\?page=\d+') AND environment = 'shop-production'
-```
 
-Its vocabulary is `otel_logs`'s own, which is the price of a store any
-OTel-shaped tool can read: `Body`, `SeverityText`, `LogAttributes['…']` where
-the query language says `message`, `level` and a field name. Kitchen's own
-columns — `project`, `environment`, `build`, `process`, `run`, `source`,
-`namespace`, `pod`, `container`, `node` — are real columns here and mean what they mean everywhere
-else, because they are what the table is ordered by.
+where the names in the scope are the projects the caller holds a role on, bound
+as parameters. An operator's read is the one with no `project` condition at all,
+and that is asked for explicitly rather than being what happens when nothing
+says otherwise: a selection that names no scope reads **nothing**, which is why
+a caller who can see no projects is answered an empty page without the store
+being asked at all.
 
-It reaches ClickHouse as query text, which is the point — and why it runs pinned
-read-only (`readonly=2`: no writes, no DDL) under an execution cap, as the
-operator's own database user. What that user can read is the whole telemetry
-database, so a cross-project read is narrowed by the API before it runs: a
-caller who is not an operator has `project IN (…their own…)` composed onto
-their selection with `AND`, which is why a `where` cannot reach another
-project's lines — and why the narrowing goes into the query rather than over
-the answer, so a page is a page of the caller's own lines.
+The narrowing goes into the query rather than over the answer because these
+reads are bounded: filtering afterwards would spend the caller's limit on lines
+they are not shown.
 
-A query either side refuses — a bracket that never closes, an unknown column —
-answers `400` carrying the diagnostic that says how to fix it: Kitchen's parser
-for `q`, ClickHouse's own for `where`.
+The read-only settings (`readonly=2`: no writes, no DDL) and the execution cap
+are still there, and are still worth having — they keep a mistake on the
+platform's side from becoming a write or a runaway scan. They were never the
+boundary between callers, and the store is reached as the platform's own
+database user, which can read the whole telemetry database.
+
+A query Kitchen's parser refuses — a bracket that never closes, `>=` with no
+number after it — answers `400` carrying the diagnostic that says how to fix it.
+So does one ClickHouse refuses, which after all of the above means a regular
+expression it will not compile.
 
 ### The histogram
 
@@ -267,14 +306,23 @@ shape. `?limit=` is how many templates come back (default 20, capped at 200).
 
 `GET /logs/saved` lists the selections someone kept under a name; `POST`
 saves the current one and `DELETE /logs/saved/{name}` forgets it. A saved
-query is the observability view's own URL state — `query`, `where`,
-`rangeMinutes`, `limit`, `view`, `includeCluster` — with a `title` on it.
+query is the observability view's own URL state — `query`, `rangeMinutes`,
+`limit`, `view`, `includeCluster` — with a `title` on it. `where` is refused
+here too, with the same message the read routes give.
 
 ```json
 {"name": "checkout-500s", "title": "Checkout 500s",
  "query": "level:error service:shop", "rangeMinutes": 60, "limit": 500,
  "view": "patterns", "savedBy": "grace@example.com", "createdAt": "2026-08-16T10:00:00Z"}
 ```
+
+Saving one also records **the projects the caller could see at that moment**,
+on `spec.scope` of the object. It is what an alert on the query may ever count
+over, and it is written down here rather than resolved later because the only
+identity a saved query carries is `savedBy`, which is a byline: an address that
+changes when the account's does, and one nothing checked against a `sub`.
+A query saved before this existed carries no scope, and its alert is not
+evaluated until it is saved again — see below.
 
 The object name is derived from the title, so nothing has to be invented; a
 second query that derives the same name answers `409` in the platform's words
@@ -295,8 +343,8 @@ for that reader anyway.
 
 **They are shared *and unowned*, which is a decision and not an oversight.**
 Any account may save one, and any account may delete one it can be shown — a
-query naming no project, "Platform 5xx" with a bare `where` clause, is
-therefore deletable by anybody with a token. `savedBy` is a byline, not an
+query naming no project, "Platform 5xx" over `level:error`, is therefore
+deletable by anybody with a token. `savedBy` is a byline, not an
 owner: it is the caller as the API knew them at the time, an address that
 changes when the account's does, so enforcing against it would take a role
 away from the person it was recorded for. Making a saved query owned means
@@ -355,3 +403,23 @@ so a threshold that stays crossed all afternoon is one message. `lastCount` and
 `message` are what a person reads while it stays crossed; `message` is also
 where an evaluation that could not be made says so, which is otherwise
 invisible on an alert that has simply never fired.
+
+**An alert counts only over the scope recorded on its query**, never over the
+whole store. Three things stop it being evaluated at all, and each says so in
+`message` rather than publishing a number:
+
+- the query carries the removed `where` — save the question again in the query
+  language;
+- no scope was recorded, which is every query saved before this change — save
+  it again;
+- the query no longer compiles.
+
+In all three the count is set to `0` and the alert stops firing: a number
+counted under the old rules is not a number to leave standing. Re-saving the
+question is two clicks in the observability view, and the alert resumes on the
+next evaluation.
+
+`lastCount`, `firing` and `message` are also **only shown to a reader whose own
+scope covers the query's**. The alert's definition — its window, threshold,
+comparison and whether it is suspended — is shown to everyone the query is
+listed to, because those say nothing about anybody's lines; the count does.

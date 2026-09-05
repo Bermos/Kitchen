@@ -166,12 +166,15 @@ func (s *Server) writeLogs(
 }
 
 // logSelectionFrom reads what every observability endpoint is asked over: the
-// query, the escape hatch, and the window.
+// query and the window.
 //
-// Both query surfaces are optional. An empty selection asks for everything in
-// the window, which is a legitimate question and is spelled by asking nothing —
-// there is no sentinel expression to type.
+// The query is optional. An empty selection asks for everything in the window,
+// which is a legitimate question and is spelled by asking nothing — there is no
+// sentinel expression to type.
 func logSelectionFrom(req *http.Request) (clickhouse.LogSelection, error) {
+	if raw := strings.TrimSpace(req.URL.Query().Get("where")); raw != "" {
+		return clickhouse.LogSelection{}, errRawWhere
+	}
 	since, err := timeParam(req, "since")
 	if err != nil {
 		return clickhouse.LogSelection{}, err
@@ -182,48 +185,65 @@ func logSelectionFrom(req *http.Request) (clickhouse.LogSelection, error) {
 	}
 	return clickhouse.LogSelection{
 		Query: strings.TrimSpace(req.URL.Query().Get("q")),
-		Where: strings.TrimSpace(req.URL.Query().Get("where")),
 		Since: since,
 		Until: until,
 	}, nil
 }
 
-// scopedSelection narrows a cross-project selection to the projects the caller
-// can see. An operator's is returned untouched.
+// errRawWhere is what a caller who sends the removed escape hatch is told, and
+// it is one string because four routes and the saved-query write all answer it.
+//
+// `where` was a ClickHouse expression evaluated as written, bounded only by the
+// caller's projects being appended to it with AND. A conjunct bounds what a
+// statement returns and nothing about what it may read, so a subquery in it
+// read the whole telemetry database (issue #421). It is refused rather than
+// sanitised: the query language compiles every value into a bound parameter and
+// cannot express a subquery, a second table or a function the compiler did not
+// choose, which is a boundary rather than a filter over what somebody typed.
+//
+// The refusal names the replacement, because most `where` clauses have one: a
+// column comparison is `project:shop`, a substring is a bare word, and
+// `match(Body, '…')` is `message:/…/`.
+var errRawWhere = errors.New(
+	"`where` is no longer accepted: a filter is written in the query language, which the " +
+		"platform compiles and binds every value of. Use `q` — `project:shop stream:stderr` for a " +
+		"column, `timeout` or \"connection refused\" for the message, `message:/GET \\/works/` for a " +
+		"regular expression, `http.status:>=500` for a number. See docs/api/logs.md")
+
+// scopedSelection bounds a cross-project selection by the projects the caller
+// can see, structurally: the scope is a field of the selection, compiled into
+// `project IN (…)` with every name bound as a parameter and ANDed around
+// whatever the caller asked for.
+//
+// It is a field rather than a conjunct composed onto the caller's own text
+// because the two are not the same thing. A conjunct narrows the rows a
+// statement answers with; it says nothing about which rows the statement may
+// read, and the statement used to be caller-written. Now the only text in it is
+// the platform's own, and the scope is the outermost thing in it.
 //
 // The narrowing goes into the query rather than over the answer, because these
 // reads are bounded: filtering afterwards would spend the caller's limit on
 // lines they are not shown, and a page could come back empty while the store
-// held plenty of theirs. `project` is a real column on the log table — the
-// query language's `project:` compiles to the same one — and the names are
-// Kubernetes object names, so the only thing composed into the statement is a
-// list of DNS labels, quoted anyway.
+// held plenty of theirs.
 //
 // A line belonging to no project at all is the platform's own (the cluster
-// source), and stays out: the condition names projects, and an empty `project`
-// is not one of them.
+// source), and stays out of a developer's answer: the condition names projects,
+// and an empty `project` is not one of them. An operator's selection is the
+// platform's whole store, which is what `all` means.
 func scopedSelection(scope projectScope, selection clickhouse.LogSelection) clickhouse.LogSelection {
 	if scope.all {
+		selection.Scope = clickhouse.LogScope{Platform: true}
 		return selection
 	}
-	names := scope.names()
-	quoted := make([]string, 0, len(names))
-	for _, name := range names {
-		quoted = append(quoted, "'"+strings.ReplaceAll(name, "'", "''")+"'")
-	}
-	mine := "project IN (" + strings.Join(quoted, ", ") + ")"
-	if selection.Where == "" {
-		selection.Where = mine
-		return selection
-	}
-	selection.Where = "(" + selection.Where + ") AND " + mine
+	selection.Scope = clickhouse.LogScope{Projects: scope.names()}
 	return selection
 }
 
 // writeQueryError answers the two ways a caller's own query can be wrong —
-// Kitchen's parser refusing it, and ClickHouse refusing it — with the
-// diagnostic that says how to fix it. Anything else is the platform's fault
-// and is reported as one.
+// Kitchen's parser refusing it, and ClickHouse refusing what the parser
+// produced (a regular expression it will not compile is the one that still
+// gets that far) — with the diagnostic that says how to fix it. Anything else
+// is the platform's fault and is reported as one.
 func (s *Server) writeQueryError(w http.ResponseWriter, err error) {
 	syntaxErr := &clickhouse.LogQueryError{}
 	if errors.As(err, &syntaxErr) {
@@ -238,9 +258,8 @@ func (s *Server) writeQueryError(w http.ResponseWriter, err error) {
 	s.writeError(w, err)
 }
 
-// queryLogs is the observability surface's lines. `q` is Kitchen's log query
-// language and the front door; `where` is a real ClickHouse expression, kept
-// because it is genuinely more powerful. Given both, they compose with AND.
+// queryLogs is the observability surface's lines, selected with `q` — Kitchen's
+// log query language, and the only filter surface there is.
 func (s *Server) queryLogs(w http.ResponseWriter, req *http.Request) {
 	selection, err := logSelectionFrom(req)
 	if err != nil {

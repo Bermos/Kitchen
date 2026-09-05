@@ -186,14 +186,15 @@ func TestSearchLogsRefusesAnUnscopedQuery(t *testing.T) {
 	}
 }
 
-func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
+func TestFilterLogsCompilesTheSelectionAndRunsItReadOnly(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = `{"ts":"2026-08-13T10:00:01.000Z","source":"runtime","project":"shop","stream":"stderr","message":"boom"}`
 
 	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{
 		LogSelection: LogSelection{
-			Where: "project = 'shop' AND SeverityText = 'ERROR'",
+			Query: "level:error",
+			Scope: LogScope{Projects: []string{testProject}},
 			Since: since,
 		},
 		Limit: 10,
@@ -205,17 +206,22 @@ func TestFilterLogsRunsTheExpressionReadOnly(t *testing.T) {
 		t.Fatalf("unexpected lines: %+v", lines)
 	}
 
-	// The expression is the feature, so it appears in the query text as
-	// written — which is exactly why the query must be pinned read-only and
-	// time-capped.
-	if !strings.Contains(store.query, "(project = 'shop' AND SeverityText = 'ERROR')") {
-		t.Fatalf("the expression should reach the query text as written:\n%s", store.query)
+	// Nothing the caller typed is in the statement: the scope and the level
+	// both leave as parameters, and the text around them is this package's.
+	if !strings.Contains(store.query, "(project IN ({scope0:String}))") {
+		t.Fatalf("the scope should bound the statement structurally:\n%s", store.query)
+	}
+	if got := store.params.Get("param_scope0"); got != testProject {
+		t.Fatalf("the scope's names should travel as parameters, got %q", got)
+	}
+	if strings.Contains(store.query, "error") {
+		t.Fatalf("a value the caller typed should never reach the statement:\n%s", store.query)
 	}
 	if got := store.params.Get("readonly"); got != "2" {
-		t.Fatalf("a caller-written query must run read-only, got readonly=%q", got)
+		t.Fatalf("a log query must run read-only, got readonly=%q", got)
 	}
 	if store.params.Get("max_execution_time") == "" {
-		t.Fatalf("a caller-written query must carry an execution cap")
+		t.Fatalf("a log query must carry an execution cap")
 	}
 	// The window and the limit still travel as parameters.
 	if !strings.HasPrefix(store.params.Get("param_since"), "2026-08-13T09:00:00") {
@@ -237,7 +243,7 @@ func TestTheFormattedTimestampDoesNotShadowTheColumn(t *testing.T) {
 	since := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
 
 	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{
-		LogSelection: LogSelection{Since: since},
+		LogSelection: LogSelection{Since: since, Scope: LogScope{Platform: true}},
 	}); err != nil {
 		t.Fatalf("FilterLogs: %v", err)
 	}
@@ -268,7 +274,7 @@ func assertNoShadow(t *testing.T, query string) {
 func TestFilterLogsAcceptsAnEmptySelection(t *testing.T) {
 	store := newFakeLogStore(t)
 	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{
-		LogSelection: LogSelection{Where: "   ", Query: "  "},
+		LogSelection: LogSelection{Query: "  ", Scope: LogScope{Platform: true}},
 	}); err != nil {
 		t.Fatalf("an empty selection should select everything: %v", err)
 	}
@@ -282,7 +288,9 @@ func TestFilterLogsAcceptsAnEmptySelection(t *testing.T) {
 
 func TestFilterLogsBoundsTheLimit(t *testing.T) {
 	store := newFakeLogStore(t)
-	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{Limit: 999999}); err != nil {
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{
+		LogSelection: LogSelection{Scope: LogScope{Platform: true}}, Limit: 999999,
+	}); err != nil {
 		t.Fatalf("FilterLogs: %v", err)
 	}
 	if got := store.params.Get("param_limit"); got != "5000" {
@@ -306,7 +314,7 @@ func TestARefusedQueryIsTypedAsTheCallersError(t *testing.T) {
 	})
 
 	_, err = client.FilterLogs(context.Background(), LogFilter{
-		LogSelection: LogSelection{Where: "projct = 'shop'"},
+		LogSelection: LogSelection{Query: `message:/(/`, Scope: LogScope{Platform: true}},
 	})
 	queryErr := &QueryError{}
 	if !errors.As(err, &queryErr) {
@@ -322,7 +330,9 @@ func TestARefusedQueryIsTypedAsTheCallersError(t *testing.T) {
 // ALIAS columns in the DDL doing it quietly.
 func TestTheProjectionTranslatesTheExportersColumns(t *testing.T) {
 	store := newFakeLogStore(t)
-	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{}); err != nil {
+	if _, err := store.client(t).FilterLogs(context.Background(), LogFilter{
+		LogSelection: LogSelection{Scope: LogScope{Platform: true}},
+	}); err != nil {
 		t.Fatalf("FilterLogs: %v", err)
 	}
 	for _, want := range []string{
@@ -359,7 +369,7 @@ func TestTheLevelIsFoldedRatherThanPassedThrough(t *testing.T) {
 	store.rows = `{"ts":"2026-08-13T10:00:01.000Z","level":"error","message":"boom"}`
 
 	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{
-		LogSelection: LogSelection{Query: "level:error"},
+		LogSelection: LogSelection{Query: "level:error", Scope: LogScope{Platform: true}},
 	})
 	if err != nil {
 		t.Fatalf("FilterLogs: %v", err)
@@ -379,7 +389,8 @@ func TestALineKeepsItsMicroseconds(t *testing.T) {
 	store := newFakeLogStore(t)
 	store.rows = `{"ts":"2026-08-13T10:00:01.123456Z","message":"boom"}`
 
-	lines, err := store.client(t).FilterLogs(context.Background(), LogFilter{})
+	lines, err := store.client(t).FilterLogs(context.Background(),
+		LogFilter{LogSelection: LogSelection{Scope: LogScope{Platform: true}}})
 	if err != nil {
 		t.Fatalf("FilterLogs: %v", err)
 	}

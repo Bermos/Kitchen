@@ -25,10 +25,11 @@ import (
 
 // Kitchen's log query language: `level:error service:shop -stream:stdout`.
 //
-// The store is ClickHouse and the API does not hide it — the raw expression is
-// still there, as `where` — but writing SQL should not be the price of asking
-// "which of my errors are new". This compiles the small language the query bar
-// speaks into the predicate the raw surface would have taken.
+// The store is ClickHouse and the API does not hide that it is, but writing
+// SQL is not the price of asking "which of my errors are new" — and, since
+// #421, is not something the API accepts at all. This compiles the small
+// language the query bar speaks into the predicate a statement is built from.
+// It is the only route from something a caller typed into a query.
 //
 // Every value the user typed leaves as a `{name:Type}` parameter rather than as
 // query text, so a quote or a backslash in a search term is a search term. The

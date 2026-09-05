@@ -370,6 +370,12 @@ func (s *Server) updateLogs(w http.ResponseWriter, req *http.Request) {
 	filter := clickhouse.LogFilter{
 		LogSelection: clickhouse.LogSelection{
 			Query: updateLogSelection(update.Status.JobName, search),
+			// The platform's own namespace, whose lines belong to no project
+			// at all — so this is one of the two reads that ask for the whole
+			// store. The route is the operator's, and the selection above is
+			// composed from the update rather than from anything the caller
+			// sent.
+			Scope: clickhouse.LogScope{Platform: true},
 			Since: since,
 			Until: until,
 		},

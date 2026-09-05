@@ -23,10 +23,11 @@ import (
 	"testing"
 	"time"
 
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
-func TestQueryingLogsWithAClickHouseExpression(t *testing.T) {
+func TestQueryingLogsSelectsWithTheQueryLanguage(t *testing.T) {
 	h := newHarness(t, nil)
 	h.logs.lines = []clickhouse.LogLine{{
 		Timestamp: time.Now(),
@@ -36,19 +37,63 @@ func TestQueryingLogsWithAClickHouseExpression(t *testing.T) {
 		Message:   "unhandled rejection",
 	}}
 
-	where := url.QueryEscape("project = 'shop' AND stream = 'stderr'")
-	recorder := h.do(t, http.MethodGet, "/api/v1/logs?where="+where+"&limit=50", "")
+	query := url.QueryEscape("project:shop stream:stderr")
+	recorder := h.do(t, http.MethodGet, "/api/v1/logs?q="+query+"&limit=50", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	if !strings.Contains(recorder.Body.String(), "unhandled rejection") {
 		t.Fatalf("want the line in the answer, got %s", recorder.Body.String())
 	}
-	if h.logs.lastFilter.Where != "project = 'shop' AND stream = 'stderr'" {
-		t.Fatalf("the expression did not reach the store as written: %+v", h.logs.lastFilter)
+	if h.logs.lastFilter.Query != "project:shop stream:stderr" {
+		t.Fatalf("the query did not reach the store: %+v", h.logs.lastFilter)
 	}
 	if h.logs.lastFilter.Limit != 50 {
 		t.Fatalf("the limit did not reach the store: %+v", h.logs.lastFilter)
+	}
+}
+
+// `where` was a ClickHouse expression evaluated as written, and the caller's
+// projects were only appended to it — which bounds what the statement answers
+// with and nothing about what it may read (issue #421). It is refused on every
+// route that took it, including for an operator: the escape hatch is gone
+// rather than reserved, because the query language is what the platform can
+// compile and bind.
+func TestTheRawExpressionIsRefusedOnEveryQueryRoute(t *testing.T) {
+	oracle := url.QueryEscape(
+		"(SELECT count() FROM otel_logs WHERE project='billing' AND position(Body,'AKIA')>0) > 0")
+	for _, route := range []string{"/api/v1/logs", "/api/v1/logs/histogram",
+		"/api/v1/logs/facets", "/api/v1/logs/patterns"} {
+		// The harness's caller is an operator, and an operator is refused too.
+		h := newHarness(t, nil)
+		recorder := h.do(t, http.MethodGet, route+"?where="+oracle, "")
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d: %s", route, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "`q`") {
+			t.Fatalf("%s: the refusal should name the replacement: %s", route, recorder.Body.String())
+		}
+		if h.logs.lastFilter.Query != "" || h.logs.lastFilter.Limit != 0 {
+			t.Fatalf("%s: the store should not have been asked: %+v", route, h.logs.lastFilter)
+		}
+	}
+}
+
+// The oracle the issue is about, asked the only way it can still be asked. It
+// is not refused — it is a perfectly ordinary search for a word — and it
+// reaches the store as a query over the caller's own scope, where the words
+// `SELECT` and `otel_logs` are a message to look for.
+func TestASubqueryTypedIntoTheQueryLanguageIsJustText(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer, blogFixtures()...)
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/logs?q="+
+		url.QueryEscape(`"(SELECT count() FROM otel_logs WHERE project='billing')"`), "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	scope := h.logs.lastFilter.Scope
+	if scope.Platform || len(scope.Projects) != 1 || scope.Projects[0] != feedProject {
+		t.Fatalf("the read should be bounded by the caller's projects, got %+v", scope)
 	}
 }
 
@@ -64,7 +109,7 @@ func TestQueryingLogsWithoutAQuerySelectsEverything(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if h.logs.lastFilter.Where != "" || h.logs.lastFilter.Query != "" {
+	if h.logs.lastFilter.Query != "" {
 		t.Fatalf("nothing asked for should reach the store as nothing: %+v", h.logs.lastFilter)
 	}
 }
@@ -82,19 +127,19 @@ func TestQueryingLogsWithTheQueryLanguage(t *testing.T) {
 	}
 }
 
-// The two surfaces compose rather than exclude each other: the view scopes the
-// cluster's own pods out with `q` while the operator writes ClickHouse in
-// `where`.
-func TestTheQueryAndTheEscapeHatchCompose(t *testing.T) {
+// What the two surfaces used to be written as, in one query: the cluster's own
+// pods scoped out and a substring of the message, which the language says in
+// one line.
+func TestOneQuerySaysWhatBothSurfacesUsedTo(t *testing.T) {
 	h := newHarness(t, nil)
 
-	recorder := h.do(t, http.MethodGet, "/api/v1/logs?q="+url.QueryEscape("-source:cluster")+
-		"&where="+url.QueryEscape("message ILIKE '%timeout%'"), "")
+	recorder := h.do(t, http.MethodGet, "/api/v1/logs?q="+
+		url.QueryEscape(`-source:cluster timeout`), "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
-	if h.logs.lastFilter.Query != "-source:cluster" || h.logs.lastFilter.Where != "message ILIKE '%timeout%'" {
-		t.Fatalf("both surfaces should reach the store: %+v", h.logs.lastFilter)
+	if h.logs.lastFilter.Query != "-source:cluster timeout" {
+		t.Fatalf("the query should reach the store: %+v", h.logs.lastFilter)
 	}
 }
 
@@ -155,6 +200,9 @@ func TestTheAnalyticsShareTheSelection(t *testing.T) {
 	}
 }
 
+// ClickHouse can still refuse what the compiler produced — a regular
+// expression it will not compile is the one that gets that far — and that
+// diagnostic is the caller's to read.
 func TestABadExpressionIsTheCallersProblem(t *testing.T) {
 	h := newHarness(t, nil)
 	h.logs.filterErr = &clickhouse.QueryError{
@@ -162,7 +210,7 @@ func TestABadExpressionIsTheCallersProblem(t *testing.T) {
 		Message: "Code: 62. DB::Exception: Syntax error near 'projct'",
 	}
 
-	recorder := h.do(t, http.MethodGet, "/api/v1/logs?where="+url.QueryEscape("projct == 'shop'"), "")
+	recorder := h.do(t, http.MethodGet, "/api/v1/logs?q="+url.QueryEscape("message:/(/"), "")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
 	}

@@ -222,38 +222,98 @@ FORMAT JSONEachRow`,
 	return parseLogLines(body, limit)
 }
 
-// LogSelection is what a question about the logs is asked over: the query, and
-// the window it is asked in. Every analytic over the store — the lines, the
-// histogram, the facets, the patterns — takes one, because they are four views
-// of the same selection and would be lying if they could disagree about it.
+// LogSelection is what a question about the logs is asked over: the query, the
+// scope it may read, and the window it is asked in. Every analytic over the
+// store — the lines, the histogram, the facets, the patterns — takes one,
+// because they are four views of the same selection and would be lying if they
+// could disagree about it.
 //
-// Both query surfaces are optional and compose with AND. An empty selection is
-// a legitimate question — "everything in the window" — and the window and the
-// limit are what bound it. There is deliberately no sentinel to type for that.
+// The query is optional and an empty one is a legitimate question —
+// "everything in the window" — where the window, the scope and the limit are
+// what bound it. There is deliberately no sentinel to type for that.
+//
+// **The scope is not optional**, and that is the whole of issue #421. A
+// selection used to carry a second surface beside the query: `Where`, a
+// ClickHouse expression composed into the statement as written, with the
+// caller's projects appended to it as one more conjunct. A conjunct bounds
+// what a statement *returns*; it bounds nothing about what it may *read*, so a
+// subquery inside the expression answered about the whole telemetry database
+// one bit at a time — and `readonly=2`, which forbids writes and DDL, permits
+// `url()` outright (it wants CREATE TEMPORARY TABLE, which readonly=2 grants),
+// so the reach was not even confined to this store. There is now one filter
+// surface, the query language, whose every value leaves as a bound parameter
+// and whose statement text this package writes itself; the scope is applied
+// structurally around it, and a selection that names none reads nothing.
 type LogSelection struct {
 	// Query is Kitchen's log query language: `level:error service:shop`.
-	// See CompileLogQuery. This is the front door.
+	// See CompileLogQuery. It is the only filter surface there is.
 	Query string
-	// Where is a ClickHouse boolean expression over the table's columns,
-	// evaluated as written. It is the escape hatch, kept because it is
-	// genuinely more powerful than the query language and always will be.
-	//
-	// Its vocabulary is the table's, not the query language's: `Body`,
-	// `SeverityText`, `LogAttributes['…']`. The Kitchen-named columns
-	// (`project`, `environment`, `pod`, …) are real columns and mean here what
-	// they mean everywhere else.
-	Where string
+	// Scope is what this selection may read. It is the caller's projects on
+	// the API's routes, one project on a read that is about one, and the
+	// platform's whole store only where the reader is entitled to it.
+	Scope LogScope
 	// Since and Until bound the window on top of the query.
 	Since time.Time
 	Until time.Time
 }
 
+// LogScope is which projects a selection may read: the boundary, expressed as
+// a structure rather than as text somebody could compose around.
+//
+// Platform and an empty Projects are deliberately two different things. A
+// scope that names nothing reads nothing — a zero LogScope is the safe
+// direction, not "everything" — and the whole store is asked for by saying so.
+type LogScope struct {
+	// Projects narrows the read to lines belonging to these projects, by name.
+	Projects []string
+	// Platform is every line in the store, including the ones belonging to no
+	// project at all — Kitchen's own components and the rest of the cluster.
+	// It is the operator's view, and the two reads inside the platform that
+	// are about the platform (a self-update's job, a component's own output).
+	Platform bool
+}
+
+// condition compiles the scope into the predicate that bounds the statement,
+// binding every project name as a parameter. Names are DNS labels and could
+// safely be quoted, but nothing caller-shaped is written into a statement here
+// on purpose: the rule is that values travel as parameters, and a rule with an
+// exception in it is a rule somebody extends.
+func (s LogScope) condition(params map[string]string) (string, error) {
+	if s.Platform {
+		return "", nil
+	}
+	if len(s.Projects) == 0 {
+		// Not a LogQueryError: there is nothing the caller could type to fix
+		// it. It is a selection the platform built without saying what it may
+		// read, which is a bug in the caller of this package, and it reads
+		// nothing rather than everything.
+		return "", fmt.Errorf("a log selection must say which projects it may read")
+	}
+	placeholders := make([]string, 0, len(s.Projects))
+	for i, project := range s.Projects {
+		name := "scope" + strconv.Itoa(i)
+		params[name] = project
+		placeholders = append(placeholders, fmt.Sprintf("{%s:String}", name))
+	}
+	return "project IN (" + strings.Join(placeholders, ", ") + ")", nil
+}
+
 // conditions compiles the selection into ClickHouse predicates and the
-// parameters they read. An empty selection compiles to no conditions at all —
-// not to a tautology — and the caller renders no WHERE clause.
+// parameters they read: the scope first, then the caller's own query, then the
+// window. A selection with nothing but a scope compiles to the scope alone —
+// not to a tautology — and one that asks for everything in an unbounded window
+// is still bounded by it.
 func (s LogSelection) conditions() ([]string, map[string]string, error) {
 	conditions := []string{}
 	params := map[string]string{}
+
+	scope, err := s.Scope.condition(params)
+	if err != nil {
+		return nil, nil, err
+	}
+	if scope != "" {
+		conditions = append(conditions, "("+scope+")")
+	}
 
 	if query := strings.TrimSpace(s.Query); query != "" {
 		compiled, err := CompileLogQuery(query)
@@ -266,9 +326,6 @@ func (s LogSelection) conditions() ([]string, map[string]string, error) {
 				params[name] = value
 			}
 		}
-	}
-	if where := strings.TrimSpace(s.Where); where != "" {
-		conditions = append(conditions, "("+where+")")
 	}
 	if !s.Since.IsZero() {
 		conditions = append(conditions, logSinceCondition)
@@ -304,12 +361,12 @@ type LogFilter struct {
 
 // FilterLogs answers the lines a selection matches.
 //
-// The `where` half of a selection goes into the query text as written — that is
-// the feature — so the query runs read-only (readonly=2: no writes, no DDL) and
-// under an execution-time cap. What a caller can reach is what the operator's
-// ClickHouse user can read; today every API caller is a trusted platform user
-// (scopes and RBAC are an open item in AUTH.md), and the settings keep a typo
-// from becoming a write or a runaway scan.
+// Nothing a caller typed reaches the statement as text: the query language
+// compiles to predicates this package wrote, over columns it chose, with every
+// value bound as a parameter. The read-only settings (readonly=2: no writes, no
+// DDL) and the execution cap stay on top of that as the second line rather than
+// the first — they are what keeps a platform-side mistake from becoming a write
+// or a runaway scan, and they were never a boundary between callers.
 func (c *Client) FilterLogs(ctx context.Context, filter LogFilter) ([]LogLine, error) {
 	limit := filter.Limit
 	if limit < 1 {

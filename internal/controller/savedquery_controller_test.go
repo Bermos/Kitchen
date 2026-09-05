@@ -131,8 +131,12 @@ var _ = Describe("Saved-query alerts", func() {
 		saved = &kitchenv1alpha1.SavedQuery{
 			ObjectMeta: metav1.ObjectMeta{Name: queryName, Namespace: PlatformNamespace},
 			Spec: kitchenv1alpha1.SavedQuerySpec{
-				Title:        "Checkout 500s",
-				Query:        "level:error service:shop",
+				Title: "Checkout 500s",
+				Query: "level:error service:shop",
+				// What whoever saved it could see. An alert is a question
+				// nobody is watching being asked, so the scope it may count
+				// over is written down rather than assumed.
+				Scope:        &kitchenv1alpha1.SavedQueryScope{Projects: []string{"shop"}},
 				RangeMinutes: 60,
 				Alert: &kitchenv1alpha1.SavedQueryAlert{
 					WindowMinutes:   10,
@@ -163,6 +167,8 @@ var _ = Describe("Saved-query alerts", func() {
 		asked := logs.asked()
 		Expect(asked).To(HaveLen(1))
 		Expect(asked[0].Query).To(Equal("level:error service:shop"))
+		Expect(asked[0].Scope).To(Equal(clickhouse.LogScope{Projects: []string{"shop"}}),
+			"an alert counts over the scope its author had, never over the whole store")
 		Expect(asked[0].Until.Sub(asked[0].Since)).To(Equal(10*time.Minute),
 			"an alert evaluates over spec.alert.windowMinutes; rangeMinutes is what a person reads")
 	})
@@ -249,6 +255,73 @@ var _ = Describe("Saved-query alerts", func() {
 		Expect(saved.Status.Message).To(ContainSubstring("refused the query"))
 		Consistently(firings).WithTimeout(500 * time.Millisecond).
 			WithPolling(50 * time.Millisecond).Should(BeEmpty())
+	})
+
+	// Issue #421: the alert used to be evaluated with no scope whatsoever and
+	// with whatever ClickHouse expression the saved query carried, and it
+	// published the count on the object for anyone the query is listed to. The
+	// three ways a query can no longer be asked all fail the same way: nothing
+	// is counted, nothing stays firing, and the object says why.
+	DescribeTable("refuses to evaluate a question it cannot ask safely",
+		func(prepare func(), reason string) {
+			logs.answer(9000, nil)
+			// It was firing on the old rules, so the refusal has to take that
+			// back rather than leave the last number standing.
+			saved.Status.Firing = true
+			saved.Status.LastCount = 9000
+			Expect(k8sClient.Status().Update(ctx, saved)).To(Succeed())
+
+			prepare()
+			Expect(k8sClient.Update(ctx, saved)).To(Succeed())
+			evaluate()
+
+			Expect(logs.asked()).To(BeEmpty(), "the store must not be asked at all")
+			Expect(saved.Status.Firing).To(BeFalse())
+			Expect(saved.Status.LastCount).To(BeZero(),
+				"a count taken under the old rules must not stay published")
+			Expect(saved.Status.Message).To(ContainSubstring("not evaluated"))
+			Expect(saved.Status.Message).To(ContainSubstring(reason))
+			Consistently(firings).WithTimeout(500 * time.Millisecond).
+				WithPolling(50 * time.Millisecond).Should(BeEmpty())
+		},
+		Entry("one saved before a scope was recorded", func() {
+			saved.Spec.Scope = nil
+		}, "no project scope was recorded"),
+		Entry("one whose author could see nothing", func() {
+			saved.Spec.Scope = &kitchenv1alpha1.SavedQueryScope{}
+		}, "no project scope was recorded"),
+		Entry("one still carrying the raw ClickHouse filter", func() {
+			saved.Spec.Where = "project = 'billing'"
+		}, "no longer evaluated"),
+	)
+
+	// A query the language has moved under is the caller's to fix and nothing
+	// that happens later fixes it, so it is a permanent refusal rather than a
+	// store that will be back in a minute.
+	It("fails an alert whose query no longer compiles, rather than counting", func() {
+		logs.answer(0, &clickhouse.LogQueryError{Message: "a bracket is never closed"})
+		saved.Status.LastCount = 42
+		Expect(k8sClient.Status().Update(ctx, saved)).To(Succeed())
+		evaluate()
+
+		Expect(saved.Status.LastCount).To(BeZero())
+		Expect(saved.Status.Firing).To(BeFalse())
+		Expect(saved.Status.Message).To(ContainSubstring("a bracket is never closed"))
+	})
+
+	// A store that cannot be reached is the other kind: the question is still
+	// a good one, so the last count it produced stays where a person can see
+	// it and the message says why there is no newer one.
+	It("keeps the last count when it is the store that could not answer", func() {
+		logs.answer(3, nil)
+		evaluate()
+		Expect(saved.Status.LastCount).To(Equal(int64(3)))
+
+		now = now.Add(10 * time.Minute)
+		logs.answer(0, fmt.Errorf("dial tcp: connection refused"))
+		evaluate()
+		Expect(saved.Status.LastCount).To(Equal(int64(3)))
+		Expect(saved.Status.Message).To(ContainSubstring("connection refused"))
 	})
 
 	It("does nothing at all for a query with no alert, or a suspended one", func() {

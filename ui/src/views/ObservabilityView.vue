@@ -28,19 +28,22 @@ import StatusDot from "../components/StatusDot.vue";
 // what is on screen is always a link.
 //
 // The query bar speaks Kitchen's log query language — `level:error
-// service:shop` — and can be switched to raw ClickHouse, which is genuinely
-// more powerful and is not the front door. Neither has a default: an empty bar
-// asks for everything in the window, which is the question someone opening this
-// page is asking.
+// service:shop` — and that is the whole of what a filter can be. It used to be
+// switchable into raw ClickHouse, which read as "more powerful" and was in fact
+// unbounded: the expression was evaluated as written and the caller's projects
+// were only appended to it, so a subquery inside it read the whole telemetry
+// store (issue #421). The language compiles every value into a bound parameter
+// and the API applies the project scope around it, which is a boundary rather
+// than a filter over what somebody typed.
+//
+// The bar has no default: an empty one asks for everything in the window, which
+// is the question someone opening this page is asking.
 
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 
-type Mode = "query" | "clickhouse";
-const mode = ref<Mode>(route.query.where ? "clickhouse" : "query");
 const query = ref((route.query.q as string) ?? "");
-const where = ref((route.query.where as string) ?? "");
 const limit = ref(Number(route.query.limit) || 200);
 const limits = [200, 500, 1000, 5000];
 const tab = ref<"lines" | "patterns">(route.query.view === "patterns" ? "patterns" : "lines");
@@ -49,9 +52,9 @@ const tab = ref<"lines" | "patterns">(route.query.view === "patterns" ? "pattern
 // logs of things Kitchen did not deploy — the CNI, the CSI sidecars, whatever
 // else the cluster runs. They are worth having (a sick node is exactly when
 // Kitchen looks broken) and they are not what someone opening this page is
-// looking for, so they are scoped out unless asked for. The clause rides in the
-// query language even in ClickHouse mode: the two surfaces compose with AND
-// server-side, so the bar stays the operator's to write.
+// looking for, so they are scoped out unless asked for. It rides in the query
+// language as a clause of its own, which is what lets the chips below take it
+// back off again.
 const clusterClause: Clause = { field: "source", value: "cluster", negated: true };
 
 // Whether the cluster's own lines are in the answer — a preference, narrowed
@@ -108,7 +111,6 @@ function selection(): LogSelection {
   };
   return {
     q: scoped.trim() || undefined,
-    where: mode.value === "clickhouse" ? where.value.trim() || undefined : undefined,
     since: window.since,
     until: window.until,
   };
@@ -207,17 +209,10 @@ function toggleLiveTail() {
   }
 }
 
-function setMode(next: Mode) {
-  if (mode.value === next) return;
-  mode.value = next;
-  void run();
-}
-
 /** The selection, in the address bar. A query on screen is always a link. */
 function syncURL() {
   const params: Record<string, string> = {};
   if (query.value.trim()) params.q = query.value.trim();
-  if (mode.value === "clickhouse" && where.value.trim()) params.where = where.value.trim();
   if (includeCluster.value) params.cluster = "1";
   if (limit.value !== 200) params.limit = String(limit.value);
   if (tab.value !== "lines") params.view = tab.value;
@@ -278,7 +273,23 @@ async function run(full: unknown = true) {
   }
 }
 
-onMounted(run);
+onMounted(() => {
+  // A link somebody kept from before #421 carries `?where=`, and this page no
+  // longer sends it — the API refuses it. Running the rest of the link without
+  // it asks a wider question than the link did, so it says so rather than
+  // quietly showing more lines than the sender saw.
+  if (route.query.where) {
+    toast.add({
+      title: "This link's raw ClickHouse filter is not applied",
+      description:
+        "`where` was removed: it could read outside the projects its author could see. " +
+        "What is shown is the rest of the link — write the filter in the query bar to narrow it again.",
+      color: "warning",
+      icon: "i-lucide-triangle-alert",
+    });
+  }
+  void run();
+});
 usePoll(() => void run(false), 5000, () => liveTail.value && !streaming.value && !loading.value);
 
 watch(tab, (next) => {
@@ -359,7 +370,6 @@ async function saveQuery() {
       title: savedTitle.value.trim(),
       description: savedDescription.value.trim() || undefined,
       query: query.value.trim() || undefined,
-      where: mode.value === "clickhouse" ? where.value.trim() || undefined : undefined,
       rangeMinutes: savedRange(),
       limit: limit.value,
       view: tab.value,
@@ -385,9 +395,22 @@ async function saveQuery() {
  * was read in: a query saved because its patterns were the point should open
  * on them. */
 function applySaved(entry: SavedQuery) {
-  mode.value = entry.where ? "clickhouse" : "query";
   query.value = entry.query ?? "";
-  where.value = entry.where ?? "";
+  // A query saved before #421 may carry a raw ClickHouse filter, which is no
+  // longer evaluated anywhere. Applying its other half alone would ask a wider
+  // question than the one that was saved, so the difference is said out loud
+  // rather than left for the reader to notice in the line count.
+  if (entry.where) {
+    toast.add({
+      title: `“${entry.title}” was saved with a raw ClickHouse filter`,
+      description:
+        "That filter is no longer applied — it could read outside its author's projects. " +
+        `Only its query language half is: ${entry.query || "everything in the window"}. ` +
+        "Save the question again to keep it.",
+      color: "warning",
+      icon: "i-lucide-triangle-alert",
+    });
+  }
   limit.value = entry.limit || 200;
   rangeMinutes.value = entry.rangeMinutes;
   pinned.value = null;
@@ -401,7 +424,7 @@ function applySaved(entry: SavedQuery) {
 function isCurrent(entry: SavedQuery): boolean {
   return (
     (entry.query ?? "") === query.value.trim() &&
-    (entry.where ?? "") === (mode.value === "clickhouse" ? where.value.trim() : "") &&
+    !entry.where &&
     !pinned.value &&
     entry.rangeMinutes === rangeMinutes.value
   );
@@ -520,9 +543,7 @@ function fieldsOf(line: LogLine): [string, string][] {
   return Object.entries(line.fields ?? {}).sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-const placeholder = computed(() =>
-  mode.value === "query" ? `level:error service:shop` : `project = 'shop' AND stream = 'stderr'`,
-);
+const placeholder = `level:error service:shop`;
 </script>
 
 <template>
@@ -591,29 +612,11 @@ const placeholder = computed(() =>
       <div
         class="w-full sm:w-auto sm:flex-1 flex items-center gap-2 rounded-md border border-default bg-muted px-3 focus-within:border-accented"
       >
-        <button
-          class="font-mono text-xs shrink-0 select-none"
-          :class="mode === 'query' ? 'text-info' : 'text-warning'"
-          :title="
-            mode === 'query'
-              ? 'Kitchen query syntax. Click to write ClickHouse instead.'
-              : 'A ClickHouse expression, evaluated as written. Click to go back to query syntax.'
-          "
-          @click="setMode(mode === 'query' ? 'clickhouse' : 'query')"
-        >
-          {{ mode === "query" ? "search" : "where" }}
-        </button>
+        <span class="font-mono text-xs shrink-0 select-none text-info" title="Kitchen's log query language">
+          search
+        </span>
         <input
-          v-if="mode === 'query'"
           v-model="query"
-          class="flex-1 bg-transparent py-2 font-mono text-sm text-highlighted outline-none placeholder:text-dimmed"
-          :placeholder="placeholder"
-          spellcheck="false"
-          @keydown.enter="run"
-        />
-        <input
-          v-else
-          v-model="where"
           class="flex-1 bg-transparent py-2 font-mono text-sm text-highlighted outline-none placeholder:text-dimmed"
           :placeholder="placeholder"
           spellcheck="false"
@@ -644,7 +647,7 @@ const placeholder = computed(() =>
       >
         <button
           class="px-1.5 py-0.5 text-toned hover:text-highlighted"
-          :title="entry.description || entry.query || entry.where || 'Everything in the window'"
+          :title="entry.description || entry.query || 'Everything in the window'"
           @click="applySaved(entry)"
         >
           {{ entry.title }}
@@ -680,24 +683,15 @@ const placeholder = computed(() =>
       >
         {{ clause.negated ? "−" : "" }}{{ clause.field }}:{{ clause.value }} ×
       </button>
-      <!-- What can be typed here. Both lists are the mode's: the last example
-           and four of the columns are only worth knowing about if the cluster's
-           own lines are in the answer, and they are the operator's. -->
-      <span v-if="mode === 'query'" class="text-dimmed">
+      <!-- What can be typed here. The last example is only worth knowing about
+           if the cluster's own lines are in the answer, and they are the
+           operator's. -->
+      <span class="text-dimmed">
         <template v-if="!activeClauses.length">
           <span class="font-mono">level:error</span> · <span class="font-mono">service:shop</span> ·
           <span class="font-mono">http.status:&gt;=500</span>
           <OperatorOnly> · <span class="font-mono">-source:cluster</span></OperatorOnly>
         </template>
-      </span>
-      <span v-else class="text-dimmed font-mono">
-        <OperatorOnly>
-          columns: timestamp · source · project · environment · build · pod · container · stream · level · traceId ·
-          spanId · message · fields
-        </OperatorOnly>
-        <span v-if="!operatorMode">
-          columns: timestamp · project · environment · build · stream · level · traceId · spanId · message · fields
-        </span>
       </span>
     </div>
 
@@ -706,7 +700,7 @@ const placeholder = computed(() =>
       color="error"
       variant="soft"
       icon="i-lucide-triangle-alert"
-      :title="mode === 'query' ? 'The query could not be run' : 'ClickHouse refused the query'"
+      title="The query could not be run"
       :description="error"
       class="[&_p]:font-mono [&_p]:text-xs"
     />
@@ -879,7 +873,7 @@ const placeholder = computed(() =>
             <UInput v-model="savedDescription" placeholder="Errors from the checkout service, last hour" />
           </UFormField>
           <p class="text-xs text-muted font-mono break-all">
-            {{ mode === "clickhouse" ? where.trim() || "1 = 1" : query.trim() || "everything in the window" }}
+            {{ query.trim() || "everything in the window" }}
           </p>
         </div>
       </template>

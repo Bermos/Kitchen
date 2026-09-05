@@ -51,12 +51,37 @@ type SavedQuerySpec struct {
 	// +optional
 	Query string `json:"query,omitempty"`
 
-	// Where is a ClickHouse expression, the escape hatch the query bar can
-	// be switched into. A saved query may carry either or both, exactly as
-	// the view composes them.
+	// Where was a ClickHouse expression, the escape hatch the query bar could
+	// be switched into. **It is no longer evaluated, and no longer accepted**
+	// (issue #421): it was composed into the statement as written, bounded
+	// only by a conjunct, so it could read the whole telemetry store rather
+	// than the projects its author could see.
+	//
+	// The field stays on the type rather than being removed so that a query
+	// saved before that change keeps saying what it was, which is what lets
+	// the API and the dashboard tell whoever finds it why it no longer runs
+	// and what to write instead. Dropping the field would instead widen such
+	// a query silently — its remaining half selects everything the `where`
+	// used to narrow.
 	// +kubebuilder:validation:MaxLength=2000
 	// +optional
 	Where string `json:"where,omitempty"`
+
+	// Scope is what an alert on this query may count: the projects whoever
+	// saved it could see, recorded at that moment.
+	//
+	// It is recorded rather than resolved at evaluation time because the only
+	// identity a saved query carries is `savedBy`, which is a byline — an
+	// address that changes when the account's does, and one nothing verified
+	// as belonging to a `sub`. Reconstructing a role from it would be a role
+	// nobody granted; a scope written down when a token had just been checked
+	// is one that was.
+	//
+	// A query carrying none — every query saved before this field existed —
+	// is not evaluated at all, and says so in status.message. That is the
+	// safe direction: an absent scope means nothing, never everything.
+	// +optional
+	Scope *SavedQueryScope `json:"scope,omitempty"`
 
 	// RangeMinutes is the window the question is asked over, relative to
 	// whenever it is opened — which is what makes it worth saving. Zero
@@ -102,6 +127,25 @@ type SavedQuerySpec struct {
 	// nobody can tune. Absent means the query is only ever asked by a person.
 	// +optional
 	Alert *SavedQueryAlert `json:"alert,omitempty"`
+}
+
+// SavedQueryScope is which projects a saved query's alert may count over.
+//
+// The two fields are not the same as each other's absence. Platform is the
+// whole store, including the lines belonging to no project — Kitchen's own
+// components and the rest of the cluster — and is what an operator's saved
+// query records. A list of projects is what everybody else's records. Neither
+// set is a scope that reads everything by default: an object carrying no scope
+// at all counts nothing.
+type SavedQueryScope struct {
+	// Platform is every line in the store. It is recorded for a query saved
+	// by an operator, who may read all of it.
+	// +optional
+	Platform bool `json:"platform,omitempty"`
+
+	// Projects names the projects the query may count over.
+	// +optional
+	Projects []string `json:"projects,omitempty"`
 }
 
 // SavedQueryAlert is a threshold over a window, asked on a schedule.
