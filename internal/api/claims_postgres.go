@@ -43,6 +43,11 @@ func (postgresClaimShaper) fields() []claimField {
 			set:   func(body *createClaimRequest) bool { return body.Postgres != nil },
 			lacks: "no version, no extensions and no volume",
 		},
+		{
+			name:  "backup",
+			set:   func(body *createClaimRequest) bool { return body.Backup != nil },
+			lacks: "no backup this platform configures — whoever runs it backs it up",
+		},
 	}
 }
 
@@ -72,6 +77,7 @@ func (postgresClaimShaper) config(
 
 func (postgresClaimShaper) view(claim *kitchenv1alpha1.ResourceClaim, view *claimView) {
 	view.Postgres = postgresOf(claim)
+	view.Backup = backupOf(claim)
 }
 
 func (postgresClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceClaim) string {

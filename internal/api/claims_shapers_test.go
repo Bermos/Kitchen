@@ -93,6 +93,8 @@ func sampleField(name string) string {
 		return `"volume": {"process": "web", "size": "1Gi", "mountPath": "/data"}`
 	case kitchenv1alpha1.ClaimTypeInngest:
 		return `"inngest": {"app": "shop-worker"}`
+	case "backup":
+		return `"backup": {"enabled": true}`
 	case "callbackPaths":
 		return `"callbackPaths": ["/auth/callback"]`
 	case "redirectURIs":

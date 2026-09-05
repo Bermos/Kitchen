@@ -1810,6 +1810,13 @@ spec:
     - name: before-the-migration
       at: 2026-08-30T14:05:00Z          # inside the window the status reports
   promotedRecovery: ""                  # which copy the claim binds; empty binds the instance's own database
+  backup:                               # postgres only; every field inherits the Connection's, then the
+    enabled: true                       # platform's destination. Absent is the usual and the right answer
+    schedule: "0 0 3 * * *"             # CloudNativePG's cron: SIX fields, seconds first, UTC
+    retentionPolicy: 30d                # how long the destination keeps them; empty keeps everything
+    destination:                        # a bucket of this claim's own; absent takes the platform's
+      type: s3
+      s3: { bucket: shop-archive, prefix: db, credentialsSecretRef: { name: shop-db-backup-destination } }
   config:
     previewMode: fresh                  # what previews get: the provider's declared mode (default), shared or none
     postgres:                           # what the database itself has to be; all of it optional
@@ -1855,6 +1862,19 @@ status:
     retained:                           # what a promote displaced and did not destroy
       - displacedBy: before-the-migration
         at: 2026-08-31T09:20:00Z
+  backup:                               # read from the provider every reconcile, never echoed from the spec
+    enabled: true                       # what the platform is actually configuring, after inheritance
+    providerManaged: false              # true where the provider keeps its own history and takes no policy
+    reason: backed up to s3://…         # why the state is what it is, in the words that name the fix
+    schedule: "0 0 3 * * *"             # the policy in force, as the database actually holds it
+    retentionPolicy: 30d
+    destination: s3://kitchen-archive/databases   # described, never a credential
+    lastBackup: 2026-09-03T03:00:11Z    # as the database's own operator reports them
+    lastFailure: null
+    firstRecoverablePoint: 2026-08-30T03:14:02Z   # the oldest moment the destination can reconstruct;
+                                        # empty until a base backup has been taken and read back
+    archiving: healthy                  # healthy | failing | unknown — is WAL reaching the destination
+    archivingMessage: ""                # the database's own account of it
   conditions: [...]                     # Ready, Provisioned, PreviewBranchesReady, RecoveriesReady
 ```
 
@@ -1918,6 +1938,24 @@ reconcile rather than being a field somebody sets. There is deliberately no
 one somebody can declare falsely. [docs/api/claims.md](api/claims.md#recovering-the-data-to-a-moment-in-the-past)
 is the surface, and [docs/BACKUP.md](BACKUP.md) is where this sits next to the
 platform's own archive, which restores the claim and never the data behind it.
+
+**`spec.backup` is what puts an archive behind a database this platform runs**
+— continuous WAL archiving to an object store, plus a base backup on a
+schedule, for a `postgres` claim through CloudNativePG. Every field inherits:
+the claim's answer, then the Connection's `config.backup`, then the platform's
+own `spec.backup.destination` on the Kitchen singleton, so an installation
+that configured a destination once has said where its databases go. The
+schedule is CloudNativePG's six-field cron and a five-field one is refused
+rather than misread. `status.backup` is read from the database on every
+reconcile and never echoed from the spec — `firstRecoverablePoint` is the
+whole point of it, and `archiving` is reported apart from the schedule because
+a base backup with no WAL behind it recovers to the base backup and no
+further. Nothing here ever deletes what is at the destination: not switching
+the policy off, and not deleting the claim under either deletion policy —
+`retentionPolicy` is the only thing that prunes. A database the platform
+adopted rather than created is never written to, a provider that keeps its own
+history reports `providerManaged` and takes no policy, and a preview's
+database is never backed up at all.
 
 **`config.inngest` names an Inngest app rather than creating one.** An
 `inngest` claim, through a `backgroundJobs`-capable Connection holding an

@@ -733,6 +733,108 @@ A type that provisions no data — `oidcClient` — takes no `deletionPolicy` at
 all, and deleting one stays the developer's: what it holds is permission to
 sign people in, and that must not outlive the claim.
 
+## Backing up what a claim provisioned
+
+A `postgres` claim through the self-hosted provider is a database this
+platform runs, so it is one the platform can point at an object store and hand
+a schedule. `backup` on the create request is that policy, and it is the only
+block on this API whose sensible default is *say nothing*:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-db", "project": "shop", "connection": "postgres", "type": "postgres",
+       "backup": {"schedule": "0 0 1 * * *", "retentionPolicy": "90d"}}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+| Field | Default | What it does |
+|---|---|---|
+| `backup.enabled` | on wherever a destination resolves | Whether the platform configures archiving for this database at all |
+| `backup.schedule` | the connection's, then `0 0 3 * * *` | When a base backup is taken |
+| `backup.retentionPolicy` | the connection's, then keep everything | How long the destination keeps this database's backups: `30d`, `4w`, `6m` |
+| `backup.destination` | the platform's own, under a prefix of this database's | A bucket of the claim's own: `bucket`, `prefix`, `region`, `endpoint`, `forcePathStyle`, `serverSideEncryption`, and a `accessKeyId`/`secretAccessKey` pair |
+
+Every field inherits when it is absent — the claim's answer, then the
+[connection](connections.md)'s default, then the platform's own destination —
+so an installation that configured a destination once has already said where
+its databases go, and a claim writes down only what it wants differently. An
+empty block is not the same as no block, which is why the dashboard's switch
+has three positions and defaults to the inherited one.
+
+**`backup.schedule` is CloudNativePG's cron, not Kubernetes'.** Six fields
+with a leading seconds field, and a five-field expression is refused here
+rather than passed on: `0 3 * * *` is *valid* and means every hour at three
+minutes past, so accepting it would back the database up 24 times a day and
+never at three in the morning. The refusal carries the spelling that works.
+
+The credential half of a destination of the claim's own is **write-only**, like
+every credential this API stores: the keys go into a Secret carrying
+`app.kubernetes.io/managed-by: kitchen`, the operator copies what the database
+needs into the database's own namespace, both go when the claim goes, and no
+response ever echoes a key. Sending only one of the pair is refused — half a
+key pair is a destination that cannot authenticate, and finding that out at
+03:00 is the failure this whole feature exists to avoid. Leaving both out asks
+for the ambient credential chain.
+
+A claim of any other type is refused the block, because the platform does not
+run what it points at: a bucket, a cache or a queue is backed up by whoever
+runs it.
+
+### What a read answers
+
+`backup` on the claim view is what is actually happening, read from the
+database on every pass rather than echoed from the policy:
+
+```json
+{"backup": {"enabled": true, "schedule": "0 0 3 * * *", "retentionPolicy": "30d",
+            "destination": "s3://kitchen-archive/databases",
+            "lastBackup": "2026-09-03T03:00:11Z",
+            "firstRecoverablePoint": "2026-08-30T03:14:02Z",
+            "archiving": "healthy",
+            "reason": "backed up to s3://kitchen-archive/databases"}}
+```
+
+`firstRecoverablePoint` is the field the feature exists for: the oldest moment
+the destination can still put this database back to. It is absent until the
+first base backup has been taken and read back, and `reason` says so in those
+words rather than leaving a green policy over an empty bucket. `destination`
+is described and never a credential.
+
+`archiving` — `healthy`, `failing` or `unknown` — is reported apart from the
+schedule because the two fail independently: a base backup with no write-ahead
+log behind it recovers to the base backup and no further, while reporting a
+perfectly green schedule the whole time. `archivingMessage` carries the
+database's own account of it.
+
+`providerManaged: true` is the honest third state, between backed up and not.
+A claim through a provider that keeps its own history — Neon — takes no policy
+at all, configures nothing, and reports that provider's own sentence in
+`reason`. A screen showing such a claim as unprotected would be wrong.
+
+Three things this deliberately does not do, each of which is a decision rather
+than an omission:
+
+- **Backups outlive the claim, under either deletion policy.** `Delete`
+  destroys the database; nothing deletes what is at the destination but the
+  retention policy. If deletion took the archives too, the policy meant to
+  protect data would be the one that removed the last copy of it.
+- **Switching a policy off deletes nothing.** It removes the configuration and
+  the schedule; what has already been written stays.
+- **A preview's database is never backed up.** It is a fresh, empty database
+  declaring `dataProvenance: synthetic`, and archiving one is pure cost. That
+  is structural rather than a default: a preview's database is a resource of
+  its own, built from the shape of the claim's and never from its
+  configuration.
+
+A database this platform *found* rather than provisioned is never written to
+either — the claim says so, naming whoever runs it as the one backing it up.
+
+**CLI.** No command carries this. It is set once when a claim is created and
+otherwise read on the claim, so `kitchen api POST /claims` and `kitchen api
+GET /claims/<name>` carry it from a terminal, which is exactly the fallback
+`kitchen api` exists for. [docs/BACKUP.md](../BACKUP.md#the-databases-the-platform-runs-itself)
+is the whole of what it configures.
+
 ## Recovering the data to a moment in the past
 
 Neither supported provider can rewind a database in place, and neither needs

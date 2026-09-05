@@ -1629,6 +1629,26 @@ cannot write it carries on and exchanges every time.
   A claim refused for an extension nothing can supply answers `Failed` with
   the reason in its `Ready` condition, which is on that same JSON — so the
   refusal reaches a terminal without a command being written for it.
+
+  **A claim's backup policy is the same decision once more**, and worth the
+  sentence because it looks like it should have a command: it added no route
+  and renamed none — `POST /claims` gained one optional nested object, and
+  `GET /claims/{name}` answers a `backup` block beside it — so the whole of it
+  is two `kitchen api` lines, and the one number worth reading is on the
+  second:
+
+  ```sh
+  kitchen api POST /claims --data '{"name":"shop-db","project":"shop",
+    "connection":"postgres","type":"postgres",
+    "backup":{"schedule":"0 0 3 * * *","retentionPolicy":"30d"}}'
+  kitchen api GET /claims/shop-db | jq '.backup | {enabled, firstRecoverablePoint, archiving}'
+  ```
+
+  The policy itself is the operator's and set once on the Connection, which is
+  `kitchen api PATCH /connections/{name}` — already the only way to edit a
+  connection's config from a terminal. A destination of a claim's own carries a
+  key pair, which is exactly the one-time operator act with a credential in it
+  that `kitchen api` exists to carry.
 - **`kitchen addons`.** The one surface here that *did* add routes — five of
   them, `GET`, `POST`, `PATCH` and `DELETE` under `/addons` — and still gets
   no command, which is a decision rather than an omission by default. What an

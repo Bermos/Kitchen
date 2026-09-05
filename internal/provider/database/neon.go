@@ -154,6 +154,23 @@ func (n *Neon) CreateBranch(ctx context.Context, instanceID, name string) (Branc
 	return n.branchAt(ctx, instanceID, name, time.Time{})
 }
 
+// ManagedBackupNote is Neon's answer to a backup policy: it keeps its own.
+//
+// There is nothing here for the platform to configure and nothing it could
+// turn off — the continuous history a branch at a past timestamp is taken
+// from *is* the backup, it is inherent to Neon's storage rather than written
+// to a bucket somebody chose, and its length is the project's retention
+// setting. So a Neon claim takes no policy at all, and reports this instead
+// of either an unconfigured schedule or an "unprotected" it does not deserve.
+//
+// It is the same line the platform draws everywhere else about what a
+// provider runs: what the claim points at is the provider's to keep.
+func (n *Neon) ManagedBackupNote() string {
+	return "Neon keeps continuous history of this database itself — that history is what a point-in-time " +
+		"recovery is taken from, and it is kept for as long as the Neon project's own retention says. " +
+		"There is no schedule and no destination for the platform to configure, and none to get wrong"
+}
+
 // RecoveryWindow reads how far back this Neon project can be branched from:
 // its own history retention, which is a per-project setting the plan decides.
 // Latest is now, because Neon's history is continuous up to the present — a

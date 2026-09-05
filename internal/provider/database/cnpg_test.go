@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -61,10 +62,11 @@ func cnpgScheme(t *testing.T) *runtime.Scheme {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	gvk := clusterGVK()
-	scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
-	scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
-	metav1.AddToGroupVersion(scheme, gvk.GroupVersion())
+	for _, gvk := range []schema.GroupVersionKind{clusterGVK(), scheduledBackupGVK()} {
+		scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+		metav1.AddToGroupVersion(scheme, gvk.GroupVersion())
+	}
 	return scheme
 }
 

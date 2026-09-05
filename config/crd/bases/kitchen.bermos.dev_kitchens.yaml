@@ -360,8 +360,9 @@ spec:
                           serverSideEncryption:
                             description: |-
                               ServerSideEncryption asks the store to encrypt the object at rest:
-                              "AES256" or "aws:kms". The archive is every credential the platform
-                              holds, so a store that can encrypt it should be told to.
+                              ServerSideEncryptionAES256 or ServerSideEncryptionKMS. The archive is
+                              every credential the platform holds, so a store that can encrypt it
+                              should be told to.
                             enum:
                             - AES256
                             - aws:kms

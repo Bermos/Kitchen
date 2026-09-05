@@ -39,6 +39,17 @@ const (
 	BackupDestinationS3 BackupDestinationType = "s3"
 )
 
+// The at-rest encryption an S3 destination can be asked for, spelled once
+// because two surfaces refuse everything else by name — the platform's own
+// destination and a claim's — and the CRD's enum marker beside
+// S3Destination.ServerSideEncryption is the third place the pair appears.
+const (
+	// ServerSideEncryptionAES256 is the store's own key.
+	ServerSideEncryptionAES256 = "AES256"
+	// ServerSideEncryptionKMS is a key named by KMSKeyID.
+	ServerSideEncryptionKMS = "aws:kms"
+)
+
 // S3Destination is a bucket at an S3-compatible store.
 type S3Destination struct {
 	// Bucket archives are written into. It should be a bucket of its own:
@@ -71,8 +82,9 @@ type S3Destination struct {
 	ForcePathStyle bool `json:"forcePathStyle,omitempty"`
 
 	// ServerSideEncryption asks the store to encrypt the object at rest:
-	// "AES256" or "aws:kms". The archive is every credential the platform
-	// holds, so a store that can encrypt it should be told to.
+	// ServerSideEncryptionAES256 or ServerSideEncryptionKMS. The archive is
+	// every credential the platform holds, so a store that can encrypt it
+	// should be told to.
 	// +kubebuilder:validation:Enum={"AES256","aws:kms"}
 	// +optional
 	ServerSideEncryption string `json:"serverSideEncryption,omitempty"`

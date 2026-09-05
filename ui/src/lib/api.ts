@@ -2137,6 +2137,61 @@ export interface ClaimRedis {
   version?: string;
 }
 
+/** What is happening to the data a claim provisioned: the policy in force,
+ * when a backup last succeeded, and the oldest moment the destination can
+ * still put the database back to.
+ *
+ * `firstRecoverablePoint` is the field that matters. "Backups are configured"
+ * is worth nothing; "we can restore to 03:14 last Tuesday" is worth
+ * everything, and only the second is a fact about the destination rather than
+ * about the policy. It is absent until the first base backup has been taken
+ * and read back, which is a real state and shown as the absence it is.
+ *
+ * `providerManaged` is the honest third state between backed up and not: a
+ * Neon claim keeps continuous history at Neon, which the platform neither
+ * configures nor could turn off, and `reason` is that provider's own sentence
+ * about it. */
+export interface ClaimBackup {
+  enabled: boolean;
+  providerManaged?: boolean;
+  reason?: string;
+  schedule?: string;
+  retentionPolicy?: string;
+  /** Described and never a credential: "s3://bucket/prefix". */
+  destination?: string;
+  lastBackup?: string;
+  lastFailure?: string;
+  firstRecoverablePoint?: string;
+  /** "healthy", "failing" or "unknown": whether the write-ahead log is
+   * reaching the destination between base backups. A base backup whose WAL is
+   * not archiving recovers to the base backup and no further, which is why
+   * this is reported apart from the schedule. */
+  archiving?: string;
+  archivingMessage?: string;
+}
+
+/** A backup policy as a claim asks for it. Every field is optional and an
+ * absent one inherits — the Connection's default, and failing that the
+ * platform's own destination — which is what almost every claim should do. */
+export interface NewClaimBackup {
+  enabled?: boolean;
+  /** CloudNativePG's cron: six fields, seconds first. */
+  schedule?: string;
+  /** A count and a unit: "30d", "4w", "6m". */
+  retentionPolicy?: string;
+  destination?: {
+    bucket: string;
+    prefix?: string;
+    region?: string;
+    endpoint?: string;
+    forcePathStyle?: boolean;
+    serverSideEncryption?: string;
+    /** Write-only: nothing ever reads a key back. */
+    accessKeyId?: string;
+    secretAccessKey?: string;
+  };
+}
+
 export interface Claim {
   name: string;
   project: string;
@@ -2190,6 +2245,10 @@ export interface Claim {
    * granted is the phase and the conditions: a claim asking for an extension
    * no image can supply is Failed, with the refusal as the message. */
   postgres?: ClaimPostgres;
+  /** What is happening to the data a postgres claim provisioned. Absent on a
+   * claim of a type nothing backs up, and on one no operator has reconciled
+   * yet. */
+  backup?: ClaimBackup;
   /** What an objectStore claim asked its bucket to be. Absent when it asked
    * for nothing in particular. */
   objectStore?: ClaimObjectStore;
@@ -2356,6 +2415,9 @@ export interface NewClaim {
   /** redis only: what the instance is for, how much memory it may use, and
    * which Valkey. */
   redis?: ClaimRedis;
+  /** postgres only: whether the database is archived off the cluster, how
+   * often, kept for how long, and where. Absent inherits the whole of it. */
+  backup?: NewClaimBackup;
 }
 
 /** What the preview ceiling is doing to one project: how many previews are

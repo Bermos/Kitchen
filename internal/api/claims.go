@@ -124,6 +124,17 @@ type createClaimRequest struct {
 	// environment has an event key to read is the provider's answer, and it
 	// lands on the claim as a failure saying where to create one.
 	Inngest *kitchenv1alpha1.InngestConfig `json:"inngest,omitempty"`
+
+	// Backup is what happens to the data this claim provisions: whether it
+	// is archived off the cluster, how often, kept for how long, and where.
+	// Absent inherits the whole of it from the claim's Connection and,
+	// failing that, from the platform's own backup destination — which is
+	// what almost every claim should do.
+	//
+	// It belongs to a claim whose resource this platform runs and can
+	// therefore configure, which is postgres alone. Any key half of it is
+	// write-only, like every credential this API stores.
+	Backup *claimBackupWrite `json:"backup,omitempty"`
 }
 
 func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
@@ -211,6 +222,10 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
+	backupSpec, ok := s.claimBackupSpec(w, req, claimType, &body)
+	if !ok {
+		return
+	}
 
 	caller, _ := CallerFrom(ctx)
 	claim := &kitchenv1alpha1.ResourceClaim{
@@ -226,6 +241,7 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 			DeletionPolicy: policy,
 			Config:         config,
 			DataClass:      dataClass,
+			Backup:         backupSpec,
 		},
 	}
 	reason := fmt.Sprintf("claim %s created: %s", claim.Name, body.Type)
@@ -531,6 +547,11 @@ func withArticle(noun string) string {
 // at the door explains itself better than one three layers in — and because
 // nothing should be able to reach a CREATE EXTENSION statement unchecked.
 var extensionNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
+
+// retentionPolicyPattern is a backup retention in barman's own vocabulary: a
+// count and a unit, "30d". It is the CRD's pattern, spelled again here so the
+// refusal is a sentence rather than an admission error.
+var retentionPolicyPattern = regexp.MustCompile(`^[1-9][0-9]*[dwm]$`)
 
 // mayDestroyData is the one escalation on the claims surface: `deletionPolicy:
 // Delete` is the admin's, everything else about a claim is the developer's.
