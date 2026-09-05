@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.2](https://github.com/Bermos/Kitchen/compare/v0.33.1...v0.33.2) (2026-09-05)
+
+
+### Bug fixes
+
+* **clickhouse:** coerce non-finite resource aggregates ([a785e5d](https://github.com/Bermos/Kitchen/commit/a785e5df7873a81aca0c0d3a7d01f44ecadf0e18))
+
 ## [0.33.1](https://github.com/Bermos/Kitchen/compare/v0.33.0...v0.33.1) (2026-09-05)
 
 
