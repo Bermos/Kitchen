@@ -214,6 +214,12 @@ export interface Project {
    * takes the platform's (`previewsMaxPerProject` on `/settings`); `0` is no
    * ceiling for this project. */
   previewsMax?: number;
+  /** What a pull request opened from a **fork** of this project's repository
+   * gets: `none` (the default — nothing is built and nothing is published),
+   * `build` (the commit is built and no environment is created), or `full`
+   * (a fork is treated as the project's own branch, secrets included).
+   * Always one of the three words. */
+  previewsForks: ForkPolicy;
   /** The ceiling as the operator last measured it, absent until a reconcile
    * has looked. */
   previewCapacity?: PreviewCapacity;
@@ -355,6 +361,10 @@ export interface ProjectSettings {
    * the project takes the platform's again — 0 is a setting here and cannot
    * also mean "unset". */
   previewsMax?: number;
+  /** What a pull request from a fork of this project's repository gets. The
+   * platform's `previewsForksMax` is the most it may be set to; asking for
+   * more is refused with a `400` rather than clamped. */
+  previewsForks?: ForkPolicy;
   buildStrategy?: string;
   dockerfilePath?: string;
   /** The stage of a multi-stage Dockerfile to ship; an empty string clears it,
@@ -2439,6 +2449,17 @@ export interface NewClaim {
   backup?: NewClaimBackup;
 }
 
+/** What a pull request opened from a **fork** — any repository that is not the
+ *  project's own — is given.
+ *
+ *  A fork's head is a stranger's code, and before this existed the platform
+ *  could not tell it apart from the project's own: it built with the project's
+ *  registry credential and got a preview carrying the project's secrets. The
+ *  three values are, least to most: `none` gives it nothing, `build` compiles
+ *  the commit and publishes no environment, `full` treats it as the project's
+ *  own branch. */
+export type ForkPolicy = "none" | "build" | "full";
+
 /** What the preview ceiling is doing to one project: how many previews are
  * live, the ceiling in force (`0` is none), and the pull requests refused one
  * while the project sat at it. Nothing is queued — each refused request gets
@@ -2487,6 +2508,12 @@ export interface Settings {
    * sent, since 0 is a setting — no ceiling at all — rather than an absent
    * value, and it is reported as a project would actually get it. */
   previewsMaxPerProject: number;
+  /** `spec.previews.forksMax`: the most any project may give a pull request
+   * opened from a fork. `full` — the default — forbids nothing and leaves the
+   * decision to each project, whose own default is `none`; `build` allows a
+   * fork's commit to be compiled and never published; `none` refuses fork
+   * pull requests across the whole installation. Always one of the three. */
+  previewsForksMax: ForkPolicy;
   logRetentionDays?: number;
   gatewayAddress?: string;
   /** `spec.ingress.publicAddresses`: where the internet reaches the platform,
@@ -4708,6 +4735,7 @@ export const api = {
         | "buildTimeoutMinutes"
         | "releaseRetention"
         | "previewsMaxPerProject"
+        | "previewsForksMax"
         | "logRetentionDays"
       >
     > & {

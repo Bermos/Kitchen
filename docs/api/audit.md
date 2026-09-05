@@ -29,6 +29,12 @@ run's). Types:
 `claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`,
 `run.started`, `run.succeeded`, `run.failed`, `secret.rotated`.
 
+`preview.refused` carries both refusals, and its `message` says which: a
+project at its [preview ceiling](./projects.md#the-preview-ceiling), or a pull
+request from a fork the project does not publish
+([`previewsForks`](./projects.md#pull-requests-from-forks)). The second has no
+`build` field, because a fork the project does not build never produces one.
+
 `secret.rotated` is the one entry here that is not about somebody's write: it
 is the platform restarting a workload because a Secret it reads changed under
 it, and it names which workload and what it was reading. A pod roll at a

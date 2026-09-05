@@ -42,9 +42,12 @@ const (
 	EventReleaseRedeployed = "release.redeployed"
 	EventPreviewCreated    = "preview.created"
 	EventPreviewRemoved    = "preview.removed"
-	// A preview the platform declined to create because the project is at
-	// its ceiling (#294). It is in the feed because the absence of a preview
-	// is otherwise only visible on the pull request that asked for one.
+	// A preview the platform declined to create: the project is at its
+	// ceiling (#294), or the pull request comes from a fork the project does
+	// not publish (#422). It is in the feed because the absence of a preview
+	// is otherwise only visible on the pull request that asked for one — and
+	// the fork case doubly so, since nothing else in the platform records a
+	// delivery it decided not to act on. The message says which it was.
 	EventPreviewRefused = "preview.refused"
 	EventClaimBound     = "claim.bound"
 	EventClaimFailed    = "claim.failed"

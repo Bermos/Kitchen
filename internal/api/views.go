@@ -166,6 +166,12 @@ type projectView struct {
 	// this project — which is why it is a pointer, and why absent has to
 	// stay tellable from zero.
 	PreviewsMax *int32 `json:"previewsMax,omitempty"`
+	// PreviewsForks is what a pull request from a fork of this project's
+	// repository gets: `none`, `build` or `full` (#422). It is always one of
+	// the three words rather than absent — a project written before the field
+	// existed reads as `none`, which is what the platform actually does with
+	// it, and a security default nobody can see is one nobody checks.
+	PreviewsForks string `json:"previewsForks"`
 	// PreviewCapacity is the ceiling as the operator last measured it: how
 	// many previews are live, the ceiling in force, and the pull requests
 	// refused one while the project sat at it. Absent until a reconcile has
@@ -287,6 +293,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		Previews:           project.Spec.Previews.IsEnabled(),
 		PreviewsProtected:  project.Spec.Previews.IsProtected(),
 		PreviewsMax:        project.Spec.Previews.Max,
+		PreviewsForks:      string(project.Spec.Previews.Forks.Normalized()),
 		PreviewCapacity:    newPreviewCapacityView(project.Status.Previews),
 		BuildStrategy:      string(project.Spec.Build.Strategy),
 		DockerfilePath:     project.Spec.Build.DockerfilePath,

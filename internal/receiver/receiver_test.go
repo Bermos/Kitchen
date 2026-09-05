@@ -232,7 +232,7 @@ func TestPullRequestCreatesBuild(t *testing.T) {
 	body := []byte(`{
 		"action": "opened",
 		"number": 42,
-		"pull_request": {"head": {"ref": "feat/checkout", "sha": "aaaabbbbccccdddd"}},
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "aaaabbbbccccdddd", "repo": {"full_name": "acme/shop"}}},
 		"repository": {"full_name": "acme/shop"}
 	}`)
 
@@ -275,7 +275,7 @@ func TestPullRequestAfterPushAssociatesTheExistingBuild(t *testing.T) {
 	opened := []byte(`{
 		"action": "opened",
 		"number": 10,
-		"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab"}},
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab", "repo": {"full_name": "acme/shop"}}},
 		"repository": {"full_name": "acme/shop"}
 	}`)
 	rec := deliver(handler, "pull_request", opened, sign(opened))
@@ -317,7 +317,7 @@ func TestPushRedeliveryDoesNotUnlearnThePullRequest(t *testing.T) {
 	opened := []byte(`{
 		"action": "opened",
 		"number": 10,
-		"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab"}},
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab", "repo": {"full_name": "acme/shop"}}},
 		"repository": {"full_name": "acme/shop"}
 	}`)
 	if rec := deliver(handler, "pull_request", opened, sign(opened)); rec.Code != http.StatusAccepted {
@@ -361,7 +361,7 @@ func TestTheFirstPullRequestToClaimACommitKeepsIt(t *testing.T) {
 		opened := []byte(fmt.Sprintf(`{
 			"action": "opened",
 			"number": %d,
-			"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab"}},
+			"pull_request": {"head": {"ref": "feat/checkout", "sha": "8f3a2c1d0abc456789ab", "repo": {"full_name": "acme/shop"}}},
 			"repository": {"full_name": "acme/shop"}
 		}`, number))
 		if rec := deliver(handler, "pull_request", opened, sign(opened)); rec.Code != http.StatusAccepted {
@@ -397,6 +397,7 @@ func TestGitLabMergeRequestAfterPushAssociatesTheExistingBuild(t *testing.T) {
 	opened := []byte(`{
 		"object_attributes": {
 			"action": "open", "iid": 42, "source_branch": "feat/checkout",
+			"source_project_id": 7, "target_project_id": 7,
 			"last_commit": {"id": "aaaabbbbccccdddd", "message": "Add checkout"}
 		},
 		"project": {"path_with_namespace": "acme/shop"},
@@ -430,7 +431,7 @@ func TestPullRequestClosedDeletesPreview(t *testing.T) {
 	body := []byte(`{
 		"action": "closed",
 		"number": 42,
-		"pull_request": {"head": {"ref": "feat/checkout", "sha": "aaaabbbbccccdddd"}},
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "aaaabbbbccccdddd", "repo": {"full_name": "acme/shop"}}},
 		"repository": {"full_name": "acme/shop"}
 	}`)
 
@@ -498,7 +499,7 @@ func TestGiteaPullRequestCreatesBuild(t *testing.T) {
 	body := []byte(`{
 		"action": "opened",
 		"number": 42,
-		"pull_request": {"head": {"ref": "feat/checkout", "sha": "aaaabbbbccccdddd"}},
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "aaaabbbbccccdddd", "repo": {"full_name": "acme/shop"}}},
 		"repository": {"full_name": "acme/shop"}
 	}`)
 
@@ -581,7 +582,7 @@ func TestGiteaSynchronizedRebuildsThePreview(t *testing.T) {
 	body := []byte(`{
 		"action": "synchronized",
 		"number": 42,
-		"pull_request": {"head": {"ref": "feat/checkout", "sha": "ccccddddeeeeffff"}},
+		"pull_request": {"head": {"ref": "feat/checkout", "sha": "ccccddddeeeeffff", "repo": {"full_name": "acme/shop"}}},
 		"repository": {"full_name": "acme/shop"}
 	}`)
 
@@ -605,6 +606,7 @@ func TestGitLabMergeRequestOpenedAndUpdated(t *testing.T) {
 	opened := []byte(`{
 		"object_attributes": {
 			"action": "open", "iid": 42, "source_branch": "feat/checkout",
+			"source_project_id": 7, "target_project_id": 7,
 			"last_commit": {"id": "aaaabbbbccccdddd", "message": "Add checkout"}
 		},
 		"project": {"path_with_namespace": "acme/shop"},
@@ -629,6 +631,7 @@ func TestGitLabMergeRequestOpenedAndUpdated(t *testing.T) {
 	relabelled := []byte(`{
 		"object_attributes": {
 			"action": "update", "iid": 42, "source_branch": "feat/checkout",
+			"source_project_id": 7, "target_project_id": 7,
 			"last_commit": {"id": "1111222233334444", "message": "Add checkout"}
 		},
 		"project": {"path_with_namespace": "acme/shop"},
@@ -648,6 +651,7 @@ func TestGitLabMergeRequestOpenedAndUpdated(t *testing.T) {
 	pushed := []byte(`{
 		"object_attributes": {
 			"action": "update", "iid": 42, "source_branch": "feat/checkout",
+			"source_project_id": 7, "target_project_id": 7,
 			"oldrev": "aaaabbbbccccdddd",
 			"last_commit": {"id": "1111222233334444", "message": "Fix the total"}
 		},

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { api } from "../lib/api";
+import { api, type ForkPolicy } from "../lib/api";
 import { loadConfig, platformVersion } from "../lib/config";
 import { versionLabel } from "../lib/updates";
 import { useAsync } from "../lib/useAsync";
@@ -48,6 +48,11 @@ const releaseRetention = ref<number>(10);
 // setting — no ceiling at all — and not an empty box, the same way the build
 // timeout's 0 is.
 const previewsMax = ref<number>(5);
+// The most any project may give a pull request opened from a fork. `full`
+// forbids nothing and leaves the decision to each project, whose own default
+// is `none`; this is here for the operator who wants the answer to be the same
+// on every project whatever a project admin sets.
+const forksMax = ref<ForkPolicy>("full");
 const retention = ref<number>(30);
 
 watch(settings, (value) => {
@@ -59,6 +64,7 @@ watch(settings, (value) => {
   buildTimeout.value = value.buildTimeoutMinutes ?? 60;
   releaseRetention.value = value.releaseRetention ?? 10;
   previewsMax.value = value.previewsMaxPerProject ?? 5;
+  forksMax.value = value.previewsForksMax ?? "full";
   retention.value = value.logRetentionDays ?? 30;
 });
 
@@ -73,6 +79,7 @@ const dirty = computed(() => {
     buildTimeout.value !== (s.buildTimeoutMinutes ?? 60) ||
     releaseRetention.value !== (s.releaseRetention ?? 10) ||
     previewsMax.value !== (s.previewsMaxPerProject ?? 5) ||
+    forksMax.value !== (s.previewsForksMax ?? "full") ||
     retention.value !== (s.logRetentionDays ?? 30)
   );
 });
@@ -110,6 +117,7 @@ async function save() {
       buildTimeoutMinutes: buildTimeout.value,
       releaseRetention: releaseRetention.value,
       previewsMaxPerProject: previewsMax.value,
+      previewsForksMax: forksMax.value,
       logRetentionDays: retention.value,
     });
     toast.add({ title: "Settings saved", color: "success", icon: "i-lucide-check" });
@@ -120,6 +128,29 @@ async function save() {
     saving.value = false;
   }
 }
+
+/** The estate-wide ceiling on what a fork's pull request may be given. The
+ *  labels say what the platform allows rather than what the value is called,
+ *  because the interesting one is the middle: a fork's commit compiled and
+ *  never published. */
+const forkCeilings = [
+  { label: "none — no project may build a fork's pull request", value: "none" },
+  { label: "build — a fork's commit may be built, never published", value: "build" },
+  { label: "full — each project decides for itself", value: "full" },
+];
+
+/** What the ceiling means, said once so the default does not read as a
+ *  permission the platform granted. */
+const forkCeilingLine = computed(() => {
+  switch (forksMax.value) {
+    case "none":
+      return "No project builds a pull request opened from a fork, whatever its own setting says.";
+    case "build":
+      return "A project may have a fork's commit built, and no project may publish one: a fork never reaches an environment holding a project's secrets.";
+    default:
+      return "Each project decides. Every project starts at none — nothing built, nothing published — and a project admin may allow more.";
+  }
+});
 
 const strategies = [
   { label: "auto — detect the framework", value: "auto" },
@@ -236,6 +267,15 @@ const strategies = [
               >
                 <UInputNumber v-model="previewsMax" :min="0" :max="100" class="w-40" />
               </UFormField>
+              <!-- What a fork's pull request may be given, beside the ceiling
+                   on how many previews there may be: the two are the same
+                   question asked about how many and about whose. -->
+              <UFormField
+                label="Pull requests from forks"
+                help="The most any project may give a pull request opened from a fork of its repository. Each project's own default is none."
+              >
+                <USelect v-model="forksMax" :items="forkCeilings" class="w-full" />
+              </UFormField>
               <UFormField
                 label="Default telemetry retention (days)"
                 help="The number every telemetry class inherits. Setting a class in the retention panel overrides it for that class."
@@ -245,6 +285,7 @@ const strategies = [
             </div>
             <p class="text-xs text-muted">{{ buildFootprint }}</p>
             <p class="text-xs text-muted">{{ previewCeiling }}</p>
+            <p class="text-xs text-muted">{{ forkCeilingLine }}</p>
             <div class="flex justify-end">
               <UButton :disabled="!dirty" :loading="saving" icon="i-lucide-save" @click="save">Save changes</UButton>
             </div>

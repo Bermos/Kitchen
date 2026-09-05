@@ -15,7 +15,8 @@ operators are**:
 
 ```json
 {"baseDomain": "apps.example.com", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
- "buildTimeoutMinutes": 60, "previewsMaxPerProject": 5, "logRetentionDays": 30,
+ "buildTimeoutMinutes": 60, "previewsMaxPerProject": 5, "previewsForksMax": "full",
+ "logRetentionDays": 30,
  "operators": [{"subject": "user_01H8X…", "email": "anna@example.com"}]}
 ```
 
@@ -35,7 +36,8 @@ The field carries no `omitempty` for exactly that reason.
 
 ```json
 {"buildStrategy": "auto", "buildConcurrency": 2, "buildCPU": "2", "buildMemory": "4Gi",
- "buildTimeoutMinutes": 60, "previewsMaxPerProject": 5, "logRetentionDays": 30,
+ "buildTimeoutMinutes": 60, "previewsMaxPerProject": 5, "previewsForksMax": "full",
+ "logRetentionDays": 30,
  "operators": [{"email": "anna@example.com"}, {"subject": "user_01H8X…"}]}
 ```
 
@@ -141,6 +143,38 @@ once another preview has closed and freed a slot. A queue would have the
 platform deploy a commit nobody asked it to deploy, minutes or days after the
 push. A project may set its own ceiling with
 [`previewsMax`](./projects.md#the-preview-ceiling), which overrides this one.
+
+**`previewsForksMax` is the ceiling on what a fork's pull request may be
+given**, estate-wide. It is `spec.previews.forksMax`, one of the same three
+words a project's own
+[`previewsForks`](./projects.md#pull-requests-from-forks) takes, and it is the
+most any project may ask for:
+
+- `full` — the default — forbids nothing and leaves the decision to each
+  project, whose own default is `none`.
+- `build` lets a project have a fork's commit compiled and lets no project
+  publish one, so a fork never reaches an environment holding a project's
+  secrets.
+- `none` refuses fork pull requests across the whole installation, whatever a
+  project admin sets.
+
+It is the same three words as the project's field rather than a boolean beside
+it, because the two are only ever read together — "the project asks for X, the
+platform allows at most Y" — and because a boolean could not say the stricter
+thing an operator worried enough to set anything is most likely to want.
+
+An unset ceiling reads as `full` rather than as `none`: the safe default is
+the project's own, and a ceiling that read absent as the strictest value would
+turn forks off on an installation that had deliberately allowed them. Anything
+that is not one of the three words is a `400`.
+
+A `PATCH /projects/{name}` asking for more than this allows is refused with a
+`400` naming this field, rather than clamped in silence — but only where the
+value moves: a project already above the ceiling can re-send what it already
+says, so an operator lowering this does not make every other setting on that
+project unsaveable. Lowering it after the fact clamps at read time: a project
+already set above it gets what the platform allows, and its own field is left
+as written, so raising the ceiling again restores what the project asked for.
 
 Everything else on the singleton — the base domain, the issuer, the ingress —
 shapes URLs and credentials the platform has already handed out, so changing

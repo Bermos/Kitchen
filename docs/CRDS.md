@@ -122,6 +122,11 @@ spec:
                                         # slot frees — nothing is queued. Production and anything promoted are
                                         # never counted; a project may set its own (previews.max below); 0 is
                                         # no ceiling at all
+    forksMax: full                      # none | build | full — the most any project may give a pull request
+                                        # opened from a fork of its repository. full (the default) forbids
+                                        # nothing and leaves it to each project, whose own default is none;
+                                        # build lets a fork's commit be compiled and lets nothing publish one;
+                                        # none refuses fork pull requests estate-wide
   appNamespaces:
     podSecurity: privileged             # privileged | baseline | restricted — the Pod Security level the
                                         # operator labels every kitchen-<project> namespace with. Set rather
@@ -680,6 +685,13 @@ spec:
                                         # platform's previews.maxPerProject. Unset takes the platform's,
                                         # which is what almost every project should do; 0 is no ceiling
                                         # for this project
+    forks: none                         # none (default) | build | full — what a pull request opened from a
+                                        # fork gets. none builds nothing and publishes nothing, and says so
+                                        # on the request; build compiles the commit and creates no
+                                        # environment, so no variable, secret or claim binding of this
+                                        # project reaches it; full treats a fork as this project's own
+                                        # branch, secrets included. Bounded by previews.forksMax on the
+                                        # platform
     ttlAfterClosed: 1h                  # grace period before teardown
   dataClass: confidential               # public | internal | confidential | strictlyConfidential;
                                         # absent = unclassified, shown as such and never defaulted.
@@ -1243,6 +1255,10 @@ spec:
     message: "Add checkout flow"        # branch, or neither: half a commit is refused at
     author: bermos                      # admission, and nothing fakes one
     pullRequest: 42                     # unset for direct pushes
+    forkRepo: stranger/my-shop          # set only when the pull request's head lives somewhere other than
+                                        # the project's own repository — so a non-empty value is "this is a
+                                        # fork", and where from. A Build like this exists only where
+                                        # previews.forks allows a fork's commit to be built at all
   acquire:                              # the other member of the same union: what a Build with no commit
     reference: ghcr.io/vendor/app:stable  # takes. The reference as the project declared it when this was
     digest: sha256:cd34...              # created, and the digest to take — set by the poll, which has
@@ -1614,6 +1630,8 @@ spec:
   preview:
     pullRequest: 42
     branch: feat/checkout
+    forkRepo: stranger/my-shop          # set only for a preview of a pull request from a fork, which exists
+                                        # only where the project set previews.forks: full
   dataClass: internal                   # ceiling this environment is rated to hold — the promotion
                                         # rule refuses a project classified above it; absent = unrated
   residency: CH                         # declared location of its data; absent inherits

@@ -80,9 +80,18 @@ type settingsView struct {
 	// an empty box. No omitempty for the reason the build ceiling carries
 	// none: 0 is a setting here — no ceiling at all — and a dashboard has to
 	// be able to tell it from an API too old to have the field.
-	PreviewsMaxPerProject int32  `json:"previewsMaxPerProject"`
-	LogRetentionDays      int32  `json:"logRetentionDays,omitempty"`
-	GatewayAddress        string `json:"gatewayAddress,omitempty"`
+	PreviewsMaxPerProject int32 `json:"previewsMaxPerProject"`
+	// PreviewsForksMax is `spec.previews.forksMax`: the most any project may
+	// give a pull request opened from a fork (#422). `none` refuses fork pull
+	// requests estate-wide, `build` lets a fork's commit be compiled and never
+	// published, and `full` — the default — forbids nothing and leaves the
+	// decision to each project, whose own default is `none`.
+	//
+	// It is always one of the three words: a singleton predating the field
+	// reads as `full`, which is what the platform actually does with it.
+	PreviewsForksMax string `json:"previewsForksMax"`
+	LogRetentionDays int32  `json:"logRetentionDays,omitempty"`
+	GatewayAddress   string `json:"gatewayAddress,omitempty"`
 	// PublicAddresses is `spec.ingress.publicAddresses`: where the internet
 	// reaches this platform, when a router forwards to the Gateway from an
 	// address the cluster never sees. It is here beside the Gateway's own
@@ -153,6 +162,7 @@ func newSettingsView(kitchen *kitchenv1alpha1.Kitchen) settingsView {
 		BuildTimeoutMinutes:   buildTimeoutMinutes(kitchen),
 		ReleaseRetention:      kitchen.Spec.Builds.ReleaseRetention,
 		PreviewsMaxPerProject: kitchen.Spec.Previews.EffectiveMaxPerProject(),
+		PreviewsForksMax:      string(kitchen.Spec.Previews.EffectiveForksMax()),
 		LogRetentionDays:      kitchen.Spec.Observability.ClickHouse.RetentionDays,
 		GatewayAddress:        kitchen.Status.GatewayAddress,
 		PublicAddresses:       kitchen.Spec.Ingress.PublicAddresses,
@@ -218,6 +228,10 @@ type patchSettingsRequest struct {
 	// 0 is the installation that has decided previews are unbounded, and a
 	// request that does not mention the field must not be able to clear it.
 	PreviewsMaxPerProject *int32 `json:"previewsMaxPerProject"`
+	// PreviewsForksMax is the most any project may give a fork's pull
+	// request: `none`, `build` or `full`. A pointer like the rest, so a
+	// request that does not mention it cannot clear it.
+	PreviewsForksMax *string `json:"previewsForksMax"`
 	// BackupSchedule, BackupSuspend, BackupKeepLast and BackupKeepDays are
 	// the scheduled backup's ordinary settings: when it runs, whether it is
 	// paused, and how much of the destination survives a prune. The
@@ -325,6 +339,18 @@ func (s *Server) patchSettings(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		kitchen.Spec.Previews.MaxPerProject = body.PreviewsMaxPerProject
+	}
+	if body.PreviewsForksMax != nil {
+		forks := kitchenv1alpha1.ForkPolicy(strings.TrimSpace(*body.PreviewsForksMax))
+		switch forks {
+		case kitchenv1alpha1.ForkPolicyNone, kitchenv1alpha1.ForkPolicyBuild, kitchenv1alpha1.ForkPolicyFull:
+			kitchen.Spec.Previews.ForksMax = forks
+		default:
+			badRequest(w, "previewsForksMax must be none, build or full (got %q): it is the most "+
+				"any project may give a pull request from a fork, and a project's own default is none",
+				*body.PreviewsForksMax)
+			return
+		}
 	}
 	if body.LogRetentionDays != nil {
 		if *body.LogRetentionDays < 1 {
@@ -591,6 +617,7 @@ func changedSettingsFields(body patchSettingsRequest) []string {
 		{"buildTimeoutMinutes", body.BuildTimeoutMinutes != nil},
 		{"releaseRetention", body.ReleaseRetention != nil},
 		{"previewsMaxPerProject", body.PreviewsMaxPerProject != nil},
+		{"previewsForksMax", body.PreviewsForksMax != nil},
 		{"logRetentionDays", body.LogRetentionDays != nil},
 		{"backupSchedule", body.BackupSchedule != nil},
 		{"backupSuspend", body.BackupSuspend != nil},

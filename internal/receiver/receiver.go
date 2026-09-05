@@ -41,6 +41,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 )
@@ -74,6 +76,13 @@ type GitWebhookReceiver struct {
 	Namespace string
 	// BindAddr for the HTTP server, e.g. ":8090".
 	BindAddr string
+	// Activity feeds the dashboard's recent-activity feed, so that a pull
+	// request the platform declined to build is visible somewhere other than
+	// on the pull request itself. May be nil.
+	Activity *activity.Recorder
+	// Factory resolves the git provider a refusal is reported through.
+	// Defaults to gitprovider.Default; tests inject fakes.
+	Factory gitprovider.Factory
 }
 
 // Start implements manager.Runnable.
@@ -124,6 +133,8 @@ type pushPayload struct {
 }
 
 // prPayload is the subset of GitHub's pull_request event the receiver needs.
+// Gitea's is the same shape, down to `head.repo.full_name`, which is why one
+// struct serves both.
 type prPayload struct {
 	Action      string `json:"action"`
 	Number      int32  `json:"number"`
@@ -131,6 +142,17 @@ type prPayload struct {
 		Head struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
+			// Repo is where the head commit actually lives, and is the whole
+			// of issue #422: a pull request opened from a fork carries a
+			// different repository here, and every provider sends it. Not
+			// decoding it is how a stranger's commit came to be built with
+			// the project's credentials and previewed with its secrets — the
+			// head SHA of a fork's request is reachable in the base
+			// repository through refs/pull/N/head, so nothing downstream
+			// could tell the difference.
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
 	} `json:"pull_request"`
 	Repository struct {
@@ -169,6 +191,16 @@ type gitlabMRPayload struct {
 			ID      string `json:"id"`
 			Message string `json:"message"`
 		} `json:"last_commit"`
+		// GitLab says where a merge request's source branch lives with a
+		// numeric project id rather than a path: a fork is a source project
+		// that is not the target project (#422). The path is carried
+		// alongside so a refusal can name the fork, but the *decision* is the
+		// ids, because they are what GitLab guarantees.
+		SourceProjectID int64 `json:"source_project_id"`
+		TargetProjectID int64 `json:"target_project_id"`
+		Source          struct {
+			PathWithNamespace string `json:"path_with_namespace"`
+		} `json:"source"`
 	} `json:"object_attributes"`
 	Project struct {
 		PathWithNamespace string `json:"path_with_namespace"`
@@ -336,7 +368,8 @@ func (r *GitWebhookReceiver) dispatchGitHub(
 		if author == "" {
 			author = payload.HeadCommit.Author.Name
 		}
-		return r.createBuild(ctx, project, payload.After, branch, payload.HeadCommit.Message, author, nil)
+		return r.createBuild(ctx, project, pushRevision(
+			payload.After, branch, payload.HeadCommit.Message, author))
 
 	case eventPullRequest:
 		payload := prPayload{}
@@ -345,8 +378,12 @@ func (r *GitWebhookReceiver) dispatchGitHub(
 		}
 		switch payload.Action {
 		case actionOpened, actionSynchronize, actionReopened:
-			return r.createBuild(ctx, project,
-				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
+			return r.pullRequestBuild(ctx, project, kitchenv1alpha1.GitRevision{
+				SHA:         payload.PullRequest.Head.SHA,
+				Branch:      payload.PullRequest.Head.Ref,
+				PullRequest: &payload.Number,
+				ForkRepo:    forkRepoOf(project, payload.PullRequest.Head.Repo.FullName),
+			})
 		case actionClosed:
 			// TODO: honor previews.ttlAfterClosed instead of immediate teardown.
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
@@ -394,7 +431,7 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 				author = last.Author.Name
 			}
 		}
-		return r.createBuild(ctx, project, payload.After, branch, message, author, nil)
+		return r.createBuild(ctx, project, pushRevision(payload.After, branch, message, author))
 	case eventPullRequest:
 		payload := gitlabMRPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
@@ -411,12 +448,16 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 		}
 		switch action {
 		case "open", actionOpened, "reopen", actionReopened, "update", "updated":
-			return r.createBuild(ctx, project,
-				attrs.LastCommit.ID,
-				attrs.SourceBranch,
-				attrs.LastCommit.Message,
-				prefer(payload.User.Username, payload.User.Name),
-				&attrs.IID)
+			subject, commitBody := kitchenv1alpha1.SplitCommitMessage(attrs.LastCommit.Message)
+			return r.pullRequestBuild(ctx, project, kitchenv1alpha1.GitRevision{
+				SHA:         attrs.LastCommit.ID,
+				Branch:      attrs.SourceBranch,
+				Message:     subject,
+				Body:        commitBody,
+				Author:      prefer(payload.User.Username, payload.User.Name),
+				PullRequest: &attrs.IID,
+				ForkRepo:    gitlabForkRepo(attrs.SourceProjectID, attrs.TargetProjectID, attrs.Source.PathWithNamespace),
+			})
 		case "close", actionClosed, "merge", "merged":
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
 				Name:      controller.PreviewEnvironmentName(project.Name, attrs.IID),
@@ -452,7 +493,8 @@ func (r *GitWebhookReceiver) dispatchGitea(
 		author = prefer(author, payload.HeadCommit.Author.Name)
 		author = prefer(author, payload.Pusher.FullName)
 		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
-		return r.createBuild(ctx, project, payload.After, branch, payload.HeadCommit.Message, author, nil)
+		return r.createBuild(ctx, project, pushRevision(
+			payload.After, branch, payload.HeadCommit.Message, author))
 	case eventPullRequest:
 		payload := prPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
@@ -460,8 +502,12 @@ func (r *GitWebhookReceiver) dispatchGitea(
 		}
 		switch payload.Action {
 		case actionOpened, actionSynchronized, actionSynchronize, actionReopened:
-			return r.createBuild(ctx, project,
-				payload.PullRequest.Head.SHA, payload.PullRequest.Head.Ref, "", "", &payload.Number)
+			return r.pullRequestBuild(ctx, project, kitchenv1alpha1.GitRevision{
+				SHA:         payload.PullRequest.Head.SHA,
+				Branch:      payload.PullRequest.Head.Ref,
+				PullRequest: &payload.Number,
+				ForkRepo:    forkRepoOf(project, payload.PullRequest.Head.Repo.FullName),
+			})
 		case actionClosed:
 			env := &kitchenv1alpha1.Environment{ObjectMeta: metav1.ObjectMeta{
 				Name:      controller.PreviewEnvironmentName(project.Name, payload.Number),
@@ -478,37 +524,142 @@ func (r *GitWebhookReceiver) dispatchGitea(
 func (r *GitWebhookReceiver) createBuild(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
-	sha, branch, message, author string,
-	pullRequest *int32,
+	revision kitchenv1alpha1.GitRevision,
 ) ([]string, error) {
-	// A push carries the whole commit message; a Build carries it as the two
-	// things the platform shows — the subject in every row, the body behind it.
-	subject, commitBody := kitchenv1alpha1.SplitCommitMessage(message)
 	build := &kitchenv1alpha1.Build{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      kitchenv1alpha1.BuildNameFor(project.Name, sha),
+			Name:      kitchenv1alpha1.BuildNameFor(project.Name, revision.SHA),
 			Namespace: project.Namespace,
 			Labels:    map[string]string{kitchenv1alpha1.ProjectLabel: project.Name},
 		},
 		Spec: kitchenv1alpha1.BuildSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-			Git: kitchenv1alpha1.GitRevision{
-				SHA:         sha,
-				Branch:      branch,
-				Message:     subject,
-				Body:        commitBody,
-				Author:      author,
-				PullRequest: pullRequest,
-			},
+			Git:        revision,
 		},
 	}
 	if err := r.Client.Create(ctx, build); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return r.recordPullRequest(ctx, build.Namespace, build.Name, pullRequest)
+			return r.recordPullRequest(ctx, build.Namespace, build.Name, revision.PullRequest)
 		}
 		return nil, err
 	}
 	return []string{build.Name}, nil
+}
+
+// pushRevision is a push's revision: the whole commit message split into the
+// two things the platform shows — the subject in every row, the body behind
+// it — and no pull request and no fork, because a push event is a push to the
+// project's own repository by definition. No provider delivers a fork's pushes
+// to the base repository's webhook; verified against GitHub, whose `push`
+// event fires on the repository the branch is in, which for a fork is the
+// fork's own webhook and not this one.
+func pushRevision(sha, branch, message, author string) kitchenv1alpha1.GitRevision {
+	subject, commitBody := kitchenv1alpha1.SplitCommitMessage(message)
+	return kitchenv1alpha1.GitRevision{
+		SHA:     sha,
+		Branch:  branch,
+		Message: subject,
+		Body:    commitBody,
+		Author:  author,
+	}
+}
+
+// pullRequestBuild is createBuild with the fork gate in front of it (#422).
+//
+// A pull request whose head is in the project's own repository is built the
+// way it always was. One whose head is somewhere else is a stranger's code,
+// and what it gets is the project's `spec.previews.forks` bounded by the
+// platform's `spec.previews.forksMax`:
+//
+//   - `none`, the default: no Build at all, and the pull request is told so
+//     where its author is looking — a commit status and the preview comment.
+//     Refusing here rather than in the build controller is the point: a Build
+//     that exists is a build pod holding the project's registry credential.
+//   - `build`: the Build is created and records where the head came from; the
+//     build controller then declines to give it a preview, so nothing the
+//     project configured reaches the fork's code.
+//   - `full`: exactly what the project's own branch gets.
+func (r *GitWebhookReceiver) pullRequestBuild(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	revision kitchenv1alpha1.GitRevision,
+) ([]string, error) {
+	if !revision.IsFork() {
+		return r.createBuild(ctx, project, revision)
+	}
+	policy := controller.ForkPolicyFor(ctx, r.Client, project)
+	if policy.BuildsForks() {
+		return r.createBuild(ctx, project, revision)
+	}
+	r.refuseFork(ctx, project, revision, policy)
+	return nil, nil
+}
+
+// refuseFork says, in the three places the platform says things, that this
+// pull request got nothing: on the request itself, in the activity feed, and
+// in the operator's log.
+//
+// It is best effort by construction — a provider that cannot be reached does
+// not change what was refused — so nothing here returns an error. The delivery
+// is still a 202: the platform read it, understood it and decided.
+func (r *GitWebhookReceiver) refuseFork(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	revision kitchenv1alpha1.GitRevision,
+	policy kitchenv1alpha1.ForkPolicy,
+) {
+	pullRequest := int32(0)
+	if revision.PullRequest != nil {
+		pullRequest = *revision.PullRequest
+	}
+	reason := controller.ForkRefusalMessage(project, policy, revision.ForkRepo)
+	logf.Log.WithName("git-webhook-receiver").Info("refused a pull request from a fork",
+		"project", project.Name, "pullRequest", pullRequest,
+		"fork", revision.ForkRepo, "commit", revision.SHA, "forks", policy)
+	controller.ForkReporter{Client: r.Client, Factory: r.Factory}.
+		ReportForkRefused(ctx, project, revision, pullRequest, reason)
+	r.Activity.Record(ctx, clickhouse.Event{
+		Type:    clickhouse.EventPreviewRefused,
+		Project: project.Name,
+		Message: reason,
+	})
+}
+
+// forkRepoOf is where a GitHub or Gitea pull request's head lives, as the
+// Build records it: empty when it is the project's own repository, and the
+// head repository's full name when it is not.
+//
+// A payload that names no head repository is a fork, not the project's own.
+// That is the only safe reading of a missing field here — the field is what
+// this whole gate turns on, and a provider that stopped sending it, or a shape
+// this receiver has not met, must fail closed rather than hand a stranger the
+// project's credentials.
+func forkRepoOf(project *kitchenv1alpha1.Project, headRepo string) string {
+	if headRepo == "" {
+		return kitchenv1alpha1.UnknownForkRepo
+	}
+	if strings.EqualFold(headRepo, project.Spec.Source.GitSource().Repo) {
+		return ""
+	}
+	return headRepo
+}
+
+// gitlabForkRepo is the same question for GitLab, which answers it with
+// numeric project ids rather than paths: a merge request whose source project
+// is not its target project comes from a fork.
+//
+// A payload missing either id is treated as a fork for the reason forkRepoOf
+// treats a missing name as one — and here it matters twice over, because two
+// absent ids are equal, so reading them naively would call every malformed
+// delivery the project's own.
+func gitlabForkRepo(sourceID, targetID int64, sourcePath string) string {
+	if sourceID != 0 && targetID != 0 && sourceID == targetID {
+		return ""
+	}
+	if sourcePath == "" {
+		return kitchenv1alpha1.UnknownForkRepo
+	}
+	return sourcePath
 }
 
 // recordPullRequest is what happens when the Build for this commit is already
