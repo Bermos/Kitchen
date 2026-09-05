@@ -288,107 +288,109 @@ const userMenu = computed(() => [
         />
       </div>
 
-      <nav class="p-2 space-y-0.5">
-        <RouterLink
-          v-for="item in nav"
-          :key="item.name"
-          :to="item.to"
-          class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
-          :class="navActive(item) ? 'bg-elevated text-highlighted' : 'text-toned'"
-        >
-          <UIcon :name="item.icon" class="size-4 shrink-0" />
-          {{ item.label }}
-          <span v-if="item.count !== undefined" class="ml-auto font-mono text-xs text-dimmed">{{ item.count }}</span>
-        </RouterLink>
-      </nav>
-
-      <!-- Operator mode's own section. Everything platform-scoped lives behind
-           one prefix and nothing project-scoped does. -->
-      <template v-if="operatorMode">
-        <div class="px-4 pt-4 pb-1">
-          <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Platform</span>
-        </div>
-        <nav class="px-2 space-y-0.5">
+      <div class="flex-1 min-h-0 overflow-y-auto">
+        <nav class="p-2 space-y-0.5">
           <RouterLink
-            v-for="item in platformNav"
+            v-for="item in nav"
             :key="item.name"
             :to="item.to"
             class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
-            :class="route.name === item.name ? 'bg-elevated text-highlighted' : 'text-toned'"
+            :class="navActive(item) ? 'bg-elevated text-highlighted' : 'text-toned'"
           >
             <UIcon :name="item.icon" class="size-4 shrink-0" />
             {{ item.label }}
+            <span v-if="item.count !== undefined" class="ml-auto font-mono text-xs text-dimmed">{{ item.count }}</span>
           </RouterLink>
         </nav>
-      </template>
 
-      <div class="px-4 pt-4 pb-1 flex items-center justify-between">
-        <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>
-        <NewProjectModal @created="() => void inventory.refresh()">
-          <UButton
-            icon="i-lucide-plus"
-            color="neutral"
-            variant="ghost"
-            size="xs"
-            aria-label="New project"
-            class="-mr-1.5"
-          />
-        </NewProjectModal>
-      </div>
-      <nav class="px-2 space-y-0.5 overflow-y-auto flex-1 min-h-0">
-        <RouterLink
-          v-for="project in projects"
-          :key="project.name"
-          :to="{ name: 'project', params: { name: project.name } }"
-          class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
-          :class="activeProject === project.name ? 'bg-elevated text-highlighted' : 'text-toned'"
-        >
-          <StatusDot :tone="projectTone(project.name)" />
-          <span class="truncate">{{ project.name }}</span>
-          <span v-if="previewCount(project.name)" class="ml-auto font-mono text-xs text-dimmed">
-            {{ previewCount(project.name) }}
-          </span>
-        </RouterLink>
-        <p v-if="inventory.data.value && !projects.length" class="px-2.5 py-1.5 text-xs text-dimmed">
-          No projects yet — the + above creates one.
-        </p>
-      </nav>
-
-      <div class="px-4 py-3 border-t border-default text-xs space-y-1.5">
-        <div v-if="cluster" class="flex items-center gap-2" :title="cluster.title">
-          <StatusDot :tone="cluster.healthy ? 'success' : 'warning'" />
-          <span class="text-toned truncate">{{ cluster.label || "cluster" }}</span>
-        </div>
-        <template v-if="gateway">
-          <div class="flex items-center gap-2">
-            <StatusDot :tone="gateway.healthy ? 'success' : 'warning'" />
-            <span class="text-muted">Gateway</span>
-            <span class="ml-auto font-mono text-toned">{{ gateway.healthy ? "healthy" : "pending" }}</span>
+        <!-- Operator mode's own section. Everything platform-scoped lives behind
+             one prefix and nothing project-scoped does. -->
+        <template v-if="operatorMode">
+          <div class="px-4 pt-4 pb-1">
+            <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Platform</span>
           </div>
-          <div class="flex items-center gap-2">
-            <span class="text-dimmed pl-3.5 font-mono truncate" :title="gateway.address">{{ gateway.address }}</span>
-          </div>
+          <nav class="px-2 space-y-0.5">
+            <RouterLink
+              v-for="item in platformNav"
+              :key="item.name"
+              :to="item.to"
+              class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
+              :class="route.name === item.name ? 'bg-elevated text-highlighted' : 'text-toned'"
+            >
+              <UIcon :name="item.icon" class="size-4 shrink-0" />
+              {{ item.label }}
+            </RouterLink>
+          </nav>
         </template>
-        <div v-if="status.data.value?.tunnel?.enabled" class="flex items-center gap-2">
-          <StatusDot :tone="status.data.value?.tunnel?.connected ? 'success' : 'warning'" />
-          <span class="text-muted">Tunnel</span>
-          <span class="ml-auto font-mono text-toned" :title="status.data.value?.tunnel?.message">
-            {{ status.data.value?.tunnel?.connected ? "connected" : "pending" }}
-          </span>
+
+        <div class="px-4 pt-4 pb-1 flex items-center justify-between">
+          <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>
+          <NewProjectModal @created="() => void inventory.refresh()">
+            <UButton
+              icon="i-lucide-plus"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              aria-label="New project"
+              class="-mr-1.5"
+            />
+          </NewProjectModal>
         </div>
-        <div v-if="builds" class="flex items-center gap-2">
-          <StatusDot :tone="builds.busy ? 'warning' : 'neutral'" :pulse="builds.busy" />
-          <span class="text-muted">Builds</span>
-          <span
-            class="ml-auto font-mono text-toned"
-            :title="builds.queued ? `${builds.queued} waiting for a slot` : 'no builds waiting'"
+        <nav class="px-2 space-y-0.5">
+          <RouterLink
+            v-for="project in projects"
+            :key="project.name"
+            :to="{ name: 'project', params: { name: project.name } }"
+            class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
+            :class="activeProject === project.name ? 'bg-elevated text-highlighted' : 'text-toned'"
           >
-            {{ builds.label }}<template v-if="builds.queued"> · {{ builds.queued }} queued</template>
-          </span>
-        </div>
-        <div v-if="version" class="flex items-center gap-2">
-          <span class="text-muted">Kitchen</span>
-          <span class="ml-auto font-mono text-dimmed" :title="`Kitchen ${version}`">{{ version }}</span>
+            <StatusDot :tone="projectTone(project.name)" />
+            <span class="truncate">{{ project.name }}</span>
+            <span v-if="previewCount(project.name)" class="ml-auto font-mono text-xs text-dimmed">
+              {{ previewCount(project.name) }}
+            </span>
+          </RouterLink>
+          <p v-if="inventory.data.value && !projects.length" class="px-2.5 py-1.5 text-xs text-dimmed">
+            No projects yet — the + above creates one.
+          </p>
+        </nav>
+
+        <div class="px-4 py-3 border-t border-default text-xs space-y-1.5">
+          <div v-if="cluster" class="flex items-center gap-2" :title="cluster.title">
+            <StatusDot :tone="cluster.healthy ? 'success' : 'warning'" />
+            <span class="text-toned truncate">{{ cluster.label || "cluster" }}</span>
+          </div>
+          <template v-if="gateway">
+            <div class="flex items-center gap-2">
+              <StatusDot :tone="gateway.healthy ? 'success' : 'warning'" />
+              <span class="text-muted">Gateway</span>
+              <span class="ml-auto font-mono text-toned">{{ gateway.healthy ? "healthy" : "pending" }}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-dimmed pl-3.5 font-mono truncate" :title="gateway.address">{{ gateway.address }}</span>
+            </div>
+          </template>
+          <div v-if="status.data.value?.tunnel?.enabled" class="flex items-center gap-2">
+            <StatusDot :tone="status.data.value?.tunnel?.connected ? 'success' : 'warning'" />
+            <span class="text-muted">Tunnel</span>
+            <span class="ml-auto font-mono text-toned" :title="status.data.value?.tunnel?.message">
+              {{ status.data.value?.tunnel?.connected ? "connected" : "pending" }}
+            </span>
+          </div>
+          <div v-if="builds" class="flex items-center gap-2">
+            <StatusDot :tone="builds.busy ? 'warning' : 'neutral'" :pulse="builds.busy" />
+            <span class="text-muted">Builds</span>
+            <span
+              class="ml-auto font-mono text-toned"
+              :title="builds.queued ? `${builds.queued} waiting for a slot` : 'no builds waiting'"
+            >
+              {{ builds.label }}<template v-if="builds.queued"> · {{ builds.queued }} queued</template>
+            </span>
+          </div>
+          <div v-if="version" class="flex items-center gap-2">
+            <span class="text-muted">Kitchen</span>
+            <span class="ml-auto font-mono text-dimmed" :title="`Kitchen ${version}`">{{ version }}</span>
+          </div>
         </div>
       </div>
     </aside>
