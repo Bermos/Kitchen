@@ -196,6 +196,30 @@ var _ = Describe("Kitchen scheduled backup", func() {
 		By("bounding one run at the configured timeout")
 		Expect(cron.Spec.JobTemplate.Spec.ActiveDeadlineSeconds).To(Equal(ptr.To(int64(1200))))
 
+		By("mounting the CA a destination inside this cluster is verified against")
+		var mounted *corev1.VolumeMount
+		for i := range container.VolumeMounts {
+			if container.VolumeMounts[i].Name == internalCAVolume {
+				mounted = &container.VolumeMounts[i]
+			}
+		}
+		Expect(mounted).NotTo(BeNil(),
+			"a run uploading to the object store this platform bundles verifies it against "+
+				"the platform's own CA, and fails on a file that is not there")
+		Expect(mounted.MountPath).To(Equal(InternalCAMountPath))
+		var volume *corev1.Volume
+		for i := range cron.Spec.JobTemplate.Spec.Template.Spec.Volumes {
+			if cron.Spec.JobTemplate.Spec.Template.Spec.Volumes[i].Name == internalCAVolume {
+				volume = &cron.Spec.JobTemplate.Spec.Template.Spec.Volumes[i]
+			}
+		}
+		Expect(volume).NotTo(BeNil())
+		Expect(volume.ConfigMap.Name).To(Equal(InternalCAConfigMapName))
+		Expect(volume.ConfigMap.Optional).To(Equal(ptr.To(true)),
+			"the same CronJob is written on an installation backing up to a store on the "+
+				"internet, where the ConfigMap does not exist and a required mount would be a "+
+				"scheduled backup that never runs at all")
+
 		By("reporting what is configured, and that nothing has run yet")
 		Expect(kitchen.Status.Backup).NotTo(BeNil())
 		Expect(kitchen.Status.Backup.Schedule).To(Equal("0 3 * * *"))

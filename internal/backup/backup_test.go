@@ -412,3 +412,34 @@ func TestReadRefusesSomethingElse(t *testing.T) {
 		t.Fatalf("an archive of an empty platform is still an archive: %v", err)
 	}
 }
+
+// A destination inside this cluster over TLS is served by the platform's own
+// CA — no public authority issues for a `.svc` name, because nobody owns one —
+// so the bundle the operator publishes is what verifies it, and every other
+// destination keeps the host's roots (#382).
+func TestOnlyAnInClusterDestinationIsVerifiedAgainstThePlatformsOwnCA(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint string
+		want     bool
+	}{
+		{"https://kitchen-objectstore.kitchen-system.svc:9000", true},
+		{"https://kitchen-objectstore.kitchen-system.svc.cluster.local:9000", true},
+		{"https://s3.eu-central-1.amazonaws.com", false},
+		{"https://minio.example.com", false},
+		// Plaintext verifies nothing, so there is no bundle that would help;
+		// it is reported by the platform rather than papered over here.
+		{"http://kitchen-objectstore.kitchen-system.svc:9000", false},
+		{"", false},
+		{"://not a url", false},
+	} {
+		if got := InCluster(tc.endpoint); got != tc.want {
+			t.Errorf("InCluster(%q) = %v, want %v", tc.endpoint, got, tc.want)
+		}
+	}
+
+	// And the file it names is the one every pod the operator writes mounts.
+	if !strings.HasPrefix(InternalCAFile, "/etc/kitchen/internal-ca/") {
+		t.Errorf("the CA is read from %s, which is not where the platform mounts it",
+			InternalCAFile)
+	}
+}

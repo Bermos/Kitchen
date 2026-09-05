@@ -1099,14 +1099,61 @@ claim, never a prefix in a shared one, and no application is ever handed the
 root. Each preview environment gets an empty bucket of its own, torn down
 with the preview.
 
+### How applications reach it
+
+`objectStore.tls.enabled` (on by default) is what stops the store answering in
+plaintext. Until it existed, MinIO served plain HTTP on 9000 — so every object,
+every upload and every bucket credential crossed the wire readable, and this is
+the one bundled store [the platform namespace
+accepts](#what-the-platform-namespace-accepts) traffic to from application
+namespaces, so that was between two namespaces as well as inside
+`kitchen-system`.
+
+What it does:
+
+- **The store gets a certificate from the platform's internal CA** — the same
+  self-signed root, CA certificate and CA issuer the [telemetry
+  store](#how-the-store-is-reached) uses, minted by the operator through the
+  bundled cert-manager — issued for every name a client in the cluster reaches
+  its Service by, `kitchen-objectstore.kitchen-system.svc.cluster.local`
+  included, because that is the address an application's binding carries.
+- **MinIO serves TLS on the one port it listens on.** There is no second,
+  plaintext listener to remove: a certificate in the directory `--certs-dir`
+  names is what makes 9000 TLS, and a client that will not do TLS is refused
+  rather than served. cert-manager writes `tls.crt` and `tls.key`, MinIO reads
+  `public.crt` and `private.key`, so the volume projects the two under the
+  names the server looks for.
+- **The store's pod waits for its certificate** rather than starting without
+  one. On a first install that is a wait of seconds and never a fallback: at no
+  point does this store answer a plaintext request because its certificate was
+  late.
+- **The platform's own clients verify it** — hostname and chain, against the CA
+  — because they are the platform's and can carry the bundle: the operator
+  provisions every bucket over it, and a scheduled backup uploading to this
+  store verifies it the same way.
+- **Every application is handed the CA in its binding.** An application pod
+  cannot mount a ConfigMap in `kitchen-system`, and no image the platform did
+  not build has a private root in its trust store — so the binding Secret
+  carries a `caCert` key holding the CA certificate itself, and an S3 client
+  configured with it gets the same `verify-full` the platform's own components
+  do. It is absent, not empty, for a store whose certificate a public root
+  already vouches for.
+
+None of it depends on `kitchen.tls.mode`: that decides how the platform is
+published to the internet, and this decides what two pods in one cluster say to
+each other. `objectStore.tls.enabled=false` is the one way to run the bundled
+store in plaintext, and leaves `InternalCAReady` False on the Kitchen singleton
+with reason `StoreInTheClear`, naming what is readable.
+
 ### Why it is not published on the Gateway
 
 The registry has to be, because the node's container runtime pulls images
 and trusts nothing the cluster says about a certificate. Nothing like that is
 in the path here: an application runs in the cluster and reaches the store at
-`kitchen-objectstore.kitchen-system.svc.cluster.local:9000`, over plain HTTP
-on a Service address nothing outside can reach. So there is no hostname, no
-TLS requirement, and it works in `kitchen.tls.mode=none`.
+`kitchen-objectstore.kitchen-system.svc.cluster.local:9000`, on a Service
+address nothing outside can reach — so there is no hostname to publish, and it
+works in `kitchen.tls.mode=none`, where the store still serves TLS from the
+platform's own CA.
 
 The corollary is stated rather than hidden: **a bucket in the bundled store
 cannot be publicly readable**, because there is no public to read it. A claim
@@ -1780,6 +1827,41 @@ If the certificate never issues — no cert-manager on the cluster, for instance
 stuck. `--set postgres.tls.enabled=false` on the upgrade puts it back the way
 it was, in the clear.
 
+### Upgrading to an object store that speaks TLS
+
+The upgrade that adds `objectStore.tls.enabled` restarts MinIO once, with a
+certificate, and rewrites where every bound bucket says its store is. The
+ordering is the telemetry store's, and so is the reason nothing is lost:
+
+1. Helm applies the release. The operator rolls first in practice and requests
+   the store's certificate from the CA it already has (or mints, on an
+   installation where this is the first store to ask for one).
+2. The object store's StatefulSet rolls. Its new pod does not start until the
+   certificate Secret exists — `ContainerCreating` until it does — so at no
+   point is there a MinIO answering in the clear because its certificate was
+   late.
+3. **Every binding is brought forward, without a new credential.** The
+   `endpoint` on each bound claim's Secret becomes `https://`, and a `caCert`
+   key appears holding the CA certificate. The bucket, the access key and the
+   secret key are left exactly as they are: the credential is the bucket's, and
+   reissuing it to carry an address would roll every pod for a change that is
+   not theirs.
+4. **The applications reading those bindings roll themselves.** A Secret's
+   values do not reach a pod that is already running, so the operator digests
+   the Secrets each workload reads onto its pod template — a binding whose
+   endpoint changed is a changed digest, and the Deployment rolls. It is the
+   same mechanism a rotated credential goes through, and it needs no redeploy.
+
+What an application does have to do is *use* `caCert`: a client configured with
+the endpoint alone verifies against the host's roots, which have never heard of
+this CA, and refuses the connection. Its requests fail from the store's restart
+until it is configured to trust the certificate — there is no window in which
+they succeed in the clear. See [the claims
+guide](../../docs/api/claims.md#objectstore) for what the key holds.
+
+`--set objectStore.tls.enabled=false` on the upgrade puts it back the way it
+was, in the clear, and the bindings follow it back on the next reconcile.
+
 ### Upgrading from 0.1.0
 
 Releases at 0.1.0 cannot be upgraded in place. Their ClickHouse and Postgres
@@ -2082,6 +2164,7 @@ kubectl delete namespace kitchen-system
 | `objectStore.auth.accessKeyId` | `kitchen` | The root user; mints every bucket's own credential and is never handed to an application. |
 | `objectStore.auth.secretAccessKey` | `""` | Generated on install, preserved on upgrade. |
 | `objectStore.region` | `us-east-1` | What every bucket reports, and what the seeded Connection is told. |
+| `objectStore.tls.enabled` | `true` | Serve the store over HTTPS, with a certificate the operator requests from the platform's internal CA, and hand every binding the CA certificate to verify it against. Off is the one way to run it in the clear; see [How applications reach it](#how-applications-reach-it). |
 | `objectStore.service.port` | `9000` | |
 | `objectStore.persistence.enabled` | `true` | PVC for the store. Every object dies with the pod without it. |
 | `objectStore.persistence.size` / `.storageClass` / `.accessModes` | `50Gi` / cluster default / `[ReadWriteOnce]` | |

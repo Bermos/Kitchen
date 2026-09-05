@@ -96,6 +96,16 @@ type BackupDestination struct {
 	AccessKeyIDKey     string
 	SecretAccessKeyKey string
 	RegionKey          string
+
+	// EndpointCASecret and EndpointCAKey name the PEM certificate of the
+	// authority that signed the store's own, in the same Secret and the same
+	// namespace as the credential above. They are answered only for a store
+	// whose certificate no public root vouches for — the object store this
+	// platform bundles, served on a `.svc` name from the platform's internal
+	// CA (#382) — because barman runs in the database's namespace, where the
+	// platform's CA is not published unless something puts it there.
+	EndpointCASecret string
+	EndpointCAKey    string
 }
 
 // Configured reports whether there is anywhere to write to at all. A policy

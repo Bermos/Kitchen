@@ -36,6 +36,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/audit"
+	"github.com/Bermos/Kitchen/internal/backup"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
@@ -186,6 +187,21 @@ func validS3Config(config map[string]any) error {
 			if _, isBool := value.(bool); !isBool {
 				return fmt.Errorf("config.%s is true or false (got %v)", key, value)
 			}
+		}
+	}
+	// `caFile` is a path inside the operator's own pod, and the platform is
+	// what puts a bundle there: the CA it mints for the store it bundles
+	// (#382). A request naming any other path would have the operator read a
+	// file of the caller's choosing and say whether it holds a certificate,
+	// which is a file-read oracle rather than a setting. The value is still
+	// accepted so that reading the seeded Connection back and writing it
+	// again is not a refusal.
+	if value, ok := config["caFile"]; ok {
+		file, isString := value.(string)
+		if !isString || (strings.TrimSpace(file) != "" && strings.TrimSpace(file) != backup.InternalCAFile) {
+			return fmt.Errorf("config.caFile is the platform's own CA bundle (%s) and nothing "+
+				"else: a store of your own is verified against the host's roots, which is what "+
+				"leaving it out asks for", backup.InternalCAFile)
 		}
 	}
 	raw, err := json.Marshal(config)

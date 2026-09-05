@@ -74,13 +74,28 @@ func (p *S3Probe) Probe(ctx context.Context) Result {
 	if err != nil {
 		return unreachableBecause(err.Error())
 	}
+	// The bundled store's certificate comes from the platform's own CA, which
+	// the host's roots have never heard of — so the probe verifies against
+	// the bundle the Connection names, exactly as the provisioner does. A
+	// probe that trusted less than the provisioner would report a connection
+	// healthy that every claim through it then fails on.
+	transport := p.Transport
+	if transport == nil {
+		verified, _, err := p.Config.Verify()
+		if err != nil {
+			return unreachableBecause(err.Error())
+		}
+		if verified != nil {
+			transport = verified
+		}
+	}
 	creds := credentials.NewStaticV4(p.AccessKeyID, p.SecretAccessKey, "")
 	lookup := minio.BucketLookupDNS
 	if p.Config.ForcePathStyle {
 		lookup = minio.BucketLookupPath
 	}
 	client, err := minio.New(host, &minio.Options{
-		Creds: creds, Secure: secure, Region: p.Config.Region, BucketLookup: lookup, Transport: p.Transport,
+		Creds: creds, Secure: secure, Region: p.Config.Region, BucketLookup: lookup, Transport: transport,
 	})
 	if err != nil {
 		return unreachableBecause(err.Error())
@@ -104,7 +119,7 @@ func (p *S3Probe) Probe(ctx context.Context) Result {
 		return result
 	}
 
-	admin, err := madmin.NewWithOptions(host, &madmin.Options{Creds: creds, Secure: secure, Transport: p.Transport})
+	admin, err := madmin.NewWithOptions(host, &madmin.Options{Creds: creds, Secure: secure, Transport: transport})
 	if err != nil {
 		return result.withWarnings(fmt.Sprintf("the admin client could not be built: %s", err.Error()))
 	}

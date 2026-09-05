@@ -364,6 +364,36 @@ func (r *ResourceClaimReconciler) claimBackupDestination(
 	if region := strings.TrimSpace(s3.Region); region != "" {
 		data[backupCredentialRegionKey] = []byte(region)
 	}
+	// Whether there was anything to copy before the CA below. It decides
+	// whether the Secret this writes is the destination's *credential* or
+	// only the certificate it is verified against.
+	credentialCopied := len(data) > 0
+
+	// And the authority that signed the store's certificate, for a store
+	// inside this cluster (#382): barman runs in the database's namespace,
+	// where the ConfigMap the operator publishes the platform's CA in is not,
+	// so the certificate travels in this same Secret — CloudNativePG takes
+	// `endpointCA` by secret reference, and one copy is one thing to keep in
+	// step and one thing to delete with the claim.
+	//
+	// A CA that is not there yet is not an error: the reconcile that
+	// publishes it wakes this one, and a database configured to verify
+	// against a file that does not exist would be a backup that fails every
+	// night instead of a policy that lands a moment later.
+	caCopied := false
+	if backup.InCluster(s3.Endpoint) {
+		bundle := &corev1.ConfigMap{}
+		key := types.NamespacedName{Namespace: PlatformNamespace, Name: InternalCAConfigMapName}
+		if err := r.Get(ctx, key, bundle); err == nil {
+			if pem := bundle.Data[InternalCABundleKey]; pem != "" {
+				data[InternalCABundleKey] = []byte(pem)
+				caCopied = true
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return database.BackupDestination{}, err
+		}
+	}
+
 	if len(data) == 0 {
 		// Nothing to copy: the ambient credential chain, which is the better
 		// answer where it is available because there is then no long-lived
@@ -386,6 +416,16 @@ func (r *ResourceClaimReconciler) claimBackupDestination(
 		return database.BackupDestination{}, err
 	}
 
+	if caCopied {
+		resolved.EndpointCASecret = name
+		resolved.EndpointCAKey = InternalCABundleKey
+	}
+	if !credentialCopied {
+		// The Secret exists for the CA alone: naming it as the credential
+		// too would tell CloudNativePG to sign requests with keys that are
+		// not in it, rather than with the pod's own credential chain.
+		return resolved, nil
+	}
 	resolved.CredentialsSecret = name
 	resolved.AccessKeyIDKey = backup.CredentialKeyAccessKeyID
 	resolved.SecretAccessKeyKey = backup.CredentialKeySecretAccessKey

@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -87,6 +88,21 @@ func (objectStoreContract) reconcile(
 	mode := declare(claim, claimType, conn.Spec.Provider)
 	branchErr := r.reconcileBranches(ctx, claim, project.Name, bucketBrancher{provisioner}, appNS,
 		conn.Spec.Provider, mode.Isolated())
+
+	// A binding is written once, when the bucket is provisioned, and what it
+	// says about the *store* can change under it afterwards — which is
+	// exactly what the bundled store gaining a certificate is (#382): the
+	// same bucket at the same address, over https now, with a CA to verify
+	// it against. An application left holding `http://` would be talking to
+	// a store that no longer answers there, and nothing would say why.
+	//
+	// So the store's half of every binding is rewritten each pass, and only
+	// that half: the credential is the bucket's, it is scoped to it, and
+	// reissuing it to carry an address would roll every pod for a change
+	// that is not theirs.
+	if err := r.refreshBindingAddresses(ctx, provisioner, claim, appNS); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	reason := fmt.Sprintf("claim %s bound: %s via %s", claim.Name, claim.Spec.Type, conn.Name)
 	if err := r.bind(ctx, claim, conn.Spec.Provider, reason, map[string]any{
@@ -229,6 +245,70 @@ func bucketRequirements(claim *kitchenv1alpha1.ResourceClaim) objectstore.Requir
 		PublicRead: cfg.PublicRead,
 		Size:       cfg.Size,
 	}
+}
+
+// refreshBindingAddresses writes where the store is over every binding this
+// claim owns — its own and each preview's — leaving the credential and the
+// bucket name alone.
+//
+// A provisioner that cannot say where its store is without asking it does
+// nothing here; every one in this repository can, and the interface is what
+// keeps this from knowing which it holds.
+func (r *ResourceClaimReconciler) refreshBindingAddresses(
+	ctx context.Context,
+	provisioner objectstore.Provisioner,
+	claim *kitchenv1alpha1.ResourceClaim,
+	appNS string,
+) error {
+	addressable, ok := provisioner.(objectstore.Addressable)
+	if !ok {
+		return nil
+	}
+	address := addressable.Address().Data()
+
+	names := []string{claim.Status.SecretName}
+	for _, branch := range claim.Status.Branches {
+		names = append(names, branch.SecretName)
+	}
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		secret := &corev1.Secret{}
+		key := types.NamespacedName{Namespace: appNS, Name: name}
+		if err := r.Get(ctx, key, secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				// Provisioning writes it on the next pass; there is nothing
+				// here to keep in step yet.
+				continue
+			}
+			return err
+		}
+		changed := false
+		for field, value := range address {
+			switch {
+			case len(value) == 0 && len(secret.Data[field]) > 0:
+				// The store stopped serving a certificate the platform
+				// issued. An application holding a CA that no longer signs
+				// anything verifies against the wrong thing for ever.
+				delete(secret.Data, field)
+				changed = true
+			case len(value) > 0 && !bytes.Equal(secret.Data[field], value):
+				if secret.Data == nil {
+					secret.Data = map[string][]byte{}
+				}
+				secret.Data[field] = value
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		if err := r.Update(ctx, secret); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // bucketBrancher is an object store provisioner as reconcileBranches sees

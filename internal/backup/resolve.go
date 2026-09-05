@@ -19,6 +19,8 @@ package backup
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,6 +37,38 @@ const (
 	CredentialKeyAccessKeyID     = "accessKeyId"
 	CredentialKeySecretAccessKey = "secretAccessKey"
 )
+
+// InternalCAFile is where every pod the platform writes sees the CA the
+// operator mints for its own stores — the chart's `kitchen.internalCAFile`,
+// mounted from the ConfigMap `kitchen-internal-ca`, in the operator's own pod
+// and in the pod a scheduled backup run gets.
+//
+// It is a constant here rather than a field on the destination because
+// nothing about it is configurable: there is one internal CA per platform
+// namespace, and the only question is whether the destination is a store that
+// it signed. TestTheCABundleIsMountedWhereTheChartSaysItIs holds this and the
+// controller's mount path together.
+const InternalCAFile = "/etc/kitchen/internal-ca/ca.crt"
+
+// InCluster reports whether a destination's endpoint names a Service in this
+// cluster rather than a store on the internet.
+//
+// It is a question about the certificate, not about the route: no public
+// authority issues for a `.svc` name — nobody owns it — so a store answering
+// TLS on one is served by an authority inside the cluster, and the only one
+// this platform knows of is its own. Everything else, including a store on a
+// private network with a real name, is verified against the host's roots as
+// before.
+func InCluster(endpoint string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Scheme != "https" {
+		// Plain HTTP verifies nothing, so there is no bundle that would
+		// help; it is reported by the platform rather than fixed here.
+		return false
+	}
+	host := parsed.Hostname()
+	return strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".svc.cluster.local")
+}
 
 // Open builds the destination the spec describes, resolving its credential
 // through the cluster.
@@ -68,6 +102,12 @@ func Open(
 			ForcePathStyle:       spec.S3.ForcePathStyle,
 			ServerSideEncryption: spec.S3.ServerSideEncryption,
 			KMSKeyID:             spec.S3.KMSKeyID,
+		}
+		if InCluster(config.Endpoint) {
+			// A store inside this cluster over TLS: the platform's own CA is
+			// the only authority that can have signed it, and this process —
+			// the operator, or the pod of a scheduled run — mounts it.
+			config.CABundleFile = InternalCAFile
 		}
 		if ref := spec.S3.CredentialsSecretRef; ref != nil {
 			secret := &corev1.Secret{}

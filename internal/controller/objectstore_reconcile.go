@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -94,9 +95,15 @@ type objectStoreCredentials struct {
 	SecretAccessKey string
 }
 
-// objectStoreCredential reads the credential the chart generated. It is the
-// store's root: what mints every claim's own scoped credential, and never
-// what an application is handed.
+// objectStoreCredential reads the store's own secret: the root credential the
+// chart generated — what mints every claim's own scoped credential, and never
+// what an application is handed — and, from the same place, how the store is
+// reached.
+//
+// The scheme and the CA bundle are filled onto the store rather than returned
+// beside the credential, because everything downstream of here asks the store
+// where it is: the endpoint in the seeded Connection, the endpoint in every
+// binding, and what the platform reports about the namespace.
 func (r *KitchenReconciler) objectStoreCredential(
 	ctx context.Context,
 	store *platformObjectStore,
@@ -105,6 +112,12 @@ func (r *KitchenReconciler) objectStoreCredential(
 	key := types.NamespacedName{Namespace: PlatformNamespace, Name: store.SecretName}
 	if err := r.Get(ctx, key, secret); err != nil {
 		return nil, err
+	}
+	store.Scheme = strings.TrimSpace(string(secret.Data[objectstore.SecretKeyScheme]))
+	store.CAFile = strings.TrimSpace(string(secret.Data[objectstore.SecretKeyCAFile]))
+	if store.Scheme != "" && store.Scheme != objectstore.SchemeHTTP && store.Scheme != objectstore.SchemeHTTPS {
+		return nil, fmt.Errorf("secret %q asks for scheme %q; it is %s or %s", store.SecretName,
+			store.Scheme, objectstore.SchemeHTTP, objectstore.SchemeHTTPS)
 	}
 	credential := &objectStoreCredentials{
 		AccessKeyID:     string(secret.Data[objectstore.CredentialKeyAccessKeyID]),
@@ -156,6 +169,11 @@ func (r *KitchenReconciler) seedObjectStoreConnection(
 		Region:         store.Region,
 		ForcePathStyle: true,
 		InCluster:      true,
+		// What the store's certificate is verified against, where the chart
+		// asked for one. It is the operator's own mount of the CA it
+		// publishes, and it is on the Connection because the Connection is
+		// what every client of this store is built from.
+		CAFile: store.CAFile,
 	})
 	if err != nil {
 		return "", err

@@ -404,12 +404,13 @@ installation says what its clients should ask of that.
 {{/*
 Whether anything in this release is served with a certificate from the
 platform's internal CA. It is what decides whether the operator's own pod
-mounts the CA bundle: the operator is a client of both stores — it queries the
-telemetry store, and it dumps the accounts database on the backup schedule —
-so one store speaking TLS is enough for it to need the bundle.
+mounts the CA bundle: the operator is a client of all three stores — it queries
+the telemetry store, dumps the accounts database on the backup schedule, and
+provisions every bucket at the object store — so one store speaking TLS is
+enough for it to need the bundle.
 */}}
 {{- define "kitchen.internalTLSEnabled" -}}
-{{- if or (eq (include "kitchen.clickhouseTLSEnabled" .) "true") (eq (include "kitchen.postgresTLSEnabled" .) "true") }}true{{ end }}
+{{- if or (eq (include "kitchen.clickhouseTLSEnabled" .) "true") (eq (include "kitchen.postgresTLSEnabled" .) "true") (eq (include "kitchen.objectStoreTLSEnabled" .) "true") }}true{{ end }}
 {{- end }}
 
 {{/*
@@ -675,6 +676,59 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "kitchen.objectStoreImage" -}}
 {{- printf "%s:%s" .Values.objectStore.image.repository .Values.objectStore.image.tag }}
+{{- end }}
+
+{{/*
+TLS inside the platform namespace, for the bundled object store.
+
+Same shape as `kitchen.clickhouseTLSEnabled` and the same argument: it is the
+bundled store's property alone. An installation reaching a store of its own
+does that through an ordinary `s3` Connection, whose endpoint carries whatever
+scheme that store serves.
+
+This is the store applications reach, so leaving it in the clear is not only
+readable inside `kitchen-system`: every object and every bucket credential
+crosses between namespaces in the clear too.
+*/}}
+{{- define "kitchen.objectStoreTLSEnabled" -}}
+{{- if and .Values.objectStore.enabled .Values.objectStore.tls.enabled }}true{{ end }}
+{{- end }}
+
+{{/*
+The address the store answers on, and the one its certificate is issued for.
+The operator turns it into every shortening a cluster resolver accepts,
+including the `.cluster.local` form an application's binding carries.
+*/}}
+{{- define "kitchen.objectStoreHost" -}}
+{{- printf "%s.%s.svc" (include "kitchen.objectStoreFullname" .) .Release.Namespace }}
+{{- end }}
+
+{{/*
+The scheme every client reaches the store on, written into the store's secret
+rather than worked out again by each of them — the operator, the seeded
+Connection, and through it every application's binding.
+*/}}
+{{- define "kitchen.objectStoreScheme" -}}
+{{- if eq (include "kitchen.objectStoreTLSEnabled" .) "true" }}https{{ else }}http{{ end }}
+{{- end }}
+
+{{/*
+The Secret the store's certificate is issued into — see
+`kitchen.clickhouseTLSSecretName` for why this name is the chart's and the
+CA's is not.
+*/}}
+{{- define "kitchen.objectStoreTLSSecretName" -}}
+{{- printf "%s-objectstore-tls" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{/*
+Where the certificate is mounted. MinIO takes a *directory* and expects
+`public.crt` and `private.key` in it — cert-manager writes `tls.crt` and
+`tls.key`, which is why the volume projects the two keys under the names the
+server looks for rather than mounting the Secret as it stands.
+*/}}
+{{- define "kitchen.objectStoreTLSMountPath" -}}
+{{- "/etc/kitchen/objectstore/certs" }}
 {{- end }}
 
 {{/*
@@ -1185,6 +1239,9 @@ does not run in.
 {{- if lt (int .Values.registry.retention.keepTags) 1 }}
 {{- fail "registry.retention.keepTags must be at least 1: keeping no tags at all would delete the image every environment is currently running." }}
 {{- end }}
+{{- end }}
+{{- if and .Values.objectStore.enabled (not (get (default dict .Values.objectStore) "tls")) }}
+{{- fail "objectStore.tls values are missing: upgrade with --reset-then-reuse-values so new chart defaults are merged with existing overrides." }}
 {{- end }}
 {{- if and .Values.objectStore.enabled (lt (len .Values.objectStore.auth.accessKeyId) 3) }}
 {{- fail "objectStore.auth.accessKeyId must be at least 3 characters: MinIO refuses a shorter root user, and the store would never start." }}

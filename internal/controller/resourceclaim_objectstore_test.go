@@ -228,6 +228,51 @@ var _ = Describe("An objectStore claim", func() {
 		Expect(store.Quotas[bucket]).To(Equal(uint64(1 << 30)))
 	})
 
+	It("keeps where the store is in step, without reissuing the bucket's credential", func() {
+		createClaim("", "")
+		reconcileOnce()
+
+		claim := getClaim()
+		bindingKey := types.NamespacedName{Namespace: appNS, Name: claim.Status.SecretName}
+		before := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, bindingKey, before)).To(Succeed())
+		Expect(before.Data).NotTo(HaveKey(objectstore.BindingKeyCACert),
+			"a store with no certificate of the platform's writes no authority at all: a key "+
+				"that is there and empty reads as one that vouches for nothing")
+
+		By("moving the store to https with a certificate the platform's own CA signed")
+		provider.Config.Endpoint = "https://kitchen-objectstore.kitchen-system.svc.cluster.local:9000"
+		provider.CACert = "-- the platform's CA --"
+
+		reconcileOnce()
+
+		after := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, bindingKey, after)).To(Succeed())
+		Expect(string(after.Data[objectstore.BindingKeyEndpoint])).To(HavePrefix("https://"),
+			"an application left holding http:// talks to a store that no longer answers there")
+		Expect(string(after.Data[objectstore.BindingKeyCACert])).To(Equal("-- the platform's CA --"),
+			"an application pod cannot mount the platform's ConfigMap, so the certificate "+
+				"travels with the binding or it cannot verify at all")
+		Expect(after.Data[objectstore.BindingKeyAccessKeyID]).
+			To(Equal(before.Data[objectstore.BindingKeyAccessKeyID]),
+				"the credential is the bucket's; reissuing it to carry an address would roll "+
+					"every pod for a change that is not theirs")
+		Expect(after.Data[objectstore.BindingKeySecretAccessKey]).
+			To(Equal(before.Data[objectstore.BindingKeySecretAccessKey]))
+		Expect(after.Data[objectstore.BindingKeyBucket]).To(Equal(before.Data[objectstore.BindingKeyBucket]))
+
+		By("clearing an authority that no longer signs anything")
+		provider.CACert = ""
+
+		reconcileOnce()
+
+		cleared := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, bindingKey, cleared)).To(Succeed())
+		Expect(cleared.Data).NotTo(HaveKey(objectstore.BindingKeyCACert),
+			"a stale CA left behind is an application verifying against an authority that "+
+				"vouches for nothing, for ever")
+	})
+
 	It("fails the claim, with the reason, when the store cannot honour a requirement", func() {
 		createClaim(`{"objectStore": {"publicRead": true}}`, "")
 		reconcileOnce()

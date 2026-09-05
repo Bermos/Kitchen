@@ -18,8 +18,12 @@ package destination
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -44,6 +48,17 @@ type S3Config struct {
 	// for the latter.
 	ServerSideEncryption string
 	KMSKeyID             string
+
+	// CABundleFile is a PEM bundle added to the host's own roots for this
+	// destination, for a store whose certificate no public authority signed
+	// — the object store this platform bundles, served on a `.svc` name from
+	// the platform's internal CA (#382). Empty is the host's roots alone,
+	// which is every destination on the internet.
+	//
+	// It is added to the system pool rather than replacing it: one client
+	// reaches whichever store the destination names, and a pool holding only
+	// a private CA would refuse AWS.
+	CABundleFile string
 
 	// AccessKeyID and SecretAccessKey are the static credential, where there
 	// is one. Both empty is the ambient chain — IRSA, EKS Pod Identity, an
@@ -86,6 +101,13 @@ func NewS3(ctx context.Context, config S3Config) (*S3, error) {
 		options = append(options, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(config.AccessKeyID, config.SecretAccessKey, "")))
 	}
+	if config.CABundleFile != "" {
+		transport, err := trustBundle(config.CABundleFile)
+		if err != nil {
+			return nil, err
+		}
+		options = append(options, awsconfig.WithHTTPClient(&http.Client{Transport: transport}))
+	}
 	loaded, err := awsconfig.LoadDefaultConfig(ctx, options...)
 	if err != nil {
 		return nil, fmt.Errorf("the destination's credentials could not be resolved: %w", err)
@@ -103,6 +125,34 @@ func NewS3(ctx context.Context, config S3Config) (*S3, error) {
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
 	return &S3{config: config, client: client}, nil
+}
+
+// trustBundle builds the transport that verifies this destination: the host's
+// own roots plus the bundle named, which is how a store inside the cluster is
+// verified without the client losing every store outside it.
+//
+// A bundle that cannot be read is an error naming the file. The alternative
+// — carrying on with the host's roots — is an upload that fails at 02:00 with
+// a certificate error and nothing to say which file was missing.
+func trustBundle(file string) (*http.Transport, error) {
+	pem, err := os.ReadFile(file) //nolint:gosec // the path is the platform's own, not a request's
+	if err != nil {
+		return nil, fmt.Errorf("reading the destination's CA bundle %s: %w", file, err)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("the destination's CA bundle %s holds no certificate", file)
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("the default HTTP transport is not one a CA can be added to")
+	}
+	transport = transport.Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	return transport, nil
 }
 
 // Put uploads one archive.

@@ -229,6 +229,14 @@ func barmanObjectStore(destination BackupDestination, cluster string) map[string
 	}
 	store["s3Credentials"] = credentials
 
+	// The authority that signed the store's certificate, where it is not one
+	// the image's trust store has heard of. Without it barman refuses the
+	// connection, which is the right answer to an unverifiable store and the
+	// wrong end of a backup that silently stops.
+	if secret := strings.TrimSpace(destination.EndpointCASecret); secret != "" {
+		store["endpointCA"] = map[string]any{"name": secret, "key": destination.EndpointCAKey}
+	}
+
 	// The archive of a database is the database, so a store that can encrypt
 	// it at rest is told to. Both halves: a base backup nobody encrypted is
 	// not made safer by encrypted WAL.

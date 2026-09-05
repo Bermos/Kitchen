@@ -57,14 +57,43 @@ type platformObjectStore struct {
 	Region string
 	// SecretName holds the store's root access key pair.
 	SecretName string
+
+	// Scheme is how the store is reached: https where the chart asked the
+	// operator to issue it a certificate, http where somebody chose to leave
+	// it in the clear. It is read from the store's own secret rather than
+	// decided here, because whether the bundled store serves TLS is a chart
+	// value and the secret is where the chart says so.
+	Scheme string
+	// CAFile is the PEM bundle that certificate is verified against, at the
+	// path this pod mounts it. Empty for a store reached in the clear, and
+	// for one whose certificate is somebody else's.
+	CAFile string
 }
 
-// endpoint is the store's URL inside the cluster. Plain HTTP on the Service
-// address: nothing outside the cluster reaches it, and the node's container
-// runtime — the reason the registry needs a trusted certificate — is not in
+// endpoint is the store's URL inside the cluster, on the Service address:
+// nothing outside the cluster reaches it, and the node's container runtime —
+// the reason the registry needs a publicly trusted certificate — is not in
 // the path of an application's own requests.
+//
+// The scheme is the store's own (#382). It used to be `http` unconditionally,
+// which is what made every object, every upload and every claim's credential
+// readable to anything that landed in the namespace or watched the node.
 func (o platformObjectStore) endpoint() string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", o.Service, PlatformNamespace, o.Port)
+	scheme := o.Scheme
+	if scheme == "" {
+		// A secret written by a chart older than the certificate is
+		// describing a store that really does answer in the clear.
+		scheme = objectstore.SchemeHTTP
+	}
+	return fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d", scheme, o.Service, PlatformNamespace, o.Port)
+}
+
+// host is the address the certificate is issued for, and the one the chart
+// writes into the store's secret: `<service>.<namespace>.svc`, which
+// serviceDNSNames turns into every shortening a cluster resolver accepts —
+// the `.cluster.local` form the endpoint above uses among them.
+func (o platformObjectStore) host() string {
+	return fmt.Sprintf("%s.%s.svc", o.Service, PlatformNamespace)
 }
 
 // resolveObjectStore describes the bundled store, or nil when the platform

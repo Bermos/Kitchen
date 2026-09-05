@@ -36,7 +36,9 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/accountsdb"
+	"github.com/Bermos/Kitchen/internal/backup"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
 // The address the chart writes into the connection secret for a release named
@@ -47,11 +49,15 @@ const telemetryHost = "kitchen-clickhouse.kitchen-system.svc"
 // storeCertificateName is what the chart asks the operator to fill.
 const storeCertificateName = "kitchen-clickhouse-tls"
 
-// The same two facts for the accounts database, whose connection secret says
-// them in the same words — one vocabulary, so one controller issues for both.
+// The same two facts for the accounts database and for the object store, whose
+// secrets say them in the same words — one vocabulary, so one controller
+// issues for all three.
 const (
 	accountsHost            = "kitchen-postgres.kitchen-system.svc"
 	accountsCertificateName = "kitchen-postgres-tls"
+
+	objectStoreHost            = "kitchen-objectstore.kitchen-system.svc"
+	objectStoreCertificateName = "kitchen-objectstore-tls"
 )
 
 // Every bundled store's connection secret spells the two keys this controller
@@ -62,6 +68,7 @@ func TestEveryStoreSpeaksOneConnectionSecretVocabulary(t *testing.T) {
 	for _, spelling := range []struct{ what, key, want string }{
 		{"the telemetry store's host", clickhouse.SecretKeyHost, connectionSecretKeyHost},
 		{"the accounts database's host", accountsdb.SecretKeyHost, connectionSecretKeyHost},
+		{"the object store's host", objectstore.SecretKeyHost, connectionSecretKeyHost},
 		{
 			"the telemetry store's certificate request",
 			clickhouse.SecretKeyCertificateSecret, connectionSecretKeyCertificateSecret,
@@ -69,6 +76,10 @@ func TestEveryStoreSpeaksOneConnectionSecretVocabulary(t *testing.T) {
 		{
 			"the accounts database's certificate request",
 			accountsdb.SecretKeyCertificateSecret, connectionSecretKeyCertificateSecret,
+		},
+		{
+			"the object store's certificate request",
+			objectstore.SecretKeyCertificateSecret, connectionSecretKeyCertificateSecret,
 		},
 	} {
 		if spelling.key != spelling.want {
@@ -132,6 +143,13 @@ func TestTheCABundleIsMountedWhereTheChartSaysItIs(t *testing.T) {
 	if !strings.Contains(string(helpers), `{{- "`+InternalCAMountPath+`" }}`) {
 		t.Errorf("the chart does not mount the CA bundle at %s, which is where every pod the "+
 			"operator writes looks for it", InternalCAMountPath)
+	}
+	// And the file inside it that a backup run verifies a destination in this
+	// cluster against, which is a constant of its own in a package that cannot
+	// import this one.
+	if want := InternalCAMountPath + "/" + InternalCABundleKey; backup.InternalCAFile != want {
+		t.Errorf("a backup run reads its CA at %s and the pod mounts one at %s: the upload "+
+			"fails on a file that is not there", backup.InternalCAFile, want)
 	}
 }
 
@@ -227,6 +245,29 @@ var _ = Describe("The platform's internal CA", func() {
 		}))).To(Succeed())
 	}
 
+	// objectStoreSecret is the other secret the chart writes, and the other
+	// store one controller issues for. The singleton has to name the store
+	// too: nothing is issued for a store the platform does not deploy.
+	objectStoreSecret := func(data map[string]string) {
+		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
+		}))).To(Succeed())
+		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: objectStoreChartSecretName, Namespace: PlatformNamespace},
+			StringData: data,
+		}))).To(Succeed())
+
+		kitchen := &kitchenv1alpha1.Kitchen{}
+		ExpectWithOffset(1, k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
+		kitchen.Spec.ObjectStore = kitchenv1alpha1.ObjectStoreSpec{
+			Enabled:   true,
+			Service:   "kitchen-objectstore",
+			Port:      9000,
+			SecretRef: &kitchenv1alpha1.LocalObjectReference{Name: objectStoreChartSecretName},
+		}
+		ExpectWithOffset(1, k8sClient.Update(ctx, kitchen)).To(Succeed())
+	}
+
 	BeforeEach(func() {
 		reconciler = &KitchenReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		tlsIssuer = &InternalTLSReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -267,6 +308,16 @@ var _ = Describe("The platform's internal CA", func() {
 			certificate(accountsCertificateName),
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 				Name: accountsdb.DefaultSecretName, Namespace: PlatformNamespace,
+			}},
+			certificate(objectStoreCertificateName),
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+				Name: objectStoreChartSecretName, Namespace: PlatformNamespace,
+			}},
+			&kitchenv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{
+				Name: ObjectStoreConnectionName, Namespace: PlatformNamespace,
+			}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+				Name: ObjectStoreCredentialsSecretName, Namespace: PlatformNamespace,
 			}},
 			&kitchenv1alpha1.Kitchen{ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName}},
 		} {
@@ -393,6 +444,111 @@ var _ = Describe("The platform's internal CA", func() {
 			"a CA that never issued leaves the store's pod waiting for a Secret and every "+
 				"telemetry condition reading \"cannot connect\"; the survey is where that is visible")
 		Expect(row.Healthy).To(BeTrue())
+	})
+
+	It("issues the object store a certificate for the name applications reach it by", func() {
+		connectionSecret(map[string]string{
+			clickhouse.SecretKeyHost:              telemetryHost,
+			clickhouse.SecretKeyHTTPPort:          "8443",
+			clickhouse.SecretKeyDatabase:          "kitchen",
+			clickhouse.SecretKeyUsername:          "kitchen",
+			clickhouse.SecretKeyPassword:          "hunter2",
+			clickhouse.SecretKeyScheme:            clickhouse.SchemeHTTPS,
+			clickhouse.SecretKeyCAFile:            "/etc/kitchen/internal-ca/ca.crt",
+			clickhouse.SecretKeyCertificateSecret: storeCertificateName,
+		})
+		objectStoreSecret(map[string]string{
+			objectstore.CredentialKeyAccessKeyID:     "kitchen",
+			objectstore.CredentialKeySecretAccessKey: "hunter2hunter2",
+			objectstore.SecretKeyHost:                objectStoreHost,
+			objectstore.SecretKeyScheme:              objectstore.SchemeHTTPS,
+			objectstore.SecretKeyCAFile:              "/etc/kitchen/internal-ca/ca.crt",
+			objectstore.SecretKeyCertificateSecret:   objectStoreCertificateName,
+		})
+
+		By("getting there the same way the telemetry store does: the CA first")
+		reconcileOnce()
+		issueFor(objectStoreChartSecretName)
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: InternalCASecretName, Namespace: PlatformNamespace},
+			Type:       corev1.SecretTypeTLS,
+			StringData: map[string]string{
+				"ca.crt":  "-- the platform's CA --",
+				"tls.crt": "-- the platform's CA --",
+				"tls.key": "-- the key nothing but cert-manager may hold --",
+			},
+		})).To(Succeed())
+		writeIssued(caCertKey)
+		issueOnce()
+		issueFor(objectStoreChartSecretName)
+
+		By("issuing for every name a client in the cluster dials, applications included")
+		cert := certificate(objectStoreCertificateName)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: objectStoreCertificateName, Namespace: PlatformNamespace,
+		}, cert)).To(Succeed())
+		spec, found, err := unstructured.NestedMap(cert.Object, "spec")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(spec).To(HaveKeyWithValue("secretName", objectStoreCertificateName))
+		Expect(spec).To(HaveKeyWithValue("dnsNames", []any{
+			objectStoreHost,
+			// The one an application's binding carries, which is the whole
+			// reason the store's SANs are not just the address the operator
+			// happens to use.
+			"kitchen-objectstore.kitchen-system.svc.cluster.local",
+			"kitchen-objectstore.kitchen-system",
+			"kitchen-objectstore",
+		}))
+
+		By("holding the condition until both stores' certificates are issued")
+		reportOnce()
+		Expect(conditionOn().Status).To(Equal(metav1.ConditionFalse))
+		writeIssued(storeCertKey)
+		reportOnce()
+		Expect(conditionOn().Status).To(Equal(metav1.ConditionFalse),
+			"one condition covers every bundled store, and it is as good as the weakest")
+		writeIssued(types.NamespacedName{
+			Name: objectStoreCertificateName, Namespace: PlatformNamespace,
+		})
+		reportOnce()
+
+		cond := conditionOn()
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("Issued"))
+		Expect(cond.Message).To(ContainSubstring(telemetryHost))
+		Expect(cond.Message).To(ContainSubstring(objectStoreHost))
+	})
+
+	It("names the object store when it is the one left in the clear", func() {
+		// A telemetry store of somebody else's, over TLS: not the internal
+		// CA's business, so the object store is the only store with anything
+		// to say and the message is entirely about it.
+		connectionSecret(map[string]string{
+			clickhouse.SecretKeyHost:     "clickhouse.telemetry.example.com",
+			clickhouse.SecretKeyHTTPPort: "8443",
+			clickhouse.SecretKeyDatabase: "kitchen",
+			clickhouse.SecretKeyUsername: "kitchen",
+			clickhouse.SecretKeyPassword: "hunter2",
+			clickhouse.SecretKeyScheme:   clickhouse.SchemeHTTPS,
+		})
+		objectStoreSecret(map[string]string{
+			objectstore.CredentialKeyAccessKeyID:     "kitchen",
+			objectstore.CredentialKeySecretAccessKey: "hunter2hunter2",
+			objectstore.SecretKeyHost:                objectStoreHost,
+			objectstore.SecretKeyScheme:              objectstore.SchemeHTTP,
+		})
+
+		reconcileOnce()
+
+		cond := conditionOn()
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("StoreInTheClear"))
+		Expect(cond.Message).To(ContainSubstring("objectStore.tls.enabled"))
+		Expect(cond.Message).To(ContainSubstring("application namespace"),
+			"the object store is the one bundled store applications reach, so what crosses "+
+				"in the clear crosses between namespaces too")
 	})
 
 	It("says so when the store is left answering in the clear", func() {

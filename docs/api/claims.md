@@ -127,10 +127,31 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 ```
 
 The binding secret carries `endpoint`, `bucket`, `region`, `accessKeyId`,
-`secretAccessKey` and `forcePathStyle`. The last is not decoration: MinIO
-addresses a bucket in the path and AWS in the host name, and an application
-that guesses wrong fails on every request — so the Connection says which,
-once, and every binding carries the answer.
+`secretAccessKey`, `forcePathStyle` and — for the bundled store — `caCert`.
+`forcePathStyle` is not decoration: MinIO addresses a bucket in the path and
+AWS in the host name, and an application that guesses wrong fails on every
+request — so the Connection says which, once, and every binding carries the
+answer.
+
+**`caCert` is how an application verifies a store the internet has never heard
+of.** The bundled store is reached at a `.svc` address over `https://`, with a
+certificate the platform's own CA signed (#382), and nothing public vouches for
+that authority: an application pod cannot mount the ConfigMap it is published
+in, and no image the platform did not build carries it in a trust store. So the
+CA certificate itself travels in the binding, and an S3 client configured with
+it gets the same `verify-full` the platform's own components do — for example
+`AWS_CA_BUNDLE` pointed at a file written from the key, minio-go's `Transport`
+with the certificate in its root pool, or boto3's `verify=`. The key is
+**absent, not empty**, for a store whose certificate a public root already
+vouches for: present-and-empty would read as an authority that vouches for
+nothing.
+
+**Where the store is can change under a binding that is otherwise still
+correct** — the bundled store gaining a certificate is exactly that — so
+`endpoint`, `region`, `forcePathStyle` and `caCert` are rewritten over an
+existing binding each reconcile, and the bucket and its credential are left
+alone. An application reading the changed Secret is rolled by the operator on
+its own, the way a rotated credential reaches it.
 
 **A bucket per claim, with a credential scoped to it.** Never a prefix in a
 shared bucket, because a prefix is not an isolation boundary. At a MinIO —
@@ -775,6 +796,15 @@ response ever echoes a key. Sending only one of the pair is refused — half a
 key pair is a destination that cannot authenticate, and finding that out at
 03:00 is the failure this whole feature exists to avoid. Leaving both out asks
 for the ambient credential chain.
+
+**A destination inside this cluster travels with its authority.** Barman runs
+in the database's own namespace, where the ConfigMap the platform publishes its
+internal CA in is not — so where the destination's `endpoint` is a `.svc` name
+over `https://`, which since #382 is what the bundled object store is, the CA
+certificate is copied into that same managed Secret and named as
+CloudNativePG's `endpointCA`. It is one copy to keep in step and one thing to
+delete with the claim. A destination on the internet is verified against the
+host's roots and gets none of this.
 
 A claim of any other type is refused the block, because the platform does not
 run what it points at: a bucket, a cache or a queue is backed up by whoever
