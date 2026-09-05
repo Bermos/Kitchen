@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.33.0](https://github.com/Bermos/Kitchen/compare/v0.32.0...v0.33.0) (2026-09-05)
+
+
+### Features
+
+* **api:** write the volume a bound claim needs, so nothing needs kubectl ([#412](https://github.com/Bermos/Kitchen/issues/412)) ([c360586](https://github.com/Bermos/Kitchen/commit/c3605861576a3b2cb855f7dd1cf14f31e9936e47))
+* **claims:** back up the databases this platform runs, and say how far back ([#411](https://github.com/Bermos/Kitchen/issues/411)) ([01953de](https://github.com/Bermos/Kitchen/commit/01953dec184934e00c57daed521f019c3cb6f6c8))
+* **claims:** recover a database this cluster runs to a moment in the past ([#415](https://github.com/Bermos/Kitchen/issues/415)) ([7abc7e1](https://github.com/Bermos/Kitchen/commit/7abc7e19961f2c00b5225a66f7935f8bce40a8da))
+* **operator:** a posture a workload declares for itself, over the project's ([#410](https://github.com/Bermos/Kitchen/issues/410)) ([891f867](https://github.com/Bermos/Kitchen/commit/891f867646f10eae20b23a29d5256f8b6adf7ac8)), closes [#399](https://github.com/Bermos/Kitchen/issues/399)
+* **platform:** prepare a volume before the process that cannot start on it ([#409](https://github.com/Bermos/Kitchen/issues/409)) ([2ccd384](https://github.com/Bermos/Kitchen/commit/2ccd384d0643b879c4c27f2bfdef2e81fc384014)), closes [#348](https://github.com/Bermos/Kitchen/issues/348)
+
+
+### Bug fixes
+
+* **claims:** take a database's backup schedule with the database ([#417](https://github.com/Bermos/Kitchen/issues/417)) ([874b25d](https://github.com/Bermos/Kitchen/commit/874b25db69846394a8c9b78de3372090115b02a5)), closes [#416](https://github.com/Bermos/Kitchen/issues/416)
+
 ## [0.32.0](https://github.com/Bermos/Kitchen/compare/v0.31.0...v0.32.0) (2026-09-04)
 
 
