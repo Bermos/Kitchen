@@ -101,25 +101,23 @@ func (r *ResourceClaimReconciler) reconcileRecoveries(
 		return r.recoveryUnavailable(claim, "the database is not provisioned yet")
 	}
 
-	window, err := recoverable.RecoveryWindow(ctx, claim.Status.InstanceID)
-	if err != nil {
-		// The window could not be read, which is not the same as there not
-		// being one. Whatever was last observed stays on the status, marked
-		// unavailable, so nothing offers a picker over a window nobody can
-		// confirm.
-		status := r.recoveryStatus(claim)
-		status.Available = false
-		status.Reason = fmt.Sprintf("could not read what %s can recover to: %s", provider, err.Error())
-		return r.recoveriesNotReady(claim, "WindowUnreadable", err)
-	}
+	// unreadable is why the window could not be given, kept rather than
+	// returned on the spot so that the siblings below are reconciled under it
+	// anyway: a provider that stops answering does not un-make the copies it
+	// has already made, and a recovery somebody discards while the window is
+	// gone still has to go.
+	var unreadable error
+	unreadableReason := ""
 
 	status := r.recoveryStatus(claim)
-	if window.Empty() {
+	window, err := recoverable.RecoveryWindow(ctx, claim.Status.InstanceID)
+	switch {
+	case err == nil && window.Empty():
 		status.Window = nil
 		status.Available = false
 		status.Reason = fmt.Sprintf("%s keeps no history for this database, so there is nothing to "+
 			"recover to", provider)
-	} else {
+	case err == nil:
 		status.Window = &kitchenv1alpha1.ClaimRecoveryWindow{
 			Earliest:   metav1.NewTime(window.Earliest),
 			Latest:     metav1.NewTime(window.Latest),
@@ -128,6 +126,33 @@ func (r *ResourceClaimReconciler) reconcileRecoveries(
 		status.Available = true
 		status.Reason = fmt.Sprintf("%s can reconstruct this database to any moment inside the window",
 			provider)
+
+	case errors.Is(err, database.ErrBackupNotManaged), errors.Is(err, database.ErrUnsatisfiable):
+		// A refusal: the provider will not recover *this* database and has
+		// said why. Retrying refuses again, so the provider's own sentence is
+		// the whole answer — a database this platform did not create, or one
+		// with no archive to bootstrap from, is a fact and not a fault.
+		if failure := r.recoveryUnavailable(claim, err.Error()); failure != nil {
+			return failure
+		}
+
+	case errors.Is(err, database.ErrNotReady):
+		// Not yet: there is an archive and nothing in it to reach back to.
+		// The claim says so in the provider's own words, and the requeue is
+		// what makes the window appear without anybody nudging it.
+		status.Window = nil
+		status.Available = false
+		status.Reason = err.Error()
+		unreadable, unreadableReason = err, "WindowNotYet"
+
+	default:
+		// The window could not be read, which is not the same as there not
+		// being one. Whatever was last observed stays on the status, marked
+		// unavailable, so nothing offers a picker over a window nobody can
+		// confirm.
+		status.Available = false
+		status.Reason = fmt.Sprintf("could not read what %s can recover to: %s", provider, err.Error())
+		unreadable, unreadableReason = err, "WindowUnreadable"
 	}
 
 	if err := r.recoverSiblings(ctx, claim, recoverable, appNS); err != nil {
@@ -135,6 +160,9 @@ func (r *ResourceClaimReconciler) reconcileRecoveries(
 	}
 	if err := r.promoteRecovery(ctx, claim, appNS); err != nil {
 		return err
+	}
+	if unreadable != nil {
+		return r.recoveriesNotReady(claim, unreadableReason, unreadable)
 	}
 
 	count := len(r.recoveryStatus(claim).Recoveries)

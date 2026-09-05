@@ -98,22 +98,27 @@ this one is all-or-nothing and is taken on a schedule, and the other reaches
 back only as far as the claim's own provider keeps history, which the claim
 reports rather than the platform deciding.
 
-**Claim recovery exists where the provider can actually do it.** A Neon claim
-can be recovered to any moment inside the project's retention window, because
-Neon's storage keeps continuous history; a claim through the self-hosted
-provider cannot yet, even with a backup policy behind it, because recovering
-from these archives means bootstrapping a *new* CloudNativePG Cluster from the
-object store rather than branching an existing one — that is
-[issue #247](https://github.com/Bermos/Kitchen/issues/247). What the backup
-policy does supply today is the window such a recovery would offer: the first
-recoverable point on the claim is its earliest edge. The claim says which of
-the two it is, in the provider's own words, rather than either being assumed.
+**Claim recovery exists where the provider can actually do it, and the two
+providers can do it for different reasons.** A Neon claim can be recovered to
+any moment inside the project's retention window, because Neon's storage keeps
+continuous history and there is nothing to configure. A CloudNativePG claim
+can be recovered **once it has a backup policy**, because there is then an
+archive to bootstrap a new Cluster from — the recovery is the second half of
+the feature the rest of this section is about, and a claim without a policy
+offers nothing and says so. Either way the window is the provider's own
+answer, read on every reconcile: for CloudNativePG its earliest edge is the
+first recoverable point below, and its latest edge is where the write-ahead
+log has actually been shipped to rather than the present moment.
 
 Neither kind of recovery rewinds anything in place. The platform restore
 writes objects back into an empty platform; a claim recovery makes a *copy* of
-the data at the chosen moment and leaves the original alone until somebody
-promotes the copy. Both are described in their own document, and neither
-substitutes for the other.
+the data at the chosen moment — for CloudNativePG a **new** Cluster
+bootstrapped from the object store with a `recoveryTarget`, for Neon a branch
+at a parent timestamp — and leaves the original alone until somebody promotes
+the copy.
+
+Both are described in their own document, and neither substitutes for the
+other.
 
 ## Taking a backup
 
@@ -441,14 +446,16 @@ dropped the field is a failing claim with a sentence on it, not a silent loss.
   backups then "Delete" would quietly destroy the recovery point, which is the
   one thing deletion protection exists to prevent. What is in the bucket is
   pruned by `retentionPolicy` and by nothing else.
-- **Restoring a claim is a different feature.** A CloudNativePG restore is a
-  *new* Cluster bootstrapped from the object store, not an in-place operation
-  and nothing the platform archive's restore Job does. Recovering a claim to a
-  moment already exists for the providers that can branch
-  ([claims](api/claims.md#recovering-the-data-to-a-moment-in-the-past)); doing
-  it from these archives is
-  [issue #247](https://github.com/Bermos/Kitchen/issues/247), and the first
-  recoverable point above is the earliest edge of the window it would offer.
+- **Recovering a claim from these archives is a different operation, and it
+  exists.** It is a *new* Cluster bootstrapped from the object store at a
+  `recoveryTarget` — never an in-place rewind, and nothing the platform
+  archive's restore Job does — and it is driven from the claim's own recovery
+  surface ([claims](api/claims.md#recovering-the-data-to-a-moment-in-the-past)).
+  The first recoverable point above is the earliest edge of the window it
+  offers. The recovered database archives to the same destination under a
+  prefix of its own and inherits this schedule once it is serving, so a copy
+  somebody promotes is itself backed up from the moment it takes over rather
+  than being a production database with nothing behind it.
 - **The bucket warning above applies here too, and harder.** These archives
   are the application's data, not the platform's configuration. Everything
   said about locking the destination down is the same, and a database's

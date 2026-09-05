@@ -1967,10 +1967,12 @@ different database means asking for a different database.
 **`spec.recoveries` recovers to a copy; `spec.promotedRecovery` decides to use
 one.** Neither supported provider rewinds a database in place, and neither
 needs to: recovering makes a *sibling* holding the data as it was at a moment
-— for Neon, a branch at a parent timestamp — with a binding Secret of its own
-(`<claim>-recovery-<name>`), while the application keeps reading what it was
-reading. Setting `promotedRecovery` rewrites the claim's own binding Secret
-with that copy's, which rolls every Environment reading the claim; what it
+— for Neon a branch at a parent timestamp, for CloudNativePG a new Cluster
+bootstrapped from the claim's own archive at a `recoveryTarget` — with a
+binding Secret of its own (`<claim>-recovery-<name>`), while the application
+keeps reading what it was reading. Setting `promotedRecovery` rewrites the
+claim's own binding Secret with that copy's, which rolls every Environment
+reading the claim; what it
 displaced is recorded under `status.recovery.retained` and **kept**, on the
 same reasoning that makes `deletionPolicy: Retain` the default. Removing a
 name from `spec.recoveries` discards that copy and its data.
@@ -1980,7 +1982,11 @@ Whether any of it is possible is `status.recovery.available`, and it is
 interface or it does not, and the window is read off the provider on every
 reconcile rather than being a field somebody sets. There is deliberately no
 `pointInTimeRecovery` capability on the Connection — a declared capability is
-one somebody can declare falsely. [docs/api/claims.md](api/claims.md#recovering-the-data-to-a-moment-in-the-past)
+one somebody can declare falsely. A CloudNativePG claim is recoverable exactly
+where `spec.backup` has put an archive behind it and a base backup has landed
+in it, so `available` moves with the policy below and `reason` says which of
+the two is missing; a preview's database, and a database the platform adopted
+rather than created, are never recoverable and say so. [docs/api/claims.md](api/claims.md#recovering-the-data-to-a-moment-in-the-past)
 is the surface, and [docs/BACKUP.md](BACKUP.md) is where this sits next to the
 platform's own archive, which restores the claim and never the data behind it.
 
