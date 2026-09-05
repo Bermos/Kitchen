@@ -78,20 +78,53 @@ const (
 	usageAnnotation     = "kitchen.bermos.dev/cache-usage"
 	maxMemoryAnnotation = "kitchen.bermos.dev/cache-max-memory"
 	imageAnnotation     = "kitchen.bermos.dev/cache-image"
+
+	// configKey is the second key of an instance's Secret: a valkey.conf
+	// holding the one directive that must not be an argument, and the mount
+	// point the server reads it from.
+	//
+	// A password passed as `--requirepass` is in the container's argv, which
+	// is in the pod spec, which is readable by everything that can read a
+	// Pod in this namespace, and in `ps` inside the container — where an
+	// application's own process would find it. A file is readable by the
+	// process that opens it and by nothing that lists things.
+	configKey       = "valkey.conf"
+	configMountPath = "/etc/valkey"
+	configFilePath  = configMountPath + "/" + configKey
 )
 
 // DefaultValkeyImages is the catalogue of images this provisioner will run,
-// newest first, pinned by digest-bearing tag. It is compiled in for the
-// reason every other catalogue in this repository is: what the platform runs
-// is what the platform knows how to operate, and a claim naming a version
-// nothing here publishes is refused rather than run.
+// newest first, pinned by digest. It is compiled in for the reason every
+// other catalogue in this repository is: what the platform runs is what the
+// platform knows how to operate, and a claim naming a version nothing here
+// publishes is refused rather than run.
 //
-// An installation that wants another one says so on the Connection, which is
-// the operator's to set — a developer asking for a version should not be
+// The tag is kept beside the digest because it is what a person reads, but
+// it is the digest that decides what runs: `valkey/valkey:8.1-alpine` is a
+// moving tag, and an instance created today and one created after upstream
+// republishes it would otherwise be two different builds under one version
+// number — which is the whole of what pinning is for. The pair is pinned the
+// way internal/controller/addon_keda.go pins its two chart versions and
+// internal/provider/inngest/selfhosted.go pins its server image: together,
+// in one place, so a bump is one edit that is read as one decision.
+//
+// **Bumping one.** Read the digest off the registry for the tag you want and
+// write both halves:
+//
+//	crane digest valkey/valkey:8.1-alpine
+//	docker buildx imagetools inspect valkey/valkey:8.1-alpine  # if crane is not to hand
+//
+// Take the digest of the multi-arch index rather than of one platform's
+// manifest, so a cluster of mixed nodes can pull it. Then read Valkey's
+// release notes for anything that moved among the arguments valkeyArgs
+// writes, since those are the whole of an instance's configuration.
+//
+// An installation that wants another image says so on the Connection, which
+// is the operator's to set — a developer asking for a version should not be
 // able to choose the image it arrives in.
 var DefaultValkeyImages = []ValkeyImage{
-	{Major: "8", Image: "valkey/valkey:8.1-alpine"},
-	{Major: "7", Image: "valkey/valkey:7.2-alpine"},
+	{Major: "8", Image: "valkey/valkey:8.1-alpine@sha256:cfb2aa4c8352930130fd45eb231a57310ac326d7323edae12b384b9270c46dda"},
+	{Major: "7", Image: "valkey/valkey:7.2-alpine@sha256:7436ad9c95f743c8eb82f551366ca89b2e04cfa01f7cb4431919baeac2a9cfb9"},
 }
 
 // ValkeyImage is one entry of that catalogue.
@@ -446,6 +479,20 @@ func (v *Valkey) ensureSecret(ctx context.Context, name, project string) (string
 		if password == "" {
 			return "", fmt.Errorf("the secret for %s holds no %s", name, BindingKeyPassword)
 		}
+		// A Secret written before the configuration file existed carries the
+		// password alone. Adding the file is what lets an instance created
+		// from here on mount it, and costs an instance that already runs
+		// nothing: its pod names no such volume.
+		if want := valkeyConf(password); string(secret.Data[configKey]) != string(want) {
+			patched := secret.DeepCopy()
+			if patched.Data == nil {
+				patched.Data = map[string][]byte{}
+			}
+			patched.Data[configKey] = want
+			if err := v.Client.Update(ctx, patched); err != nil {
+				return "", err
+			}
+		}
 		return password, nil
 	case !apierrors.IsNotFound(err):
 		return "", err
@@ -466,7 +513,10 @@ func (v *Valkey) ensureSecret(ctx context.Context, name, project string) (string
 		// back on every reconcile, and StringData is a convenience the API
 		// server converts on write — writing Data means the password
 		// round-trips identically wherever it is stored.
-		Data: map[string][]byte{BindingKeyPassword: []byte(password)},
+		Data: map[string][]byte{
+			BindingKeyPassword: []byte(password),
+			configKey:          valkeyConf(password),
+		},
 	}
 	if err := v.Client.Create(ctx, secret); err != nil {
 		if apierrors.IsAlreadyExists(err) {
@@ -477,6 +527,19 @@ func (v *Valkey) ensureSecret(ctx context.Context, name, project string) (string
 		return "", err
 	}
 	return password, nil
+}
+
+// valkeyConf is the whole of the file the server is started with: the one
+// directive that would otherwise be an argument. Everything else valkeyArgs
+// writes stays in argv, where it is configuration and not a credential, and
+// where the difference between a cache and a queue can still be read off the
+// pod.
+//
+// The hex password needs no quoting — that is what newPassword's encoding is
+// for — but it is quoted anyway, because a directive whose value is only
+// safe by convention is one bad day from not being.
+func valkeyConf(password string) []byte {
+	return []byte(fmt.Sprintf("requirepass %q\n", password))
 }
 
 // newPassword is 32 bytes of randomness, hex-encoded so that it survives
@@ -581,13 +644,6 @@ func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulS
 						Image: cfg.image,
 						Args:  valkeyArgs(cfg),
 						Ports: []corev1.ContainerPort{{Name: "valkey", ContainerPort: valkeyPort}},
-						Env: []corev1.EnvVar{{
-							Name: "VALKEY_PASSWORD",
-							ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{Name: name},
-								Key:                  BindingKeyPassword,
-							}},
-						}},
 						SecurityContext: &corev1.SecurityContext{
 							AllowPrivilegeEscalation: boolPtr(false),
 							ReadOnlyRootFilesystem:   boolPtr(true),
@@ -606,7 +662,7 @@ func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulS
 						LivenessProbe:  valkeyProbe(),
 						VolumeMounts:   volumeMounts(),
 					}},
-					Volumes: podVolumes(cfg),
+					Volumes: podVolumes(name, cfg),
 				},
 			},
 		},
@@ -629,9 +685,16 @@ func (v *Valkey) desiredStatefulSet(name string, cfg settings) *appsv1.StatefulS
 // valkeyArgs is where the whole contract lands: the difference between a
 // cache and a queue is four arguments, and getting them backwards is the
 // incident this contract exists to prevent.
+//
+// The first argument is the configuration file, which is how valkey-server
+// takes one; everything after it overrides what is in it. The file holds
+// exactly one directive — the password — and it is there rather than here
+// because argv is readable by anything that can read the pod, this container
+// included. Everything else stays an argument, so what an instance is can
+// still be read off its pod spec.
 func valkeyArgs(cfg settings) []string {
 	args := []string{
-		"--requirepass", "$(VALKEY_PASSWORD)",
+		configFilePath,
 		"--maxmemory", strconv.FormatInt(cfg.maxMemory.Value(), 10),
 	}
 	if cfg.usage.Durable() {
@@ -672,19 +735,38 @@ func valkeyProbe() *corev1.Probe {
 // exists because the container's root filesystem is read-only and Valkey
 // wants a directory whether or not it puts anything there.
 func volumeMounts() []corev1.VolumeMount {
-	return []corev1.VolumeMount{{Name: "data", MountPath: "/data"}}
+	return []corev1.VolumeMount{
+		{Name: "data", MountPath: "/data"},
+		{Name: "config", MountPath: configMountPath, ReadOnly: true},
+	}
 }
 
-// podVolumes is the cache's emptyDir, and nothing for a queue — whose
-// volume comes from the StatefulSet's claim template instead.
-func podVolumes(cfg settings) []corev1.Volume {
+// podVolumes is the configuration file, plus the cache's emptyDir — and
+// nothing else for a queue, whose data volume comes from the StatefulSet's
+// claim template instead.
+func podVolumes(name string, cfg settings) []corev1.Volume {
+	// The instance's own Secret, projected as the one key that is the
+	// configuration file. Projecting the key rather than the whole Secret is
+	// what keeps the password out of the mounted directory as a file of its
+	// own: the server reads valkey.conf and there is nothing else there.
+	volumes := []corev1.Volume{{
+		Name: "config",
+		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: name,
+			Items:      []corev1.KeyToPath{{Key: configKey, Path: configKey}},
+			// Owner and group only, which with the pod's fsGroup means root
+			// and the user the server runs as. World-readable is the
+			// projection default and this is a credential.
+			DefaultMode: ptr.To(int32(0o440)),
+		}},
+	}}
 	if cfg.usage.Durable() {
-		return nil
+		return volumes
 	}
-	return []corev1.Volume{{
+	return append(volumes, corev1.Volume{
 		Name:         "data",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-	}}
+	})
 }
 
 // memoryLimit is maxmemory plus a quarter, which is the headroom Valkey's

@@ -181,7 +181,24 @@ restore:
     # this is not cluster-admin: a restore writes the kinds this chart owns and
     # the secrets in its own namespace, which is an enumerable list.
     create: true
-  resources: {}
+  # -- Seconds the finished Job and its pod are kept before the cluster
+  # reclaims them. A restore's log is the only record of what it did, so this
+  # is a day rather than the minutes a routine Job would take — long enough to
+  # read it after the install that needed it, short enough that a Job whose
+  # pod template is immutable is not still sitting there at the next one. Set
+  # it empty to keep the Job until somebody deletes it.
+  ttlSecondsAfterFinished: 86400
+  # -- Requests and limits for the restore container. It reads a tarball,
+  # writes objects through the API server and streams one SQL dump into
+  # Postgres, so the memory it wants tracks the archive rather than the
+  # cluster; the limit is set well above the requests because being throttled
+  # is not what anybody wants of the one Job that runs on the worst day.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 1Gi
 
 crds:
   # -- Install the kitchen.bermos.dev CRDs. Disable when they are managed
@@ -952,6 +969,12 @@ clickhouse:
       type: RuntimeDefault
   securityContext:
     allowPrivilegeEscalation: false
+    # -- Nothing writes to the image. The data directory, the users.d the
+    # entrypoint generates into, /tmp and the server's own log directory are
+    # all volumes — see the StatefulSet — so the image itself is never
+    # written to and a process that has got in cannot leave anything behind
+    # that survives a restart.
+    readOnlyRootFilesystem: true
     capabilities:
       drop:
         - ALL
@@ -1205,6 +1228,11 @@ postgres:
       type: RuntimeDefault
   securityContext:
     allowPrivilegeEscalation: false
+    # -- Nothing writes to the image. PGDATA and the socket directory the
+    # entrypoint initialises through are both volumes already, which is the
+    # whole of what this image writes — verified against `postgres:17.6-alpine`
+    # by running it read-only through initdb and a first start.
+    readOnlyRootFilesystem: true
     capabilities:
       drop:
         - ALL
@@ -1767,3 +1795,43 @@ cert-manager:
     # prerequisite anyway — Cilium's Gateway support needs them first.
     gatewayAPI:
       enabled: true
+  # -- Requests and limits for the cert-manager controller. Its chart ships
+  # none — every cert-manager pod is BestEffort out of the box, first to be
+  # evicted when a node runs short, which for the component that renews the
+  # wildcard certificate every published URL rides on is the wrong end of the
+  # queue to be at. The numbers are small because the work is: it watches a
+  # handful of objects and talks to an ACME server.
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  webhook:
+    # -- Requests and limits for the admission webhook. It is in the path of
+    # every Certificate and Issuer write, the operator's included, so it is
+    # given the same floor as the controller.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
+  cainjector:
+    # -- Requests and limits for the CA injector. It caches the objects it
+    # injects into, which is what the larger memory limit is for.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+  startupapicheck:
+    # -- Requests and limits for the startup check Job. It runs once, waits
+    # for the webhook to admit an object and exits.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi

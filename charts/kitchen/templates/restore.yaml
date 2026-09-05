@@ -152,6 +152,17 @@ spec:
   # what a failure needs is somebody reading the log, not another attempt
   # against the same archive.
   backoffLimit: 0
+  {{- if ne (toString .Values.restore.ttlSecondsAfterFinished) "" }}
+  # The Job and its pod are reclaimed a day after they finish. Without this
+  # they stay forever: a Job is not garbage-collected on its own, so every
+  # restore an installation has ever run is still an object in this namespace
+  # and still a pod holding the archive's mount — and `restore.id`, which
+  # exists precisely because a Job's pod template is immutable, guarantees
+  # they accumulate rather than replace each other. A day is what the log is
+  # worth; `kubectl logs` on a Job that has been reclaimed is why it is not
+  # shorter.
+  ttlSecondsAfterFinished: {{ int .Values.restore.ttlSecondsAfterFinished }}
+  {{- end }}
   template:
     metadata:
       # Deliberately *not* `kitchen.selectorLabels`: the API and metrics

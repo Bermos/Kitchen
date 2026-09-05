@@ -137,7 +137,9 @@ func callAPI(
 		err := client.stream(ctx, "following "+path, strings.TrimPrefix(path, apiPrefix), parameters,
 			func(payload []byte) error {
 				return printer.event(json.RawMessage(payload), func(tui.Styles) string {
-					return string(payload)
+					// The text branch only: under --json the payload is
+					// written as the platform sent it. See safe.go.
+					return safeText(string(payload))
 				})
 			})
 		if ctx.Err() != nil {
@@ -163,7 +165,7 @@ func callAPI(
 	// of what it is for.
 	refused := status >= 400 && !ignoreStatus
 	if !refused || !printer.json {
-		if err := printBody(printer, answer); err != nil {
+		if err := printBody(printer, answer, r.Terminal); err != nil {
 			return err
 		}
 	}
@@ -177,13 +179,23 @@ func callAPI(
 // unchanged — the platform's bytes, not a re-encoding of them — and for a
 // person it is indented, which is the one thing a terminal wants that a pipe
 // does not.
-func printBody(p *printer, answer []byte) error {
+//
+// `terminal` is whether stdout is one. This route reaches every endpoint
+// there is, including the ones that answer with an application's own log
+// lines, so the body is text somebody else wrote and a terminal acts on what
+// is in it — safe.go says what that means. It is stripped only where there
+// is a terminal to protect: a pipe is given the platform's bytes, which is
+// what makes `kitchen api ... > file` the same file whichever way it ran.
+func printBody(p *printer, answer []byte, terminal bool) error {
 	if len(bytes.TrimSpace(answer)) == 0 {
 		return nil
 	}
 	if p.json {
 		_, err := p.out.Write(append(bytes.TrimRight(answer, "\n"), '\n'))
 		return err
+	}
+	if terminal {
+		answer = safeBytes(answer)
 	}
 	indented := &bytes.Buffer{}
 	if err := json.Indent(indented, answer, "", "  "); err != nil {

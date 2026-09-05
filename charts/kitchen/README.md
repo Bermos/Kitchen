@@ -1906,7 +1906,8 @@ kubectl delete namespace kitchen-system
 | `restore.waitForSchema` | `5m` | How long to wait for the identity provider to have migrated its schema. |
 | `restore.serviceAccountName` | `""` | Generated when empty. |
 | `restore.rbac.create` | `true` | Create the restore's ServiceAccount and roles. Not cluster-admin, unlike self-update's. |
-| `restore.resources` | `{}` | |
+| `restore.resources` | 100m/128Mi → 1Gi | The memory it wants tracks the archive, not the cluster. |
+| `restore.ttlSecondsAfterFinished` | `86400` | Seconds the finished Job and its pod are kept. A Job is not garbage-collected on its own, and `restore.id` guarantees they accumulate. Empty keeps it until somebody deletes it. |
 | `crds.install` | `true` | Install the `kitchen.bermos.dev` CRDs. |
 | `crds.keep` | `true` | Keep CRDs (and custom resources) on uninstall. |
 | `kitchen.create` | `true` | Create the `Kitchen` singleton. Needs `baseDomain`. |
@@ -1927,6 +1928,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.tls.acme.dns01.cloudflare.apiTokenSecretKey` | `api-token` | Key inside that secret. |
 | `cert-manager.enabled` | `true` | Install cert-manager with the platform. Disable if the cluster already runs one. |
 | `cert-manager.crds.enabled` / `.keep` | `true` / `true` | Install cert-manager's CRDs, and keep them on uninstall. |
+| `cert-manager.resources` / `.webhook.resources` / `.cainjector.resources` / `.startupapicheck.resources` | 10m/32–128Mi → 128–512Mi | cert-manager's own chart ships none, so every one of its pods would be BestEffort — first evicted when a node runs short, for the component that renews the wildcard certificate every published URL rides on. |
 | `cert-manager.config.gatewayAPI.enabled` | `true` | Solve HTTP-01 challenges as HTTPRoutes on the shared Gateway — what issues custom-domain certificates. A cluster that runs its own cert-manager needs the same switch on it. |
 | `kitchen.auth` | from `auth.*` / `previewGate.*` | The singleton's `auth` block mirrors `auth.enabled`, the resolved host, the secret the operator registers clients with, and the preview gate. |
 | `kitchen.builds.defaultStrategy` | `auto` | `auto`, `dockerfile` or `buildpacks`. |
@@ -1997,6 +1999,7 @@ kubectl delete namespace kitchen-system
 | `clickhouse.persistence.enabled` | `true` | PVC for the data directory. |
 | `clickhouse.persistence.size` / `.storageClass` / `.accessModes` | `20Gi` / cluster default / `[ReadWriteOnce]` | |
 | `clickhouse.resources` | 200m/1Gi → 4Gi | |
+| `clickhouse.podSecurityContext` / `.securityContext` | restricted PSS | Non-root as the image's uid 101, no capabilities, and a read-only root filesystem: the data directory, `users.d`, `/tmp` and the server's log directory are volumes, so nothing writes to the image. |
 | `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. |
 | `clickhouse.external.host` / `.httpPort` / `.nativePort` | `""` / `8123` / `9000` | Point at an existing ClickHouse. |
 | `clickhouse.external.tls` | `false` | That store serves TLS, verified against the host's roots. The operator issues nothing for it. |
@@ -2010,7 +2013,7 @@ kubectl delete namespace kitchen-system
 | `collector.logs.levelFields` | `[level, severity, lvl]` | JSON fields a line's severity may be written under, first match wins. Non-JSON lines are scanned for the common spellings. |
 | `collector.logs.traceIdFields` / `.spanIdFields` | `[trace_id, traceId, …]` | Fields a line's trace and span ids may be written under, first match wins. Lifting them into `TraceId`/`SpanId` is what links a log line to its trace. |
 | `collector.metrics.kubelet.enabled` | `true` | Scrape the node's kubelet for per-pod and per-container CPU and memory. |
-| `collector.metrics.node.enabled` | `true` | Scrape the node itself: CPU, load, memory, network, disk, filesystem. |
+| `collector.metrics.node.enabled` | `true` | Scrape the node itself: CPU, load, memory, network, disk, filesystem. Off also removes the mount of the node's root filesystem, which is there for this scraper and nothing else — the container log files are their own read-only `/var/log` mount. |
 | `collector.metrics.intervalSeconds` | `30` | Seconds between scrapes, for both. |
 | `collector.otlp.grpcPort` | `4317` | OTLP/gRPC port. OTLP/HTTP's is `kitchen.observability.traces.port`. |
 | `collector.export.queueSize` | `20000` | Signals held per node while the store is unreachable; beyond it the newest are dropped. |
@@ -2032,6 +2035,7 @@ kubectl delete namespace kitchen-system
 | `postgres.persistence.enabled` | `true` | PVC for the data directory. Accounts die with the pod without it. |
 | `postgres.persistence.size` / `.storageClass` / `.accessModes` | `8Gi` / cluster default / `[ReadWriteOnce]` | |
 | `postgres.resources` | 100m/256Mi → 1Gi | |
+| `postgres.podSecurityContext` / `.securityContext` | restricted PSS | Non-root as the image's uid 70, no capabilities, and a read-only root filesystem: `PGDATA` and the socket directory are volumes and are the whole of what the image writes. |
 | `postgres.external.host` / `.port` | `""` / `5432` | Point at an existing Postgres. |
 | `postgres.external.sslmode` | `""` | What clients ask of an external Postgres, appended to the DSN. `verify-full` is the only value both drivers read the same way; empty is a connection in the clear, and the platform says so. |
 | `auth.enabled` | `true` | Deploy the identity provider. Needs a Postgres. |

@@ -40,6 +40,16 @@ export function connectionSecurity(databaseURL: string): { sslmode: string; caFi
 	}
 }
 
+/**
+ * The other thing exactly one replica may do at a time: create the first
+ * administrator. Two valid POSTs to /bootstrap that arrive together both read
+ * an empty user table and both write an account, and the endpoint that is
+ * meant to be one-time has run twice. Its own key rather than the migration
+ * one, because the two guard different work and a bootstrap should not be
+ * queued behind a schema migration that is not going to touch it.
+ */
+export const BOOTSTRAP_LOCK_KEY = 4_015_071_987;
+
 export function createPool(databaseURL: string): pg.Pool {
 	const { sslmode, caFile } = connectionSecurity(databaseURL);
 	// The driver reads this file when it parses the connection string, which
@@ -92,14 +102,29 @@ export async function waitForDatabase(pool: pg.Pool, timeoutSeconds: number): Pr
 }
 
 /**
+ * Runs `work` while holding a session-level Postgres advisory lock, on a
+ * connection of its own so that nothing else on the pool can release it by
+ * accident. The lock is cluster-wide: it serializes replicas, which is the
+ * only reason either caller wants one.
+ */
+export async function withAdvisoryLock<T>(pool: pg.Pool, key: number, work: () => Promise<T>): Promise<T> {
+	const client = await pool.connect();
+	try {
+		await client.query("SELECT pg_advisory_lock($1)", [key]);
+		return await work();
+	} finally {
+		await client.query("SELECT pg_advisory_unlock($1)", [key]).catch(() => undefined);
+		client.release();
+	}
+}
+
+/**
  * Brings the schema up to date for the configured plugin set. better-auth
  * derives the schema from the options, so this runs on every start and is a
  * no-op once nothing has changed.
  */
 export async function runMigrations(options: BetterAuthOptions, pool: pg.Pool): Promise<void> {
-	const client = await pool.connect();
-	try {
-		await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
+	await withAdvisoryLock(pool, MIGRATION_LOCK_KEY, async () => {
 		const { toBeCreated, toBeAdded, runMigrations: apply } = await getMigrations(options);
 		if (toBeCreated.length === 0 && toBeAdded.length === 0) {
 			log.info("database schema is up to date");
@@ -111,8 +136,5 @@ export async function runMigrations(options: BetterAuthOptions, pool: pg.Pool): 
 		});
 		await apply();
 		log.info("database schema migrated");
-	} finally {
-		await client.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_KEY]).catch(() => undefined);
-		client.release();
-	}
+	});
 }

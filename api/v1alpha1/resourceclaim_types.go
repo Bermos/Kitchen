@@ -664,6 +664,19 @@ func (c *ResourceClaim) OIDCClient() OIDCClientConfig {
 // the keys — read from the account the Connection holds, for the named
 // environment and, per preview, for a branch environment of the preview's
 // own.
+//
+// What a branch environment does not isolate. Against Inngest Cloud the
+// signing key and the event key are the whole account's — Inngest mints no
+// per-environment credential and there is no endpoint that would scope one —
+// and INNGEST_ENV is what selects an environment. So an application that
+// overwrites INNGEST_ENV addresses whatever branch environment it names,
+// including one belonging to another project claiming through the same
+// Connection. The tenancy boundary is the Inngest account, not the project.
+// Two isolations follow, and both are the operator's: a Connection per
+// project, each holding an API key for an account of its own; or the
+// inngestSelfHosted provider, where each preview gets an Inngest server of
+// its own, with keys of its own, and there is no shared credential to point
+// anywhere. docs/api/claims.md says it at length.
 type InngestConfig struct {
 	// App is the Inngest app ID the application's client is created with
 	// (`new Inngest({ id })`). It is what the claim's status reports on —
@@ -677,6 +690,15 @@ type InngestConfig struct {
 	// account's `production`, or a custom environment created in the
 	// Inngest dashboard. Preview environments never bind to it — they get
 	// a branch environment each. Empty means production.
+	//
+	// Against Inngest Cloud a branch environment is not a tenancy boundary.
+	// The keys beside INNGEST_ENV are the account's — Inngest mints none
+	// scoped to one environment — so an application that overwrites the
+	// variable addresses any branch environment of the same account,
+	// including another project's. Isolate with a Connection per project,
+	// each holding a key for an account of its own, or claim through the
+	// inngestSelfHosted provider, where every preview gets a server and keys
+	// of its own.
 	// +optional
 	Environment string `json:"environment,omitempty"`
 

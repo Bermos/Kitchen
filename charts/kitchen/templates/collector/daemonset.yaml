@@ -161,6 +161,7 @@ spec:
             - name: var-log
               mountPath: {{ .Values.collector.hostLogsPath | quote }}
               readOnly: true
+            {{- if .Values.collector.metrics.node.enabled }}
             - name: hostfs
               mountPath: /hostfs
               readOnly: true
@@ -169,6 +170,7 @@ spec:
               # every pod on this node attaches — is invisible to the node
               # metrics scraper.
               mountPropagation: HostToContainer
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -203,14 +205,28 @@ spec:
           hostPath:
             path: {{ .Values.collector.hostLogsPath | quote }}
             type: Directory
-        # The node's own filesystem, for the node metrics scraper. Mounted
-        # whether or not that scraper is on: what the pod may see is a property
-        # of the DaemonSet and of the namespace's Pod Security level, not of
-        # which pipeline happens to be enabled.
+        {{- if .Values.collector.metrics.node.enabled }}
+        # The node's own filesystem, for the node metrics scraper — and only
+        # for it. The container log files are a mount of their own above
+        # (`hostLogsPath`, /var/log, read-only); this is the whole root, which
+        # host_metrics needs because CPU, load, memory, network and disk are
+        # read out of /proc and /sys and the filesystem scraper walks the
+        # node's mount table. There is no narrower path that answers those.
+        #
+        # It used to be mounted whether or not the scraper was on, on the
+        # argument that what the pod may see should be a property of the
+        # DaemonSet rather than of which pipeline is enabled. The other reading
+        # is the one that holds: an installation that has switched node metrics
+        # off has said it does not want the node read, and mounting its root
+        # anyway hands every reader of this pod spec a capability nothing in
+        # the collector's configuration uses. Defaults are unchanged —
+        # `collector.metrics.node.enabled` is on — so this narrows the pod only
+        # where somebody asked for it to be narrowed.
         - name: hostfs
           hostPath:
             path: /
             type: Directory
+        {{- end }}
       {{- with .Values.collector.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

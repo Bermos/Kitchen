@@ -932,6 +932,15 @@ async function save() {
               of its own. Through a connection the platform runs itself, they are the keys and the address of an
               Inngest server of this claim's own, and a preview gets a whole server of its own.
             </p>
+            <p class="text-xs text-muted">
+              An Inngest Cloud account's branch environments share its signing key and event key — Inngest mints
+              no key that opens only one — and <span class="font-mono">INNGEST_ENV</span> is what picks an
+              environment. So a preview that overwrites it addresses any branch environment of the same account,
+              including another project's. The boundary is the Inngest account, not the project: use a separate
+              connection, holding a key for an account of its own, for a project that must not reach the others,
+              or claim through a connection the platform runs itself, where every preview gets its own server
+              and its own keys.
+            </p>
             <div class="grid gap-4 sm:grid-cols-2">
               <UFormField
                 label="App ID"

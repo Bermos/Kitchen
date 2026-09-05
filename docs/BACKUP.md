@@ -532,6 +532,10 @@ already are: cluster bootstrap, the exception
 
 `--set restore.id=2` runs it again: a Job's pod template is immutable, so the
 id is part of its name and a second attempt's log stands beside the first.
+Because they stand beside each other rather than replacing each other, they are
+reclaimed: a finished restore Job and its pod are deleted a day after they
+finish (`restore.ttlSecondsAfterFinished`, `86400`). Read the log inside that
+day, or set the value empty to keep the Job until somebody deletes it.
 
 ### What a restore does not overwrite
 

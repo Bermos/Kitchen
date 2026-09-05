@@ -125,6 +125,19 @@ spec:
             # The entrypoint writes the user definition here on every start.
             - name: users
               mountPath: /etc/clickhouse-server/users.d
+            # The two paths the image writes outside its data directory, which
+            # is the whole of what a read-only root filesystem costs here. The
+            # entrypoint stages the user definition through /tmp before it
+            # lands in users.d above — without a writable one the container
+            # exits on `cp: can't create '/tmp/users.xml'` before the server is
+            # ever started — and the server's own logger writes the trace and
+            # error logs to /var/log/clickhouse-server whatever else it does.
+            # Both were going to the container's writable layer before, which
+            # is the same node disk under a name nobody can see.
+            - name: tmp
+              mountPath: /tmp
+            - name: logs
+              mountPath: /var/log/clickhouse-server
             {{- if .Values.clickhouse.extraConfig }}
             # Ahead of the TLS file below, and that order is load bearing: the
             # kubelet mounts these in the order they are written, so a whole
@@ -167,6 +180,16 @@ spec:
             # which the pod's fsGroup makes the group of every file here.
             defaultMode: 0640
         {{- end }}
+        - name: tmp
+          emptyDir: {}
+        # ClickHouse rotates this itself — 1000M across 10 files by default,
+        # and the same again for the error log — so it is deliberately not
+        # given a sizeLimit: one below the rotation the server is configured
+        # for turns a full log directory into an evicted pod, which is a worse
+        # failure than the disk this was already using before the root
+        # filesystem became read-only.
+        - name: logs
+          emptyDir: {}
         {{- if .Values.clickhouse.extraConfig }}
         - name: config
           configMap:

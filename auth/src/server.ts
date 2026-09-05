@@ -357,12 +357,18 @@ export function createServer(
 
 		if (req.method === "GET") {
 			const token = url.searchParams.get("token");
-			if (await isBootstrapped(auth, config)) {
-				sendHTML(res, 410, messagePage("Already set up", "This installation already has an account. Sign in instead."));
-				return;
-			}
+			// The token is checked *before* the installation is: 410 and 401
+			// are two different answers, and answering them in the other
+			// order tells whoever asks — with no credential at all — whether
+			// this installation has been set up yet. That is the one fact the
+			// bootstrap link is protecting, so a caller who cannot produce
+			// the token is told nothing but that they cannot.
 			if (!tokenMatches(config.bootstrapToken, token)) {
 				sendHTML(res, 401, messagePage("Invalid link", "This bootstrap link is missing or carries the wrong token."));
+				return;
+			}
+			if (await isBootstrapped(auth, config)) {
+				sendHTML(res, 410, messagePage("Already set up", "This installation already has an account. Sign in instead."));
 				return;
 			}
 			sendHTML(res, 200, bootstrapPage(token ?? ""));
@@ -383,7 +389,7 @@ export function createServer(
 			return;
 		}
 
-		const result = await bootstrapFirstUser(auth, config, {
+		const result = await bootstrapFirstUser(auth, config, pool, {
 			token: body.token ?? url.searchParams.get("token"),
 			email: body.email ?? "",
 			name: body.name ?? "",

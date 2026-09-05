@@ -469,3 +469,118 @@ func TestOnlyTheInClusterCacheIsAnIdlingProvisioner(t *testing.T) {
 		t.Error("a logical database at somebody else's server has no process of its own to park")
 	}
 }
+
+// The password is a file the server reads, not an argument anything can list.
+//
+// `--requirepass <password>` puts the credential in the container's argv,
+// which is in the pod spec — readable by everything that can read a Pod in
+// the instances' namespace — and in `ps` inside the container, where the
+// application's own process would find it. So it is the one directive that
+// lives in a valkey.conf projected from the instance's Secret, and the rest
+// of the configuration stays in argv where it can still be read off the pod.
+func TestValkeyKeepsThePasswordOutOfArgv(t *testing.T) {
+	provisioner, c := newValkey(t)
+	ctx := context.Background()
+
+	if _, err := provisioner.Provision(ctx, shopCache); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("want ErrNotReady while it starts, got %v", err)
+	}
+
+	key := types.NamespacedName{Namespace: DefaultCacheNamespace, Name: "kitchen-shop-cache"}
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, key, secret); err != nil {
+		t.Fatal(err)
+	}
+	password := string(secret.Data[BindingKeyPassword])
+	conf := string(secret.Data[configKey])
+	if !strings.Contains(conf, "requirepass") || !strings.Contains(conf, password) {
+		t.Fatalf("the instance's %s must carry the password as its requirepass directive: %q", configKey, conf)
+	}
+
+	set := &appsv1.StatefulSet{}
+	if err := c.Get(ctx, key, set); err != nil {
+		t.Fatal(err)
+	}
+	container := set.Spec.Template.Spec.Containers[0]
+	args := strings.Join(container.Args, " ")
+	if strings.Contains(args, "requirepass") || strings.Contains(args, password) {
+		t.Errorf("the password must not reach argv: %s", args)
+	}
+	if len(container.Args) == 0 || container.Args[0] != configFilePath {
+		t.Errorf("the server is started with the configuration file first, got %v", container.Args)
+	}
+	for _, env := range container.Env {
+		if strings.Contains(env.Name, "PASSWORD") {
+			t.Errorf("the password must not reach the environment either: %s", env.Name)
+		}
+	}
+
+	// The file is projected on its own, so the mounted directory is the
+	// configuration and not a second copy of the credential.
+	var config *corev1.Volume
+	for i := range set.Spec.Template.Spec.Volumes {
+		if set.Spec.Template.Spec.Volumes[i].Name == "config" {
+			config = &set.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if config == nil || config.Secret == nil {
+		t.Fatalf("the pod mounts no configuration volume: %+v", set.Spec.Template.Spec.Volumes)
+	}
+	if config.Secret.SecretName != key.Name {
+		t.Errorf("the configuration comes from the instance's own Secret, got %q", config.Secret.SecretName)
+	}
+	if len(config.Secret.Items) != 1 || config.Secret.Items[0].Key != configKey {
+		t.Errorf("only %s is projected, got %+v", configKey, config.Secret.Items)
+	}
+	if config.Secret.DefaultMode == nil || *config.Secret.DefaultMode&0o007 != 0 {
+		t.Errorf("a credential is not world-readable, got mode %v", config.Secret.DefaultMode)
+	}
+}
+
+// A Secret written before the configuration file existed carries the password
+// alone; the next reconcile adds the file without minting a second password,
+// because the binding an application already holds is that one.
+func TestValkeyAddsTheConfigFileToAnOlderSecret(t *testing.T) {
+	provisioner, c := newValkey(t)
+	ctx := context.Background()
+
+	if err := provisioner.ensureNamespace(ctx); err != nil {
+		t.Fatal(err)
+	}
+	older := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kitchen-shop-cache", Namespace: DefaultCacheNamespace},
+		Type:       corev1.SecretTypeOpaque,
+		Data:       map[string][]byte{BindingKeyPassword: []byte("an-existing-password")},
+	}
+	if err := c.Create(ctx, older); err != nil {
+		t.Fatal(err)
+	}
+
+	password, err := provisioner.ensureSecret(ctx, "kitchen-shop-cache", shopProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if password != "an-existing-password" {
+		t.Fatalf("the password an application already holds must survive, got %q", password)
+	}
+
+	stored := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: DefaultCacheNamespace, Name: "kitchen-shop-cache"}
+	if err := c.Get(ctx, key, stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stored.Data[configKey]), "an-existing-password") {
+		t.Fatalf("the configuration file was not added: %q", stored.Data[configKey])
+	}
+}
+
+// The catalogue is pinned by digest, not by a tag that moves under it. The
+// comment above it said "pinned by digest-bearing tag" for a while and no
+// entry was; this is the half of that claim a test can hold.
+func TestValkeyImagesArePinnedByDigest(t *testing.T) {
+	for _, entry := range DefaultValkeyImages {
+		if !strings.Contains(entry.Image, "@sha256:") {
+			t.Errorf("Valkey %s is not pinned by digest: %s", entry.Major, entry.Image)
+		}
+	}
+}
