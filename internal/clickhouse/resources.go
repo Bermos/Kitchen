@@ -236,15 +236,15 @@ func resourceSeriesStatement(database string, rollup bool) string {
 
 	return fmt.Sprintf(`SELECT
     toString(toUnixTimestamp(slot)) AS bucket,
-    toString(sum(cpu)) AS cpu,
-    toString(sum(cpuPeak)) AS cpuPeak,
-    toString(toUInt64(sum(mem))) AS memory,
-    toString(toUInt64(sum(memPeak))) AS memoryPeak,
+	    toString(ifNotFinite(sum(cpu), toFloat64(0))) AS cpu,
+	    toString(ifNotFinite(sum(cpuPeak), toFloat64(0))) AS cpuPeak,
+	    toString(toUInt64(ifNotFinite(sum(mem), toFloat64(0)))) AS memory,
+	    toString(toUInt64(ifNotFinite(sum(memPeak), toFloat64(0)))) AS memoryPeak,
     toString(uniqExact(pod)) AS replicas,
-    toString(toUInt64(sum(restarts))) AS restarts,
-    toString(toUInt64(sum(oom))) AS oomKills,
+	    toString(toUInt64(ifNotFinite(sum(restarts), toFloat64(0)))) AS restarts,
+	    toString(toUInt64(ifNotFinite(sum(oom), toFloat64(0)))) AS oomKills,
     toString(max(cpuLimit)) AS cpuLimit,
-    toString(toUInt64(max(memLimit))) AS memoryLimit
+	    toString(toUInt64(ifNotFinite(max(memLimit), toFloat64(0)))) AS memoryLimit
 FROM (
     %s
 )

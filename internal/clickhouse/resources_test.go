@@ -229,8 +229,19 @@ func TestTheSeriesGroupsPerContainerBeforeItSumsTheEnvironment(t *testing.T) {
 	if !strings.Contains(store.query, "GROUP BY slot, pod, container") {
 		t.Fatalf("the inner grouping should be per container:\n%s", store.query)
 	}
-	if !strings.Contains(store.query, "toString(sum(cpu)) AS cpu") {
+	if !strings.Contains(store.query, "toString(ifNotFinite(sum(cpu), toFloat64(0))) AS cpu") {
 		t.Fatalf("the outer grouping should sum the containers:\n%s", store.query)
+	}
+	// A bucket with only one half of a metric can yield NaN from avgIf/avgMerge;
+	// non-finite aggregates are coerced before integer conversion.
+	for _, want := range []string{
+		"toString(toUInt64(ifNotFinite(sum(mem), toFloat64(0)))) AS memory",
+		"toString(toUInt64(ifNotFinite(sum(memPeak), toFloat64(0)))) AS memoryPeak",
+		"toString(toUInt64(ifNotFinite(max(memLimit), toFloat64(0)))) AS memoryLimit",
+	} {
+		if !strings.Contains(store.query, want) {
+			t.Fatalf("the outer grouping should coerce non-finite values: missing %q in\n%s", want, store.query)
+		}
 	}
 	// `slot` is deliberately not `bucket`: the outer SELECT renders the bucket
 	// as a string, and a GROUP BY resolves against the aliases first.
