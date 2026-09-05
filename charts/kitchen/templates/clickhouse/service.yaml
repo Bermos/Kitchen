@@ -16,14 +16,7 @@ spec:
   selector:
     {{- include "kitchen.clickhouseSelectorLabels" . | nindent 4 }}
   ports:
-    - name: http
-      port: {{ .Values.clickhouse.service.httpPort }}
-      targetPort: http
-      protocol: TCP
-    - name: native
-      port: {{ .Values.clickhouse.service.nativePort }}
-      targetPort: native
-      protocol: TCP
+    {{- include "kitchen.clickhouseServicePorts" . | trim | nindent 4 }}
 ---
 # Governing service for the StatefulSet: stable per-pod DNS.
 apiVersion: v1
@@ -40,12 +33,5 @@ spec:
   selector:
     {{- include "kitchen.clickhouseSelectorLabels" . | nindent 4 }}
   ports:
-    - name: http
-      port: {{ .Values.clickhouse.service.httpPort }}
-      targetPort: http
-      protocol: TCP
-    - name: native
-      port: {{ .Values.clickhouse.service.nativePort }}
-      targetPort: native
-      protocol: TCP
+    {{- include "kitchen.clickhouseServicePorts" . | trim | nindent 4 }}
 {{- end }}

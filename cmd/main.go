@@ -538,6 +538,18 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NotificationDelivery")
 		os.Exit(1)
 	}
+	// The platform's own certificate authority, and the certificate the
+	// telemetry store serves. Driven by the connection secrets the chart
+	// writes rather than by the Kitchen singleton, because the singleton is a
+	// post-install hook and the store's pod waits for its certificate — see
+	// InternalTLSReconciler.
+	if err = (&controller.InternalTLSReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "InternalTLS")
+		os.Exit(1)
+	}
 	if err = (&controller.SavedQueryReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),

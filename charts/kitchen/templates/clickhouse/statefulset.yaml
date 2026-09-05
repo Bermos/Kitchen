@@ -21,10 +21,15 @@ spec:
       labels:
         {{- include "kitchen.clickhouseSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: clickhouse
-      {{- if or .Values.clickhouse.extraConfig .Values.clickhouse.podAnnotations }}
+      {{- if or .Values.clickhouse.extraConfig .Values.clickhouse.podAnnotations (eq (include "kitchen.clickhouseTLSEnabled" .) "true") }}
       annotations:
         {{- with .Values.clickhouse.extraConfig }}
         checksum/config: {{ toYaml . | sha256sum }}
+        {{- end }}
+        {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+        # ClickHouse reads its configuration at startup, and this file is what
+        # decides which ports it listens on and with what certificate.
+        checksum/tls-config: {{ include (print $.Template.BasePath "/clickhouse/tls-configmap.yaml") . | sha256sum }}
         {{- end }}
         {{- with .Values.clickhouse.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -45,11 +50,22 @@ spec:
           image: {{ printf "%s:%s" .Values.clickhouse.image.repository .Values.clickhouse.image.tag }}
           imagePullPolicy: {{ .Values.clickhouse.image.pullPolicy }}
           env:
-            # The entrypoint creates this database and user on first start, and
-            # drops the image's passwordless `default` user as long as the
-            # username is not "default".
+            {{- if ne (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+            # The entrypoint creates this database on first start, over the
+            # plain native port on localhost. With TLS on there is no plain
+            # native port to create it over — `clickhouse-client` is invoked
+            # with neither `--secure` nor a CA — so the variable is left out,
+            # which skips that step entirely and the operator creates the
+            # database instead. It already does: `CREATE DATABASE IF NOT
+            # EXISTS` is the first statement of EnsureTelemetrySchema, and it
+            # is how an external store gets its database today.
             - name: CLICKHOUSE_DB
               value: {{ .Values.clickhouse.auth.database | quote }}
+            {{- end }}
+            # The user and its password are written into users.d by the
+            # entrypoint on every start, before any of that and regardless of
+            # it. The image's passwordless `default` user is dropped with it,
+            # as long as the username is not "default".
             - name: CLICKHOUSE_USER
               value: {{ .Values.clickhouse.auth.username | quote }}
             - name: CLICKHOUSE_PASSWORD
@@ -61,27 +77,43 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
+            {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+            - name: https
+              containerPort: {{ int .Values.clickhouse.tls.httpsPort }}
+              protocol: TCP
+            - name: native-tls
+              containerPort: {{ int .Values.clickhouse.tls.nativePort }}
+              protocol: TCP
+            {{- else }}
             - name: http
               containerPort: 8123
               protocol: TCP
             - name: native
               containerPort: 9000
               protocol: TCP
+            {{- end }}
+          {{- /*
+          The probes follow the interface. `scheme: HTTPS` is the kubelet
+          dialling TLS and not verifying the certificate, which is right here
+          and is not a hole: the kubelet is on the node the pod is on, and what
+          it is asking is whether this process answers, not who it is.
+          */}}
+          {{- $probe := dict "path" "/ping" "port" "http" }}
+          {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+          {{- $probe = dict "path" "/ping" "port" "https" "scheme" "HTTPS" }}
+          {{- end }}
           startupProbe:
             httpGet:
-              path: /ping
-              port: http
+              {{- toYaml $probe | nindent 14 }}
             periodSeconds: 5
             failureThreshold: 60
           livenessProbe:
             httpGet:
-              path: /ping
-              port: http
+              {{- toYaml $probe | nindent 14 }}
             periodSeconds: 20
           readinessProbe:
             httpGet:
-              path: /ping
-              port: http
+              {{- toYaml $probe | nindent 14 }}
             periodSeconds: 10
           securityContext:
             {{- toYaml .Values.clickhouse.securityContext | nindent 12 }}
@@ -94,12 +126,47 @@ spec:
             - name: users
               mountPath: /etc/clickhouse-server/users.d
             {{- if .Values.clickhouse.extraConfig }}
+            # Ahead of the TLS file below, and that order is load bearing: the
+            # kubelet mounts these in the order they are written, so a whole
+            # directory mounted over config.d *after* a file was bind-mounted
+            # into it would hide the file — and a ClickHouse whose TLS
+            # configuration went missing serves the image's defaults, which
+            # are plaintext, without saying anything.
             - name: config
               mountPath: /etc/clickhouse-server/config.d
+            {{- end }}
+            {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+            # One file, by subPath, so the image's own config.d — which is
+            # where `listen_host` comes from — is still there underneath. A
+            # directory mount here would hide it, and a ClickHouse listening
+            # on localhost alone is a store nothing in the cluster can reach.
+            - name: tls-config
+              mountPath: /etc/clickhouse-server/config.d/kitchen-tls.xml
+              subPath: kitchen-tls.xml
+              readOnly: true
+            # The certificate itself, issued by the operator from the
+            # platform's internal CA. The pod does not start until it exists,
+            # which on a first install is a wait and never a fallback: there
+            # is no configuration here under which this server answers in the
+            # clear because its certificate was late.
+            - name: tls
+              mountPath: {{ include "kitchen.clickhouseTLSMountPath" . }}
+              readOnly: true
             {{- end }}
       volumes:
         - name: users
           emptyDir: {}
+        {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+        - name: tls-config
+          configMap:
+            name: {{ include "kitchen.clickhouseFullname" . }}-tls-config
+        - name: tls
+          secret:
+            secretName: {{ include "kitchen.clickhouseTLSSecretName" . }}
+            # The server reads its own key as the image's clickhouse user,
+            # which the pod's fsGroup makes the group of every file here.
+            defaultMode: 0640
+        {{- end }}
         {{- if .Values.clickhouse.extraConfig }}
         - name: config
           configMap:

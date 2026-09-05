@@ -116,6 +116,17 @@ func (r *KitchenReconciler) surveyComponents(
 		})
 	}
 
+	// Whether the platform's own stores are reached over TLS, on the same
+	// terms: not a workload, and in this list because an unencrypted platform
+	// namespace has no pod to be unhealthy and would otherwise be visible
+	// nowhere an operator looks.
+	if tls := internalTLSComponent(kitchen); tls != nil {
+		surveyed = append(surveyed, surveyedWorkload{
+			status:     *tls,
+			objectName: InternalCACertificateName,
+		})
+	}
+
 	// The scheduled backup, on the same terms as the clock check: not a
 	// workload, and in this list because this list is what an operator reads.
 	// It is the row that answers "when did a backup last work", which is the

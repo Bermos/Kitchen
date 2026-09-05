@@ -222,6 +222,10 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	r.reconcileCloudflared(ctx, kitchen, setCond)
 
 	certReady := r.reconcileTLS(ctx, kitchen, setCond)
+	// Ahead of the schema, because it is the answer to why the schema cannot
+	// be applied: on a first install nothing reaches the store until the store
+	// has a certificate to serve.
+	internalCAReady := r.reconcileInternalTLS(ctx, kitchen, setCond)
 	schemaReady := r.reconcileTelemetrySchema(ctx, kitchen, setCond)
 	complianceReady := r.reconcileCompliance(ctx, kitchen, setCond)
 	gateReady := r.reconcilePreviewGate(ctx, kitchen, setCond)
@@ -250,6 +254,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"registryReady", registryReady,
 		"objectStoreReady", objectStoreReady,
 		"certificateReady", certReady,
+		"internalCAReady", internalCAReady,
 		"complianceReady", complianceReady,
 		"operatorsConfigured", accessReady,
 		"backupReady", backupReady,
@@ -257,7 +262,8 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"databasesReady", databasesReady,
 		"componentsHealthy", componentsHealthy)
 	if !programmed || !schemaReady || !gateReady || !registryReady || !objectStoreReady || !certReady ||
-		!complianceReady || !accessReady || !idlingReady || !databasesReady || !componentsHealthy {
+		!internalCAReady || !complianceReady || !accessReady || !idlingReady || !databasesReady ||
+		!componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

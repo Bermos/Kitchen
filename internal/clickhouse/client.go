@@ -22,10 +22,13 @@ package clickhouse
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -43,6 +46,47 @@ const (
 	SecretKeyDatabase = "database"
 	SecretKeyUsername = "username"
 	SecretKeyPassword = "password"
+
+	// SecretKeyScheme says whether the store's HTTP interface answers in the
+	// clear or over TLS. The chart writes `https` for the bundled ClickHouse,
+	// which serves a certificate the operator requests from the platform's
+	// own internal CA, and for an external store configured for it.
+	//
+	// An absent key is read as `http`, because a secret written by a chart
+	// older than the certificate is describing a store that really does
+	// answer in the clear. It is the one place plaintext survives, and it is
+	// the chart's statement of fact rather than a fallback the client takes
+	// on its own: nothing here ever downgrades a `https` connection.
+	SecretKeyScheme = "scheme"
+
+	// SecretKeyCAFile is where the PEM bundle that must sign the store's
+	// certificate is mounted in this pod. It is a path rather than the bundle
+	// itself because the bundle belongs to the operator, which mints it, and
+	// the chart is what decides where a pod sees it — the same ConfigMap is
+	// mounted into the telemetry agent under the same name.
+	//
+	// Empty means the host's own roots, which is what an external store with
+	// a publicly trusted certificate wants. It never means "do not verify":
+	// there is no setting for that anywhere in this package.
+	SecretKeyCAFile = "caFile"
+
+	// SecretKeyCertificateSecret names the Secret the store's own certificate
+	// belongs in, and by naming it asks the operator to fill that Secret from
+	// the platform's internal CA. It is the one key here the client never
+	// reads: it is addressed to the operator, and it lives in this secret
+	// because this secret is where everything about the connection is
+	// written down.
+	//
+	// Absent means the operator issues nothing — an external store, whose
+	// certificate is somebody else's to manage, or a bundled store somebody
+	// has deliberately left in the clear.
+	SecretKeyCertificateSecret = "certificateSecret"
+)
+
+// The two schemes the HTTP interface may be reached on.
+const (
+	SchemeHTTP  = "http"
+	SchemeHTTPS = "https"
 )
 
 const (
@@ -66,6 +110,15 @@ type Config struct {
 	Database string
 	Username string
 	Password string
+
+	// Scheme is http or https. Empty is http, for a connection secret
+	// written before the store had a certificate.
+	Scheme string
+
+	// CAFile is the PEM bundle the store's certificate is verified against.
+	// Empty verifies against the host's roots. Verification itself is not
+	// optional either way.
+	CAFile string
 }
 
 // ConfigFromSecret reads the connection details the chart wrote.
@@ -76,6 +129,11 @@ func ConfigFromSecret(secret *corev1.Secret) (Config, error) {
 		Database: string(secret.Data[SecretKeyDatabase]),
 		Username: string(secret.Data[SecretKeyUsername]),
 		Password: string(secret.Data[SecretKeyPassword]),
+		Scheme:   string(secret.Data[SecretKeyScheme]),
+		CAFile:   string(secret.Data[SecretKeyCAFile]),
+	}
+	if cfg.Scheme == "" {
+		cfg.Scheme = SchemeHTTP
 	}
 	var missing []string
 	for key, value := range map[string]string{
@@ -97,24 +155,73 @@ func ConfigFromSecret(secret *corev1.Secret) (Config, error) {
 		return Config{}, fmt.Errorf("secret %s/%s holds an unusable database name %q",
 			secret.Namespace, secret.Name, cfg.Database)
 	}
+	if cfg.Scheme != SchemeHTTP && cfg.Scheme != SchemeHTTPS {
+		return Config{}, fmt.Errorf("secret %s/%s asks for scheme %q; it is %s or %s",
+			secret.Namespace, secret.Name, cfg.Scheme, SchemeHTTP, SchemeHTTPS)
+	}
 	return cfg, nil
+}
+
+// scheme is the connection's scheme, defaulted for a Config built in code
+// rather than read from a secret.
+func (c Config) scheme() string {
+	if c.Scheme == "" {
+		return SchemeHTTP
+	}
+	return c.Scheme
 }
 
 // endpoint is the HTTP address queries are posted to.
 func (c Config) endpoint() string {
-	return fmt.Sprintf("http://%s:%s/", c.Host, c.HTTPPort)
+	return fmt.Sprintf("%s://%s:%s/", c.scheme(), c.Host, c.HTTPPort)
 }
 
 // Client runs statements against one ClickHouse.
 type Client struct {
 	cfg  Config
 	http *http.Client
+
+	// unusable is the reason this client can never connect — a CA bundle it
+	// was told to verify against and could not read. It is kept rather than
+	// returned from New because a client that cannot verify must fail every
+	// query loudly, and the alternatives are both worse: returning an error
+	// from New would have every one of its forty call sites decide what to do
+	// about it, and carrying on without the bundle would verify against the
+	// host's roots, which for a store whose certificate came from the
+	// platform's own CA is a connection that fails for a reason nobody can
+	// read.
+	unusable error
 }
 
 // New builds a client with a timeout that keeps a wedged store from stalling
 // a reconcile.
+//
+// A https connection is verified — hostname and chain, against cfg.CAFile
+// where there is one and the host's roots where there is not. There is no
+// switch here that turns that off, and no path that falls back to plaintext:
+// a store the chart says speaks TLS is either reached over verified TLS or
+// not reached at all.
 func New(cfg Config) *Client {
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second}}
+	client := &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second}}
+	if cfg.scheme() != SchemeHTTPS || cfg.CAFile == "" {
+		return client
+	}
+
+	pem, err := os.ReadFile(cfg.CAFile)
+	if err != nil {
+		client.unusable = fmt.Errorf("reading the telemetry store's CA bundle %s: %w", cfg.CAFile, err)
+		return client
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		client.unusable = fmt.Errorf("the telemetry store's CA bundle %s holds no certificate", cfg.CAFile)
+		return client
+	}
+	client.http.Transport = &http.Transport{TLSClientConfig: &tls.Config{
+		RootCAs:    roots,
+		MinVersion: tls.VersionTLS12,
+	}}
+	return client
 }
 
 // Exec runs a statement and discards its output.
@@ -189,6 +296,9 @@ func (c *Client) execOutsideDatabase(ctx context.Context, query string) error {
 
 // do posts one statement and reads its answer.
 func (c *Client) do(ctx context.Context, query string, values url.Values) (string, error) {
+	if c.unusable != nil {
+		return "", c.unusable
+	}
 	endpoint := c.cfg.endpoint() + "?" + values.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(query))

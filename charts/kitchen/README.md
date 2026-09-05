@@ -339,9 +339,9 @@ The chart runs a single-node ClickHouse — the store for logs, metrics, traces,
 build logs and Hubble flow data. It is not the system of record; the CRDs are.
 
 Connection details always land in the secret `<release>-clickhouse` (`host`,
-`httpPort`, `nativePort`, `database`, `username`, `password`, `dsn`), whether
-ClickHouse runs here or elsewhere, so the agent and the operator have one place
-to look.
+`httpPort`, `nativePort`, `database`, `username`, `password`, `scheme`,
+`caFile`, `dsn`), whether ClickHouse runs here or elsewhere, so the agent and
+the operator have one place to look.
 
 The password is generated on install and read back from the cluster on upgrade,
 so it stays stable. Two consequences worth knowing:
@@ -364,6 +364,74 @@ Point at an existing ClickHouse instead:
 Or install without a store at all — logs, metrics and traces then have nowhere
 to land — with `--set clickhouse.enabled=false --set
 clickhouse.acknowledgeNoStore=true`.
+
+### How the store is reached
+
+`clickhouse.tls.enabled` (on by default) is what stops the store answering in
+plaintext. Until it existed, ClickHouse served plain HTTP on 8123 and the plain
+native protocol on 9000, so every log line, every query and the store's own
+password crossed `kitchen-system` readable — by anything that lands in the
+namespace, and by the node. [What the platform namespace
+accepts](#what-the-platform-namespace-accepts) closed that namespace to
+applications; it did not encrypt what is inside it.
+
+What it does:
+
+- **The operator mints a CA**, through the cert-manager this chart already
+  bundles: a self-signed `Issuer`, a `Certificate` with `isCA`, and a second
+  `Issuer` that signs with the result — all three in `kitchen-system`, all
+  three created by the operator rather than by this chart, because
+  cert-manager's own webhook admits them and on a first install they cannot
+  exist until it is serving.
+- **ClickHouse gets a certificate from it**, for every name a client in the
+  cluster reaches its Service by, mounted into the pod. The store then serves
+  the HTTP interface on `clickhouse.tls.httpsPort` (8443) and the native
+  protocol on `clickhouse.tls.nativePort` (9440), and **the plaintext
+  listeners are removed from its configuration** rather than left unused: 8123
+  and 9000 are refused connections, not quieter ones.
+- **The platform's own clients verify it**, hostname and chain, against the CA
+  — `verify-full`, not `require`. They can, because they are the platform's:
+  the operator publishes the CA certificate (and never its private key) as the
+  ConfigMap `kitchen-internal-ca`, and the operator's own pod and the telemetry
+  agent mount it. There is no setting anywhere in the platform that connects to
+  this store without verifying it.
+
+Two things follow that are easy to be surprised by:
+
+- **It has nothing to do with `kitchen.tls.mode`.** That decides how the
+  platform is published to the internet. This decides whether two pods in one
+  namespace talk in the clear, and the CA signs itself, so an installation on
+  `tls.mode: none` — no ACME account, no wildcard, no DNS — still gets all of
+  it.
+- **The store's pod, and the telemetry agent's, wait for it.** On a first
+  install ClickHouse sits in `ContainerCreating` until the operator has created
+  the CA and cert-manager has issued from it, and every node's telemetry agent
+  waits the same way for the CA bundle. Both are seconds and need no ordering
+  from you — the operator issues from a connection secret rather than from the
+  Kitchen singleton, which is a post-install hook and would otherwise be
+  waiting for the store that is waiting for it. It is a wait rather than a
+  fallback on purpose: there is no state in which the store answers in the
+  clear because its certificate was late, or the agent ships a log line in the
+  clear because the CA was.
+
+`kubectl exec` into the pod reaches it with `clickhouse-client --secure`; add
+`--accept-invalid-certificate` for a connection to `127.0.0.1`, which no
+certificate names. The CA is inside the pod at
+`/etc/clickhouse-server/tls/ca.crt` if you would rather check it.
+
+An **external** store is somebody else's certificate to manage, so the operator
+issues nothing for it: set `clickhouse.external.tls=true` when it serves TLS
+signed by a CA the platform's components already trust, and the platform
+verifies it against the host's roots. Left off, the connection is plaintext and
+the platform says so rather than pretending otherwise — see below.
+
+**Turning it off is the one way to run the bundled store in plaintext**, and
+the platform will not be quiet about it: `clickhouse.tls.enabled=false` leaves
+`InternalCAReady` False on the Kitchen singleton with reason `StoreInTheClear`,
+naming what is readable. That condition does not hold the platform short of
+Ready — it is a choice somebody made — but it is in the list an operator reads,
+beside a healthy `internal-ca` row in `status.components` on an installation
+where the CA did issue.
 
 ## The telemetry agent
 
@@ -1590,6 +1658,35 @@ enforces them — but two things are worth checking before you upgrade:
 Rolling it back is `--set networkPolicy.enabled=false` on the next upgrade,
 which deletes the policies with the release's own manifest.
 
+### Upgrading to a telemetry store that speaks TLS
+
+The upgrade that adds `clickhouse.tls.enabled` restarts ClickHouse once, with a
+certificate. Nothing has to be done in order, but it is worth knowing what
+happens in what order and why nothing is lost:
+
+1. Helm applies the release. The operator's own Deployment rolls first in
+   practice — it is a Deployment with no volume to wait for — and the new
+   operator creates the CA, the two issuers and the store's certificate.
+   cert-manager issues both in seconds: it is signing them itself, with no ACME
+   account, no DNS and nothing outside the cluster.
+2. The ClickHouse StatefulSet rolls. Its new pod does not start until the
+   certificate Secret exists, which by then it does. If the operator is slower,
+   the pod waits — `ContainerCreating` — and starts when the Secret appears.
+3. **The telemetry agent keeps collecting throughout.** Its export queue holds
+   and retries for five minutes (`retry_on_failure.max_elapsed_time`), which is
+   far longer than a single-pod restart, so a rollout costs latency rather than
+   data. Its own health endpoint belongs to an extension that knows nothing
+   about the store, so it stays Ready and its node keeps a place to export to.
+4. **The REST API's health does not depend on the store either.** Telemetry
+   reads fail while it is down and the dashboard's observability screens say so;
+   nothing in the request path of a deployment touches it.
+
+The window where the store is unreachable is one pod restart, which is what any
+upgrade of it already costs. If the certificate never issues — no cert-manager
+on the cluster, for instance — the store stays down and `InternalCAReady` says
+which of the two certificates is stuck. `--set clickhouse.tls.enabled=false` on
+the upgrade puts it back the way it was, in the clear.
+
 ### Upgrading from 0.1.0
 
 Releases at 0.1.0 cannot be upgraded in place. Their ClickHouse and Postgres
@@ -1801,12 +1898,15 @@ kubectl delete namespace kitchen-system
 | `clickhouse.image.repository` / `.tag` | `clickhouse/clickhouse-server` / `26.3.17.110-alpine` | Current LTS line. |
 | `clickhouse.auth.database` / `.username` | `kitchen` / `kitchen` | Created on first start. |
 | `clickhouse.auth.password` | `""` | Generated on install, preserved on upgrade. |
-| `clickhouse.service.type` / `.httpPort` / `.nativePort` | `ClusterIP` / `8123` / `9000` | |
+| `clickhouse.tls.enabled` | `true` | Serve the store over TLS, with a certificate the operator requests from the platform's internal CA, and remove its plaintext listeners. Off is the one way to run it in the clear; see [How the store is reached](#how-the-store-is-reached). |
+| `clickhouse.tls.httpsPort` / `.nativePort` | `8443` / `9440` | Ports the HTTP interface and the native protocol answer on once TLS is on. |
+| `clickhouse.service.type` / `.httpPort` / `.nativePort` | `ClusterIP` / `8123` / `9000` | The ports apply when `clickhouse.tls.enabled` is off. |
 | `clickhouse.persistence.enabled` | `true` | PVC for the data directory. |
 | `clickhouse.persistence.size` / `.storageClass` / `.accessModes` | `20Gi` / cluster default / `[ReadWriteOnce]` | |
 | `clickhouse.resources` | 200m/1Gi → 4Gi | |
 | `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. |
 | `clickhouse.external.host` / `.httpPort` / `.nativePort` | `""` / `8123` / `9000` | Point at an existing ClickHouse. |
+| `clickhouse.external.tls` | `false` | That store serves TLS, verified against the host's roots. The operator issues nothing for it. |
 | `clickhouse.acknowledgeNoStore` | `false` | Install with no telemetry store at all. |
 | `collector.enabled` | `true` | Run the telemetry agent. Off means no logs, no metrics and no OTLP endpoint. Skipped when there is no store. |
 | `collector.image.repository` / `.tag` | `otel/opentelemetry-collector-contrib` / `0.158.0` | Pinned: the operator's DDL tracks this exporter version. |
