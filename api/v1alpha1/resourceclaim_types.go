@@ -190,6 +190,7 @@ func (c *ResourceClaim) Type() (ClaimType, bool) {
 // markers is held to the table by a test, since a marker cannot read one.
 // +kubebuilder:validation:XValidation:rule="self.type in ['oidcClient', 'volume'] || has(self.connectionRef)",message="connectionRef is required: it names the Connection that provisions the resource. Only a claim the platform provisions itself goes without one.",messageExpression="'connectionRef is required: it names the Connection that provisions a ' + self.type + ' claim. Only a claim of a type the platform provisions itself (oidcClient, volume) goes without one.'"
 // +kubebuilder:validation:XValidation:rule="!(self.type in ['oidcClient', 'volume']) || !has(self.connectionRef)",message="this claim type takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.",messageExpression="'a ' + self.type + ' claim takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.'"
+// +kubebuilder:validation:XValidation:rule="!has(self.backup) || self.type == 'postgres'",message="spec.backup belongs to a claim whose resource this platform runs and can configure backups for, which is postgres alone. A resource somebody else runs is backed up by whoever runs it.",messageExpression="'spec.backup belongs to a postgres claim: a ' + self.type + ' claim names a resource this platform does not run its own backups of, so a policy here would be a promise nothing keeps.'"
 type ResourceClaimSpec struct {
 	ProjectRef LocalObjectReference `json:"projectRef"`
 
@@ -249,6 +250,18 @@ type ResourceClaimSpec struct {
 	// Removing an entry discards that recovery and its data at the provider.
 	// +optional
 	Recoveries []ClaimRecoveryRequest `json:"recoveries,omitempty"`
+
+	// Backup is the claim's backup policy: whether its resource is backed up
+	// to an object store, on what schedule, kept for how long, and where.
+	// Absent inherits the whole of it from the claim's Connection and,
+	// failing that, from the platform's own backup destination.
+	//
+	// It belongs to the types whose resource this platform runs itself and
+	// can therefore configure — postgres, today, through CloudNativePG. A
+	// claim of another type is refused it rather than carrying a policy
+	// nothing would act on.
+	// +optional
+	Backup *ClaimBackupSpec `json:"backup,omitempty"`
 
 	// PromotedRecovery names the recovery, out of Recoveries, whose database
 	// the claim binds to. Empty — the normal state — binds the instance's own
@@ -1253,6 +1266,13 @@ type ResourceClaimStatus struct {
 	// a promote displaced. Absent on a claim of a type nothing recovers.
 	// +optional
 	Recovery *ClaimRecoveryStatus `json:"recovery,omitempty"`
+
+	// Backup is what is actually happening to this claim's backups: the
+	// policy in force, when one last succeeded, the first moment the
+	// destination can still reconstruct, and whether continuous archiving is
+	// healthy. Absent on a claim of a type nothing backs up.
+	// +optional
+	Backup *ClaimBackupStatus `json:"backup,omitempty"`
 
 	// RedirectURIs is the redirect list an oidcClient claim's client is
 	// registered with, as the operator last wrote it. It is what a reconcile

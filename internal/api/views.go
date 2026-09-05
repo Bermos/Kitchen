@@ -1571,6 +1571,12 @@ type claimView struct {
 	// condition's message.
 	Postgres *claimPostgresView `json:"postgres,omitempty"`
 
+	// Backup is what is happening to the data this claim provisions: the
+	// policy in force, when a backup last succeeded, and the oldest moment
+	// the destination can still put it back to. Absent on a claim of a type
+	// nothing backs up, and on one no operator has reconciled yet.
+	Backup *claimBackupView `json:"backup,omitempty"`
+
 	// ObjectStore is what the claim asked its bucket to be — versioned,
 	// publicly readable, held to a size. Absent when it asked for nothing.
 	ObjectStore *claimObjectStoreView `json:"objectStore,omitempty"`

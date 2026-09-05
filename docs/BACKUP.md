@@ -49,12 +49,12 @@ Also not in the archive, and named in its own manifest so nobody has to guess:
   itself**: a CloudNativePG claim's data lives in a volume in
   `spec.databases.namespace`, which this archive does not carry and this
   restore does not recreate. It survives a restore only if the namespace and
-  its volumes did — or if something else is backing them up. CloudNativePG has
-  its own backup machinery for exactly this, and pointing it somewhere is a
-  decision an installation that keeps production data here has to make
-  deliberately — a per-claim backup policy that makes that decision once, on
-  the platform, is the second phase of
-  [issue #245](https://github.com/Bermos/Kitchen/issues/245).
+  its volumes did — or if something else is backing them up. That something
+  else is [the per-claim backup
+  policy](#the-databases-the-platform-runs-itself) below: continuous archiving
+  to an object store, configured once on the connection, and kept entirely
+  apart from this archive because the two recover different things at
+  different moments.
 - **Volumes a `volume` claim mounts into an application.** They live in the
   project's application namespace, on whatever StorageClass the claim named,
   and this archive carries neither them nor their data: the claim is
@@ -88,6 +88,7 @@ come back with it.
 | | Restores | How | Where it is |
 | --- | --- | --- | --- |
 | **Platform archive** | Configuration, credentials and accounts — every Project, Connection, Environment, Domain and ResourceClaim, plus the identity provider's Postgres | The restore Job, below | This document |
+| **Claim backups** | One claim's application data, continuously, to an object store | Per claim, by the database's own machinery | [below](#the-databases-the-platform-runs-itself) |
 | **Claim recovery** | One claim's application data, as it was at a moment | Per claim, through its own provider | [docs/api/claims.md](api/claims.md#recovering-the-data-to-a-moment-in-the-past) |
 
 A full disaster recovery is both, in that order: restoring the platform brings
@@ -100,11 +101,13 @@ reports rather than the platform deciding.
 **Claim recovery exists where the provider can actually do it.** A Neon claim
 can be recovered to any moment inside the project's retention window, because
 Neon's storage keeps continuous history; a claim through the self-hosted
-provider cannot, because there is no archive behind it to recover from — a
-per-claim backup policy, which is what would put one there, is
-[issue #245](https://github.com/Bermos/Kitchen/issues/245)'s second phase. The
-claim says which of the two it is, in the provider's own words, rather than
-either being assumed.
+provider cannot yet, even with a backup policy behind it, because recovering
+from these archives means bootstrapping a *new* CloudNativePG Cluster from the
+object store rather than branching an existing one — that is
+[issue #247](https://github.com/Bermos/Kitchen/issues/247). What the backup
+policy does supply today is the window such a recovery would offer: the first
+recoverable point on the claim is its earliest edge. The claim says which of
+the two it is, in the provider's own words, rather than either being assumed.
 
 Neither kind of recovery rewinds anything in place. The platform restore
 writes objects back into an empty platform; a claim recovery makes a *copy* of
@@ -312,6 +315,144 @@ about includes somebody deleting the backups before deleting the cluster.
 
 Keep the destination's own credential outside the platform too. It is in the
 archive, and the archive is in the destination.
+
+## The databases the platform runs itself
+
+The archive above carries configuration, credentials and accounts, and
+deliberately carries **no application data**. A `postgres` claim provisioned
+through the self-hosted provider is a CloudNativePG database in
+`spec.databases.namespace`, and this is what keeps it: continuous write-ahead
+log archiving to an object store, plus a base backup on a schedule, kept by
+the database's own machinery rather than by a tar of the cluster.
+
+The policy is set **once, on the connection**, and overridden per claim where
+one database needs something different:
+
+```sh
+# every database this connection provisions, to the platform's own bucket.
+# A connection's config is replaced rather than merged, so send the whole of it
+kitchen api PATCH /connections/postgres --data '{"config": {
+  "backup": {"enabled": true, "schedule": "0 0 3 * * *", "retentionPolicy": "30d"}}}'
+
+# and one claim that wants otherwise, on the claim itself
+kitchen api POST /claims --data '{
+  "name": "shop-db", "project": "shop", "connection": "postgres", "type": "postgres",
+  "backup": {"schedule": "0 0 1 * * *", "retentionPolicy": "90d"}}'
+```
+
+The claim's own half is on the claim form in the dashboard — whether, how
+often, and for how long — beside the deletion policy it has to be read
+against.
+
+An absent field inherits: the claim's, then the connection's, then the
+platform's own `spec.backup.destination`. So an installation that configured a
+destination once has already said where its databases go, under a
+`databases/` prefix of their own, and each database under a path named after
+its own Cluster — two claims sharing a bucket never share a path and neither
+shares one with the platform archive.
+
+| Field | Default | What it does |
+|---|---|---|
+| `enabled` | on wherever a destination resolves | Whether the platform configures archiving for this database at all |
+| `schedule` | `0 0 3 * * *` | When a base backup is taken. **Six fields, seconds first** — see below |
+| `retentionPolicy` | keep everything | How long the destination keeps this database's backups: `30d`, `4w`, `6m` |
+| `destination` | the platform's own | A bucket of this database's own, with its own credential |
+
+**The schedule is CloudNativePG's cron and not Kubernetes'.** It has six
+fields with a leading seconds field, and that is not a footnote: `0 3 * * *`,
+meant as three in the morning, is a *valid* five-field expression that the
+database's operator reads as every hour at three minutes past. It is refused
+by the API and by the operator rather than passed through to mean something
+else, and the refusal carries the six-field spelling.
+
+### What is reported, and the one number that matters
+
+`status.backup` on the claim is read from the database on every pass and never
+echoed from the policy — a configuration that never landed cannot report
+itself as in force. It carries the schedule, retention and destination
+actually held, when a base backup last succeeded or failed, whether continuous
+archiving is healthy, and **the first recoverable point**.
+
+That last one is the point of the whole feature. "Backups are configured" is
+worth nothing; "we can restore to 03:14 last Tuesday" is worth everything, and
+only the second is a fact about the destination. It is empty until the first
+base backup has been taken and read back, and the dashboard says so in those
+words rather than showing a green policy over an empty bucket.
+
+Archiving health is reported apart from the schedule because the two fail
+independently and only one of them is visible. **A base backup with no
+write-ahead log behind it recovers to the base backup and no further**, while
+reporting a perfectly green schedule the whole time.
+
+### Which mechanism, and why
+
+CloudNativePG has been moving object-store configuration out of the in-tree
+`spec.backup.barmanObjectStore` field and into the barman-cloud CNPG-I plugin,
+and the in-tree form is deprecated. Kitchen pins the operator's chart
+(`DefaultCNPGChartVersion` in `internal/controller/addon_cnpg.go`), so the
+question has one answer at a time rather than a general one. Settled against
+the pin — chart **0.29.0**, which is CloudNativePG **1.30.0**:
+
+- `spec.backup.barmanObjectStore` is present in the Cluster CRD, is the
+  default backup method, and works. It is deprecated, since 1.26.
+- The plugin is the successor and is **not** used here. It needs its own
+  release installed beside the operator and its own `ObjectStore` object per
+  destination — and it cannot be installed into a CloudNativePG the platform
+  merely *found*. An adopted installation is one Kitchen must not write
+  releases into, and a mechanism that needed one would mean no claim backups
+  at all there.
+- The three status fields this feature reports —
+  `firstRecoverabilityPoint`, `lastSuccessfulBackup`, `lastFailedBackup` — are
+  documented at 1.30.0 as *"not set for backup plugins"*. The in-tree
+  mechanism is the one the operator still reports about itself, and the first
+  recoverable point is the whole reason to report anything.
+
+So Kitchen writes the in-tree configuration, installs nothing extra, and works
+identically on a CloudNativePG it installed and one it adopted.
+
+**The bound is enforced rather than remembered.** A Kubernetes API server
+prunes fields a CRD no longer declares *silently*, so a configuration that has
+stopped being applied looks exactly like one that was. The write is therefore
+read back, and a Cluster that did not keep it makes the claim say
+`ErrBackupUnsupported` naming the plugin — rather than a database that looks
+configured and archives nothing. Bumping the pin onto an operator that has
+dropped the field is a failing claim with a sentence on it, not a silent loss.
+
+### What this does not do
+
+- **A database the platform did not create is never written to.** A claim
+  bound to a CloudNativePG installation Kitchen adopted
+  (`status.databases.managed: false`, or a Cluster without the platform's
+  managed-by label) configures nothing and says so on the claim: whoever runs
+  it keeps backing it up.
+- **A claim through a provider that keeps its own history takes no policy.** A
+  Neon claim reports what Neon keeps — the continuous history a point-in-time
+  branch is taken from — and the platform configures nothing. That is the
+  honest third state between backed up and not: such a database is protected,
+  by somebody else.
+- **A preview's database is never backed up.** It is a fresh, empty Cluster of
+  its own declaring `dataProvenance: synthetic`, built from the shape of the
+  claim's database and not from its spec, so it carries no object store
+  configuration and gets no schedule. Archiving one would be pure cost.
+- **Nothing here deletes anything at the destination.** Switching a policy off
+  removes the configuration and the schedule and leaves every archive where it
+  is. So does deleting the claim, **under either deletion policy**:
+  `deletionPolicy: Delete` destroys the database, and if it also destroyed the
+  backups then "Delete" would quietly destroy the recovery point, which is the
+  one thing deletion protection exists to prevent. What is in the bucket is
+  pruned by `retentionPolicy` and by nothing else.
+- **Restoring a claim is a different feature.** A CloudNativePG restore is a
+  *new* Cluster bootstrapped from the object store, not an in-place operation
+  and nothing the platform archive's restore Job does. Recovering a claim to a
+  moment already exists for the providers that can branch
+  ([claims](api/claims.md#recovering-the-data-to-a-moment-in-the-past)); doing
+  it from these archives is
+  [issue #247](https://github.com/Bermos/Kitchen/issues/247), and the first
+  recoverable point above is the earliest edge of the window it would offer.
+- **The bucket warning above applies here too, and harder.** These archives
+  are the application's data, not the platform's configuration. Everything
+  said about locking the destination down is the same, and a database's
+  archives should not be casually readable by whoever can read the platform's.
 
 ## Restoring
 

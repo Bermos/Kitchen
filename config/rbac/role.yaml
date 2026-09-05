@@ -219,6 +219,7 @@ rules:
   - postgresql.cnpg.io
   resources:
   - clusters
+  - scheduledbackups
   verbs:
   - create
   - delete

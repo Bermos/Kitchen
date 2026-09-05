@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
 
@@ -136,6 +137,33 @@ type cnpgConfig struct {
 	StorageClass string          `json:"storageClass,omitempty"`
 	Instances    int             `json:"instances,omitempty"`
 	Images       []PostgresImage `json:"images,omitempty"`
+
+	// Backup is the backup policy every claim through this Connection
+	// inherits — one decision for every database the installation
+	// provisions, which a claim may then override. It is the same shape as
+	// the claim's own field so that the two compose by field rather than by
+	// translation.
+	Backup *kitchenv1alpha1.ClaimBackupSpec `json:"backup,omitempty"`
+}
+
+// ConnectionBackupPolicy is the backup default an operator set on a database
+// Connection, and nil where they set none.
+//
+// It lives here rather than in the reconciler because the `cnpg` slice of a
+// Connection's config is this package's vocabulary: the reconciler asks what
+// the Connection says, and does not have to know how the Connection spells
+// it. A Connection through a provider that backs itself up answers nil, which
+// is correct — there is no policy for such a claim to inherit.
+func ConnectionBackupPolicy(conn *kitchenv1alpha1.Connection) *kitchenv1alpha1.ClaimBackupSpec {
+	if conn == nil || conn.Spec.Provider != ProviderCNPG || conn.Spec.Config == nil ||
+		len(conn.Spec.Config.Raw) == 0 {
+		return nil
+	}
+	cfg := cnpgConfig{}
+	if err := json.Unmarshal(conn.Spec.Config.Raw, &cfg); err != nil {
+		return nil
+	}
+	return cfg.Backup
 }
 
 // NewCNPG builds the provisioner from a Connection.

@@ -112,6 +112,13 @@ func (postgresContract) reconcile(
 		return result, err
 	}
 
+	// What is keeping this database's data, and what the destination can
+	// reconstruct it to (#245 phase 2). It runs against the claim's own
+	// instance and never against a branch, which is the whole of "previews
+	// default off": a preview's database is fresh and empty, and archiving
+	// one is pure cost.
+	backupErr := r.reconcileClaimBackup(ctx, claim, provisioner, conn)
+
 	claimType, _ := claim.Type()
 	mode := declare(claim, claimType, conn.Spec.Provider)
 	branchErr := r.reconcileBranches(ctx, claim, project.Name, databaseBrancher{provisioner}, appNS,
@@ -137,10 +144,16 @@ func (postgresContract) reconcile(
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	if branchErr != nil || recoveryErr != nil {
-		// The shared binding works either way; the branch and recovery
-		// conditions carry the provider's complaint and the requeue retries
-		// it.
+	if branchErr != nil || recoveryErr != nil || backupErr != nil {
+		// The shared binding works either way; the branch, recovery and
+		// backup status carry the provider's complaint and the requeue
+		// retries it. A backup that could not be configured is emphatically
+		// not a claim that failed — the application is reading its database
+		// throughout — so it moves the requeue and nothing else.
+		if backupErr != nil {
+			log.Info("could not keep the claim's backup policy in force",
+				"claim", claim.Name, "reason", backupErr.Error())
+		}
 		return ctrl.Result{RequeueAfter: claimRequeueDelay}, nil
 	}
 	log.Info("reconciled resource claim", "claim", claim.Name, "secret", claim.Status.SecretName)
@@ -184,6 +197,12 @@ func (postgresContract) finalize(
 		}
 	}
 	if err := r.releaseEnvironments(ctx, claim); err != nil {
+		return err
+	}
+	// The credential copies the backup policy needed, and nothing at the
+	// destination: backups outlive the claim under either deletion policy,
+	// pruned by their own retention and by nothing else.
+	if err := r.finalizeClaimBackup(ctx, claim); err != nil {
 		return err
 	}
 

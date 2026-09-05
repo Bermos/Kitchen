@@ -35,10 +35,36 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 ```
 
 Its `config` is optional and is the operator's defaults for every claim through
-it: `namespace`, `storageSize`, `storageClass`, `instances`, and `images` — the
+it: `namespace`, `storageSize`, `storageClass`, `instances`, `images` — the
 catalogue of what this installation will run a database from, and what each one
-promises a claim's extensions can come from. Testing it asks whether
-CloudNativePG is serving here, which is the only question there is.
+promises a claim's extensions can come from — and `backup`. Testing it asks
+whether CloudNativePG is serving here, which is the only question there is.
+
+`backup` is the backup policy every database provisioned through this
+connection inherits, so that "where our databases go and how long they are
+kept" is one decision rather than one per claim. It is the same block a
+[claim](claims.md#backing-up-what-a-claim-provisioned) carries, and a claim
+overrides it field by field:
+
+```json
+{"backup": {"enabled": true, "schedule": "0 0 3 * * *", "retentionPolicy": "30d"}}
+```
+
+An absent `destination` — which is the usual case — means the platform's own
+(`PUT /platform/backup/destination`), under a prefix of each database's own.
+The schedule is **CloudNativePG's** cron: six fields, seconds first.
+[docs/BACKUP.md](../BACKUP.md#the-databases-the-platform-runs-itself) is the
+whole of what this configures and what it reports back.
+
+Note that `config` is **replaced** by a patch rather than merged, so setting
+this on a connection that already has one means sending the whole block:
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"config": {"storageSize": "20Gi",
+                  "backup": {"schedule": "0 0 3 * * *", "retentionPolicy": "30d"}}}' \
+  https://kitchen.apps.example.com/api/v1/connections/postgres
+```
 
 Every one of these is the operator's except the list, which answers **two
 shapes**. A project cannot exist without a `gitSource` and a `registry`

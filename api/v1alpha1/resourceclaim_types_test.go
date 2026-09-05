@@ -48,11 +48,22 @@ func TestClaimTypeTableMatchesCRD(t *testing.T) {
 			"ResourceClaimSpec.Type with the table", enum, want)
 	}
 
-	if len(spec.XValidations) != 2 {
-		t.Fatalf("expected the two connectionRef rules on ResourceClaimSpec, found %d", len(spec.XValidations))
+	// The rules this test is about are the two that decide which types take a
+	// Connection. Others may sit beside them — a field belonging to one type
+	// alone is refused the same way — and they are their own tests' business,
+	// so this selects rather than counts everything on the spec.
+	var connectionRules []apiextensionsv1.ValidationRule
+	for _, rule := range spec.XValidations {
+		if strings.Contains(rule.Rule, "connectionRef") {
+			connectionRules = append(connectionRules, rule)
+		}
+	}
+	if len(connectionRules) != 2 {
+		t.Fatalf("expected the two connectionRef rules on ResourceClaimSpec, found %d of %d rules",
+			len(connectionRules), len(spec.XValidations))
 	}
 	want := ClaimTypesWithoutConnection()
-	for _, rule := range spec.XValidations {
+	for _, rule := range connectionRules {
 		if !strings.Contains(rule.Rule, "self.type in [") {
 			t.Errorf("rule %q does not test spec.type against a set: write it as `self.type in [...]` so "+
 				"that a type is added to the set rather than to a chain of exceptions", rule.Rule)

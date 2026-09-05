@@ -186,6 +186,38 @@ const pgExtensions = ref("");
 const pgStorageSize = ref("");
 const pgStorageClass = ref("");
 
+// The backup half (#245 phase 2). It is the one part of a postgres claim
+// whose default is "whatever the platform already decided": an installation
+// that configured a backup destination has said where its databases go, and
+// this is where one claim says otherwise. So the switch has three positions
+// and the inherited one is the default — a two-position switch would make
+// every claim re-state a decision it never made.
+const backupPolicy = ref("");
+const backupPolicyOptions = [
+  { label: "what the connection and the platform say", value: "" },
+  { label: "back this database up", value: "on" },
+  { label: "do not back this database up", value: "off" },
+];
+const backupSchedule = ref("");
+const backupRetention = ref("");
+
+/** The backup block as the API takes it, or nothing when nothing was asked
+ * for — an empty block would say the developer chose defaults they never
+ * saw, which is the same rule the postgres block keeps.
+ *
+ * A bucket of the claim's own is deliberately not here. It carries a
+ * credential and it is a one-time operator act, which is exactly the fallback
+ * `kitchen api POST /claims` exists for; what a developer decides on this
+ * screen is whether, how often and for how long. */
+function backupRequest() {
+  const block = {
+    ...(backupPolicy.value ? { enabled: backupPolicy.value === "on" } : {}),
+    ...(backupSchedule.value.trim() ? { schedule: backupSchedule.value.trim() } : {}),
+    ...(backupRetention.value.trim() ? { retentionPolicy: backupRetention.value.trim() } : {}),
+  };
+  return Object.keys(block).length ? block : undefined;
+}
+
 // The volume half: which process mounts it, where, and what it has to be.
 // The process is the one thing a volume claim cannot go without — a volume
 // attaches to one copy of a process at a time, and every process of the
@@ -523,6 +555,9 @@ watch(open, (value) => {
   pgExtensions.value = "";
   pgStorageSize.value = "";
   pgStorageClass.value = "";
+  backupPolicy.value = "";
+  backupSchedule.value = "";
+  backupRetention.value = "";
   bucketVersioning.value = false;
   bucketPublicRead.value = false;
   bucketSize.value = "";
@@ -613,6 +648,7 @@ async function save() {
         ...(previewMode.value ? { previewMode: previewMode.value } : {}),
         deletionPolicy: deletionPolicy.value,
         ...(isPostgres.value && postgresRequest() ? { postgres: postgresRequest() } : {}),
+        ...(isPostgres.value && backupRequest() ? { backup: backupRequest() } : {}),
         ...(isObjectStore.value && objectStoreRequest() ? { objectStore: objectStoreRequest() } : {}),
         ...(isRedis.value ? { redis: redisRequest() } : {}),
         ...(dataClass.value ? { dataClass: dataClass.value } : {}),
@@ -1049,6 +1085,36 @@ async function save() {
             All four are applied when the database is created. Changing them afterwards asks for a different
             database rather than reshaping this one.
           </p>
+
+          <template v-if="isPostgres">
+            <div class="grid gap-4 sm:grid-cols-3">
+              <UFormField
+                label="Backups"
+                help="Empty inherits: the connection's default, and failing that the platform's — which is on wherever a backup destination is configured."
+              >
+                <USelect v-model="backupPolicy" :items="backupPolicyOptions" class="w-full" />
+              </UFormField>
+              <UFormField
+                label="Backup schedule"
+                help="Six fields, seconds first — this is the database's own cron, not Kubernetes'. Empty takes a nightly backup in a quiet hour."
+              >
+                <UInput v-model="backupSchedule" placeholder="0 0 3 * * *" class="w-full font-mono" />
+              </UFormField>
+              <UFormField
+                label="Keep backups for"
+                help="A count and a unit: 30d, 4w, 6m. Empty keeps every backup."
+              >
+                <UInput v-model="backupRetention" placeholder="30d" class="w-full font-mono" />
+              </UFormField>
+            </div>
+            <p class="text-xs text-muted">
+              Backups go to the platform's own destination, under a prefix of this database's own, and they
+              <strong>outlive the claim</strong> under either deletion policy below — deleting a claim must not be
+              able to destroy the recovery point. What deletes them is the retention above and nothing else.
+              A connection to a hosted Postgres takes no policy at all: that provider keeps its own history, and
+              the claim says so once it is bound. A preview's database is never backed up — it is fresh and empty.
+            </p>
+          </template>
 
           <UFormField
             v-if="isPostgres"

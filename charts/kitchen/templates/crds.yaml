@@ -5182,8 +5182,9 @@ spec:
                           serverSideEncryption:
                             description: |-
                               ServerSideEncryption asks the store to encrypt the object at rest:
-                              "AES256" or "aws:kms". The archive is every credential the platform
-                              holds, so a store that can encrypt it should be told to.
+                              ServerSideEncryptionAES256 or ServerSideEncryptionKMS. The archive is
+                              every credential the platform holds, so a store that can encrypt it
+                              should be told to.
                             enum:
                             - AES256
                             - aws:kms
@@ -12001,6 +12002,148 @@ spec:
               exception, and the refusal names the type it refused. The set in the
               markers is held to the table by a test, since a marker cannot read one.
             properties:
+              backup:
+                description: |-
+                  Backup is the claim's backup policy: whether its resource is backed up
+                  to an object store, on what schedule, kept for how long, and where.
+                  Absent inherits the whole of it from the claim's Connection and,
+                  failing that, from the platform's own backup destination.
+
+                  It belongs to the types whose resource this platform runs itself and
+                  can therefore configure — postgres, today, through CloudNativePG. A
+                  claim of another type is refused it rather than carrying a policy
+                  nothing would act on.
+                properties:
+                  destination:
+                    description: |-
+                      Destination is where this claim's backups are written. Empty takes the
+                      Connection's, and failing that the platform's own
+                      (`spec.backup.destination`) — under a prefix of this database's own, so
+                      two claims never write over each other and neither writes over the
+                      platform archive.
+
+                      The credential half is a Secret in the platform namespace, written by
+                      the API and never read back, exactly as the platform destination's is.
+                    properties:
+                      s3:
+                        description: S3Destination is a bucket at an S3-compatible
+                          store.
+                        properties:
+                          bucket:
+                            description: |-
+                              Bucket archives are written into. It should be a bucket of its own:
+                              see the retention note below, and docs/BACKUP.md on why this bucket is
+                              the cluster's root credential store.
+                            minLength: 1
+                            type: string
+                          credentialsSecretRef:
+                            description: |-
+                              CredentialsSecretRef names a Secret in the platform namespace holding
+                              accessKeyId and secretAccessKey. It is written by
+                              PUT /platform/backup/destination and never read back, like every other
+                              credential this API stores.
+
+                              Absent means the ambient credential chain — IRSA, EKS Pod Identity, an
+                              instance role — which is the better answer where it is available,
+                              because there is then no long-lived key anywhere to leak.
+                            properties:
+                              name:
+                                minLength: 1
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          endpoint:
+                            description: |-
+                              Endpoint overrides AWS. This is what makes MinIO, R2, Backblaze,
+                              Wasabi, Ceph and Garage the same code path rather than five backends.
+                            type: string
+                          forcePathStyle:
+                            description: |-
+                              ForcePathStyle addresses the bucket as <endpoint>/<bucket> rather than
+                              <bucket>.<endpoint>. Every store that is reached by IP address or by a
+                              name with no wildcard certificate behind it needs this — MinIO in a
+                              cluster is the usual one.
+                            type: boolean
+                          kmsKeyId:
+                            description: KMSKeyID names the key when the encryption
+                              is aws:kms.
+                            type: string
+                          prefix:
+                            description: |-
+                              Prefix is the key prefix inside the bucket. Pruning only ever considers
+                              objects under it that are named like an archive this platform wrote, so
+                              a bucket somebody also keeps other things in does not lose them.
+                            type: string
+                          region:
+                            description: |-
+                              Region the bucket is in. Most S3-compatible stores want one even where
+                              it means nothing; us-east-1 is the conventional answer for those.
+                            type: string
+                          serverSideEncryption:
+                            description: |-
+                              ServerSideEncryption asks the store to encrypt the object at rest:
+                              ServerSideEncryptionAES256 or ServerSideEncryptionKMS. The archive is
+                              every credential the platform holds, so a store that can encrypt it
+                              should be told to.
+                            enum:
+                            - AES256
+                            - aws:kms
+                            type: string
+                        required:
+                        - bucket
+                        type: object
+                      type:
+                        description: |-
+                          Type is the kind of store. The enum lives on BackupDestinationType
+                          itself, so it is not repeated here.
+                        enum:
+                        - s3
+                        type: string
+                    required:
+                    - type
+                    type: object
+                    x-kubernetes-validations:
+                    - message: 'spec.backup.destination.s3 is required when the destination
+                        type is s3: it names the bucket archives are written to.'
+                      rule: self.type != 's3' || has(self.s3)
+                    - message: an s3 block belongs to a destination of type s3 alone.
+                      rule: self.type == 's3' || !has(self.s3)
+                  enabled:
+                    description: |-
+                      Enabled turns continuous archiving and the scheduled base backup on or
+                      off for this claim. Unset inherits: the Connection's default, and
+                      failing that the platform's — which is on wherever a destination
+                      resolves, and off with the reason on the status where none does.
+
+                      A preview's database is never backed up whatever this says. It is a
+                      fresh, empty database declaring `dataProvenance: synthetic`, and
+                      archiving one is pure cost.
+                    type: boolean
+                  retentionPolicy:
+                    description: |-
+                      RetentionPolicy is how long the destination keeps this database's
+                      backups and the WAL between them, in barman's own vocabulary: "30d",
+                      "4w", "6m". It is the only thing that ever deletes them — see the note
+                      on this type about backups outliving the claim.
+
+                      Empty keeps everything, which is the safe default for the same reason
+                      the platform archive's retention is: an archive costs pennies and the
+                      failure this exists to prevent is having too few of them.
+                    pattern: ^[1-9][0-9]*[dwm]$
+                    type: string
+                  schedule:
+                    description: |-
+                      Schedule for the base backup. It is **CloudNativePG's** cron and not
+                      Kubernetes': six fields, seconds first, which is a real difference and
+                      not a footnote — "0 0 3 * * *" is three in the morning, and the
+                      five-field spelling of that is refused by the operator rather than
+                      silently read as something else. UTC, like every schedule here.
+
+                      Empty takes the Connection's, and failing that the platform's default
+                      of a nightly base backup in a quiet hour.
+                    type: string
+                type: object
               config:
                 description: Provider-specific configuration, validated by the plugin.
                 type: object
@@ -12149,9 +12292,92 @@ spec:
                 the platform provisions it itself, and a Connection here would name
                 a provider nothing would ask.'''
               rule: '!(self.type in [''oidcClient'', ''volume'']) || !has(self.connectionRef)'
+            - message: spec.backup belongs to a claim whose resource this platform
+                runs and can configure backups for, which is postgres alone. A resource
+                somebody else runs is backed up by whoever runs it.
+              messageExpression: '''spec.backup belongs to a postgres claim: a ''
+                + self.type + '' claim names a resource this platform does not run
+                its own backups of, so a policy here would be a promise nothing keeps.'''
+              rule: '!has(self.backup) || self.type == ''postgres'''
           status:
             description: ResourceClaimStatus defines the observed state of a ResourceClaim.
             properties:
+              backup:
+                description: |-
+                  Backup is what is actually happening to this claim's backups: the
+                  policy in force, when one last succeeded, the first moment the
+                  destination can still reconstruct, and whether continuous archiving is
+                  healthy. Absent on a claim of a type nothing backs up.
+                properties:
+                  archiving:
+                    description: |-
+                      Archiving is whether WAL is reaching the destination between base
+                      backups, and ArchivingMessage the database's own account of it. A base
+                      backup whose WAL is not archiving recovers to the base backup and no
+                      further, which is the failure worth surfacing rather than reporting a
+                      green schedule.
+                    enum:
+                    - healthy
+                    - failing
+                    - unknown
+                    type: string
+                  archivingMessage:
+                    type: string
+                  destination:
+                    type: string
+                  enabled:
+                    description: |-
+                      Enabled is whether the platform is configuring backups for this claim,
+                      after the claim, its Connection and the platform have all been read.
+                    type: boolean
+                  firstRecoverablePoint:
+                    description: |-
+                      FirstRecoverablePoint is the oldest moment this database can still be
+                      reconstructed to from what is at the destination. It moves forward as
+                      retention prunes and it is empty until the first base backup has been
+                      taken and read back by the database's own operator.
+
+                      It is also the seam point-in-time recovery for this provider (#247)
+                      binds to: this timestamp is the earliest edge of the window a recovery
+                      picker would offer.
+                    format: date-time
+                    type: string
+                  lastBackup:
+                    description: |-
+                      LastBackup is when a base backup last succeeded, and LastFailure when
+                      one last failed — both as the database's own operator reports them.
+                    format: date-time
+                    type: string
+                  lastFailure:
+                    format: date-time
+                    type: string
+                  providerManaged:
+                    description: |-
+                      ProviderManaged is true where the provider keeps its own backups and
+                      the platform configures nothing — a Neon claim, whose point-in-time
+                      history is inherent to its storage. Reason carries the provider's own
+                      sentence about it.
+
+                      It is the honest third state between "backed up by us" and "not backed
+                      up": such a claim is protected, by somebody else, and a screen that
+                      showed it as unprotected would be wrong.
+                    type: boolean
+                  reason:
+                    description: |-
+                      Reason says why the state above is what it is, in the words that name
+                      the fix: which destination is missing, which route configures one, or
+                      why this claim's database is not one the platform writes to.
+                    type: string
+                  retentionPolicy:
+                    type: string
+                  schedule:
+                    description: |-
+                      Schedule, RetentionPolicy and Destination are the policy in force after
+                      the claim, the Connection and the platform have been resolved — echoed
+                      so a reader does not have to compute the inheritance themselves.
+                      Destination is described and never its credential: "s3://bucket/prefix".
+                    type: string
+                type: object
               branches:
                 description: |-
                   Branches are the provider-side branches created for preview

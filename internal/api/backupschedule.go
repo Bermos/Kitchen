@@ -260,10 +260,11 @@ func (s *Server) putBackupDestination(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	switch encryption := body.S3.ServerSideEncryption; encryption {
-	case "", "AES256", "aws:kms":
+	case "", kitchenv1alpha1.ServerSideEncryptionAES256, kitchenv1alpha1.ServerSideEncryptionKMS:
 	default:
-		badRequest(w, "serverSideEncryption must be AES256 or aws:kms (got %q), or empty for whatever "+
-			"the bucket does by default", encryption)
+		badRequest(w, "serverSideEncryption must be %s or %s (got %q), or empty for whatever "+
+			"the bucket does by default",
+			kitchenv1alpha1.ServerSideEncryptionAES256, kitchenv1alpha1.ServerSideEncryptionKMS, encryption)
 		return
 	}
 

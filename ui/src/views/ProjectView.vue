@@ -711,6 +711,43 @@ function claimRequirements(claim: Claim): string[] {
   return [];
 }
 
+// What is keeping a claim's data, and how far back it can be put — the two
+// facts a backup policy is worth anything for (#245 phase 2).
+//
+// Three states rather than two, because "backed up by somebody else" is a
+// real answer: a hosted Postgres keeps its own continuous history, and
+// showing such a claim as unprotected would be wrong.
+function claimBackupBadge(claim: Claim): { label: string; color: "neutral" | "warning"; title: string } | null {
+  const backup = claim.backup;
+  if (!backup) return null;
+  if (backup.providerManaged) {
+    return { label: "backups: by the provider", color: "neutral", title: backup.reason ?? "" };
+  }
+  if (!backup.enabled) {
+    return { label: "backups: off", color: "warning", title: backup.reason ?? "" };
+  }
+  if (backup.archiving === "failing") {
+    // The failure that loses data quietly: a base backup with no write-ahead
+    // log after it can only be put back to the base backup.
+    return {
+      label: "backups: archiving failing",
+      color: "warning",
+      title: backup.archivingMessage || backup.reason || "",
+    };
+  }
+  return { label: "backups: on", color: "neutral", title: backup.reason ?? "" };
+}
+
+/** How far back this claim's data can be put, in a sentence. The absence is
+ * said out loud: a database whose first backup has not been taken and read
+ * back yet has no recovery point, and that is the state worth seeing. */
+function claimRecoveryPoint(claim: Claim): string {
+  const backup = claim.backup;
+  if (!backup || backup.providerManaged || !backup.enabled) return "";
+  if (!backup.firstRecoverablePoint) return "no recovery point yet";
+  return `recoverable to any moment since ${new Date(backup.firstRecoverablePoint).toLocaleString()}`;
+}
+
 /** The claims whose provider holds the workload up — a connect worker's
  * outbound connection, say. Scale to zero is a project-level policy, so one
  * such claim keeps every environment of this project on its pods, and the
@@ -1291,6 +1328,20 @@ function host(url?: string): string {
                   <UBadge v-if="claim.forcesRecreate" color="warning" variant="subtle" size="sm" class="ml-1">
                     downtime on deploy
                   </UBadge>
+                  <!-- What is keeping this claim's data. The provider's own
+                       account of it is on hover, because "off" and "kept by
+                       somebody else" are different answers and only the
+                       sentence tells them apart. -->
+                  <UBadge
+                    v-if="claimBackupBadge(claim)"
+                    :color="claimBackupBadge(claim)!.color"
+                    variant="subtle"
+                    size="sm"
+                    class="ml-1"
+                    :title="claimBackupBadge(claim)!.title"
+                  >
+                    {{ claimBackupBadge(claim)!.label }}
+                  </UBadge>
                   <!-- What the claim asked the database itself to be. Absent
                        on most claims, and shown where it is not, because an
                        extension is the thing a failed claim was refused for. -->
@@ -1354,6 +1405,25 @@ function host(url?: string): string {
                     </span>
                   </template>
                   <template v-else>—</template>
+                  <!-- How far back the data can be put. It is the only number
+                       a backup policy is worth anything for, so it is on the
+                       claim rather than a click away. -->
+                  <span v-if="claimRecoveryPoint(claim)" class="block text-dimmed">
+                    {{ claimRecoveryPoint(claim) }}
+                  </span>
+                  <!-- Where the archives actually are, and what the database
+                       said about its own archiving: the bucket the operator
+                       configured, in the operator's vocabulary. -->
+                  <OperatorOnly>
+                    <span v-if="claim.backup?.destination" class="block text-dimmed">
+                      {{ claim.backup.destination }}
+                      <template v-if="claim.backup.schedule"> · {{ claim.backup.schedule }}</template>
+                      <template v-if="claim.backup.retentionPolicy"> · keep {{ claim.backup.retentionPolicy }}</template>
+                    </span>
+                    <span v-if="claim.backup?.archivingMessage" class="block text-dimmed">
+                      {{ claim.backup.archivingMessage }}
+                    </span>
+                  </OperatorOnly>
                 </td>
                 <td class="px-3 py-2"><PhaseBadge :phase="claim.phase" /></td>
                 <!-- What the binding is: the secret the env vars read, or
