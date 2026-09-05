@@ -374,6 +374,24 @@ type PlatformPreviewsSpec struct {
 	// +kubebuilder:default=5
 	// +optional
 	MaxPerProject *int32 `json:"maxPerProject,omitempty"`
+
+	// ForksMax is the most a project may give a pull request opened from a
+	// fork: the estate-wide ceiling over every project's own
+	// `spec.previews.forks` (#422).
+	//
+	// It defaults to `full`, which forbids nothing — the safe default lives
+	// on the project, where it is `none`, and this is here for the operator
+	// who wants the answer to be the same on every project whatever a project
+	// admin sets. `build` allows a fork's commit to be compiled and never
+	// published; `none` refuses fork pull requests across the whole
+	// installation, which is the setting an operator running a public forge
+	// on shared hardware most likely wants.
+	//
+	// It is the same three words as the project's field rather than a boolean
+	// beside it, because the two are only ever read together — see ForkPolicy.
+	// +kubebuilder:default=full
+	// +optional
+	ForksMax ForkPolicy `json:"forksMax,omitempty"`
 }
 
 // DefaultPreviewsPerProject is the ceiling a project gets when the singleton
@@ -392,6 +410,19 @@ func (s PlatformPreviewsSpec) EffectiveMaxPerProject() int32 {
 		return 0
 	}
 	return *s.MaxPerProject
+}
+
+// EffectiveForksMax is the platform's fork ceiling as a reader should apply
+// it. A singleton written before the field existed carries an empty string,
+// and that is read as `full` rather than as `none`: the ceiling forbids
+// nothing by default, because the safe default is the project's own `none`
+// and reading an absent ceiling as the strictest value would make an upgrade
+// silently override every project that had deliberately set `full`.
+func (s PlatformPreviewsSpec) EffectiveForksMax() ForkPolicy {
+	if s.ForksMax == "" {
+		return ForkPolicyFull
+	}
+	return s.ForksMax.Normalized()
 }
 
 // BuildsSpec configures platform-wide build defaults.

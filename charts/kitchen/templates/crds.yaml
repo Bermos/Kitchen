@@ -762,6 +762,24 @@ spec:
                     type: string
                   branch:
                     type: string
+                  forkRepo:
+                    description: |-
+                      ForkRepo names the repository the pull request's head commit actually
+                      lives in, and is set **only** when that is not the project's own
+                      repository — so a non-empty value is the platform saying "this is a
+                      fork" and where from (#422).
+
+                      It is on the revision rather than on the Build's status because it is a
+                      fact about the event that created the Build, decided once by the
+                      receiver from the delivery it verified, and not something a reconciler
+                      could work out later: by the time a build runs, a fork's head is just a
+                      SHA reachable in the base repository through `refs/pull/N/head`, which
+                      is exactly how it came to be built with the project's own credentials.
+
+                      A payload that does not say where the head is leaves this set to
+                      UnknownForkRepo rather than empty: an absent field must never read as
+                      "the project's own".
+                    type: string
                   message:
                     description: |-
                       Message is the commit's *subject* — its first line and nothing else.
@@ -4051,6 +4069,14 @@ spec:
                   branch:
                     minLength: 1
                     type: string
+                  forkRepo:
+                    description: |-
+                      ForkRepo names the repository the pull request's head lives in, set
+                      only when that is not the project's own — so a preview carrying it is a
+                      preview of somebody else's code, and says so on the object rather than
+                      leaving it to be inferred from a branch name (#422). A preview like
+                      this exists at all only because the project set `previews.forks: full`.
+                    type: string
                   pullRequest:
                     format: int32
                     minimum: 1
@@ -6377,6 +6403,28 @@ spec:
                   the field a ceiling at all: structural defaulting only descends into
                   objects that are present.
                 properties:
+                  forksMax:
+                    default: full
+                    description: |-
+                      ForksMax is the most a project may give a pull request opened from a
+                      fork: the estate-wide ceiling over every project's own
+                      `spec.previews.forks` (#422).
+
+                      It defaults to `full`, which forbids nothing — the safe default lives
+                      on the project, where it is `none`, and this is here for the operator
+                      who wants the answer to be the same on every project whatever a project
+                      admin sets. `build` allows a fork's commit to be compiled and never
+                      published; `none` refuses fork pull requests across the whole
+                      installation, which is the setting an operator running a public forge
+                      on shared hardware most likely wants.
+
+                      It is the same three words as the project's field rather than a boolean
+                      beside it, because the two are only ever read together — see ForkPolicy.
+                    enum:
+                    - none
+                    - build
+                    - full
+                    type: string
                   maxPerProject:
                     default: 5
                     description: |-
@@ -8354,6 +8402,45 @@ spec:
                       serialized object, and the API server then applies the default, so
                       turning previews off would be silently undone on every write.
                     type: boolean
+                  forks:
+                    default: none
+                    description: |-
+                      Forks says what a pull request opened from a *fork* gets — a pull
+                      request whose head commit lives in some repository other than this
+                      project's own.
+
+                      It defaults to `none`, and that default is the whole of issue #422.
+                      Nothing in the platform used to have a concept of a fork: the head SHA
+                      of a stranger's pull request against a public repository is reachable
+                      in the project's own repository through `refs/pull/N/head`, so it built
+                      with the project's registry credential and got a preview environment
+                      carrying the project's own secrets and, for a claim in preview mode
+                      `shared`, production's binding. `protected` did not help — it gates
+                      *viewing* a preview, not building the commit or starting the pod that
+                      holds the secrets.
+
+                      The three values are what a fork may be given, least to most:
+
+                        - `none` builds nothing. The pull request is told so where its author
+                          is looking: a `kitchen/<project>/preview` commit status and the
+                          preview comment, the same pair the preview ceiling refuses with.
+                        - `build` builds the fork's commit and stops there — no Environment,
+                          so no project secret, no project variable and no claim binding ever
+                          reaches the fork's code. It answers "does this pull request even
+                          compile" without answering it with a credential.
+                        - `full` treats the fork exactly as the project's own branch, preview
+                          and secrets included. It is for a repository whose forks are its
+                          maintainers' own — and it is the setting to be sure about, because
+                          it is the behaviour this field exists to stop being the default.
+
+                      The platform bounds it: `spec.previews.forksMax` on the Kitchen
+                      singleton is the most any project may ask for, and a project asking for
+                      more gets the platform's answer. See ForksUnder.
+                    enum:
+                    - none
+                    - build
+                    - full
+                    type: string
                   max:
                     description: |-
                       Max is this Project's own ceiling on live preview Environments,

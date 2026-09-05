@@ -37,6 +37,14 @@ type PreviewInfo struct {
 
 	// +kubebuilder:validation:MinLength=1
 	Branch string `json:"branch"`
+
+	// ForkRepo names the repository the pull request's head lives in, set
+	// only when that is not the project's own — so a preview carrying it is a
+	// preview of somebody else's code, and says so on the object rather than
+	// leaving it to be inferred from a branch name (#422). A preview like
+	// this exists at all only because the project set `previews.forks: full`.
+	// +optional
+	ForkRepo string `json:"forkRepo,omitempty"`
 }
 
 // EnvironmentRequirements is the bar this environment sets: a policy bundle,

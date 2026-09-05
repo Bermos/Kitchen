@@ -118,6 +118,24 @@ spec:
                     type: string
                   branch:
                     type: string
+                  forkRepo:
+                    description: |-
+                      ForkRepo names the repository the pull request's head commit actually
+                      lives in, and is set **only** when that is not the project's own
+                      repository — so a non-empty value is the platform saying "this is a
+                      fork" and where from (#422).
+
+                      It is on the revision rather than on the Build's status because it is a
+                      fact about the event that created the Build, decided once by the
+                      receiver from the delivery it verified, and not something a reconciler
+                      could work out later: by the time a build runs, a fork's head is just a
+                      SHA reachable in the base repository through `refs/pull/N/head`, which
+                      is exactly how it came to be built with the project's own credentials.
+
+                      A payload that does not say where the head is leaves this set to
+                      UnknownForkRepo rather than empty: an absent field must never read as
+                      "the project's own".
+                    type: string
                   message:
                     description: |-
                       Message is the commit's *subject* — its first line and nothing else.

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, CRITICALITIES, DATA_CLASSES, type Claim, type Project, type Release } from "../lib/api";
+import { api, CRITICALITIES, DATA_CLASSES, type Claim, type ForkPolicy, type Project, type Release } from "../lib/api";
 import { buildFailureLine } from "../lib/builds";
 import { deletionGatedByName, destroysData, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
@@ -320,6 +320,10 @@ const settings = reactive({
   // platform's", which is what the API takes a negative number to mean, and 0
   // is a ceiling this project has cleared — the two cannot be the same value.
   previewsMax: -1,
+  // What a pull request from a fork gets: none, build or full. `none` is the
+  // default and the safe one — a fork's head is a stranger's code, and `full`
+  // hands it this project's own secrets.
+  previewsForks: "none" as ForkPolicy,
   buildStrategy: "auto",
   dockerfilePath: "",
   dockerfileTarget: "",
@@ -472,6 +476,29 @@ const previewCeilingLine = computed(() => {
   return `${head} Waiting on a slot: ${numbers}. Nothing is queued — each gets its preview on its next push once one is free.`;
 });
 
+/** What a fork's pull request may be given, worst to best for the reader:
+ *  the label says what the project *does*, not what the value is called,
+ *  because "full" on its own does not tell an admin that they are about to
+ *  hand a stranger's branch this project's secrets. */
+const forkOptions = [
+  { label: "none — a fork gets nothing built and nothing published", value: "none" },
+  { label: "build — build a fork's commit, publish no environment", value: "build" },
+  { label: "full — treat a fork as this project's own branch", value: "full" },
+];
+
+/** What the fork setting means in a sentence, since the consequence of the
+ *  third option is the whole reason the field exists. */
+const forkLine = computed(() => {
+  switch (settings.previewsForks) {
+    case "full":
+      return "A pull request from a fork is built and deployed exactly like this project's own branches, with this project's environment variables, secrets and claim bindings. Anybody who can open a pull request against this repository can run code with them.";
+    case "build":
+      return "A pull request from a fork is built, and nothing is published: no preview environment, so none of this project's variables, secrets or claim bindings reach it.";
+    default:
+      return "A pull request from a fork is not built at all. The request is told so: a kitchen/<project>/preview check and a comment on it.";
+  }
+});
+
 /** The pull requests currently refused a preview. Empty is the ordinary case
  *  and shows nothing. */
 const refusedPreviews = computed(() => project.value?.previewCapacity?.refused ?? []);
@@ -487,6 +514,7 @@ function loadSettings(from: Project) {
   settings.previews = from.previews;
   settings.previewsProtected = from.previewsProtected;
   settings.previewsMax = from.previewsMax ?? -1;
+  settings.previewsForks = from.previewsForks ?? "none";
   settings.buildStrategy = from.buildStrategy || "auto";
   settings.dockerfilePath = from.dockerfilePath ?? "";
   settings.dockerfileTarget = from.dockerfileTarget ?? "";
@@ -545,6 +573,7 @@ async function saveSettings() {
             previews: settings.previews,
             previewsProtected: settings.previewsProtected,
             previewsMax: settings.previewsMax,
+            previewsForks: settings.previewsForks,
             buildStrategy: settings.buildStrategy,
             dockerfilePath: settings.dockerfilePath,
             dockerfileTarget: settings.dockerfileTarget,
@@ -1607,6 +1636,18 @@ function host(url?: string): string {
               <UInputNumber v-model="settings.previewsMax" :min="0" :max="100" class="w-40" />
             </UFormField>
             <p v-if="settings.previews" class="text-xs text-muted">{{ previewCeilingLine }}</p>
+            <!-- What a fork's pull request gets. It sits with the preview
+                 settings because it is one of them, and after the ceiling
+                 because the ceiling is about how many and this is about
+                 whose. It is not gated on `previews`: `build` is a setting
+                 for a project that publishes no previews at all. -->
+            <UFormField
+              label="Pull requests from forks"
+              help="A fork is any repository that is not this project's own. The platform may cap this for every project."
+            >
+              <USelect v-model="settings.previewsForks" :items="forkOptions" class="w-full" />
+            </UFormField>
+            <p class="text-xs text-muted">{{ forkLine }}</p>
           </div>
 
           <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">

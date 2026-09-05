@@ -563,10 +563,14 @@ func main() {
 	setupLog.Info("addons", "permitted", addonInstalls.Permitted())
 	// +kubebuilder:scaffold:builder
 
+	// The receiver carries the activity recorder because it is where a pull
+	// request from a fork is refused (#422): no Build is created, so nothing
+	// downstream would ever have the event to record.
 	if err := mgr.Add(&receiver.GitWebhookReceiver{
 		Client:    mgr.GetClient(),
 		Namespace: operatorNamespace,
 		BindAddr:  gitWebhookAddr,
+		Activity:  recorder,
 	}); err != nil {
 		setupLog.Error(err, "unable to add git webhook receiver to manager")
 		os.Exit(1)

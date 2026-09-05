@@ -154,7 +154,35 @@ type GitRevision struct {
 	// Pull request number, when the commit belongs to one.
 	// +optional
 	PullRequest *int32 `json:"pullRequest,omitempty"`
+
+	// ForkRepo names the repository the pull request's head commit actually
+	// lives in, and is set **only** when that is not the project's own
+	// repository — so a non-empty value is the platform saying "this is a
+	// fork" and where from (#422).
+	//
+	// It is on the revision rather than on the Build's status because it is a
+	// fact about the event that created the Build, decided once by the
+	// receiver from the delivery it verified, and not something a reconciler
+	// could work out later: by the time a build runs, a fork's head is just a
+	// SHA reachable in the base repository through `refs/pull/N/head`, which
+	// is exactly how it came to be built with the project's own credentials.
+	//
+	// A payload that does not say where the head is leaves this set to
+	// UnknownForkRepo rather than empty: an absent field must never read as
+	// "the project's own".
+	// +optional
+	ForkRepo string `json:"forkRepo,omitempty"`
 }
+
+// UnknownForkRepo is ForkRepo's value when the delivery said the head is
+// somewhere else but not where — a payload missing the field the provider is
+// supposed to send. It is a fork, and it is treated as one; only the name is
+// missing.
+const UnknownForkRepo = "unknown"
+
+// IsFork reports whether this revision's head commit lives outside the
+// project's own repository.
+func (r GitRevision) IsFork() bool { return r.ForkRepo != "" }
 
 // AcquisitionTrigger says what asked for an acquisition, which is the
 // question "why did this environment change" starts with.

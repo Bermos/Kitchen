@@ -1596,6 +1596,14 @@ func (r *BuildReconciler) routePreview(
 	if !previewsEnabled(project) {
 		return nil
 	}
+	// A pull request from a fork is published only where the project has said
+	// forks may be (#422). It is asked before the ceiling and before the
+	// environment is looked up, so that a preview which already exists for a
+	// fork — one created before this gate did — gets no further deploys either:
+	// the upgrade does not tear it down, and it stops moving.
+	if !r.forkPreviewAllowed(ctx, build, project, pullRequest) {
+		return nil
+	}
 	envName := PreviewEnvironmentName(project.Name, pullRequest)
 	allowed, err := r.previewAllowed(ctx, build, project, envName, pullRequest)
 	if err != nil || !allowed {
@@ -1604,6 +1612,7 @@ func (r *BuildReconciler) routePreview(
 	preview := &kitchenv1alpha1.PreviewInfo{
 		PullRequest: pullRequest,
 		Branch:      build.Spec.Git.Branch,
+		ForkRepo:    build.Spec.Git.ForkRepo,
 	}
 	if err := r.ensureEnvironment(ctx, build.Namespace, project, envName,
 		kitchenv1alpha1.EnvironmentPreview, preview, releaseName, build); err != nil {

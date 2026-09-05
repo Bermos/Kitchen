@@ -290,6 +290,25 @@ hostnames, so do not serve anything there.
 If your previews are meant to be shown to people who will never have an
 account, turning protection off is a project setting and a deliberate one.
 
+**A pull request from a fork gets nothing, unless you say otherwise.** A fork
+is any repository that is not your project's own, and its head is a stranger's
+code: on a public repository anybody can open a pull request. Kitchen does not
+build it, does not deploy it, and tells the request so — a failed
+`kitchen/<project>/preview` check and a comment saying why. That is
+`previews.forks: none`, the default. A project admin can move it to `build`,
+which compiles a fork's commit and publishes nothing — no environment, so none
+of your variables, secrets or claim bindings reach it — or to `full`, which
+treats a fork exactly as your own branch, secrets included, and is for a
+repository whose forks are your own maintainers'. Your operator can cap what
+any project may ask for. It is on the project's settings screen, beside the
+preview ceiling.
+
+Two notes on upgrading into this. Previews that already exist for fork pull
+requests are **not** torn down; they simply stop being deployed to until the
+setting allows it, and go when their pull requests close. And nothing about
+branch builds changes: a push event is a push to your own repository by
+definition — no forge delivers a fork's pushes to your repository's webhook.
+
 Three things worth knowing about a preview that looks slow, missing or gone:
 
 - **A preview idles to zero when nobody is looking at it**, by default, and

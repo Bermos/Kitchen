@@ -54,7 +54,7 @@ account at all.
 
 Everything a repository needs is refused rather than ignored on such a
 project, here and on the settings PATCH: `registry`, `connection`,
-`productionBranch`, `requirePullRequest`, `previews`, and the four that say
+`productionBranch`, `requirePullRequest`, `previews`, `previewsForks`, and the four that say
 how a commit becomes an image — `buildStrategy`, `dockerfilePath`,
 `dockerfileTarget` and `rootDirectory`. A `400` naming the field is the
 answer, because each of them would otherwise read back as a setting that took
@@ -204,6 +204,7 @@ optional and absent ones keep their value:
 
 ```json
 {"productionBranch": "trunk", "previews": true, "previewsProtected": false, "previewsMax": 3,
+ "previewsForks": "none",
  "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "dockerfileTarget": "web", "rootDirectory": "apps/shop",
  "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi"}
 ```
@@ -255,6 +256,68 @@ first and bounded at twenty. **It is a record, not a queue**: each gets its
 preview on its next push, once another preview has closed and freed a slot.
 The project also carries a `PreviewCapacity` condition, absent where there is
 no ceiling.
+
+### Pull requests from forks
+
+`previewsForks` is what a pull request opened from a **fork** gets — a pull
+request whose head commit lives in some repository other than this project's
+own. It is one of three words, and it defaults to `none`:
+
+| Value | The fork's commit is built | It gets an environment | It sees this project's variables, secrets and claim bindings |
+| --- | --- | --- | --- |
+| `none` (default) | no | no | no |
+| `build` | yes | no | no |
+| `full` | yes | yes | yes |
+
+**`none` is the default, and that is a change in behaviour.** Nothing in the
+platform used to have a concept of a fork. On a public repository anybody can
+open a pull request, and its head commit is reachable in the *base* repository
+through `refs/pull/N/head` — so a stranger's commit built with this project's
+registry credential and got a preview environment carrying this project's own
+secrets, with a claim in preview mode `shared` bound to production's. Marking
+previews `previewsProtected` did not help: that gates *viewing* a preview, not
+building the commit or starting the pod that holds the secrets.
+
+A fork pull request that gets nothing is **told so where its author is
+looking**, in the same two places the [preview ceiling](#the-preview-ceiling)
+refuses: a commit status under `kitchen/<project>/preview` — beside the build's
+verdict, never over it — and the preview comment, written under the marker a
+preview of that request would have used, so a preview that appears after
+somebody changes this setting rewrites the refusal in place. Nothing is queued:
+unlike the ceiling, pushing again changes nothing until an admin moves the
+setting. The refusal is also in the activity feed as `preview.refused`.
+
+`full` is for a repository whose forks are its maintainers' own. It means
+exactly what the table says: anybody who can open a pull request against the
+repository can run code with this project's credentials.
+
+The platform bounds it. [`previewsForksMax`](./settings.md) on the platform is
+the most any project may ask for; asking for *more* is refused with a `400`
+naming it, rather than clamped in silence. Re-sending what the project already
+says is never refused, so a lowered ceiling does not make the rest of a
+project's settings unsaveable. Lowering the platform's ceiling after the fact
+clamps at read time — a project whose own setting is now above it gets what the
+platform allows, and its own field is left as written, so raising the ceiling
+again restores what the project asked for.
+
+**A preview that already exists for a fork pull request is not torn down when
+this lands.** The upgrade does not delete anything. What it does is stop the
+preview moving: no further deploy reaches it until `previewsForks` is set to
+`full`, and it goes when its pull request closes, as it always did. An
+installation that wants those previews gone now can delete them, and one that
+wants them to keep working sets `previewsForks: full` on the projects
+concerned.
+
+`GET /projects/{name}` echoes the setting as one of the three words —
+`{"previewsForks": "none"}` — never absent, because a project written before
+the field existed reads as `none` and a security default nobody can see is one
+nobody checks. A preview environment created for a fork records where its head
+came from in `spec.preview.forkRepo` on the Environment, and every Build of a
+fork's commit records it in `spec.git.forkRepo`.
+
+Only pull requests are affected. A push event is a push to this project's own
+repository by definition — no forge delivers a fork's pushes to the base
+repository's webhook — so nothing about branch builds changes.
 
 `notRequestDriven` declares that this workload does work nobody asked for, and
 turns idling off for every one of the project's environments — previews

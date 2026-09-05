@@ -223,10 +223,125 @@ type PreviewsSpec struct {
 	// +optional
 	Max *int32 `json:"max,omitempty"`
 
+	// Forks says what a pull request opened from a *fork* gets — a pull
+	// request whose head commit lives in some repository other than this
+	// project's own.
+	//
+	// It defaults to `none`, and that default is the whole of issue #422.
+	// Nothing in the platform used to have a concept of a fork: the head SHA
+	// of a stranger's pull request against a public repository is reachable
+	// in the project's own repository through `refs/pull/N/head`, so it built
+	// with the project's registry credential and got a preview environment
+	// carrying the project's own secrets and, for a claim in preview mode
+	// `shared`, production's binding. `protected` did not help — it gates
+	// *viewing* a preview, not building the commit or starting the pod that
+	// holds the secrets.
+	//
+	// The three values are what a fork may be given, least to most:
+	//
+	//   - `none` builds nothing. The pull request is told so where its author
+	//     is looking: a `kitchen/<project>/preview` commit status and the
+	//     preview comment, the same pair the preview ceiling refuses with.
+	//   - `build` builds the fork's commit and stops there — no Environment,
+	//     so no project secret, no project variable and no claim binding ever
+	//     reaches the fork's code. It answers "does this pull request even
+	//     compile" without answering it with a credential.
+	//   - `full` treats the fork exactly as the project's own branch, preview
+	//     and secrets included. It is for a repository whose forks are its
+	//     maintainers' own — and it is the setting to be sure about, because
+	//     it is the behaviour this field exists to stop being the default.
+	//
+	// The platform bounds it: `spec.previews.forksMax` on the Kitchen
+	// singleton is the most any project may ask for, and a project asking for
+	// more gets the platform's answer. See ForksUnder.
+	// +kubebuilder:default=none
+	// +optional
+	Forks ForkPolicy `json:"forks,omitempty"`
+
 	// Grace period before a preview Environment is torn down after its
 	// pull request closes.
 	// +optional
 	TTLAfterClosed *metav1.Duration `json:"ttlAfterClosed,omitempty"`
+}
+
+// ForkPolicy is what a pull request from a fork is given: nothing, a build, or
+// everything the project's own branches get (#422).
+//
+// The three are ordered, least to most, and that ordering is the whole reason
+// the platform's ceiling is spelled the same way rather than as a boolean.
+// One vocabulary reads in one sentence — "the project asks for `full`, the
+// platform allows at most `build`, so it gets `build`" — where a boolean
+// beside an enum would have to be read together anyway and still could not say
+// the stricter thing an operator worried enough to set anything is most likely
+// to want: no fork builds at all, estate-wide.
+// +kubebuilder:validation:Enum=none;build;full
+type ForkPolicy string
+
+const (
+	// ForkPolicyNone gives a fork pull request nothing at all: no Build, no
+	// Release, no preview Environment. It is the default, and the honest one
+	// — it is what every hosted CI does with a first-time contributor.
+	ForkPolicyNone ForkPolicy = "none"
+	// ForkPolicyBuild builds the fork's commit and publishes no environment.
+	// The build's own push credential is still a build's own push credential
+	// — that is what a build is — but nothing the *project* configured is
+	// handed to the fork's code, because nothing runs it.
+	ForkPolicyBuild ForkPolicy = "build"
+	// ForkPolicyFull treats the fork as the project's own branch. Everything
+	// a preview of the project's own commit gets, a fork's gets.
+	ForkPolicyFull ForkPolicy = "full"
+)
+
+// forkPolicyOrder ranks the three so a ceiling can be applied to a request.
+// An unrecognized value — an empty string on an object written before the
+// field existed, or a spelling a newer operator wrote and this one has never
+// heard of — ranks with `none`: the safe reading is the only one a security
+// default may take.
+func forkPolicyOrder(p ForkPolicy) int {
+	switch p {
+	case ForkPolicyFull:
+		return 2
+	case ForkPolicyBuild:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// Normalized is the policy as a reader should apply it: one of the three
+// words, with anything else — including the empty string an object written
+// before the field existed carries — read as `none`.
+func (p ForkPolicy) Normalized() ForkPolicy {
+	switch p {
+	case ForkPolicyFull:
+		return ForkPolicyFull
+	case ForkPolicyBuild:
+		return ForkPolicyBuild
+	default:
+		return ForkPolicyNone
+	}
+}
+
+// AtMost is this policy bounded by a ceiling: the lesser of the two.
+func (p ForkPolicy) AtMost(ceiling ForkPolicy) ForkPolicy {
+	if forkPolicyOrder(ceiling) < forkPolicyOrder(p) {
+		return ceiling.Normalized()
+	}
+	return p.Normalized()
+}
+
+// BuildsForks reports whether a fork's commit is built at all.
+func (p ForkPolicy) BuildsForks() bool { return forkPolicyOrder(p) >= forkPolicyOrder(ForkPolicyBuild) }
+
+// PreviewsForks reports whether a fork's pull request gets a preview
+// environment — which is also whether it is handed the project's secrets,
+// since an environment is how they reach anything.
+func (p ForkPolicy) PreviewsForks() bool { return p.Normalized() == ForkPolicyFull }
+
+// ForksUnder is the fork policy in force for this Project: what it asks for,
+// never more than the platform's ceiling allows.
+func (p PreviewsSpec) ForksUnder(ceiling ForkPolicy) ForkPolicy {
+	return p.Forks.AtMost(ceiling)
 }
 
 // MaxOrPlatform is the ceiling in force for this Project: its own where it

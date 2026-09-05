@@ -499,7 +499,15 @@ type patchProjectRequest struct {
 	// clears the override so the project takes the platform's again — the
 	// same shape as an empty string clearing a text setting, since 0 is a
 	// setting here and cannot also mean "unset".
-	PreviewsMax    *int32  `json:"previewsMax,omitempty"`
+	PreviewsMax *int32 `json:"previewsMax,omitempty"`
+	// PreviewsForks is what a pull request opened from a fork of this
+	// project's repository gets: `none` (the default — no build, no preview,
+	// no credential), `build` (the commit is built and nothing is published),
+	// or `full` (a fork is treated as the project's own branch). It is an
+	// admin's setting because it is a decision about who may run code with
+	// this project's secrets (#422), and the platform's
+	// `previewsForksMax` is the most it may be set to.
+	PreviewsForks  *string `json:"previewsForks,omitempty"`
 	BuildStrategy  *string `json:"buildStrategy,omitempty"`
 	DockerfilePath *string `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship; an
@@ -874,18 +882,24 @@ func applyResource(resources *corev1.ResourceRequirements, name corev1.ResourceN
 // sequence past what gocyclo will read. Nothing here touches the cluster or
 // the caller — it edits the object in place and hands back the refusal for
 // patchProject to write, so the handler keeps every response in one place.
-// applyProjectPreviews writes the three preview settings — whether pull
-// requests get an environment, whether it is gated behind platform login, and
-// how many of them may be live at once. It answers false when it has already
-// written a refusal.
+// applyProjectPreviews writes the preview settings — whether pull requests get
+// an environment, whether it is gated behind platform login, how many of them
+// may be live at once, and what a fork's pull request gets. It answers false
+// when it has already written a refusal.
 //
-// It is a function of its own rather than three blocks in patchProject
-// because the three belong together and patchProject is already at the
+// It is a function of its own rather than four blocks in patchProject
+// because they belong together and patchProject is already at the
 // complexity the linter allows.
+//
+// `forksCeiling` is the platform's `previews.forksMax`, which is why this
+// takes an argument the other appliers do not: asking for more than the estate
+// allows is refused here in words rather than clamped in silence, so an admin
+// who sets `full` and would have got `build` finds out at the moment they ask.
 func applyProjectPreviews(
 	w http.ResponseWriter,
 	project *kitchenv1alpha1.Project,
 	body patchProjectRequest,
+	forksCeiling kitchenv1alpha1.ForkPolicy,
 ) bool {
 	if body.Previews != nil {
 		if *body.Previews && !project.Spec.Source.HasRepository() {
@@ -907,7 +921,43 @@ func applyProjectPreviews(
 			project.Spec.Previews.Max = body.PreviewsMax
 		}
 	}
+	if body.PreviewsForks != nil {
+		forks := kitchenv1alpha1.ForkPolicy(strings.TrimSpace(*body.PreviewsForks))
+		switch forks {
+		case kitchenv1alpha1.ForkPolicyNone, kitchenv1alpha1.ForkPolicyBuild, kitchenv1alpha1.ForkPolicyFull:
+			// The ceiling is checked only against a value that moves. A
+			// project already above it — set before the operator lowered it,
+			// or by kubectl — is clamped at read time and left as written, and
+			// re-sending what it already says must not be what stops somebody
+			// saving an unrelated setting on the same form.
+			if forks != project.Spec.Previews.Forks.Normalized() && forks.AtMost(forksCeiling) != forks {
+				badRequest(w, "this platform allows a project to give a fork pull request at most %q "+
+					"(spec.previews.forksMax), so %q is refused: ask an operator to raise it",
+					forksCeiling, forks)
+				return false
+			}
+			project.Spec.Previews.Forks = forks
+		default:
+			badRequest(w, "previewsForks must be none, build or full (got %q): "+
+				"none gives a fork pull request nothing, build compiles its commit and "+
+				"publishes nothing, full treats a fork as the project's own", *body.PreviewsForks)
+			return false
+		}
+	}
 	return true
+}
+
+// forksCeiling is the platform's ceiling on what a project may give a fork
+// pull request. A singleton the API cannot read gives the compiled-in ceiling,
+// which forbids nothing: the safe default is on the project (`none`), and a
+// ceiling that clamped to `none` on a failed read would refuse a write that
+// was always going to be allowed.
+func (s *Server) forksCeiling(ctx context.Context) kitchenv1alpha1.ForkPolicy {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		return kitchenv1alpha1.ForkPolicyFull
+	}
+	return kitchen.Spec.Previews.EffectiveForksMax()
 }
 
 func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchProjectRequest) error {
@@ -1078,9 +1128,10 @@ func refusedRepositorySettings(
 	if project.Spec.Source.HasRepository() {
 		return false
 	}
-	if body.ProductionBranch != nil || body.RequirePullRequest != nil {
+	if body.ProductionBranch != nil || body.RequirePullRequest != nil || body.PreviewsForks != nil {
 		badRequest(w, "%s", repositorySettingRefusal(project,
-			"a production branch and a pull request requirement are a repository's settings"))
+			"a production branch, a pull request requirement and what a fork's pull request "+
+				"gets are a repository's settings"))
 		return true
 	}
 	// The four that say how a commit becomes an image. A project whose source
@@ -1133,7 +1184,7 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	if body.RequirePullRequest != nil {
 		project.Spec.Source.Git.RequirePullRequest = *body.RequirePullRequest
 	}
-	if !applyProjectPreviews(w, project, body) {
+	if !applyProjectPreviews(w, project, body, s.forksCeiling(ctx)) {
 		return
 	}
 	if err := applyProjectBuildAndRuntime(project, body); err != nil {
@@ -2203,6 +2254,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"previews", body.Previews != nil},
 		{"previewsProtected", body.PreviewsProtected != nil},
 		{"previewsMax", body.PreviewsMax != nil},
+		{"previewsForks", body.PreviewsForks != nil},
 		{"buildStrategy", body.BuildStrategy != nil},
 		{"dockerfilePath", body.DockerfilePath != nil},
 		{"dockerfileTarget", body.DockerfileTarget != nil},

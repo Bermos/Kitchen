@@ -98,6 +98,90 @@ func TestAProjectsOwnPreviewCeilingHasThreeStates(t *testing.T) {
 	}
 }
 
+// What a fork's pull request gets is a project setting with a safe default
+// (#422), and the API is where a project admin moves it: the three words, the
+// refusal of anything else, and the platform's ceiling over all of it.
+func TestAProjectsForkPolicyIsWritableAndBounded(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	if view := decode[projectView](t, h.do(t, http.MethodGet, "/api/v1/projects/shop", "")); view.PreviewsForks != "none" {
+		t.Fatalf("a project starts at none, got %q", view.PreviewsForks)
+	}
+
+	for _, testCase := range []struct {
+		name string
+		body string
+		code int
+		want kitchenv1alpha1.ForkPolicy
+	}{
+		{"build is allowed", `{"previewsForks": "build"}`, http.StatusOK, kitchenv1alpha1.ForkPolicyBuild},
+		{"full is allowed", `{"previewsForks": "full"}`, http.StatusOK, kitchenv1alpha1.ForkPolicyFull},
+		{"back to none", `{"previewsForks": "none"}`, http.StatusOK, kitchenv1alpha1.ForkPolicyNone},
+		{"anything else is refused", `{"previewsForks": "sometimes"}`, http.StatusBadRequest, kitchenv1alpha1.ForkPolicyNone},
+		{"and so is an empty string", `{"previewsForks": ""}`, http.StatusBadRequest, kitchenv1alpha1.ForkPolicyNone},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", testCase.body)
+			if recorder.Code != testCase.code {
+				t.Fatalf("want %d, got %d: %s", testCase.code, recorder.Code, recorder.Body.String())
+			}
+			stored := &kitchenv1alpha1.Project{}
+			if err := h.server.get(context.Background(), "shop", stored); err != nil {
+				t.Fatal(err)
+			}
+			if got := stored.Spec.Previews.Forks.Normalized(); got != testCase.want {
+				t.Fatalf("the setting is %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// The platform's ceiling is refused in words rather than clamped in silence:
+// an admin who asks for more than the estate allows finds out at the moment
+// they ask, and the project keeps whatever it had.
+func TestTheForkCeilingRefusesRatherThanClamps(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	kitchen.Spec.Previews.ForksMax = kitchenv1alpha1.ForkPolicyBuild
+	if err := h.server.Client.Update(context.Background(), kitchen); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"previewsForks": "full"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "forksMax") {
+		t.Fatalf("the refusal does not name the setting that caused it: %s", recorder.Body.String())
+	}
+	if recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{"previewsForks": "build"}`); recorder.Code != http.StatusOK {
+		t.Fatalf("what the ceiling allows must still be writable: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// A project already above the ceiling — set before an operator lowered it,
+	// or by kubectl — is clamped at read time and left as written, and
+	// re-sending what it already says must not be what stops somebody saving
+	// an unrelated setting on the same form.
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	stored.Spec.Previews.Forks = kitchenv1alpha1.ForkPolicyFull
+	if err := h.server.Client.Update(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"previewsForks": "full", "replicas": 2}`); recorder.Code != http.StatusOK {
+		t.Fatalf("re-sending an unchanged setting must not refuse the write: %d %s",
+			recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPatchingAProjectsSettings(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

@@ -399,6 +399,45 @@ spec:
                       serialized object, and the API server then applies the default, so
                       turning previews off would be silently undone on every write.
                     type: boolean
+                  forks:
+                    default: none
+                    description: |-
+                      Forks says what a pull request opened from a *fork* gets — a pull
+                      request whose head commit lives in some repository other than this
+                      project's own.
+
+                      It defaults to `none`, and that default is the whole of issue #422.
+                      Nothing in the platform used to have a concept of a fork: the head SHA
+                      of a stranger's pull request against a public repository is reachable
+                      in the project's own repository through `refs/pull/N/head`, so it built
+                      with the project's registry credential and got a preview environment
+                      carrying the project's own secrets and, for a claim in preview mode
+                      `shared`, production's binding. `protected` did not help — it gates
+                      *viewing* a preview, not building the commit or starting the pod that
+                      holds the secrets.
+
+                      The three values are what a fork may be given, least to most:
+
+                        - `none` builds nothing. The pull request is told so where its author
+                          is looking: a `kitchen/<project>/preview` commit status and the
+                          preview comment, the same pair the preview ceiling refuses with.
+                        - `build` builds the fork's commit and stops there — no Environment,
+                          so no project secret, no project variable and no claim binding ever
+                          reaches the fork's code. It answers "does this pull request even
+                          compile" without answering it with a credential.
+                        - `full` treats the fork exactly as the project's own branch, preview
+                          and secrets included. It is for a repository whose forks are its
+                          maintainers' own — and it is the setting to be sure about, because
+                          it is the behaviour this field exists to stop being the default.
+
+                      The platform bounds it: `spec.previews.forksMax` on the Kitchen
+                      singleton is the most any project may ask for, and a project asking for
+                      more gets the platform's answer. See ForksUnder.
+                    enum:
+                    - none
+                    - build
+                    - full
+                    type: string
                   max:
                     description: |-
                       Max is this Project's own ceiling on live preview Environments,

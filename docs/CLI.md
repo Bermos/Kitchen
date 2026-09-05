@@ -957,6 +957,28 @@ kitchen api PATCH /settings --data '{"previewsMaxPerProject":5}'
 ceiling, oldest first. Nothing is queued — each gets its preview on its next
 push.
 
+### Pull requests from forks
+
+A pull request whose head lives in a fork gets nothing by default: no build, no
+preview, no credential of the project's. It is `previews.forks` on the project,
+one of `none` (the default), `build` or `full`, bounded by the platform's
+`previewsForksMax`. See
+[Pull requests from forks](api/projects.md#pull-requests-from-forks) for what
+each one means.
+
+**It has no command, and that is the same decision the preview ceiling's is.**
+It is a rare, deliberate write about who may run code with this project's
+secrets, made once when a repository starts taking outside contributions — not
+a thing anybody does from a terminal in the course of a day, which is what a
+command is for. `kitchen api` carries it, and the platform's ceiling is the
+operator's and is on the platform settings screen:
+
+```sh
+kitchen api GET /projects/shop                        # previewsForks
+kitchen api PATCH /projects/shop --data '{"previewsForks":"build"}'
+kitchen api PATCH /settings --data '{"previewsForksMax":"build"}'
+```
+
 ### Rolling back
 
 Rollback is not a special operation: a `Release` is an immutable snapshot of an

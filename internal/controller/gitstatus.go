@@ -188,6 +188,51 @@ func (g gitReporting) reportPreviewRefused(
 	envName string,
 	reason string,
 ) {
+	g.reportPreviewBlocked(ctx, project, previewBlock{
+		Revision:    build.Spec.Git,
+		PullRequest: pullRequest,
+		Environment: envName,
+		Headline:    "no preview: the project is at its preview ceiling",
+		Reason:      reason,
+		FollowUp: "Nothing is queued: push again once a slot is free and this pull request " +
+			"gets its preview then.",
+	})
+}
+
+// previewBlock is one "you were expecting a preview and there is not going to
+// be one": what the platform declined, said in the two voices a pull request
+// is spoken to in.
+type previewBlock struct {
+	// Revision the pull request's head is at — the commit the status lands on.
+	Revision kitchenv1alpha1.GitRevision
+	// PullRequest the comment belongs to.
+	PullRequest int32
+	// Environment names the preview that was not created, which is what the
+	// comment's marker is keyed on: a preview that appears later rewrites this
+	// comment in place rather than leaving the refusal underneath it.
+	Environment string
+	// Headline is the commit status description. Every provider truncates it,
+	// so it carries the fact and Reason carries the sentence.
+	Headline string
+	// Reason is the sentence: what was refused and which setting moves it.
+	Reason string
+	// FollowUp is the line under it — what, if anything, the reader can do
+	// that changes the answer. The ceiling's resolves itself on a later push;
+	// a fork's needs somebody with admin on the project first.
+	FollowUp string
+}
+
+// reportPreviewBlocked is the shape of every refused preview the platform has:
+// the ceiling above (#294), and a pull request from a fork (#422).
+//
+// It takes a revision rather than a Build because the fork refusal happens in
+// the receiver, before any Build exists — which is the point of refusing a
+// fork there rather than deep in the build.
+func (g gitReporting) reportPreviewBlocked(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	block previewBlock,
+) {
 	reporter, ok := g.reporterFor(ctx, project)
 	if !ok {
 		return
@@ -196,34 +241,33 @@ func (g gitReporting) reportPreviewRefused(
 	repo := project.Spec.Source.GitSource().Repo
 
 	status := gitprovider.CommitStatus{
-		SHA:     build.Spec.Git.SHA,
-		State:   gitprovider.CommitFailure,
-		Context: previewStatusContext(project.Name),
-		// A commit status description is short at every provider, so it
-		// carries the fact and the comment carries the sentence.
-		Description: "no preview: the project is at its preview ceiling",
+		SHA:         block.Revision.SHA,
+		State:       gitprovider.CommitFailure,
+		Context:     previewStatusContext(project.Name),
+		Description: block.Headline,
 	}
 	if kitchen := g.platform(ctx); kitchen != nil {
 		status.TargetURL = dashboardURL(kitchen, "projects", project.Name)
 	}
 	if err := reporter.SetCommitStatus(ctx, repo, status); err != nil {
 		log.Error(err, "failed to post the refused-preview status", "project", project.Name,
-			"sha", build.Spec.Git.SHA)
+			"sha", block.Revision.SHA)
 	}
 
 	comment := previewComment{
-		Environment: envName,
+		Environment: block.Environment,
 		Project:     project.Name,
-		Refused:     reason,
-		Revision:    build.Spec.Git,
+		Refused:     block.Reason,
+		RefusedNext: block.FollowUp,
+		Revision:    block.Revision,
 	}
 	if _, err := reporter.UpsertComment(ctx, repo, gitprovider.Comment{
-		PullRequest: pullRequest,
+		PullRequest: block.PullRequest,
 		Marker:      comment.marker(),
 		Body:        comment.body(),
 	}); err != nil {
 		log.Error(err, "failed to write the refused-preview comment", "project", project.Name,
-			"pullRequest", pullRequest)
+			"pullRequest", block.PullRequest)
 	}
 }
 
@@ -460,6 +504,11 @@ type previewComment struct {
 	// (#294). It is the same comment under the same marker, so the preview
 	// this pull request gets on a later push rewrites it in place.
 	Refused string
+	// RefusedNext is the line under the refusal: what the reader can do that
+	// changes the answer. It is separate from Refused because the two
+	// refusals differ in exactly this — a ceiling frees itself and a fork
+	// needs somebody with admin on the project.
+	RefusedNext string
 }
 
 // marker identifies the platform's own comment. It is per environment rather
@@ -481,9 +530,10 @@ func (c previewComment) body() string {
 	}
 
 	if c.Refused != "" {
-		fmt.Fprintf(&b, "**No preview environment for this pull request.** %s.\n\n", c.Refused)
-		b.WriteString("Nothing is queued: push again once a slot is free and this pull request " +
-			"gets its preview then.\n")
+		fmt.Fprintf(&b, "**No preview environment for this pull request.** %s.\n", c.Refused)
+		if c.RefusedNext != "" {
+			fmt.Fprintf(&b, "\n%s\n", c.RefusedNext)
+		}
 		return b.String()
 	}
 

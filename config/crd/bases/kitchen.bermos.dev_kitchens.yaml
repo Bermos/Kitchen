@@ -1430,6 +1430,28 @@ spec:
                   the field a ceiling at all: structural defaulting only descends into
                   objects that are present.
                 properties:
+                  forksMax:
+                    default: full
+                    description: |-
+                      ForksMax is the most a project may give a pull request opened from a
+                      fork: the estate-wide ceiling over every project's own
+                      `spec.previews.forks` (#422).
+
+                      It defaults to `full`, which forbids nothing — the safe default lives
+                      on the project, where it is `none`, and this is here for the operator
+                      who wants the answer to be the same on every project whatever a project
+                      admin sets. `build` allows a fork's commit to be compiled and never
+                      published; `none` refuses fork pull requests across the whole
+                      installation, which is the setting an operator running a public forge
+                      on shared hardware most likely wants.
+
+                      It is the same three words as the project's field rather than a boolean
+                      beside it, because the two are only ever read together — see ForkPolicy.
+                    enum:
+                    - none
+                    - build
+                    - full
+                    type: string
                   maxPerProject:
                     default: 5
                     description: |-

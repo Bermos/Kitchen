@@ -275,6 +275,36 @@ func TestThePreviewCeilingIsReadAndWrittenLikeTheBuildCeiling(t *testing.T) {
 	}
 }
 
+// The estate-wide ceiling on what a fork's pull request may be given (#422).
+// A singleton that names none forbids nothing, because the safe default is
+// the project's own `none` — a ceiling that read absent as the strictest
+// value would turn forks off on an installation that had deliberately
+// allowed them.
+func TestThePlatformsForkCeilingIsReadAndWritten(t *testing.T) {
+	h := newHarness(t, nil)
+
+	if body := decode[settingsView](t, h.do(t, http.MethodGet, settingsPath, "")); body.PreviewsForksMax != "full" {
+		t.Fatalf("an unset ceiling should forbid nothing, got %q", body.PreviewsForksMax)
+	}
+
+	recorder := h.do(t, http.MethodPatch, settingsPath, `{"previewsForksMax": "none"}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if body := decode[settingsView](t, recorder); body.PreviewsForksMax != "none" {
+		t.Fatalf("the answer does not carry the ceiling: %+v", body)
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if kitchen.Spec.Previews.ForksMax != kitchenv1alpha1.ForkPolicyNone {
+		t.Fatalf("the singleton was not updated: %+v", kitchen.Spec.Previews)
+	}
+}
+
 func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 	h := newHarness(t, nil)
 
@@ -291,6 +321,8 @@ func TestChangingTheSettingsRejectsNonsense(t *testing.T) {
 		"a negative build timeout": `{"buildTimeoutMinutes": -1}`,
 		// 0 is no preview ceiling; below it is nothing at all.
 		"a negative preview ceiling": `{"previewsMaxPerProject": -1}`,
+		// The fork ceiling is three words and nothing else.
+		"a fork ceiling nobody defined": `{"previewsForksMax": "maybe"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, settingsPath, body)
