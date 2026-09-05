@@ -757,8 +757,25 @@ jobs:
         id: decide
         run: ./hack/changed-paths.sh chart "origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
 
+  # The whole round-trip, run twice on two different CNIs. The steps are one
+  # definition rather than two jobs, because the questions the two answer are
+  # not "does the chart install" twice — they are the same install, watched by
+  # two different networks:
+  #
+  #   - **kind** is kind's own CNI, kindnet, which does not enforce
+  #     NetworkPolicy at all. It is the cheap leg and the one every other
+  #     assertion here was written against, and it stays because a failure on
+  #     it is unambiguous: nothing about the network can have caused it.
+  #   - **Cilium** is the CNI Kitchen actually requires, without kube-proxy,
+  #     with the Gateway API CRDs the release under test pins. It is the only
+  #     leg that can say anything about the chart's NetworkPolicies: until it
+  #     existed, a policy that blocked every flow on the platform would have
+  #     left this workflow green (#383).
+  #
+  # The name is what branch protection has required since before the split, so
+  # the kindnet leg keeps it exactly: "Chart install on kind".
   install:
-    name: Chart install on kind
+    name: Chart install on ${{ matrix.label }}
     needs: changes
     # Pull requests only, and only when something this job can see has changed.
     # The release pull request is the exception: it runs whatever it touched,
@@ -768,6 +785,28 @@ jobs:
       && (needs.changes.outputs.run == 'true'
       || startsWith(github.head_ref, 'release-please--'))
     runs-on: ubuntu-latest
+    strategy:
+      # Neither leg's answer is worth less when the other fails, and the
+      # Cilium one is the new and therefore the likelier to break: cancelling
+      # the leg that still works would throw away the run that tells you which
+      # of the two it was.
+      fail-fast: false
+      matrix:
+        include:
+          - cni: kindnet
+            label: kind
+            values: ""
+          - cni: cilium
+            label: Cilium
+            # The object store is the only rule in the policy file that admits
+            # an application namespace, so the leg that can measure a rule is
+            # the leg that installs it. Everything else is installed the same
+            # on both.
+            values: --set objectStore.enabled=true
+    env:
+      # What this leg adds to CHART_BASE and CHART_ACME, everywhere the chart
+      # is installed or upgraded without --reuse-values.
+      CHART_EXTRA: ${{ matrix.values }}
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -792,7 +831,21 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Create kind cluster
-        run: kind create cluster
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.cni }}" = cilium ]; then
+            # One implementation of "a kind cluster whose CNI is Cilium",
+            # shared with the Hubble workflow's script: kind with no CNI and
+            # no kube-proxy, the Gateway API CRDs this Cilium release
+            # requires, Cilium with Gateway API support, and an LB IPAM pool
+            # so a Gateway can be programmed — which the shared Gateway needs
+            # before Cilium will report anything but AddressNotAssigned.
+            # It writes the versions it resolved to $GITHUB_ENV, so the steps
+            # below install no CRDs of their own.
+            ./hack/install-cilium.sh --create
+          else
+            kind create cluster
+          fi
 
       # Layer-cached across runs, so `go mod download` only pays the network
       # cost when go.mod or go.sum actually change.
@@ -824,7 +877,7 @@ jobs:
           # ImagePullBackOff.
           template() {
             helm template kitchen charts/kitchen \
-              --namespace kitchen-system ${CHART_BASE} ${CHART_ACME} \
+              --namespace kitchen-system ${CHART_BASE} ${CHART_ACME} ${CHART_EXTRA} \
               -s "$1" | awk '$1 == "image:" { print $2; exit }'
           }
           clickhouse_image=$(template templates/clickhouse/statefulset.yaml)
@@ -839,8 +892,19 @@ jobs:
           echo "Postgres image: ${postgres_image}"
           echo "Collector image: ${collector_image}"
           echo "Interceptor image: ${interceptor_image}"
-          for image in "${clickhouse_image}" "${postgres_image}" "${collector_image}" \
-                       "${interceptor_image}" "${PROBE_IMAGE}"; do
+          images="${clickhouse_image} ${postgres_image} ${collector_image}"
+          images="${images} ${interceptor_image} ${PROBE_IMAGE}"
+          # The object store is only rendered on the leg that installs it, so
+          # its image is only pulled there. Asking for the template on the
+          # other leg is an error, not an empty answer.
+          case "${CHART_EXTRA}" in
+            *objectStore.enabled=true*)
+              objectstore_image=$(template templates/objectstore/statefulset.yaml)
+              echo "Object store image: ${objectstore_image}"
+              images="${images} ${objectstore_image}"
+              ;;
+          esac
+          for image in ${images}; do
             for i in 1 2 3; do
               docker pull "${image}" && break
               [ "$i" = 3 ] && exit 1
@@ -856,6 +920,10 @@ jobs:
       # to the checked-in pin rather than failing the job; a lookup that
       # disagrees with it says so, because then the fallback is stale.
       - name: Resolve the Gateway API version Cilium requires
+        # The Cilium leg has already done this, in the script that installed
+        # Cilium: the CRDs have to be registered before the Gateway
+        # controller starts, which is long before this step.
+        if: matrix.cni != 'cilium'
         run: |
           set -uo pipefail
           conf="https://raw.githubusercontent.com/cilium/cilium/${CILIUM_VERSION}/Documentation/conf.py"
@@ -875,6 +943,7 @@ jobs:
           fi
 
       - name: Install the Gateway API CRDs
+        if: matrix.cni != 'cilium'
         run: |
           echo "Installing Gateway API ${GATEWAY_API_VERSION}"
           kubectl apply -f \
@@ -888,7 +957,7 @@ jobs:
             --namespace kitchen-system --create-namespace \
             --set image.repository=kitchen --set image.tag=ci \
             --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
-            ${CHART_BASE} ${CHART_ACME} \
+            ${CHART_BASE} ${CHART_ACME} ${CHART_EXTRA} \
             --wait --timeout 8m || {
               kubectl -n kitchen-system get pods -o wide
               kubectl -n kitchen-system describe deploy kitchen-controller-manager
@@ -921,8 +990,11 @@ jobs:
           kubectl -n kitchen-system get httproute kitchen-git-webhook kitchen-api
           kubectl -n kitchen-system get svc kitchen-git-webhook kitchen-api kitchen-metrics
           # The operator creates the shared Gateway from the Kitchen object.
-          # kind runs no Gateway controller, so it never gets programmed — it
-          # only has to exist, which proves the operator's RBAC is complete.
+          # On the kindnet leg nothing runs a Gateway controller, so it never
+          # gets programmed; on the Cilium leg one does, but the HTTPS
+          # listener names a wildcard certificate no ACME server will ever
+          # issue here. Either way the Gateway only has to exist, which is
+          # what proves the operator's RBAC is complete.
           for i in $(seq 30); do
             kubectl -n kitchen-system get gateway kitchen >/dev/null 2>&1 && break
             [ "$i" = 30 ] && { kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=50; exit 1; }
@@ -954,14 +1026,14 @@ jobs:
       - name: Verify the network policies select the pods they name
         run: |
           set -euo pipefail
-          # This cluster is plain kind, so its CNI is kindnet and NOTHING here
-          # enforces a NetworkPolicy — a policy that blocked every flow on the
-          # platform would still leave this job green. What the cluster can
-          # prove is the half that is silent in a render: that each policy is
-          # admitted by the API server, and that the label selector it was
-          # written with actually selects the pods it was written for. A
-          # selector that matches nothing is how a policy comes to protect
-          # nothing while reading exactly right.
+          # The half of a NetworkPolicy that is silent in a render and silent
+          # on any CNI: that each policy is admitted by the API server, and
+          # that the label selector it was written with actually selects the
+          # pods it was written for. A selector that matches nothing is how a
+          # policy comes to protect nothing while reading exactly right.
+          #
+          # Whether a flow is *dropped* is the next step's, and only the
+          # Cilium leg can answer it — kindnet enforces nothing at all.
           kubectl -n kitchen-system get networkpolicy \
             kitchen-default-deny-ingress \
             kitchen-allow-platform-internal \
@@ -988,6 +1060,142 @@ jobs:
                         kitchen-registry-allow-published kitchen-collector-allow-otlp; do
             selects "${policy}"
           done
+
+      # The assertion the kindnet leg cannot make, and the reason this leg
+      # exists: a flow the platform's policies deny is dropped, and a flow they
+      # allow still arrives.
+      - name: Verify an application namespace is held out of the platform's stores
+        if: matrix.cni == 'cilium'
+        run: |
+          set -euo pipefail
+          status=0
+          # The step above proves each policy is admitted and binds to pods.
+          # This one proves the traffic. On kindnet every assertion below would
+          # pass with the whole policy file deleted, which is why it runs here
+          # and nowhere else.
+          #
+          # The peer is a real application namespace, made the way the platform
+          # makes one — a Project, and the namespace its reconciler creates —
+          # because the object store's rule selects on the label
+          # `ensureNamespace` writes, and nothing else in CI proves that those
+          # two spellings agree.
+          kubectl apply -f - <<'EOF'
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Project
+          metadata:
+            name: netpol
+            namespace: kitchen-system
+          spec:
+            source:
+              git:
+                connectionRef: {name: none}
+                repo: acme/netpol
+            registry:
+              connectionRef: {name: none}
+          EOF
+          for _ in $(seq 60); do
+            kubectl get namespace kitchen-netpol >/dev/null 2>&1 && break
+            sleep 2
+          done
+          kubectl get namespace kitchen-netpol -o jsonpath='{.metadata.labels}{"\n"}' || {
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+            echo "::error::the operator created no namespace for the project"
+            exit 1
+          }
+
+          # Every port each Service publishes, whatever they are, rather than
+          # a list written down here: the telemetry store answers on 8123 and
+          # 9000 while it speaks plaintext and on 8443 and 9440 once it speaks
+          # TLS, and what is under test is the policy and not the protocol — a
+          # dropped SYN never reaches a listener either way.
+          # A Service that is missing or publishes nothing fails the step here
+          # rather than quietly shortening the list: an assertion about ports
+          # nobody serves is exactly the vacuous kind this job exists to stop.
+          targets() {
+            local svc=$1 port ports
+            ports=$(kubectl -n kitchen-system get svc "${svc}" \
+              -o jsonpath='{range .spec.ports[*]}{.port}{"\n"}{end}' 2>/dev/null || true)
+            [ -n "${ports}" ] || {
+              echo "::error::Service ${svc} publishes no ports to assert about" >&2
+              exit 1
+            }
+            for port in ${ports}; do
+              printf ' %s.kitchen-system.svc:%s' "${svc}" "${port}"
+            done
+          }
+          # The telemetry store, the identity provider's Postgres, and the
+          # private listener that enumerates accounts and mints CI keys for
+          # any project.
+          dropped="$(targets kitchen-clickhouse)$(targets kitchen-postgres)"
+          dropped="${dropped}$(targets kitchen-auth-internal)"
+          # The object store an objectStore claim hands an application, and the
+          # issuer every application is sent to sign in at.
+          allowed="$(targets kitchen-objectstore)$(targets kitchen-auth)"
+          echo "must be dropped:${dropped}"
+          echo "must be allowed:${allowed}"
+
+          kubectl -n kitchen-netpol run netpol-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --command -- sh -ec "
+              set -eu
+              # curl's exit code is the assertion. 28 is a connect timeout: the
+              # SYN went nowhere, which is what Cilium does to a packet a
+              # policy denies. 7 is a refusal — something answered, so either
+              # the port is shut or nothing is enforcing anything — and 0, 52
+              # and 56 all mean the connection was made.
+              for target in ${dropped}; do
+                code=0
+                curl -s -o /dev/null --connect-timeout 8 \"http://\${target}/\" || code=\$?
+                echo \"\${target}: curl exit \${code}\"
+                [ \"\${code}\" = 28 ] || {
+                  echo \"\${target} is reachable from an application namespace\"
+                  exit 1
+                }
+              done
+              # The other direction, and it is not a formality: a policy that
+              # denied these too would be a default-deny with extra steps, and
+              # every assertion above would still pass.
+              for target in ${allowed}; do
+                code=0
+                answer=\$(curl -s -o /dev/null -w '%{http_code}' \
+                  --connect-timeout 8 --max-time 20 \"http://\${target}/\") || code=\$?
+                echo \"\${target}: HTTP \${answer:-none} (curl exit \${code})\"
+                [ \"\${code}\" = 0 ] || {
+                  echo \"\${target} did not answer, and the policy says it should\"
+                  exit 1
+                }
+              done
+              echo netpol-ok
+            "
+          phase=""
+          for _ in $(seq 90); do
+            phase=$(kubectl -n kitchen-netpol get pod netpol-probe \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-netpol logs netpol-probe 2>&1 || true)
+          echo "probe phase=${phase}"
+          echo "${probe_output}"
+          kubectl -n kitchen-netpol delete pod netpol-probe --wait=false || true
+          case "${probe_output}" in
+            *netpol-ok) ;;
+            *)
+              status=1
+              kubectl -n kitchen-system get networkpolicy || true
+              kubectl -n kube-system exec ds/cilium -c cilium-agent -- \
+                cilium-dbg status --brief || true
+              echo "::error::the platform namespace does not answer an application" \
+                   "namespace the way its policies say it should"
+              ;;
+          esac
+          # The project's finalizer takes the namespace and the probe pod with
+          # it. The patch is the same escape hatch the backup step uses: a
+          # teardown that cannot finish must not hide the verdict above.
+          kubectl -n kitchen-system delete project netpol --ignore-not-found --timeout=120s || {
+            kubectl -n kitchen-system patch project netpol --type=merge \
+              -p '{"metadata":{"finalizers":null}}' || true
+          }
+          exit "${status}"
 
       - name: Verify the edge certificate is requested
         run: |
@@ -1936,7 +2144,7 @@ jobs:
             --namespace kitchen-system \
             --set image.repository=kitchen --set image.tag=ci \
             --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
-            ${CHART_BASE} ${CHART_ACME} \
+            ${CHART_BASE} ${CHART_ACME} ${CHART_EXTRA} \
             --set replicaCount=2 \
             --wait --timeout 8m || {
               kubectl -n kitchen-system get pods -o wide

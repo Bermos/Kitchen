@@ -5,9 +5,10 @@ backing it up. This is what one archive holds, what it deliberately does not,
 how to take one, and — the half that is worth anything — how to put it back.
 
 An untested restore is worth exactly nothing. The procedure below is the one
-CI runs on every change to this repository: the `Chart install on kind` job
-installs the chart, creates a project, takes a backup, wipes the platform's
-state, restores it and asserts the project is back. See
+CI runs on every change to this repository: the chart install job — on kind's
+own CNI and again on Cilium — installs the chart, creates a project, takes a
+backup, wipes the platform's state, restores it and asserts the project is
+back. See
 [`.github/workflows/helm.yml`](../.github/workflows/helm.yml), the step called
 *Back up, wipe and restore*.
 

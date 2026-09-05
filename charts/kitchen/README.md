@@ -211,6 +211,13 @@ are real. On a cluster whose CNI does not enforce NetworkPolicy the objects are
 created and mean nothing, silently — which is the usual way a network policy
 comes to protect nothing.
 
+That is measured rather than reasoned about: CI installs this chart on a Cilium
+cluster on every change, and from inside a real application namespace it asserts
+that the telemetry store, the identity provider's Postgres and the private
+`/kitchen` listener answer nothing at all, while the object store and the
+issuer still answer. The job is *Chart install on Cilium* in
+[`.github/workflows/helm.yml`](../../.github/workflows/helm.yml).
+
 **Inter-application policy is deliberately not here.** Two applications in two
 projects can still reach each other, and [docs/SCOPE.md](../../docs/SCOPE.md)
 says why: Kitchen has no multi-tenant threat model. What this policy claims is

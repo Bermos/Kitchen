@@ -2,13 +2,14 @@
 # Decide whether the kind jobs have anything to check in this pull request, and
 # print `run=true` or `run=false` for a workflow to read.
 #
-# The four kind jobs — Chart install on kind, E2E on kind, Several workloads on
-# kind, Gateway L7 flows on kind — cost twelve to fourteen minutes each and sit
-# on the critical path of every merge. Most pull requests cannot affect all of
-# them: a CLI change reaches no cluster at all, and the Hubble job installs no
-# Kitchen, so nothing in this repository except its own script can change what
-# it proves. There are three profiles rather than four because the two jobs in
-# the E2E workflow share one.
+# The five kind jobs — Chart install on kind, Chart install on Cilium, E2E on
+# kind, Several workloads on kind, Gateway L7 flows on kind — cost twelve to
+# twenty minutes each and sit on the critical path of every merge. Most pull
+# requests cannot affect all of them: a CLI change reaches no cluster at all,
+# and the Hubble job installs no Kitchen, so nothing in this repository except
+# its own scripts can change what it proves. There are three profiles rather
+# than five because the two jobs in the E2E workflow share one, and the two
+# legs of the chart install are one matrix behind one gate.
 #
 # This is a job-level gate, not a `paths:` filter on the workflow, and the
 # difference decides whether a pull request can merge. A skipped job still
@@ -45,8 +46,10 @@ common_ignores=(
   '.github/pull_request_template.md'
 )
 
-# The chart install job builds both images, installs the chart on kind and
-# asserts what the platform does over HTTP. It never opens a dashboard page, so
+# The chart install job builds both images, installs the chart on kind — once on
+# kindnet and once on a Cilium cluster hack/install-cilium.sh builds, which is
+# why that script is not ignorable here — and asserts what the platform does
+# over HTTP. It never opens a dashboard page, so
 # `ui/` reaches it only through the image build — and a dashboard that does not
 # build fails the Dashboard workflow's `npm run build` in forty seconds, which
 # is a required check of its own. The CLI holds no kubeconfig and is not
@@ -92,9 +95,10 @@ e2e_ignores=(
 # The Hubble job is the odd one, and its own header says why: "it is not a job
 # in the Helm workflow because it is not about the chart: it installs no
 # Kitchen, and what it tests is the platform's CNI". What it proves is that
-# Cilium's Envoy emits L7 flow records. Only its scripts, its fixtures and the
-# two workflows that pin Cilium's version can change that answer — so almost
-# everything in this tree is ignorable here, listed rather than assumed.
+# Cilium's Envoy emits L7 flow records. Only its scripts, its fixtures, the
+# script that builds its cluster and the two workflows that pin Cilium's
+# version can change that answer — so almost everything in this tree is
+# ignorable here, listed rather than assumed.
 hubble_ignores=(
   'api/*'
   'cmd/*'
