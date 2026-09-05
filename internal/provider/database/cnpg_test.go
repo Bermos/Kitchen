@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/naming"
@@ -354,6 +356,122 @@ func TestDeprovisionDeletesTheClusterAndToleratesAnAbsentOne(t *testing.T) {
 	}
 	if err := cnpg.DeleteBranch(ctx, "", ""); err != nil {
 		t.Fatalf("deleting an unrecorded branch failed: %v", err)
+	}
+}
+
+// neighbourCluster is a second database in the platform's namespace, so that
+// deprovisioning one can be shown not to take another's schedule with it.
+const neighbourCluster = "kitchen-shop-cache-db"
+
+// neighbourSchedule is that second database's own base backup schedule.
+func neighbourSchedule() *unstructured.Unstructured {
+	schedule := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{
+		"cluster": map[string]any{"name": neighbourCluster},
+	}}}
+	schedule.SetGroupVersionKind(scheduledBackupGVK())
+	schedule.SetNamespace(testDatabaseNamespace)
+	schedule.SetName(scheduledBackupName(neighbourCluster))
+	return schedule
+}
+
+// cnpgWithoutTheOperator answers for CloudNativePG's own kinds the way an API
+// server that does not serve them does: with a no-match error. That is what a
+// cluster whose operator has been uninstalled looks like from here, and a
+// claim on such a cluster still has to finalize.
+func cnpgWithoutTheOperator(t *testing.T, objects ...client.Object) *CNPG {
+	t.Helper()
+	noMatch := func(obj client.Object) error {
+		gvk := obj.GetObjectKind().GroupVersionKind()
+		if gvk.Group != clusterGVK().Group {
+			return nil
+		}
+		return &meta.NoKindMatchError{GroupKind: gvk.GroupKind(), SearchedVersions: []string{gvk.Version}}
+	}
+	base := fake.NewClientBuilder().WithScheme(cnpgScheme(t)).WithObjects(objects...).Build()
+	return &CNPG{
+		Client: interceptor.NewClient(base, interceptor.Funcs{
+			Get: func(
+				ctx context.Context, c client.WithWatch, key client.ObjectKey,
+				obj client.Object, opts ...client.GetOption,
+			) error {
+				if err := noMatch(obj); err != nil {
+					return err
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+			Delete: func(
+				ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption,
+			) error {
+				if err := noMatch(obj); err != nil {
+					return err
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		}),
+		Namespace:   testDatabaseNamespace,
+		Images:      DefaultPostgresImages,
+		StorageSize: DefaultStorageSize,
+		Instances:   DefaultInstances,
+	}
+}
+
+// A database this platform backs up loses its schedule with it. A
+// ScheduledBackup carries no owner reference to its Cluster —
+// backupOwnerReference: none is what keeps the Backup records out of the
+// Cluster's garbage collection — so nothing else would ever remove it, and
+// CloudNativePG would go on taking a base backup of a database nobody has.
+func TestDeprovisionTakesTheBackupScheduleWithTheDatabase(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), sourceSchedule(), neighbourSchedule())
+	ctx := context.Background()
+
+	if err := cnpg.Deprovision(ctx, testDatabaseNamespace+"/"+testCluster); err != nil {
+		t.Fatal(err)
+	}
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(clusterGVK())
+	key := types.NamespacedName{Namespace: testDatabaseNamespace, Name: testCluster}
+	if err := cnpg.Client.Get(ctx, key, cluster); !apierrors.IsNotFound(err) {
+		t.Errorf("the cluster survived deprovisioning (%v)", err)
+	}
+	if _, err := readSchedule(t, cnpg); !apierrors.IsNotFound(err) {
+		t.Errorf("the schedule outlived the database it names: %v", err)
+	}
+	// Only its own. Another database's schedule belongs to another claim.
+	neighbour := &unstructured.Unstructured{}
+	neighbour.SetGroupVersionKind(scheduledBackupGVK())
+	neighbourKey := types.NamespacedName{
+		Namespace: testDatabaseNamespace, Name: scheduledBackupName(neighbourCluster),
+	}
+	if err := cnpg.Client.Get(ctx, neighbourKey, neighbour); err != nil {
+		t.Errorf("deprovisioning one database took another's schedule: %v", err)
+	}
+}
+
+// A claim with no backup policy has no schedule to remove, and removing
+// nothing is not a failure — the database goes exactly as it did before.
+func TestDeprovisionWithoutABackupPolicyIsUnaffected(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), neighbourSchedule())
+	ctx := context.Background()
+
+	if err := cnpg.Deprovision(ctx, testDatabaseNamespace+"/"+testCluster); err != nil {
+		t.Fatalf("deprovisioning a database with no backup policy: %v", err)
+	}
+	cluster := &unstructured.Unstructured{}
+	cluster.SetGroupVersionKind(clusterGVK())
+	key := types.NamespacedName{Namespace: testDatabaseNamespace, Name: testCluster}
+	if err := cnpg.Client.Get(ctx, key, cluster); !apierrors.IsNotFound(err) {
+		t.Fatalf("the cluster survived deprovisioning (%v)", err)
+	}
+}
+
+// An installation whose CloudNativePG has been uninstalled still finalizes:
+// neither the Cluster nor its schedule can be addressed at all, and a claim
+// nobody can delete is worse than a database nobody can find.
+func TestDeprovisionFinalizesWhereCloudNativePGIsGone(t *testing.T) {
+	cnpg := cnpgWithoutTheOperator(t, readyCluster(), sourceSchedule())
+
+	if err := cnpg.Deprovision(context.Background(), testDatabaseNamespace+"/"+testCluster); err != nil {
+		t.Fatalf("deprovisioning where CloudNativePG is not installed: %v", err)
 	}
 }
 

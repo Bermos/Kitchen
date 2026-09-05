@@ -442,10 +442,12 @@ dropped the field is a failing claim with a sentence on it, not a silent loss.
 - **Nothing here deletes anything at the destination.** Switching a policy off
   removes the configuration and the schedule and leaves every archive where it
   is. So does deleting the claim, **under either deletion policy**:
-  `deletionPolicy: Delete` destroys the database, and if it also destroyed the
-  backups then "Delete" would quietly destroy the recovery point, which is the
-  one thing deletion protection exists to prevent. What is in the bucket is
-  pruned by `retentionPolicy` and by nothing else.
+  `deletionPolicy: Delete` destroys the database and takes its schedule with
+  it — a schedule naming a database nobody has is a job failing nightly about
+  nothing — and if it also destroyed the backups then "Delete" would quietly
+  destroy the recovery point, which is the one thing deletion protection
+  exists to prevent. What is in the bucket is pruned by `retentionPolicy` and
+  by nothing else.
 - **Recovering a claim from these archives is a different operation, and it
   exists.** It is a *new* Cluster bootstrapped from the object store at a
   `recoveryTarget` — never an in-place rewind, and nothing the platform
