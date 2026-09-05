@@ -1,0 +1,55 @@
+{{- include "kitchen.validate" . -}}
+{{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+{{- /*
+What makes the telemetry store speak TLS and stop speaking anything else.
+
+It is merged into the server's configuration, and the two `remove` attributes
+are the half that matters: ClickHouse's own config.xml declares `http_port`
+8123 and `tcp_port` 9000, and a file that only *added* the secure listeners
+would leave both of those answering in the clear beside them. `remove` is
+ClickHouse's merge attribute for deleting an element the base configuration
+declared, which is how a listener is taken away rather than moved.
+
+It is mounted one file at a time (`subPath`), not as a directory. The image
+ships its own `config.d/docker_related_config.xml`, which is where
+`listen_host` comes from — a whole-directory mount over `config.d` hides it,
+and a ClickHouse that listens on localhost alone is a store nothing in the
+cluster can reach.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kitchen.clickhouseFullname" . }}-tls-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  kitchen-tls.xml: |
+    <clickhouse>
+        <!-- The plaintext listeners, taken away rather than left beside the
+             secure ones. An address on 8123 or 9000 is a refused connection,
+             which is the only shape of this that cannot be downgraded to. -->
+        <http_port remove="remove"/>
+        <tcp_port remove="remove"/>
+        <https_port>{{ int .Values.clickhouse.tls.httpsPort }}</https_port>
+        <tcp_port_secure>{{ int .Values.clickhouse.tls.nativePort }}</tcp_port_secure>
+        <openSSL>
+            <server>
+                <!-- The certificate the operator requests from the platform's
+                     internal CA, for every name a client in the cluster
+                     reaches this Service by. -->
+                <certificateFile>{{ include "kitchen.clickhouseTLSMountPath" . }}/tls.crt</certificateFile>
+                <privateKeyFile>{{ include "kitchen.clickhouseTLSMountPath" . }}/tls.key</privateKeyFile>
+                <!-- Clients are authenticated by password, not by
+                     certificate, so none is asked for. Verification runs the
+                     other way: it is the client that verifies this server,
+                     against the CA bundle the operator publishes. -->
+                <verificationMode>none</verificationMode>
+                <cacheSessions>true</cacheSessions>
+                <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+                <preferServerCiphers>true</preferServerCiphers>
+            </server>
+        </openSSL>
+    </clickhouse>
+{{- end }}

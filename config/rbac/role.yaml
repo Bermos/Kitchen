@@ -90,6 +90,7 @@ rules:
   resources:
   - certificates
   - clusterissuers
+  - issuers
   verbs:
   - create
   - delete

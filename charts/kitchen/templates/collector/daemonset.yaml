@@ -148,6 +148,14 @@ spec:
             - name: config
               mountPath: /conf
               readOnly: true
+            {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+            # The CA the telemetry store's certificate is verified against.
+            # See the volume below for why this pod waits for it rather than
+            # starting without it.
+            - name: internal-ca
+              mountPath: {{ include "kitchen.internalCAMountPath" . }}
+              readOnly: true
+            {{- end }}
             - name: state
               mountPath: {{ include "kitchen.collectorStateDir" . }}
             - name: var-log
@@ -165,6 +173,25 @@ spec:
         - name: config
           configMap:
             name: {{ include "kitchen.collectorFullname" . }}
+        {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+        # The platform's internal CA, published by the operator once
+        # cert-manager has issued it.
+        #
+        # Deliberately *not* optional. On a first install this ConfigMap does
+        # not exist until the operator has run, and the two ways to wait for
+        # it are not equal: an optional mount gives the agent an empty
+        # directory, the exporter fails to load a CA file that is not there,
+        # and the collector exits — which is a CrashLoopBackOff whose delay
+        # doubles to five minutes and long outlives the thing it is waiting
+        # for. A required mount holds the pod in ContainerCreating instead,
+        # and the kubelet starts it within seconds of the ConfigMap
+        # appearing. It is the same wait the store's own pod does for its
+        # certificate, and for the same reason: there is no state here where
+        # this agent ships a log line in the clear because the CA was late.
+        - name: internal-ca
+          configMap:
+            name: {{ include "kitchen.internalCAConfigMapName" . }}
+        {{- end }}
         # Read offsets, kept on the node so a restarted collector resumes where
         # it left off instead of starting again at the end of every file and
         # losing whatever was written while it was down.

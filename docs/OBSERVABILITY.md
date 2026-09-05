@@ -359,7 +359,16 @@ What runs where, after this design — **bold** marks what changes:
   - **the signals evaluator** (§7) — pure functions over the operator's
     informer caches plus a few store queries; no background loop yet.
 - **ClickHouse** — single node, operator-owned schema, as today, plus the new
-  tables in §5.
+  tables in §5. **Reached over TLS and nothing else** (#382): the operator
+  mints a CA through the bundled cert-manager and issues the store a
+  certificate for its Service names, and every client above — the agent's
+  exporter on the native port, the operator's and the API's queries on the
+  HTTP interface — verifies it `verify-full` against that CA, which they can
+  because the CA bundle is a ConfigMap the operator publishes into their pods.
+  The plaintext listeners are removed from the server rather than left unused,
+  so the finding this closes cannot come back as a client quietly reconnecting
+  to 8123. It does not depend on `tls.mode`; see the chart README's *How the
+  store is reached*.
 - **Explicitly not run:** Prometheus or any second metrics stack;
   kube-state-metrics (the operator watches the API server itself); a
   `k8s_cluster`-receiver collector (same reason); per-pod L7 proxying.

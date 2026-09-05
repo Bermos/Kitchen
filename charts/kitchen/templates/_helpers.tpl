@@ -209,9 +209,104 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{/*
+Whether the store this chart deploys serves TLS. It is the bundled store's
+property alone: an external one's certificate is somebody else's to manage,
+and `clickhouse.external.tls` is how an installation says it has one.
+*/}}
+{{- define "kitchen.clickhouseTLSEnabled" -}}
+{{- if and .Values.clickhouse.enabled .Values.clickhouse.tls.enabled }}true{{ end }}
+{{- end }}
+
+{{/*
+The scheme every client reaches the store's HTTP interface on. It is written
+into the connection secret rather than worked out again in each consumer,
+because the one thing that must never differ between them is whether the
+connection is encrypted.
+*/}}
+{{- define "kitchen.clickhouseScheme" -}}
+{{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+{{- "https" }}
+{{- else if and (not .Values.clickhouse.enabled) .Values.clickhouse.external.tls }}
+{{- "https" }}
+{{- else }}
+{{- "http" }}
+{{- end }}
+{{- end }}
+
+{{/*
+The Secret the store's certificate is issued into, and the ConfigMap the CA
+that signed it is published in.
+
+The operator creates both — cert-manager's webhook admits a Certificate, so on
+a first install it cannot exist until cert-manager is serving — and learns the
+Secret's name from the connection secret, because every name this chart
+generates carries the release's. The CA's name does not: it is one authority
+per platform namespace, compiled into the operator as
+`controller.InternalCAConfigMapName`, and deliberately not configurable for the
+same reason `kitchen-wildcard-tls` is not.
+*/}}
+{{- define "kitchen.clickhouseTLSSecretName" -}}
+{{- printf "%s-clickhouse-tls" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{/*
+The store's Service ports, which follow the interface it serves. Both Services
+in front of ClickHouse publish the same pair, so it is written once.
+*/}}
+{{- define "kitchen.clickhouseServicePorts" -}}
+{{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+- name: https
+  port: {{ int .Values.clickhouse.tls.httpsPort }}
+  targetPort: https
+  protocol: TCP
+- name: native-tls
+  port: {{ int .Values.clickhouse.tls.nativePort }}
+  targetPort: native-tls
+  protocol: TCP
+{{- else }}
+- name: http
+  port: {{ int .Values.clickhouse.service.httpPort }}
+  targetPort: http
+  protocol: TCP
+- name: native
+  port: {{ int .Values.clickhouse.service.nativePort }}
+  targetPort: native
+  protocol: TCP
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.clickhouseTLSMountPath" -}}
+{{- "/etc/clickhouse-server/tls" }}
+{{- end }}
+
+{{- define "kitchen.internalCAConfigMapName" -}}
+{{- "kitchen-internal-ca" }}
+{{- end }}
+
+{{- define "kitchen.internalCAMountPath" -}}
+{{- "/etc/kitchen/internal-ca" }}
+{{- end }}
+
+{{- define "kitchen.internalCAFile" -}}
+{{- printf "%s/ca.crt" (include "kitchen.internalCAMountPath" .) }}
+{{- end }}
+
+{{/*
+The ports. Serving TLS moves both interfaces: the HTTP interface answers on
+`clickhouse.tls.httpsPort` and the native protocol on `clickhouse.tls.nativePort`,
+which are ClickHouse's own defaults for the secure listeners. The plaintext
+ports are not moved aside — they are removed from the server's configuration
+entirely — so an address on 8123 is not a downgrade, it is a refused
+connection.
+*/}}
 {{- define "kitchen.clickhouseHTTPPort" -}}
 {{- if .Values.clickhouse.enabled }}
+{{- if .Values.clickhouse.tls.enabled }}
+{{- .Values.clickhouse.tls.httpsPort }}
+{{- else }}
 {{- .Values.clickhouse.service.httpPort }}
+{{- end }}
 {{- else }}
 {{- .Values.clickhouse.external.httpPort }}
 {{- end }}
@@ -219,7 +314,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "kitchen.clickhouseNativePort" -}}
 {{- if .Values.clickhouse.enabled }}
+{{- if .Values.clickhouse.tls.enabled }}
+{{- .Values.clickhouse.tls.nativePort }}
+{{- else }}
 {{- .Values.clickhouse.service.nativePort }}
+{{- end }}
 {{- else }}
 {{- .Values.clickhouse.external.nativePort }}
 {{- end }}

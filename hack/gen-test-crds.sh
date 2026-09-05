@@ -33,7 +33,7 @@ mkdir -p "${out_dir}"
 # whole document, and a metadata header carrying the chart's own labels and
 # resource policy. Both are stripped — the header is rebuilt as plain YAML,
 # and the schema below `spec:` is copied verbatim.
-for kind in certificates clusterissuers; do
+for kind in certificates clusterissuers issuers; do
   src="${work_dir}/cert-manager/templates/crd-cert-manager.io_${kind}.yaml"
   if [[ ! -f "${src}" ]]; then
     echo "error: ${src##*/} is not in cert-manager ${chart_version}" >&2

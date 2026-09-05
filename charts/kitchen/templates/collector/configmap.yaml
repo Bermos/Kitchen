@@ -409,7 +409,31 @@ data:
 
     exporters:
       clickhouse:
-        endpoint: {{ printf "tcp://%s:%s?dial_timeout=10s" (include "kitchen.clickhouseHost" .) (include "kitchen.clickhouseNativePort" .) | quote }}
+        {{- $secure := eq (include "kitchen.clickhouseScheme" .) "https" }}
+        # The native protocol, over TLS where the store serves it. `secure` is
+        # spelled in the DSN rather than left to the scheme, because the
+        # exporter only infers it from `https://`, and `https://` on this
+        # exporter means the HTTP interface — a different port and a different
+        # protocol from the one this pipeline writes.
+        endpoint: {{ printf "tcp://%s:%s?dial_timeout=10s%s"
+              (include "kitchen.clickhouseHost" .) (include "kitchen.clickhouseNativePort" .)
+              (ternary "&secure=true" "" $secure) | quote }}
+        {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
+        # verify-full, spelled out: the chain against the CA the operator
+        # publishes, and the name against the address this agent dialled.
+        # `insecure` and `insecure_skip_verify` are absent on purpose — the
+        # agent is one of the platform's own components, so it can carry the
+        # CA, and there is nothing here to weaken.
+        #
+        # The bundle is mounted from a ConfigMap the operator writes, and it
+        # is mounted optional: on a first install this agent starts before the
+        # CA exists and fails to export until it does. That restart is the
+        # ordering rather than a fault, and it is the same one the exporter
+        # already has against a database the operator has not created yet.
+        tls:
+          ca_file: {{ include "kitchen.internalCAFile" . | quote }}
+          server_name: {{ include "kitchen.clickhouseHost" . | quote }}
+        {{- end }}
         database: {{ .Values.clickhouse.auth.database | quote }}
         username: {{ .Values.clickhouse.auth.username | quote }}
         password: ${env:CLICKHOUSE_PASSWORD}

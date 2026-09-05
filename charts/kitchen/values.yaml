@@ -884,9 +884,47 @@ clickhouse:
     # upgrades when empty. Set it explicitly if you render manifests with
     # `helm template`, which cannot read the existing secret back.
     password: ""
+  # TLS inside the platform namespace.
+  #
+  # On by default. Until it existed the store answered plain HTTP on 8123 and
+  # the plain native protocol on 9000, so every log line, every query and the
+  # store's own password crossed `kitchen-system` in the clear — readable by
+  # anything that lands in the namespace, and by the node. The NetworkPolicy
+  # `networkPolicy.enabled` renders closed the namespace to applications; it
+  # did not encrypt what is inside it.
+  #
+  # The certificate comes from a CA the **operator** mints through the
+  # cert-manager this chart already bundles — a self-signed root, a CA
+  # certificate, a CA issuer — and the platform's own components verify
+  # against it (`verify-full`, hostname and chain). Nothing here depends on
+  # `kitchen.tls.mode`: that decides how the platform is published to the
+  # internet, and this decides whether two pods in one namespace talk in the
+  # clear, so an installation on `tls.mode: none` gets it too.
+  #
+  # Turning it off is the one way to run the bundled store in plaintext, and
+  # the Kitchen singleton says so: `InternalCAReady` reads False with reason
+  # `StoreInTheClear`.
+  tls:
+    # -- Serve the telemetry store over TLS, with a certificate the operator
+    # requests from the platform's internal CA. Needs a cert-manager on the
+    # cluster — this chart bundles one — and the store's pod waits for the
+    # certificate before it starts.
+    enabled: true
+    # -- Port the HTTP interface answers on once TLS is on. ClickHouse's own
+    # default for `https_port`; the plaintext 8123 is removed from the
+    # server's configuration rather than left listening.
+    httpsPort: 8443
+    # -- Port the native protocol answers on once TLS is on, which is what the
+    # telemetry agent writes to. ClickHouse's own default for
+    # `tcp_port_secure`; the plaintext 9000 is removed with 8123.
+    nativePort: 9440
   service:
     type: ClusterIP
+    # -- Port the HTTP interface is published on when `clickhouse.tls.enabled`
+    # is off. With TLS on it is `clickhouse.tls.httpsPort` instead.
     httpPort: 8123
+    # -- Port the native protocol is published on when `clickhouse.tls.enabled`
+    # is off. With TLS on it is `clickhouse.tls.nativePort` instead.
     nativePort: 9000
     annotations: {}
   persistence:
@@ -933,6 +971,12 @@ clickhouse:
     host: ""
     httpPort: 8123
     nativePort: 9000
+    # -- The external store serves TLS, and its certificate is signed by a CA
+    # the platform's own components already trust. The platform then verifies
+    # it — hostname and chain — against the host's roots; there is no setting
+    # anywhere that connects without verifying. Leave it off and the platform
+    # says so on the Kitchen singleton rather than pretending otherwise.
+    tls: false
   # -- Install with no telemetry store at all. Only meaningful with both
   # clickhouse.enabled=false and no external host.
   acknowledgeNoStore: false

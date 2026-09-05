@@ -118,6 +118,15 @@ jobs:
                  --set clickhouse.auth.password=hunter2
           render ${CHART_BASE} ${CHART_ACME} \
                  --set clickhouse.enabled=false --set clickhouse.acknowledgeNoStore=true
+          # The telemetry store left in the clear, which is the one way to run
+          # it after #382 and has to keep rendering.
+          render ${CHART_BASE} ${CHART_ACME} --set clickhouse.tls.enabled=false
+          # And an external store that serves its own TLS.
+          render ${CHART_BASE} ${CHART_ACME} \
+                 --set clickhouse.enabled=false \
+                 --set clickhouse.external.host=clickhouse.telemetry.svc \
+                 --set clickhouse.external.tls=true \
+                 --set clickhouse.auth.password=hunter2
           render ${CHART_BASE} ${CHART_ACME} --set collector.enabled=false
           render ${CHART_BASE} ${CHART_ACME} \
                  --set 'collector.logs.excludeNamespaces={kube-system}' \
@@ -373,6 +382,92 @@ jobs:
             -s templates/networkpolicy.yaml 2>/dev/null || true)
           if echo "${off}" | grep -q 'kind: NetworkPolicy'; then
             echo "::error::networkPolicy.enabled=false still rendered a NetworkPolicy"
+            exit 1
+          fi
+
+      - name: Check the telemetry store does not answer in plaintext
+        run: |
+          set -euo pipefail
+          # #382: the bundled stores answered in the clear inside the platform
+          # namespace. The NetworkPolicy above closed the namespace to
+          # applications; it did nothing about what is readable inside it, or
+          # to anything with a view of the node.
+          store() {
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              ${CHART_BASE} ${CHART_ACME} "$@"
+          }
+
+          config=$(store -s templates/clickhouse/tls-configmap.yaml)
+          # Adding the secure listeners protects nothing on its own:
+          # ClickHouse's own config.xml declares 8123 and 9000, so a file that
+          # only added 8443 and 9440 leaves both answering beside them — and
+          # every client keeps working, which is how that goes unnoticed.
+          for port in http_port tcp_port; do
+            echo "${config}" | grep -q "<${port} remove=\"remove\"/>" || {
+              echo "::error::the telemetry store's configuration does not remove <${port}>;" \
+                   "it still answers in plaintext inside kitchen-system."
+              exit 1
+            }
+          done
+          echo "${config}" | grep -q '<https_port>8443</https_port>' || {
+            echo "::error::the telemetry store serves no HTTPS interface"
+            exit 1
+          }
+          echo "${config}" | grep -q '<tcp_port_secure>9440</tcp_port_secure>' || {
+            echo "::error::the telemetry store serves no TLS native port, which is what the" \
+                 "telemetry agent writes on."
+            exit 1
+          }
+
+          # What every client is told. `scheme` is what stops one dialling
+          # plaintext; `caFile` is the difference between an encrypted
+          # connection and a verified one.
+          secret=$(store -s templates/clickhouse/secret.yaml)
+          echo "${secret}" | grep -q 'scheme: "https"' || {
+            echo "::error::the connection secret does not say the store speaks TLS, so every" \
+                 "client of it connects in the clear."
+            exit 1
+          }
+          echo "${secret}" | grep -q 'caFile: "/etc/kitchen/internal-ca/ca.crt"' || {
+            echo "::error::the connection secret names no CA bundle: the platform's own" \
+                 "components would encrypt without verifying."
+            exit 1
+          }
+          echo "${secret}" | grep -q 'certificateSecret: "kitchen-clickhouse-tls"' || {
+            echo "::error::nothing asks the operator to issue the store a certificate, so its" \
+                 "pod waits forever for a Secret nothing writes."
+            exit 1
+          }
+
+          # The telemetry agent writes more into the store than everything
+          # else together, and it does it over the native protocol — the one
+          # client whose TLS is configured outside internal/clickhouse.
+          agent=$(store -s templates/collector/configmap.yaml)
+          echo "${agent}" | grep -q 'endpoint: "tcp://kitchen-clickhouse.kitchen-system.svc:9440?dial_timeout=10s&secure=true"' || {
+            echo "::error::the telemetry agent does not export over TLS"
+            exit 1
+          }
+          echo "${agent}" | grep -q 'ca_file: "/etc/kitchen/internal-ca/ca.crt"' || {
+            echo "::error::the telemetry agent verifies nothing about the store it writes to"
+            exit 1
+          }
+
+          # Off is the one way to run the store in the clear, and it has to be
+          # the whole way: no certificate mount to wait on, and a connection
+          # secret that says so rather than pointing clients at a port nothing
+          # serves.
+          # The TLS ConfigMap is not among the selectors: with TLS off it
+          # renders nothing at all, and `helm template -s` on a template that
+          # produced no document is an error rather than an empty answer.
+          plain=$(store --set clickhouse.tls.enabled=false \
+            -s templates/clickhouse/secret.yaml -s templates/clickhouse/statefulset.yaml)
+          echo "${plain}" | grep -q 'scheme: "http"' || {
+            echo "::error::clickhouse.tls.enabled=false still tells clients the store speaks TLS"
+            exit 1
+          }
+          if echo "${plain}" | grep -q 'kitchen-clickhouse-tls'; then
+            echo "::error::clickhouse.tls.enabled=false still mounts a certificate the operator" \
+                 "will never be asked to issue; the store's pod would never start."
             exit 1
           fi
 
@@ -943,20 +1038,97 @@ jobs:
           set -euo pipefail
           password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
             -o jsonpath='{.data.password}' | base64 -d)
+          # `--secure` because the store has no plaintext listener left at all
+          # (#382), and `--accept-invalid-certificate` because this connection
+          # is to 127.0.0.1 inside the pod, which no certificate names. What
+          # verification the platform does is proved further down, by the
+          # operator and the agent actually reaching the store over the
+          # Service address with the CA in hand.
+          ch() {
+            kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+              clickhouse-client --secure --accept-invalid-certificate "$@"
+          }
           # The credentials in the secret are the ones ClickHouse actually took.
-          answer=$(kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
-            clickhouse-client --user kitchen --password "${password}" \
+          answer=$(ch --user kitchen --password "${password}" \
             --database kitchen --query 'SELECT 1')
           [ "${answer}" = 1 ] || {
             echo "::error::ClickHouse rejected the credentials in the secret"
             exit 1
           }
           # The image's passwordless `default` user must be gone.
-          if kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
-            clickhouse-client --user default --query 'SELECT 1' >/dev/null 2>&1; then
+          if ch --user default --query 'SELECT 1' >/dev/null 2>&1; then
             echo "::error::the default ClickHouse user still accepts passwordless logins"
             exit 1
           fi
+
+      - name: Verify the telemetry store answers nothing in plaintext
+        run: |
+          set -euo pipefail
+          # #382. The NetworkPolicy closed kitchen-system to applications; it
+          # did nothing about what is readable *inside* it, or to anything
+          # with a view of the node. So the plaintext listeners are gone, and
+          # this is what proves they are gone rather than merely unused: the
+          # image's own busybox wget, from inside the pod, on both ports.
+          password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
+            -o jsonpath='{.data.password}' | base64 -d)
+          if kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+            wget -q -T 3 -O- http://127.0.0.1:8123/ping >/dev/null 2>&1; then
+            echo "::error::the telemetry store still answers plain HTTP on 8123; every query" \
+                 "and its own password cross kitchen-system in the clear."
+            exit 1
+          fi
+          if kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+            clickhouse-client --no-secure --port 9000 --user kitchen \
+            --password "${password}" --query 'SELECT 1' >/dev/null 2>&1; then
+            echo "::error::the telemetry store still accepts the plain native protocol on 9000," \
+                 "which is the port the telemetry agent writes every log line on."
+            exit 1
+          fi
+
+          # The certificate, and the CA under it. Both are the operator's, not
+          # the chart's: cert-manager's webhook admits them, so on a first
+          # install they cannot exist until it is serving.
+          for cert in kitchen-internal-ca kitchen-clickhouse-tls; do
+            ready=$(kubectl -n kitchen-system get certificate "${cert}" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+            [ "${ready}" = True ] || {
+              kubectl -n kitchen-system describe certificate "${cert}" || true
+              echo "::error::Certificate ${cert} is not ready"
+              exit 1
+            }
+          done
+          # Published as a ConfigMap, so that a client of a store gets the
+          # certificate and never the CA's private key.
+          kubectl -n kitchen-system get configmap kitchen-internal-ca \
+            -o jsonpath='{.data.ca\.crt}' | grep -q 'BEGIN CERTIFICATE' || {
+            echo "::error::the internal CA bundle was not published for the platform's clients"
+            exit 1
+          }
+          if kubectl -n kitchen-system get configmap kitchen-internal-ca \
+            -o jsonpath='{.data}' | grep -q 'tls.key'; then
+            echo "::error::the CA's private key was published in the bundle every client mounts"
+            exit 1
+          fi
+
+          # And the platform's own report of it. The operator writes this
+          # after it has connected to the store over verified TLS, so a True
+          # here is the end-to-end proof that verify-full works — the pieces
+          # above only show the objects exist.
+          for condition in InternalCAReady TelemetrySchemaReady; do
+            status=""
+            for _ in $(seq 30); do
+              status=$(kubectl get kitchen default \
+                -o jsonpath="{.status.conditions[?(@.type=='${condition}')].status}")
+              [ "${status}" = True ] && break
+              sleep 5
+            done
+            [ "${status}" = True ] || {
+              kubectl get kitchen default -o jsonpath='{.status.conditions}' | jq .
+              echo "::error::${condition} is '${status}': the platform is not reaching its own" \
+                   "store over verified TLS."
+              exit 1
+            }
+          done
 
       - name: Verify the identity provider
         run: |
@@ -1109,9 +1281,13 @@ jobs:
           set -euo pipefail
           password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
             -o jsonpath='{.data.password}' | base64 -d)
+          # --secure: the store has no plaintext listener (#382). See the
+          # store verification step above for why the certificate is not
+          # checked on a connection to 127.0.0.1.
           ch() {
             kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
-              clickhouse-client --user kitchen --password "${password}" \
+              clickhouse-client --secure --accept-invalid-certificate \
+              --user kitchen --password "${password}" \
               --database kitchen --query "$1"
           }
 
