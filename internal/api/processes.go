@@ -134,6 +134,26 @@ type processView struct {
 	// worker that declared none — unlike the web process, a worker is
 	// probed only where it asked to be.
 	Health *healthView `json:"health,omitempty"`
+	// Security is what this workload *declared* about the posture it runs
+	// under, absent where it declared nothing and inherits the unit's whole.
+	//
+	// It is the declaration rather than the resolved answer for the reason
+	// Previews is: a client that reads the list to edit it has to be able to
+	// send back what it did not touch, and sending the resolved posture back
+	// would copy the unit's onto every workload — turning an inheritance
+	// into four declarations that stop moving when the project's does.
+	Security *securityView `json:"security,omitempty"`
+	// EffectiveSecurity is the posture it actually runs under: the project's
+	// `runtime.security` with the block above merged over it field by field,
+	// and `overrides` naming which fields came from the workload (#399).
+	//
+	// It is always present, for the reason the project's own posture always
+	// is: every workload runs under one, and reporting nothing for a
+	// workload that declared nothing would read as "not constrained" rather
+	// than "constrained by the unit". It is resolved here so that the
+	// dashboard, the CLI and a refusal message cannot each resolve it
+	// differently.
+	EffectiveSecurity *securityView `json:"effectiveSecurity,omitempty"`
 	// Init is what this workload prepares inside the volumes it mounts
 	// before its own container starts (#348), as the project declares it.
 	// Absent means it prepares nothing.
@@ -250,10 +270,15 @@ func newProcessRunView(run *kitchenv1alpha1.ProcessRun) *processRunView {
 // declaration. It is what turns a deploy task's recorded run into an answer
 // about *this* deploy: a run recorded against another release is a run that
 // has not happened for this one.
+// `unit` is the posture of the runtime this workload belongs to — the
+// Release's snapshot for an environment, the Project's own declaration for a
+// project — since what a workload runs under is that with its own merged over
+// it, and neither half alone is the answer.
 func newProcessView(
 	process kitchenv1alpha1.ProcessSpec,
 	status *kitchenv1alpha1.ProcessStatus,
 	release string,
+	unit *kitchenv1alpha1.SecuritySpec,
 ) processView {
 	view := processView{
 		Name:        process.Name,
@@ -267,6 +292,14 @@ func newProcessView(
 		Previews:    process.Previews,
 		Init:        newVolumeInitViews(process.Init),
 		Healthy:     true,
+		// Both halves: what this workload asked for, and what it ends up
+		// running under. A reader shown only the second cannot tell which of
+		// the two declarations won, and a client shown only the second would
+		// write the unit's posture back as this workload's own.
+		EffectiveSecurity: newWorkloadSecurityView(unit, process.Security),
+	}
+	if process.Security != nil {
+		view.Security = newSecurityView(process.Security)
 	}
 	switch {
 	case process.Type == kitchenv1alpha1.ProcessCron:
@@ -382,30 +415,36 @@ func (s *Server) environmentProcesses(w http.ResponseWriter, req *http.Request) 
 		s.writeError(w, err)
 		return
 	}
-	views := make([]processView, 0, len(declared))
-	for _, process := range declared {
-		views = append(views, newProcessView(process, env.FindProcessStatus(process.Name), env.Spec.ReleaseRef.Name))
+	views := make([]processView, 0, len(declared.Processes))
+	for _, process := range declared.Processes {
+		views = append(views, newProcessView(
+			process, env.FindProcessStatus(process.Name), env.Spec.ReleaseRef.Name, declared.Runtime.Security))
 	}
 	writeList(w, views)
 }
 
-// declaredProcesses is the process list of the Release this environment is on.
-// A missing Release is an empty list rather than an error: the environment's
-// own conditions already say the release is gone, and this endpoint answering
-// 500 for it would be a second, less informative way of hearing about it.
+// declaredProcesses is the configuration the Release this environment is on
+// froze: its process list, and the runtime whose posture each workload's own
+// is merged over. Both halves travel because neither alone says what a
+// workload runs under.
+//
+// A missing Release is an empty snapshot rather than an error: the
+// environment's own conditions already say the release is gone, and this
+// endpoint answering 500 for it would be a second, less informative way of
+// hearing about it.
 func (s *Server) declaredProcesses(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
-) ([]kitchenv1alpha1.ProcessSpec, error) {
+) (kitchenv1alpha1.ConfigSnapshot, error) {
 	release := &kitchenv1alpha1.Release{}
 	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ReleaseRef.Name}
 	if err := s.Client.Get(ctx, key, release); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, nil
+			return kitchenv1alpha1.ConfigSnapshot{}, nil
 		}
-		return nil, err
+		return kitchenv1alpha1.ConfigSnapshot{}, err
 	}
-	return release.Spec.ConfigSnapshot.Processes, nil
+	return release.Spec.ConfigSnapshot, nil
 }
 
 // processRuns lists a process's recent runs, newest first — a schedule's
@@ -666,7 +705,7 @@ func (s *Server) runnableProcess(
 		s.writeError(w, err)
 		return kitchenv1alpha1.ProcessSpec{}, false
 	}
-	process := kitchenv1alpha1.FindProcess(declared, name)
+	process := kitchenv1alpha1.FindProcess(declared.Processes, name)
 	if process == nil {
 		s.writeError(w, apierrors.NewNotFound(
 			kitchenv1alpha1.GroupVersion.WithResource("processes").GroupResource(), name))

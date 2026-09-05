@@ -345,11 +345,19 @@ func processPodSpec(
 		// Multi-Attach failure the claim names a process to avoid.
 		Volumes: volumes,
 	}
-	// The same posture the web process runs under, and from the same
-	// snapshot: a worker and a scheduled run are the project's image started
-	// with another command, so a posture that described only the web process
-	// would describe a third of the workloads the project ships.
-	applySecurityContext(&pod, &pod.Containers[0], release.Spec.ConfigSnapshot.Runtime.Security)
+	// The posture this workload runs under, from the same snapshot: the
+	// unit's, with the workload's own written over it field by field (#399).
+	// A posture that described only the web process would describe a third of
+	// the workloads the project ships; one that described every workload
+	// identically could not say that three `node:22-slim` images run as 1000
+	// and the distroless one beside them runs as 65532.
+	//
+	// It is resolved here rather than frozen anywhere, because both halves
+	// are already frozen: the Release snapshots the runtime and the process
+	// list together, so a rollback restores the resolution exactly by
+	// restoring the two declarations it was computed from.
+	applySecurityContext(&pod, &pod.Containers[0], kitchenv1alpha1.ResolveSecurity(
+		release.Spec.ConfigSnapshot.Runtime.Security, process.Security))
 	// The configuration files this release hands *this* workload, which is
 	// the ones that named it and the ones that named nobody. A worker, a
 	// service, a scheduled run and a deploy-time task all get them: a unit is

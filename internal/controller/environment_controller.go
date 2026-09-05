@@ -1312,7 +1312,7 @@ func (r *EnvironmentReconciler) updateStatus(
 	// a release rolling out behind pods still serving the last one is exactly
 	// where a refusal would otherwise go unmentioned (#393).
 	reason, refusal, refused := r.startFailure(
-		ctx, env, appNS, release.Spec.ConfigSnapshot.Runtime.Security, available)
+		ctx, env, appNS, release.Spec.ConfigSnapshot, available)
 	env.Status.Refusal = refused
 	switch {
 	case refused != nil:

@@ -159,6 +159,65 @@ describe("what the form can refuse on its own", () => {
     ]);
   });
 
+  // #399: a workload's own posture is a declaration like any other, so it has
+  // to survive being read and sent back — a workload nobody touched must go
+  // back exactly as it came.
+  it("reads a workload's own posture back and sends it back unchanged", () => {
+    const [own, inherited] = read(
+      {
+        name: "sidecar",
+        type: "worker",
+        security: {
+          runAsNonRoot: false,
+          runAsUser: 65532,
+          readOnlyRootFilesystem: true,
+          allowPrivilegeEscalation: false,
+          seccompProfile: "RuntimeDefault",
+        },
+        effectiveSecurity: {
+          runAsNonRoot: true,
+          runAsUser: 65532,
+          readOnlyRootFilesystem: true,
+          allowPrivilegeEscalation: false,
+          seccompProfile: "RuntimeDefault",
+          overrides: ["runAsUser", "readOnlyRootFilesystem"],
+        },
+      },
+      { name: "worker", type: "worker" },
+    );
+
+    expect(own.security).toBe(true);
+    expect(own.runAsUser).toBe("65532");
+    expect(own.readOnlyRootFilesystem).toBe(true);
+    // The declaration, never the effective posture: sending the resolved one
+    // back would copy the project's onto every workload.
+    expect(own.runAsNonRoot).toBe(false);
+    expect(inherited.security).toBe(false);
+
+    const writes = processWrites([own, inherited]);
+    expect(writes[0].security).toEqual({
+      runAsNonRoot: false,
+      runAsUser: 65532,
+      readOnlyRootFilesystem: true,
+      allowPrivilegeEscalation: false,
+      dropCapabilities: [],
+    });
+    expect(writes[1].security).toBeUndefined();
+  });
+
+  // The policy applies only where there is a group to apply it to, and the
+  // API refuses one without it — so an emptied group takes it with it rather
+  // than failing the whole save.
+  it("does not send a volume change policy with no group of its own", () => {
+    const draft = newWorkloadDraft();
+    draft.name = "worker";
+    draft.security = true;
+    draft.fsGroupChangePolicy = "OnRootMismatch";
+    expect(processWrites([draft])[0].security?.fsGroupChangePolicy).toBeUndefined();
+    draft.fsGroup = "2000";
+    expect(processWrites([draft])[0].security?.fsGroupChangePolicy).toBe("OnRootMismatch");
+  });
+
   it("is quiet about a list the platform would accept", () => {
     const drafts = read(
       { name: "worker", type: "worker" },

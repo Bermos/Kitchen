@@ -1,4 +1,4 @@
-import type { ImageWrite, Process, ProcessWrite, VolumeInit } from "./api";
+import type { ImageWrite, Process, ProcessWrite, Security, SecuritySettings, VolumeInit } from "./api";
 
 // The workloads editor's side of a project's process list.
 //
@@ -67,6 +67,24 @@ export interface WorkloadDraft {
   healthTimeout: string;
   healthFailures: string;
   healthStartupFailures: string;
+  /** This workload's own security posture, merged over the project's field by
+   * field: a field set here wins, a field left blank inherits the project's.
+   * Off means it declares none at all and runs under the project's whole.
+   *
+   * Everything here is zero-means-inherit, which is the reading the posture
+   * already had one level up — so a workload adds to the project's posture or
+   * redirects it, and takes a constraint off by the project not declaring it
+   * on everything. */
+  security: boolean;
+  runAsNonRoot: boolean;
+  runAsUser: string;
+  runAsGroup: string;
+  fsGroup: string;
+  fsGroupChangePolicy: string;
+  readOnlyRootFilesystem: boolean;
+  allowPrivilegeEscalation: boolean;
+  /** One capability per line, the shape every word list here takes. */
+  dropCapabilities: string;
   /** What this workload prepares inside the volumes it mounts before it
    * starts. Empty for the great majority of workloads, which mount none. */
   init: VolumeInitDraft[];
@@ -97,6 +115,24 @@ export interface VolumeInitDraft {
    * `configuration configuration.yaml 0640`. */
   seed: string;
 }
+
+/** The eight fields of a posture, spelled the way the API, kitchen.json and
+ * the operator all spell them — which is also the way `overrides` names them.
+ * A panel that marks the overridden fields of an effective posture types its
+ * own names against this, so a name that drifts from the API's fails the
+ * build rather than quietly marking nothing. */
+export const SECURITY_FIELDS = [
+  "runAsNonRoot",
+  "runAsUser",
+  "runAsGroup",
+  "fsGroup",
+  "fsGroupChangePolicy",
+  "readOnlyRootFilesystem",
+  "allowPrivilegeEscalation",
+  "dropCapabilities",
+] as const;
+
+export type SecurityField = (typeof SECURITY_FIELDS)[number];
 
 let nextKey = 0;
 
@@ -155,6 +191,7 @@ export function workloadDrafts(processes: Process[] | undefined): WorkloadDraft[
     healthTimeout: numberField(workload.health?.timeoutSeconds),
     healthFailures: numberField(workload.health?.failureThreshold),
     healthStartupFailures: numberField(workload.health?.startupFailureThreshold),
+    ...securityDraft(workload.security),
     init: volumeInitDrafts(workload.init),
   }));
 }
@@ -235,8 +272,66 @@ export function newWorkloadDraft(origin: ImageOrigin = "project"): WorkloadDraft
     healthTimeout: "",
     healthFailures: "",
     healthStartupFailures: "",
+    ...securityDraft(undefined),
     init: [],
   };
+}
+
+/** The posture half of a draft, read off what the workload declared. Absent is
+ * a workload that declared none: it inherits the project's whole, which is the
+ * ordinary case and the one the form starts a new workload in. */
+function securityDraft(security: Security | undefined): Pick<
+  WorkloadDraft,
+  | "security"
+  | "runAsNonRoot"
+  | "runAsUser"
+  | "runAsGroup"
+  | "fsGroup"
+  | "fsGroupChangePolicy"
+  | "readOnlyRootFilesystem"
+  | "allowPrivilegeEscalation"
+  | "dropCapabilities"
+> {
+  return {
+    security: Boolean(security),
+    runAsNonRoot: security?.runAsNonRoot ?? false,
+    runAsUser: numberField(security?.runAsUser),
+    runAsGroup: numberField(security?.runAsGroup),
+    fsGroup: numberField(security?.fsGroup),
+    fsGroupChangePolicy: security?.fsGroupChangePolicy ?? "",
+    readOnlyRootFilesystem: security?.readOnlyRootFilesystem ?? false,
+    allowPrivilegeEscalation: security?.allowPrivilegeEscalation ?? false,
+    dropCapabilities: (security?.dropCapabilities ?? []).join("\n"),
+  };
+}
+
+/** What a workload's own posture sends, or nothing at all where it declares
+ * none. A block of nothing but defaults is no override — the API stores it as
+ * none — so it is left out rather than sent, which keeps a workload that
+ * declared nothing reading as a workload that declared nothing. */
+function securityWrite(draft: WorkloadDraft): SecuritySettings | undefined {
+  if (!draft.security) return undefined;
+  const fsGroup = positiveNumber(draft.fsGroup);
+  const write: SecuritySettings = {
+    runAsNonRoot: draft.runAsNonRoot,
+    readOnlyRootFilesystem: draft.readOnlyRootFilesystem,
+    allowPrivilegeEscalation: draft.allowPrivilegeEscalation,
+    dropCapabilities: wordsOf(draft.dropCapabilities),
+  };
+  const ids: [(value: number) => void, string][] = [
+    [(value) => (write.runAsUser = value), draft.runAsUser],
+    [(value) => (write.runAsGroup = value), draft.runAsGroup],
+    [(value) => (write.fsGroup = value), draft.fsGroup],
+  ];
+  for (const [set, value] of ids) {
+    const parsed = positiveNumber(value);
+    if (parsed !== undefined) set(parsed);
+  }
+  // The policy applies only where there is a group to apply it to, and the
+  // API refuses one without it — so an emptied group takes the policy with it
+  // rather than making the whole save fail.
+  if (fsGroup && draft.fsGroupChangePolicy) write.fsGroupChangePolicy = draft.fsGroupChangePolicy;
+  return write;
 }
 
 /** Whether this type of workload is addressed by the rest of the unit, and so
@@ -335,6 +430,8 @@ export function processWrites(drafts: WorkloadDraft[]): ProcessWrite[] {
           if (parsed !== undefined) set(parsed);
         }
       }
+      const security = securityWrite(draft);
+      if (security) write.security = security;
       return write;
     });
 }

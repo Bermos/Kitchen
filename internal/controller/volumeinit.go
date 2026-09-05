@@ -187,7 +187,6 @@ func buildVolumeInits(
 	envName, operatorImage string,
 ) (volumeInits, error) {
 	inits := volumeInits{}
-	security := release.Spec.ConfigSnapshot.Runtime.Security
 	files := release.Spec.ConfigSnapshot.Files
 
 	workloads := []string{kitchenv1alpha1.WebProcessName}
@@ -210,7 +209,12 @@ func buildVolumeInits(
 					"which is what --quality-gate-image passes in",
 				workload)
 		}
-		init, err := volumeInitContainer(plan, files, envName, operatorImage, security)
+		// The posture *this* workload runs under, not the unit's (#399): the
+		// pod is built under the workload's own resolution, and an init
+		// container entering as a different user would leave the tree it
+		// creates owned by somebody the process that reads it is not.
+		init, err := volumeInitContainer(plan, files, envName, operatorImage,
+			workloadSecurity(release.Spec.ConfigSnapshot, workload))
 		if err != nil {
 			return nil, fmt.Errorf("the %s workload prepares its volumes before it starts, and %w", workload, err)
 		}
@@ -261,7 +265,8 @@ func volumeInitContainer(
 		Command:      []string{"/volume-init"},
 		Env:          []corev1.EnvVar{{Name: volumeinit.PlanVariable, Value: string(encoded)}},
 		VolumeMounts: mounts,
-		// The project's own posture. It is the application's pod and the
+		// The posture this workload runs under — the unit's with the
+		// workload's own merged over it. It is the application's pod and the
 		// application's volume; running this more freely than the process
 		// that will own the result would be the platform quietly granting
 		// itself what the project declined.

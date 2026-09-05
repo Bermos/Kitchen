@@ -525,10 +525,12 @@ type patchProjectRequest struct {
 	// container's port — every environment is probed either way.
 	Health *healthRequest `json:"health,omitempty"`
 	// Security is the posture every workload of this project runs under —
-	// the web process, its workers and its scheduled runs, since they are
-	// one image. Sending it replaces the whole posture; sending `{}` takes
-	// it back off, restoring the platform's default, which every workload
-	// runs under either way.
+	// the web process, its workers, its services and its scheduled runs —
+	// unless one of them declares its own, which is a workload's `security`
+	// in `processes` and is merged over this field by field (#399). Sending
+	// it replaces the whole posture; sending `{}` takes it back off,
+	// restoring the platform's default, which every workload runs under
+	// either way.
 	Security *securityRequest `json:"security,omitempty"`
 	// Init is what the *web* process prepares inside the volumes it mounts
 	// before its own container starts (#348): directories that have to

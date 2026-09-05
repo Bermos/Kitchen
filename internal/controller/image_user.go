@@ -116,22 +116,31 @@ func imageUserIsName(user string) bool {
 	return err != nil
 }
 
-// unverifiableImages are the artifacts of one unit that this posture cannot
-// be honoured on: the project asked for `runAsNonRoot`, named no `runAsUser`,
-// and the image's own user is a name.
+// unverifiableImages are the artifacts of one unit that the posture their own
+// workload runs under cannot be honoured on: `runAsNonRoot` asked for, no
+// `runAsUser` named, and the image's own user a name.
+//
+// **The question is asked per workload, not per unit** (#399). Since a
+// workload declares a posture of its own, merged over the unit's, the four
+// images of one project can be under four different sets of constraints — so
+// the check that fires for "the project" would either refuse a workload whose
+// own `runAsUser` is exactly right or miss one whose inherited `runAsNonRoot`
+// has no uid behind it. It is the same evidence #300 already records per
+// artifact, read against the declaration that actually applies to it.
 //
 // It answers nothing at all in every other case, which is most of them — a
 // posture that names a uid is enforceable whatever the image says, and an
 // image whose user was never read is not evidence of anything.
 func unverifiableImages(
-	security *kitchenv1alpha1.SecuritySpec,
+	snapshot kitchenv1alpha1.ConfigSnapshot,
 	artifacts []kitchenv1alpha1.BuildArtifact,
 ) []kitchenv1alpha1.BuildArtifact {
-	if security == nil || !security.RunAsNonRoot || security.RunAsUser > 0 {
-		return nil
-	}
 	var found []kitchenv1alpha1.BuildArtifact
 	for _, artifact := range artifacts {
+		security := workloadSecurity(snapshot, artifact.Workload)
+		if security == nil || !security.RunAsNonRoot || security.RunAsUser > 0 {
+			continue
+		}
 		if artifact.Artifact != nil && imageUserIsName(artifact.Artifact.User) {
 			found = append(found, artifact)
 		}
@@ -154,12 +163,13 @@ func unverifiableImagesMessage(artifacts []kitchenv1alpha1.BuildArtifact) string
 			artifact.Name(), image, artifact.Artifact.User))
 	}
 	return fmt.Sprintf(
-		"this project asks for runAsNonRoot and names no runAsUser, and %s. The kubelet has to verify that "+
+		"runAsNonRoot is asked for with no runAsUser, and %s. The kubelet has to verify that "+
 			"the image does not run as root before it starts the container, and it can only do that against a "+
-			"uid — a name is resolved inside the image, where it cannot look — so every pod would be refused "+
-			"with \"cannot verify user is non-root\" and nothing would deploy. Set runtime.security.runAsUser "+
-			"to the uid that user has in the image (1000 for the official Node images, 65532 for distroless), "+
-			"or take runAsNonRoot off, and build again",
+			"uid — a name is resolved inside the image, where it cannot look — so that workload's pods would be "+
+			"refused with \"cannot verify user is non-root\" and nothing would deploy. Set runAsUser to the uid "+
+			"that user has in the image (1000 for the official Node images, 65532 for distroless) — on the "+
+			"workload's own security where only it needs one, or on runtime.security for the whole unit — or "+
+			"take runAsNonRoot off, and build again",
 		strings.Join(named, "; "))
 }
 

@@ -147,6 +147,12 @@ func TestPublishedSchemaMatchesTheFileTheParserAccepts(t *testing.T) {
 	compare(t, "processes[]", reflect.TypeFor[appconfig.Process](), *root.Properties["processes"].Items, root)
 	compare(t, "files[]", reflect.TypeFor[FileConfigFile](), *root.Properties["files"].Items, root)
 	compare(t, "processes[].health", reflect.TypeFor[appconfig.Health](), root.Defs["process"].Properties["health"], root)
+	// A workload's own posture is the same shape as the project's and is
+	// checked against the same struct: one declaration, two places it can be
+	// made, and the schema has to offer both or an editor flags the file the
+	// platform accepts.
+	compare(t, "processes[].security", reflect.TypeFor[appconfig.Security](),
+		root.Defs["process"].Properties["security"], root)
 	// What a workload prepares inside its volumes before it starts (#348).
 	// Both the web process and a named workload point at the same definition,
 	// so the file cannot describe one of them and not the other.

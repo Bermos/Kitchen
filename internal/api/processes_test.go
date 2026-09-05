@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -412,6 +413,127 @@ func TestASingletonWorkerSaysSoWhenAnEnvironmentIsRead(t *testing.T) {
 	}
 	if body.Items[1].Singleton {
 		t.Fatalf("a schedule cannot be a singleton, so it must never claim to be: %+v", body.Items[1])
+	}
+}
+
+// The posture is per project *and* per workload, so the one thing a reader
+// cannot work out for themselves — which of the two declarations won, field by
+// field — is answered here rather than in three clients (#399).
+func TestAnEnvironmentReportsThePostureEachWorkloadRunsUnder(t *testing.T) {
+	objs := withProcesses()
+	for _, obj := range objs {
+		release, ok := obj.(*kitchenv1alpha1.Release)
+		if !ok || release.Name != testRelease {
+			continue
+		}
+		release.Spec.ConfigSnapshot.Runtime.Security = &kitchenv1alpha1.SecuritySpec{
+			RunAsNonRoot: true, RunAsUser: 1000, DropCapabilities: []string{"ALL"},
+		}
+		// The distroless workload: its own user, and nothing else to say.
+		release.Spec.ConfigSnapshot.Processes[0].Security = &kitchenv1alpha1.SecuritySpec{RunAsUser: 65532}
+	}
+	h := newHarness(t, nil, objs...)
+
+	recorder := h.do(t, http.MethodGet, processesPath, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[struct {
+		Items []processView `json:"items"`
+	}](t, recorder)
+
+	worker := body.Items[0]
+	if worker.EffectiveSecurity == nil {
+		t.Fatalf("a workload with no effective posture reads as unconstrained: %+v", worker)
+	}
+	if worker.EffectiveSecurity.RunAsUser != 65532 {
+		t.Fatalf("the workload's own uid did not win: %+v", worker.EffectiveSecurity)
+	}
+	if !worker.EffectiveSecurity.RunAsNonRoot || len(worker.EffectiveSecurity.DropCapabilities) != 1 {
+		t.Fatalf("the unit's constraints were not inherited: %+v", worker.EffectiveSecurity)
+	}
+	if !reflect.DeepEqual(worker.EffectiveSecurity.Overrides, []string{"runAsUser"}) {
+		t.Fatalf("the answer does not say which field is the workload's: %+v", worker.EffectiveSecurity)
+	}
+	// The declaration travels beside it, because a client that reads the list
+	// to edit it has to send back what it did not touch — and sending the
+	// effective posture would copy the unit's onto every workload.
+	if worker.Security == nil || worker.Security.RunAsUser != 65532 || worker.Security.RunAsNonRoot {
+		t.Fatalf("the workload's own declaration is not reported as its own: %+v", worker.Security)
+	}
+
+	nightly := body.Items[1]
+	if nightly.Security != nil {
+		t.Fatalf("a workload that declared nothing must not read as declaring something: %+v", nightly.Security)
+	}
+	if nightly.EffectiveSecurity == nil || nightly.EffectiveSecurity.RunAsUser != 1000 {
+		t.Fatalf("a workload that declared nothing runs under the unit's: %+v", nightly.EffectiveSecurity)
+	}
+	if len(nightly.EffectiveSecurity.Overrides) != 0 {
+		t.Fatalf("nothing was overridden, so nothing should be marked: %+v", nightly.EffectiveSecurity)
+	}
+}
+
+// A workload declares its posture with the rest of it, and it is refused by
+// the same validator the project's own is — one answer to what a capability
+// is spelled like, whichever level asks.
+func TestDeclaringAWorkloadsOwnPosture(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop", `{
+		"processes": [
+			{"name": "worker", "type": "worker",
+			 "security": {"runAsUser": 65532, "dropCapabilities": ["net_raw"]}},
+			{"name": "api", "type": "service", "port": 8080, "security": {}}
+		]
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	worker := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "worker")
+	if worker == nil || worker.Security == nil || worker.Security.RunAsUser != 65532 {
+		t.Fatalf("the workload's posture was not stored: %+v", worker)
+	}
+	if !reflect.DeepEqual(worker.Security.DropCapabilities, []string{"NET_RAW"}) {
+		t.Fatalf("the capability was not spelled the way the kernel does: %+v", worker.Security)
+	}
+	// An empty block is no posture, which is how an override is taken back
+	// off through a route that never distinguishes an absent key from a
+	// cleared one.
+	api := kitchenv1alpha1.FindProcess(stored.Spec.Processes, "api")
+	if api == nil || api.Security != nil {
+		t.Fatalf("an empty posture should be no posture: %+v", api)
+	}
+}
+
+func TestAWorkloadsPostureIsRefusedByTheSameRulesAsTheProjects(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	for name, body := range map[string]string{
+		"a capability spelled the way nothing spells one": `{"dropCapabilities": ["net-raw"]}`,
+		"ALL beside another one":                          `{"dropCapabilities": ["ALL", "NET_RAW"]}`,
+		"a negative uid":                                  `{"runAsUser": -1}`,
+		// The policy is *how* an fsGroup is applied, so the two are one
+		// declaration and a workload that wants a different policy states
+		// its group as well.
+		"a change policy with no group of its own": `{"fsGroupChangePolicy": "OnRootMismatch"}`,
+		"a change policy nothing spells that way":  `{"fsGroup": 2000, "fsGroupChangePolicy": "Sometimes"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+				`{"processes": [{"name": "worker", "type": "worker", "security": `+body+`}]}`)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), "worker") {
+				t.Fatalf("the refusal does not name the workload: %s", recorder.Body.String())
+			}
+		})
 	}
 }
 

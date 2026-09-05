@@ -110,6 +110,7 @@ much of it.
 | `health` | worker, service | A health check, the same shape the project's web process takes. A worker's **must name the `port`** it is made against, because a worker publishes none of its own; a service's falls back to its own port. Refused on a cron process and on a task: how a run went is its exit status, not a probe. |
 | `init` | all | What this workload needs done inside the volumes it mounts, before its own container starts: directories that have to exist, and configuration files seeded in once. It is [`runtime.init`](projects.md#a-volume-the-process-cannot-start-on) one level down and on identical terms — a volume claim names the one process that mounts it, so each workload declares its own — and every type takes it, a task included: a migration that writes into a volume needs the tree as much as the worker that reads it afterwards. |
 | `previews` | all | Whether it runs in preview environments. **Off for a worker and a scheduled job unless asked for; on for a service and a task unless they say otherwise** — see below. |
+| `security` | all | This workload's own security posture, merged over the project's `runtime.security` **field by field** — see [A workload whose image is not the others'](#a-workload-whose-image-is-not-the-others). Absent means it runs under the project's whole, which is the ordinary case. |
 
 A worker is probed only where it asked to be, which is the opposite of the web
 process — every environment of a project is probed whether or not it declared
@@ -457,6 +458,69 @@ A service the environment does not run gets no variables at all. An address
 that resolves to nothing is worse than no address — the application would fail
 and blame the network.
 
+### A workload whose image is not the others'
+
+A unit is up to five images, each with its own base. The posture was the one
+thing about them still assumed to be uniform — `runtime.security` hung off the
+project and every workload ran under it, whatever image it ran (#399).
+
+The application that made this a bug is four workloads: three `node:22-slim`
+images ending `USER node`, and one distroless ending `USER nonroot:nonroot`.
+Pinning `runAsUser: 1000` across the project makes all four start, including
+the distroless one whose own user is 65532. It works because that Go binary is
+world-executable and writes nothing. That is luck, not design.
+
+So a workload declares its own, and it is **merged over the project's field by
+field**: a field the workload sets wins, a field it leaves unset inherits the
+project's.
+
+```json
+{
+  "runtime": {"security": {"runAsNonRoot": true, "runAsUser": 1000, "dropCapabilities": ["ALL"]}},
+  "processes": [
+    {"name": "worker", "type": "worker", "command": ["node", "worker.js"]},
+    {"name": "sidecar", "type": "worker",
+     "image": {"repository": "gcr.io/distroless/static", "tag": "nonroot"},
+     "security": {"runAsUser": 65532}}
+  ]
+}
+```
+
+The sidecar runs as 65532, and still never as root and still with every
+capability dropped: only `runAsUser` was declared, so only `runAsUser` moved.
+The worker runs as 1000, because it declared nothing.
+
+A merge is the friendlier half of the trade — a workload that only needs a
+different uid says only that — and the price is that the effective posture
+becomes a computation rather than a value. That is why
+`GET /environments/{name}/processes` answers **both** halves and says which
+fields came from where, rather than leaving three clients to work it out.
+
+**Every field is zero-means-inherit**, the reading the project's own posture
+already has, so a workload adds to the project's posture or points it
+somewhere else and **cannot take a constraint off**. A constraint only some
+workloads can bear is declared on those workloads rather than on the project.
+The keys and the refusals are the project's own — the same validator, naming
+the workload — so `fsGroupChangePolicy` needs an `fsGroup` in the same block,
+a capability is spelled the way the kernel spells it, and `{}` is no override
+at all, which is how one is taken back off.
+
+**The web process has no entry in this list, so its posture is
+`runtime.security`** — which is exactly where it already was. That asymmetry
+is stated rather than modelled around: a second spelling of the web process
+would be a workload nothing routes to answering to the name of the one that is.
+
+Nothing is stored resolved. The Release freezes both halves, so a rollback
+restores the resolution exactly by restoring the two declarations it was
+computed from, and `GET /releases/{name}/config-diff` reports the **resolved**
+posture per workload — a rollback that took one worker off its own uid is
+invisible on a diff that reports only a unit posture that never moved.
+
+The [`runAsNonRoot` without a `uid`](builds.md) refusal fires per workload for
+the same reason: a workload whose own `runAsUser` is the right number for its
+image is left alone even where the project names none, and one whose inherited
+`runAsNonRoot` has no uid behind it fails the build naming that workload alone.
+
 ### Previews run the whole unit
 
 `previews` reads differently by type, and both readings are decisions rather
@@ -504,6 +568,43 @@ joined to what the reconciler last saw of each.
       "readyReplicas": 2,
       "memory": "512Mi",
       "workload": "shop-production-worker",
+      "effectiveSecurity": {
+        "runAsNonRoot": true,
+        "runAsUser": 1000,
+        "readOnlyRootFilesystem": false,
+        "allowPrivilegeEscalation": false,
+        "dropCapabilities": ["ALL"],
+        "seccompProfile": "RuntimeDefault",
+        "declared": ["it must not run as root", "it runs as uid 1000", "it drops ALL"]
+      },
+      "healthy": true
+    },
+    {
+      "name": "sidecar",
+      "type": "worker",
+      "imageSource": {
+        "repository": "gcr.io/distroless/static", "tag": "nonroot",
+        "reference": "gcr.io/distroless/static:nonroot"
+      },
+      "security": {
+        "runAsNonRoot": false,
+        "runAsUser": 65532,
+        "readOnlyRootFilesystem": false,
+        "allowPrivilegeEscalation": false,
+        "seccompProfile": "RuntimeDefault",
+        "declared": ["it runs as uid 65532"]
+      },
+      "effectiveSecurity": {
+        "runAsNonRoot": true,
+        "runAsUser": 65532,
+        "readOnlyRootFilesystem": false,
+        "allowPrivilegeEscalation": false,
+        "dropCapabilities": ["ALL"],
+        "seccompProfile": "RuntimeDefault",
+        "declared": ["it must not run as root", "it runs as uid 65532", "it drops ALL"],
+        "overrides": ["runAsUser"]
+      },
+      "workload": "shop-production-sidecar",
       "healthy": true
     },
     {
@@ -571,6 +672,17 @@ what the task is doing to *this* deploy — `pending`, `running`, `complete` or
 recorded against another release has not happened for this one, however well it
 went, which is exactly what a rollback looks like. `failed` is a release that
 did not land, and what was serving before it still is.
+
+`effectiveSecurity` is the posture the workload **actually runs under**: the
+release's `runtime.security` with the workload's own merged over it field by
+field. It is always present, because every workload runs under one and nothing
+there would read as "unconstrained". `overrides` names the fields that came
+from the workload; everything else on it is the project's, inherited. `security`
+beside it is what the workload itself **declared**, absent for one that declared
+nothing — it is the declaration for the reason `previews` is, so that a client
+which reads the list to edit it can send back what it did not touch. Sending
+the effective posture back would copy the project's onto every workload, and
+four copies of one declaration stop moving when the project's does.
 
 `address` is where a service answers **inside the cluster**, and it is the
 same value its siblings read out of `KITCHEN_SERVICE_<NAME>`. It is not a
@@ -768,3 +880,18 @@ spelling worth having, so `kitchen api` carries that.
 ```sh
 kitchen api PATCH /projects/shop --data @processes.json
 ```
+
+**A workload's security posture has no flags either**, and for the same reason
+one level up: the project's own posture has none, so eight flags here would be
+the asymmetry rather than the saving. `kitchen processes` reads what each
+workload runs under, and `kitchen api` writes it:
+
+```sh
+kitchen processes --json | jq '.items[] | {name, runsUnder: .effectiveSecurity.declared, own: .effectiveSecurity.overrides}'
+kitchen api PATCH /projects/shop --data @processes.json
+```
+
+What `kitchen processes set` does carry is the declaration **untouched**: it
+reads the list, changes only the workload it names, and sends every other
+workload's posture back exactly as it came — the same read-modify-write that
+keeps a parked workload parked.

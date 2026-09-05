@@ -150,7 +150,7 @@ func TestAWorkerRefusedIsReportedWhileTheURLAnswers(t *testing.T) {
 
 	r := refusalReconciler(t, env, worker)
 	reason, message, refused := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}, true)
+		unitPosture(&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}), true)
 
 	if reason != reasonContainerRefused {
 		t.Fatalf("a refused worker behind a working URL was not reported: %q", reason)
@@ -177,7 +177,8 @@ func TestARunsPodIsNotTheEnvironmentsRefusal(t *testing.T) {
 	run.Labels["job-name"] = "shop-production-nightly-29"
 
 	r := refusalReconciler(t, env, run)
-	reason, _, refused := r.startFailure(context.Background(), env, securityTestNamespace, nil, true)
+	reason, _, refused := r.startFailure(
+		context.Background(), env, securityTestNamespace, unitPosture(nil), true)
 	if reason != "" || refused != nil {
 		t.Fatalf("a scheduled run's refusal was reported as the environment's: %q / %+v", reason, refused)
 	}

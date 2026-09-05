@@ -5,6 +5,7 @@ import { timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
+import type { SecurityField } from "../lib/workloads";
 import StatusDot from "./StatusDot.vue";
 
 // The workloads an environment runs besides its web process (#78, #271, #272):
@@ -182,6 +183,58 @@ function healthOf(process: Process): string {
   if (!health) return "";
   const target = health.path ? `GET ${health.path} on :${health.port}` : `TCP :${health.port}`;
   return `${target} every ${health.periodSeconds}s, ${health.failureThreshold} failures out`;
+}
+
+// The posture a workload runs under, field by field, with the ones it
+// declared itself marked (#399).
+//
+// It is a list rather than the API's own sentence because the marker is the
+// point: a merge makes the effective posture a computation, and a reader
+// shown one block with no marks cannot tell which of the two declarations
+// won. The unmarked lines are the project's, inherited.
+//
+// Only the constraints beyond the platform's default are listed. Everything
+// runs under the runtime's own seccomp profile and denies privilege
+// escalation, so listing those on every workload would bury the two or three
+// lines that are this workload's own.
+function postureOf(process: Process): { field: SecurityField; text: string; own: boolean }[] {
+  const security = process.effectiveSecurity;
+  if (!security) return [];
+  const own = new Set(security.overrides ?? []);
+  const lines: { field: SecurityField; text: string }[] = [];
+  if (security.runAsNonRoot) lines.push({ field: "runAsNonRoot", text: "never runs as root" });
+  if (security.runAsUser) lines.push({ field: "runAsUser", text: `runs as uid ${security.runAsUser}` });
+  if (security.runAsGroup) lines.push({ field: "runAsGroup", text: `runs as gid ${security.runAsGroup}` });
+  if (security.fsGroup) {
+    lines.push({ field: "fsGroup", text: `its volumes are owned by gid ${security.fsGroup}` });
+    if (security.fsGroupChangePolicy === "OnRootMismatch") {
+      lines.push({
+        field: "fsGroupChangePolicy",
+        text: "that ownership is applied only when the volume's own root does not already match",
+      });
+    }
+  }
+  if (security.readOnlyRootFilesystem) {
+    lines.push({ field: "readOnlyRootFilesystem", text: "its root filesystem is read only" });
+  }
+  if (security.dropCapabilities?.length) {
+    lines.push({ field: "dropCapabilities", text: `drops ${security.dropCapabilities.join(", ")}` });
+  }
+  if (security.allowPrivilegeEscalation) {
+    lines.push({
+      field: "allowPrivilegeEscalation",
+      text: "privilege escalation is allowed, which the platform otherwise denies",
+    });
+  }
+  return lines.map((line) => ({ ...line, own: own.has(line.field) }));
+}
+
+// Whether any of what this workload runs under is its own rather than the
+// project's. It decides the sentence under the list, which is the difference
+// between "this is the project's posture" and "this workload asked for
+// something else".
+function hasOwnPosture(process: Process): boolean {
+  return (process.effectiveSecurity?.overrides ?? []).length > 0;
 }
 
 // Where a workload's image comes from: its own directory of the repository,
@@ -363,6 +416,28 @@ function buildOf(process: Process): string {
             <template v-if="process.health">
               <dt class="text-dimmed">Health</dt>
               <dd class="text-toned font-mono break-all">{{ healthOf(process) }}</dd>
+            </template>
+            <template v-if="postureOf(process).length || hasOwnPosture(process)">
+              <dt class="text-dimmed">Runs under</dt>
+              <dd class="text-toned">
+                <ul class="space-y-0.5">
+                  <li v-for="line in postureOf(process)" :key="line.field">
+                    {{ line.text }}
+                    <UBadge v-if="line.own" color="neutral" variant="subtle" size="sm" class="ml-1">
+                      this workload's own
+                    </UBadge>
+                  </li>
+                </ul>
+                <p class="text-dimmed mt-1">
+                  <template v-if="hasOwnPosture(process)">
+                    Marked lines are this workload's own declaration; the rest are the project's, inherited. A unit's
+                    images do not share a base, so the user one of them declares is not the user another does.
+                  </template>
+                  <template v-else>
+                    All of it is the project's, inherited: this workload declares no posture of its own.
+                  </template>
+                </p>
+              </dd>
             </template>
             <template v-if="process.image">
               <dt class="text-dimmed">Image</dt>

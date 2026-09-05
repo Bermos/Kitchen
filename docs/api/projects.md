@@ -364,8 +364,10 @@ answers it only for somebody who already knows the defaults. Previews inherit
 it with the rest of the runtime, and it is snapshotted into every release.
 
 `security` is the posture every workload of the project runs under — the web
-process, its workers, its services and its scheduled runs, since a posture
-describes how a container runs rather than the command it is started with:
+process, its workers, its services and its scheduled runs — unless one of them
+declares its own, which is
+[`processes[].security`](processes.md#a-workload-whose-image-is-not-the-others)
+and is merged over this field by field:
 
 ```json
 {"security": {"runAsNonRoot": true, "runAsUser": 1001, "runAsGroup": 1001,
@@ -476,6 +478,14 @@ The posture is snapshotted into every release, so a rollback restores the one
 that release ran under, and it can equally be declared in the repository —
 see [kitchen.json](../CONFIG.md), where the commit that makes an image able to
 run read-only is the commit that says so.
+
+**A workload may declare its own**, merged over this one field by field: a
+unit is up to five images with five bases, and a single `runAsUser` across
+four workloads is luck rather than design (#399). The web process has no entry
+in `processes`, so its posture is this field and always was — that asymmetry
+is stated rather than modelled around. `GET /environments/{name}/processes`
+reports what each workload actually runs under and which fields came from the
+workload.
 
 `processes` is what the project ships *besides* its web process — its queue
 workers, its scheduled jobs, and the services the rest of the unit talks to

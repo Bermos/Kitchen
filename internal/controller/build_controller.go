@@ -1352,6 +1352,9 @@ func (r *BuildReconciler) succeed(
 	// runs is refused here, at the one moment the platform holds both halves:
 	// the images, resolved to digests and with their own `USER` read off
 	// their configs, and the settings the Release is about to freeze (#393).
+	// The question is asked per workload, against the posture that workload
+	// runs under — the unit's with its own merged over it (#399) — because
+	// the four images of one unit no longer share one.
 	//
 	// It is refused *now* rather than at the pod, because the pod's refusal is
 	// invisible — a container status the kubelet writes and nothing else
@@ -1359,7 +1362,7 @@ func (r *BuildReconciler) succeed(
 	// is not refused at the API, either: `runAsNonRoot` without `runAsUser` is
 	// exactly right for an image whose USER is a uid, and a 400 for that
 	// project would refuse a request that would have worked.
-	if unverifiable := unverifiableImages(snapshot.Runtime.Security, build.Artifacts()); len(unverifiable) > 0 {
+	if unverifiable := unverifiableImages(snapshot, build.Artifacts()); len(unverifiable) > 0 {
 		return r.fail(ctx, build, project, reasonImageUserUnverifiable,
 			unverifiableImagesMessage(unverifiable))
 	}

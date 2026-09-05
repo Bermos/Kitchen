@@ -131,6 +131,11 @@ const concurrencyOptions = [
   { label: "Replace — the running one is stopped", value: "Replace" },
 ];
 
+const fsGroupChangePolicyOptions = [
+  { label: "Always — Kubernetes' default", value: "" },
+  { label: "OnRootMismatch — skip the walk when the root already matches", value: "OnRootMismatch" },
+];
+
 const problems = computed(() => workloadProblems(drafts.value));
 
 // What a row says before it is opened, so a list of six is readable without
@@ -402,6 +407,86 @@ async function save() {
               <UFormField label="Failures allowed while starting">
                 <UInput v-model="draft.healthStartupFailures" :disabled="!mayEdit" type="number" class="w-full" />
               </UFormField>
+            </div>
+
+            <!-- The posture this workload runs under, where it is not the
+                 project's. A unit is up to five images with five bases, so
+                 the uid the project pinned for three of them is the wrong
+                 number for the fourth — and until this existed there was
+                 only one number. -->
+            <USwitch
+              v-model="draft.security"
+              :disabled="!mayEdit"
+              label="Run it under its own security posture"
+              description="Off, it runs under the project's whole. On, the fields below are merged over the
+                project's one at a time: what is set here wins, what is left blank stays the project's. It is what a
+                unit whose images have different bases needs — one workload's own user is not another's."
+            />
+            <div v-if="draft.security" class="space-y-4">
+              <div class="grid gap-4 sm:grid-cols-3">
+                <UFormField label="User ID" help="Blank keeps the project's, and 0 there is the image's own user.">
+                  <UInput v-model="draft.runAsUser" :disabled="!mayEdit" type="number" min="0" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Group ID" help="The gid, on the same reading.">
+                  <UInput v-model="draft.runAsGroup" :disabled="!mayEdit" type="number" min="0" class="w-full font-mono" />
+                </UFormField>
+                <UFormField
+                  label="Volume group ID"
+                  help="The gid that owns the volumes this workload mounts. A new volume comes up owned by root, so a workload running as anybody else cannot write it."
+                >
+                  <UInput v-model="draft.fsGroup" :disabled="!mayEdit" type="number" min="0" class="w-full font-mono" />
+                </UFormField>
+              </div>
+              <UFormField
+                label="Apply volume ownership"
+                help="When that ownership is applied. It needs a volume group ID of this workload's own — the policy and the group are one declaration."
+              >
+                <USelect
+                  v-model="draft.fsGroupChangePolicy"
+                  :items="fsGroupChangePolicyOptions"
+                  :disabled="!mayEdit || !draft.fsGroup"
+                  class="w-full"
+                />
+              </UFormField>
+              <UFormField
+                label="Drop capabilities"
+                help="One per line, the way the kernel spells them and without the CAP_ prefix — or the single entry ALL. A list here replaces the project's rather than adding to it."
+              >
+                <UTextarea
+                  v-model="draft.dropCapabilities"
+                  :disabled="!mayEdit"
+                  :rows="2"
+                  placeholder="ALL"
+                  class="w-full font-mono"
+                />
+              </UFormField>
+              <USwitch
+                v-model="draft.runAsNonRoot"
+                :disabled="!mayEdit"
+                label="Never run as root"
+                description="Refused before it starts rather than noticed later. The platform can only check that
+                  against a numeric user ID, so an image whose USER is a name needs one beside it — the build says
+                  so, naming the workload, rather than letting every copy of it be turned away."
+              />
+              <USwitch
+                v-model="draft.readOnlyRootFilesystem"
+                :disabled="!mayEdit"
+                label="Read-only root filesystem"
+                description="It cannot write to its own filesystem. A workload that writes a cache or a socket into
+                  it needs a volume for that path first."
+              />
+              <USwitch
+                v-model="draft.allowPrivilegeEscalation"
+                :disabled="!mayEdit"
+                label="Allow privilege escalation"
+                description="The one default the platform tightens. Turn it on only for an image that genuinely
+                  needs a setuid binary."
+              />
+              <p class="text-xs text-dimmed">
+                Everything here is blank-means-inherit, so this adds to the project's posture or points it somewhere
+                else — it cannot take a constraint off. A constraint only some workloads can bear belongs on those
+                workloads rather than on the project.
+              </p>
             </div>
 
             <!-- What this workload needs done inside the volumes it mounts

@@ -111,7 +111,7 @@ lifecycle has no stages to inherit into.
 | `previewArgs` | Replace `args` in preview environments — same commit, same artifact, different flags. |
 | `resources` | `{"cpu": "500m", "memory": "512Mi"}`, applied as request and limit alike. |
 | `health` | What the platform asks before it sends anyone to the application. `{}` is the default: a TCP connect to the port. |
-| `security` | The posture every workload of this project runs under. `{}` is the platform's default, which they run under anyway. |
+| `security` | The posture every workload of this project runs under, unless one of them declares its own — see `processes[].security`. `{}` is the platform's default, which they run under anyway. |
 | `init` | What the web process needs done inside the volumes it mounts, before its own container starts. A named workload's own is on its entry of [`processes`](#processes). |
 
 ```json
@@ -153,9 +153,10 @@ is the commit that should declare it.
 }
 ```
 
-It applies to the web process, the workers and the scheduled runs alike —
-they are one image, and a posture describes the image rather than the command
-it is started with.
+It applies to the web process, the workers and the scheduled runs alike,
+unless a workload declares a posture of its own — which is what
+`processes[].security` is, and what a unit whose images no longer share a base
+needs.
 
 **A project that says nothing still gets a posture**, and it is the
 platform's: the container runtime's own seccomp profile, and no privilege
@@ -301,6 +302,7 @@ The workloads the project ships besides its web process —
 | `timeout` | A Go duration bounding one run. An hour by default — and for a `task`, how long the deploy waits for it before calling it failed. |
 | `previews` | Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service and a task are on unless they say otherwise, because a preview missing one of its own services — or with a database branch nothing migrated — is a broken preview. |
 | `health` | A worker's or a service's health check. A worker's must name its `port` — it publishes none — and a service's falls back to its own. Refused on a scheduled process and on a task, whose verdict is the run's exit status. |
+| `security` | This workload's own security posture, merged over `runtime.security` **field by field**: what is set here wins, what is left out is inherited. Same keys, same refusals. `{}` is no override at all, which is how one is taken back off. See [a workload that needs a different posture](#a-workload-that-needs-a-different-posture). |
 
 A `task` is the one entry here that is not a thing that keeps running: it is
 work that happens once per deploy and finishes before any of that release
@@ -325,6 +327,48 @@ There is no per-workload idling setting here, and that is deliberate: scale to
 zero is the project's policy because only the web process is idled — see
 [the Project's `scaleToZero`](CRDS.md) for why, and what to do when one
 workload must stay warm.
+
+#### A workload that needs a different posture
+
+A unit stopped being one image the moment a workload could declare a build or
+an image of its own: a project ships up to five, each with its own base. Three
+`node:22-slim` images ending `USER node` beside one distroless image ending
+`USER nonroot` cannot say that three of them run as 1000 and the fourth runs
+as 65532 while there is only one number. `processes[].security` is that
+number.
+
+```json
+{
+  "runtime": {
+    "security": {"runAsNonRoot": true, "runAsUser": 1000, "dropCapabilities": ["ALL"]}
+  },
+  "processes": [
+    {"name": "worker", "type": "worker", "command": ["node", "worker.js"]},
+    {"name": "sidecar", "type": "worker", "image": {"repository": "gcr.io/distroless/static", "tag": "nonroot"},
+     "security": {"runAsUser": 65532}}
+  ]
+}
+```
+
+The sidecar runs as 65532, and still never as root and still with every
+capability dropped: only `runAsUser` was declared, so only `runAsUser` moved.
+The worker runs as 1000, because it declared nothing.
+
+**Everything here is blank-means-inherit**, which is the reading the project's
+own posture already has, so a workload adds to the project's or points it
+somewhere else and **cannot take a constraint off**. A constraint only some
+workloads can bear is declared on those workloads rather than on the project.
+`fsGroupChangePolicy` needs an `fsGroup` in the same block, because the policy
+is *how* a group is applied and the two are one declaration.
+
+The web process has no entry in `processes`, so its posture is
+`runtime.security` — which is where it already was. The asymmetry is stated
+rather than modelled around.
+
+`GET /environments/{name}/processes` reports what each workload actually runs
+under and which of the fields it declared itself, and the dashboard's workloads
+panel marks them: with a merge, which of the two declarations won is the one
+thing a reader cannot work out from what is on the screen.
 
 ### `files`
 

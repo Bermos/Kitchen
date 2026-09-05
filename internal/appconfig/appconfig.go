@@ -292,6 +292,12 @@ type Process struct {
 	// a scheduled process and on a task, whose verdict is the run's exit
 	// status.
 	Health *Health `json:"health,omitempty"`
+	// Security is this workload's own posture, merged field by field over
+	// the project's `runtime.security`: a field set here wins, a field left
+	// out inherits the unit's. It is how a unit mixing base images says that
+	// one workload runs as 1000 and another as 65532. Sending `{}` takes an
+	// override back off, exactly as it does one level up.
+	Security *Security `json:"security,omitempty"`
 	// Init is what this workload prepares inside the volumes it mounts
 	// before its own container starts: directories that have to exist, and
 	// configuration files seeded in once. Every type takes it, a task
@@ -435,27 +441,11 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 		}
 		process.Singleton = true
 	}
-	if request.Health != nil {
-		if process.Type == kitchenv1alpha1.ProcessCron {
-			return process, fmt.Errorf(
-				"process %q: a scheduled process is not kept alive by a health check — how a run went is its exit status",
-				process.Name)
-		}
-		if process.Type == kitchenv1alpha1.ProcessTask {
-			return process, fmt.Errorf(
-				"process %q: a task is not kept alive by a health check — how its run went is its exit status, "+
-					"and the deploy waits for that",
-				process.Name)
-		}
-		// A service publishes a port, so its check falls back to that one the
-		// way the web process's does. A worker publishes none, which is why
-		// its check has to name the listener it is made against.
-		needsPort := process.Type != kitchenv1alpha1.ProcessService
-		health, err := HealthSpec(*request.Health, fmt.Sprintf("process %q health", process.Name), needsPort)
-		if err != nil {
-			return process, err
-		}
-		process.Health = health
+	if err := applyProcessHealth(&process, request); err != nil {
+		return process, err
+	}
+	if err := applyProcessSecurity(&process, request); err != nil {
+		return process, err
 	}
 	if err := applyProcessResources(&process, request); err != nil {
 		return process, err
@@ -466,6 +456,61 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 	}
 	process.Init = init
 	return process, nil
+}
+
+// applyProcessHealth validates the check the platform makes against this
+// workload before it calls it working.
+//
+// It belongs to a workload that keeps running: a scheduled process and a task
+// are each one run, and how a run went is its exit status rather than
+// something to be probed for.
+func applyProcessHealth(process *kitchenv1alpha1.ProcessSpec, request Process) error {
+	if request.Health == nil {
+		return nil
+	}
+	if process.Type == kitchenv1alpha1.ProcessCron {
+		return fmt.Errorf(
+			"process %q: a scheduled process is not kept alive by a health check — how a run went is its exit status",
+			process.Name)
+	}
+	if process.Type == kitchenv1alpha1.ProcessTask {
+		return fmt.Errorf(
+			"process %q: a task is not kept alive by a health check — how its run went is its exit status, "+
+				"and the deploy waits for that",
+			process.Name)
+	}
+	// A service publishes a port, so its check falls back to that one the way
+	// the web process's does. A worker publishes none, which is why its check
+	// has to name the listener it is made against.
+	needsPort := process.Type != kitchenv1alpha1.ProcessService
+	health, err := HealthSpec(*request.Health, fmt.Sprintf("process %q health", process.Name), needsPort)
+	if err != nil {
+		return err
+	}
+	process.Health = health
+	return nil
+}
+
+// applyProcessSecurity validates this workload's own security posture, which
+// is merged over the project's `runtime.security` field by field when the pod
+// is built (#399).
+//
+// It goes through the project's own validator rather than a second one: there
+// is one answer to what a capability is spelled like and to what an fsGroup
+// change policy needs, and a workload with a second copy of those rules is a
+// second thing to be wrong. A block that declares nothing is stored as
+// nothing, which is how an override is taken back off through an API that
+// never distinguishes an absent key from a cleared one.
+func applyProcessSecurity(process *kitchenv1alpha1.ProcessSpec, request Process) error {
+	if request.Security == nil {
+		return nil
+	}
+	security, err := SecuritySpec(*request.Security, fmt.Sprintf("process %q security", process.Name))
+	if err != nil {
+		return err
+	}
+	process.Security = security
+	return nil
 }
 
 // applyProcessPort validates the port a service workload is addressed by.

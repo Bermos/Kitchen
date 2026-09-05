@@ -147,7 +147,7 @@ func TestAContainerRefusedUnderThePostureIsReportedInWords(t *testing.T) {
 	})
 
 	reason, message, refused := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}, false)
+		unitPosture(&kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true}), false)
 	if reason != reasonContainerRefused {
 		t.Fatalf("want the refusal reported as %s, got %q", reasonContainerRefused, reason)
 	}
@@ -176,7 +176,7 @@ func TestACrashLoopUnderADeclaredPostureNamesThePosture(t *testing.T) {
 	r, env := securityReconcilerWithPod(t, state)
 
 	reason, message, _ := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}, false)
+		unitPosture(&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}), false)
 	if reason != reasonRestartingUnderPosture {
 		t.Fatalf("want the crash loop attributed to the posture, got %q", reason)
 	}
@@ -184,7 +184,8 @@ func TestACrashLoopUnderADeclaredPostureNamesThePosture(t *testing.T) {
 		t.Fatalf("the message does not name the constraint in force: %q", message)
 	}
 
-	if reason, _, _ := r.startFailure(context.Background(), env, securityTestNamespace, nil, false); reason != "" {
+	if reason, _, _ := r.startFailure(
+		context.Background(), env, securityTestNamespace, unitPosture(nil), false); reason != "" {
 		t.Fatalf("a crash loop under no posture is not the posture's, got %q", reason)
 	}
 
@@ -192,7 +193,7 @@ func TestACrashLoopUnderADeclaredPostureNamesThePosture(t *testing.T) {
 	// container that has started is not one the kubelet refused, and the
 	// guess is only worth making about a workload somebody is waiting on.
 	if reason, _, _ := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}, true); reason != "" {
+		unitPosture(&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}), true); reason != "" {
 		t.Fatalf("a crash loop behind a working URL is not a start failure, got %q", reason)
 	}
 }
@@ -205,9 +206,18 @@ func TestAPodStillStartingIsNotAFailure(t *testing.T) {
 	})
 
 	reason, message, _ := r.startFailure(context.Background(), env, securityTestNamespace,
-		&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}, false)
+		unitPosture(&kitchenv1alpha1.SecuritySpec{ReadOnlyRootFilesystem: true}), false)
 	if reason != "" || message != "" {
 		t.Fatalf("a pod on its way up is not a refusal: %q / %q", reason, message)
+	}
+}
+
+// unitPosture is a Release's frozen configuration declaring one posture and
+// no workloads: the shape every case that is about the *unit's* posture wants,
+// now that what a workload runs under is that with its own merged over it.
+func unitPosture(security *kitchenv1alpha1.SecuritySpec) kitchenv1alpha1.ConfigSnapshot {
+	return kitchenv1alpha1.ConfigSnapshot{
+		Runtime: kitchenv1alpha1.RuntimeSpec{Security: security},
 	}
 }
 

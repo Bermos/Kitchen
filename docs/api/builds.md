@@ -588,6 +588,14 @@ exists and long before a pod is refused where nobody can see it (#393). An
 image whose `USER` is a number needs no help and is never refused, which is
 why this is decided here rather than at the API.
 
+The question is asked **per workload**, against the posture that workload
+actually runs under: the project's `runtime.security` with its own
+`security` merged over it (#399). A workload whose own `runAsUser` is the
+right number for its image is left alone even where the project names none,
+and one whose inherited `runAsNonRoot` has no uid behind it is failed naming
+that workload alone — the evidence is already per artifact, and this reads it
+against the declaration that applies to it.
+
 ### An artifact the platform did not build
 
 A vendored artifact — a project whose source is an image, or one workload of a
