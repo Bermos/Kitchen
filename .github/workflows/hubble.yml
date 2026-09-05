@@ -41,21 +41,16 @@ concurrency:
 # Kitchen has that exercises the flow pipeline at all.
 #
 # It is not a job in the Helm workflow because it is not about the chart: it
-# installs no Kitchen, and what it tests is the platform's CNI. The two kind
-# clusters differ deliberately —
-#
-#   - the chart's install job runs a plain kind cluster with no CNI of its own,
-#     where the shared Gateway is created but never programmed, because all it
-#     needs to prove is that the operator's RBAC lets it create one;
-#   - this one needs a Gateway that actually serves traffic, so it runs kind
-#     without kube-proxy (Cilium's Gateway API support requires the kube-proxy
-#     replacement), installs Cilium with Gateway API and Hubble, and gives kind
-#     the LoadBalancer address a Gateway needs before it reports Programmed —
-#     using Cilium's own LB IPAM, which is free here because Cilium is already
-#     the thing under test.
+# installs no Kitchen, and what it tests is the platform's CNI. The cluster
+# underneath it is the same one the chart's "Chart install on Cilium" leg
+# builds — hack/install-cilium.sh, kind without kube-proxy (Cilium's Gateway
+# API support requires the kube-proxy replacement), Cilium with Gateway API,
+# and Cilium's own LB IPAM for the LoadBalancer address a Gateway needs before
+# it reports Programmed. Hubble is what this job adds to it, and a Gateway that
+# actually serves traffic is what it needs that the chart's leg does not.
 #
 # Every version this needs is pinned in .github/workflows/helm.yml and read
-# from there by the script: CLAUDE.md's rule is that the Gateway API CRD
+# from there by that script: CLAUDE.md's rule is that the Gateway API CRD
 # version belongs to Cilium and must not be written down twice, and a second
 # CILIUM_VERSION in this file would drift away from the first one the moment
 # either moved. That is why this workflow declares no versions of its own.

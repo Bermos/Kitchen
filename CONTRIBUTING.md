@@ -211,12 +211,12 @@ Run the same scan locally before bumping a module:
 go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 ```
 
-### The four kind jobs run once per change
+### The five kind jobs run once per change
 
-Chart install on kind, E2E on kind, Several workloads on kind and Gateway L7
-flows on kind cost twelve to fourteen minutes each. They are gated to `pull_request` events, and skipped on
-the push to `main` that merges one, because that run was checking a tree that
-had already passed:
+Chart install on kind, Chart install on Cilium, E2E on kind, Several workloads
+on kind and Gateway L7 flows on kind cost twelve to twenty minutes each. They
+are gated to `pull_request` events, and skipped on the push to `main` that
+merges one, because that run was checking a tree that had already passed:
 
 - **A pull request already tests the merged copy.** `actions/checkout` on a
   `pull_request` event checks out `refs/pull/N/merge` — the branch merged into
@@ -230,7 +230,7 @@ had already passed:
   branch protection setting, not a file in this tree, and worth turning on only
   if two pull requests actually start breaking `main` together.
 
-The workflows still trigger on `main`; only those four jobs are skipped there.
+The workflows still trigger on `main`; only those five jobs are skipped there.
 The cheap jobs alongside them — and Tests, Lint, Dashboard and Auth service in
 full — keep running, because an Actions cache is readable by the branch that
 wrote it, that branch's base, and the default branch. `main`'s runs are the
@@ -243,7 +243,8 @@ They are also skipped on a pull request that cannot have changed what they
 prove. Each workflow that carries one has a `changes` job in front of it that
 runs `hack/changed-paths.sh <profile>` over the diff against the base branch
 and answers `run=true` or `run=false`; the kind job's `if:` reads it. There are
-three profiles for four jobs — the two in the E2E workflow share one.
+three profiles for five jobs — the two in the E2E workflow share one, and so do
+the two legs of the chart install.
 
 The script holds a list of what each profile may **ignore**, never a list of
 what it needs. A path nobody has classified runs the job, so adding a directory
@@ -254,8 +255,9 @@ What that means in practice:
 
 - **The Hubble job almost never runs.** Its own header says why: it installs no
   Kitchen and what it tests is the platform's CNI. Only its scripts, its
-  fixtures and the two workflows that pin Cilium's version can change the
-  answer, so everything else is ignorable there.
+  fixtures, the script that builds its cluster and the two workflows that pin
+  Cilium's version can change the answer, so everything else is ignorable
+  there.
 - **The E2E jobs skip dashboard-only and CLI-only changes.** `make test-e2e`
   runs the operator's suite against kind, and Several workloads on kind
   installs the chart and deploys a project of several workloads through a real
@@ -269,6 +271,20 @@ What that means in practice:
   that job only through the image build, and a dashboard that does not build
   fails the Dashboard workflow's `npm run build` in forty seconds — a required
   check of its own.
+- **The chart install job is two legs of one matrix, and both are gated
+  together.** Chart install on kind is the cheap one: kind's own CNI, kindnet,
+  which enforces no NetworkPolicy at all, so a failure there can never be the
+  network's doing. Chart install on Cilium builds the cluster
+  `hack/install-cilium.sh` builds for the Hubble job — no default CNI, no
+  kube-proxy, the Gateway API CRDs the pinned Cilium release requires — and it
+  is the only job that can say anything about the chart's NetworkPolicies:
+  before it existed, a policy that blocked every flow on the platform would
+  have left the workflow green. It runs a few minutes longer than the kindnet
+  leg, which is what installing Cilium costs, and it installs the bundled
+  object store because that is the one policy rule an application namespace is
+  admitted by. It reports as its own check, `Chart install on Cilium`; making
+  it *required* is a one-time change under Settings → Branches, and like the
+  others it survives being skipped.
 - **The release pull request runs all of them regardless.** Its `if:` says so
   explicitly. Its tree is what gets tagged and published, so it is the one
   place where "nothing relevant changed" is not a good enough answer. Nothing
