@@ -573,6 +573,13 @@ Garage — because `endpoint` and `forcePathStyle` make those one code path
 rather than six backends. `region` is wanted even by stores where it means
 nothing; `us-east-1` is the conventional answer for those.
 
+An `endpoint` on a `.svc` name over `https://` is a store inside this cluster,
+and no public authority issues for a name nobody owns — so it is verified
+against the platform's own internal CA, which the operator and every scheduled
+run mount. That is what lets the bundled object store be a backup destination
+now that it serves TLS (#382). Every other endpoint is verified against the
+host's roots, as before; there is no value here that turns verification off.
+
 The operator writes the key pair into a Secret carrying
 `app.kubernetes.io/managed-by: kitchen`, patches the singleton to point at it,
 and answers with the same view `GET /platform/backup` serves — **bucket and

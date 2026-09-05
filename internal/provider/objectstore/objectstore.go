@@ -96,6 +96,20 @@ type Binding struct {
 	// the host name. It is not decoration: MinIO needs it and AWS does not,
 	// and an application that guesses wrong fails on every request.
 	ForcePathStyle bool
+	// CACert is the PEM certificate of the authority that signed the store's
+	// own, for a store whose certificate no public root vouches for — which
+	// is the bundled one, served on a `.svc` name from the platform's
+	// internal CA (#382).
+	//
+	// It is the certificate itself and not a path, because this travels into
+	// an application's namespace: the platform's CA is published as a
+	// ConfigMap in `kitchen-system`, an application pod cannot mount it, and
+	// nothing puts a root into the trust store of an image the platform did
+	// not build. So the honest `verify-full` for an application is the one
+	// its own S3 client can do — hand it the certificate and let it verify
+	// against that. Empty for every store with a publicly trusted
+	// certificate, where the host's roots are the answer.
+	CACert string
 }
 
 // The keys of the binding Secret, spelled once.
@@ -106,15 +120,20 @@ const (
 	BindingKeyAccessKeyID     = "accessKeyId"
 	BindingKeySecretAccessKey = "secretAccessKey"
 	BindingKeyForcePathStyle  = "forcePathStyle"
+	BindingKeyCACert          = "caCert"
 )
 
 // Data is the binding as the Secret carries it.
+//
+// The CA is written only where there is one. A key that is present and empty
+// reads to an application as "verify against nothing", which is the one thing
+// this must never be able to say.
 func (b Binding) Data() map[string][]byte {
 	pathStyle := "false"
 	if b.ForcePathStyle {
 		pathStyle = "true"
 	}
-	return map[string][]byte{
+	data := map[string][]byte{
 		BindingKeyEndpoint:        []byte(b.Endpoint),
 		BindingKeyBucket:          []byte(b.Bucket),
 		BindingKeyRegion:          []byte(b.Region),
@@ -122,6 +141,50 @@ func (b Binding) Data() map[string][]byte {
 		BindingKeySecretAccessKey: []byte(b.SecretAccessKey),
 		BindingKeyForcePathStyle:  []byte(pathStyle),
 	}
+	if b.CACert != "" {
+		data[BindingKeyCACert] = []byte(b.CACert)
+	}
+	return data
+}
+
+// Address is what a binding says about the store rather than about the
+// bucket: where it answers, what region it reports, how a bucket is addressed
+// and what its certificate is verified against.
+//
+// It exists because those four can change under a binding that is otherwise
+// still correct — the store gaining a certificate and moving from `http://`
+// to `https://` is exactly that — and the credential must not be reissued to
+// carry the news. The reconciler writes these keys over an existing binding
+// Secret and leaves the rest of it alone.
+type Address struct {
+	Endpoint       string
+	Region         string
+	ForcePathStyle bool
+	CACert         string
+}
+
+// Data is the address as those keys of the binding Secret. `caCert` appears
+// with an empty value for a store that has none, because this is applied over
+// a Secret that may carry a stale one — and the absence has to be able to
+// travel too.
+func (a Address) Data() map[string][]byte {
+	pathStyle := "false"
+	if a.ForcePathStyle {
+		pathStyle = "true"
+	}
+	return map[string][]byte{
+		BindingKeyEndpoint:       []byte(a.Endpoint),
+		BindingKeyRegion:         []byte(a.Region),
+		BindingKeyForcePathStyle: []byte(pathStyle),
+		BindingKeyCACert:         []byte(a.CACert),
+	}
+}
+
+// Addressable is a Provisioner that can say where its store is without
+// asking the store anything. Every provisioner here is one; the interface is
+// what keeps the reconciler from knowing which implementation it holds.
+type Addressable interface {
+	Address() Address
 }
 
 // Instance is one provisioned bucket with its credential.

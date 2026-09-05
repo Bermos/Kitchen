@@ -52,6 +52,11 @@ func (c pruningClient) Update(ctx context.Context, obj client.Object, opts ...cl
 
 const testInstanceID = testDatabaseNamespace + "/" + testCluster
 
+// destinationSecret is where a claim's destination keeps everything
+// CloudNativePG takes by reference: the key pair, the region, and — for a
+// store inside this cluster — the certificate it is verified against.
+const destinationSecret = "db-backup-destination"
+
 // backedUpDestination is the policy every test here configures, with a stored
 // credential so the rendered s3Credentials are the interesting case.
 func backedUpDestination() BackupDestination {
@@ -61,7 +66,7 @@ func backedUpDestination() BackupDestination {
 		Region:               "eu-central-1",
 		Endpoint:             "https://minio.example.com",
 		ServerSideEncryption: "AES256",
-		CredentialsSecret:    "db-backup-destination",
+		CredentialsSecret:    destinationSecret,
 		AccessKeyIDKey:       "accessKeyId",
 		SecretAccessKeyKey:   "secretAccessKey",
 		RegionKey:            "region",
@@ -130,13 +135,13 @@ func TestBackupConfigurationRendersTheObjectStore(t *testing.T) {
 	}
 	credentials, _ := store["s3Credentials"].(map[string]any)
 	accessKey, _ := credentials["accessKeyId"].(map[string]any)
-	if accessKey["name"] != "db-backup-destination" || accessKey["key"] != "accessKeyId" {
+	if accessKey["name"] != destinationSecret || accessKey["key"] != "accessKeyId" {
 		t.Errorf("accessKeyId = %v, want a reference to the secret in the database namespace", accessKey)
 	}
 	// CloudNativePG takes its region by secret reference and not as a plain
 	// string, which is the whole reason the destination carries a key name.
 	region, _ := credentials["region"].(map[string]any)
-	if region["name"] != "db-backup-destination" || region["key"] != "region" {
+	if region["name"] != destinationSecret || region["key"] != "region" {
 		t.Errorf("region = %v, want a reference and not a literal", region)
 	}
 	if credentials["inheritFromIAMRole"] != nil {
@@ -149,6 +154,45 @@ func TestBackupConfigurationRendersTheObjectStore(t *testing.T) {
 	}
 	if got := nestedString(cluster, "spec", "backup", "retentionPolicy"); got != "30d" {
 		t.Errorf("retentionPolicy = %q", got)
+	}
+}
+
+// A destination inside this cluster is served by an authority no image's trust
+// store has heard of — the object store this platform bundles, since #382 — so
+// barman is handed the certificate. Without it the connection is refused, which
+// is the right answer to an unverifiable store and the wrong end of a backup
+// that silently stops.
+func TestAnInClusterDestinationCarriesTheAuthorityThatSignedIt(t *testing.T) {
+	provisioner := cnpgAgainstFakeCluster(t, managedCluster())
+	destination := backedUpDestination()
+	destination.Endpoint = "https://kitchen-objectstore.kitchen-system.svc:9000"
+	destination.EndpointCASecret = destinationSecret
+	destination.EndpointCAKey = "ca.crt"
+	policy := BackupPolicy{Enabled: true, Destination: destination}
+	if err := provisioner.ConfigureBackup(context.Background(), testInstanceID, policy); err != nil {
+		t.Fatalf("configuring the backup: %v", err)
+	}
+
+	cluster := readCluster(t, provisioner)
+	store, _, _ := unstructured.NestedMap(cluster.Object, "spec", "backup", "barmanObjectStore")
+	ca, _ := store["endpointCA"].(map[string]any)
+	if ca["name"] != destinationSecret || ca["key"] != "ca.crt" {
+		t.Errorf("endpointCA = %v, want a reference to the CA beside the credential", ca)
+	}
+
+	// And nothing is written for a destination on the internet, where the
+	// image's own roots are the answer and a CA of the platform's would be
+	// the wrong one.
+	provisioner = cnpgAgainstFakeCluster(t, managedCluster())
+	if err := provisioner.ConfigureBackup(context.Background(), testInstanceID,
+		BackupPolicy{Enabled: true, Destination: backedUpDestination()}); err != nil {
+		t.Fatalf("configuring the backup: %v", err)
+	}
+	store, _, _ = unstructured.NestedMap(readCluster(t, provisioner).Object,
+		"spec", "backup", "barmanObjectStore")
+	if _, ok := store["endpointCA"]; ok {
+		t.Errorf("a destination outside the cluster was given an authority of the "+
+			"platform's: %v", store)
 	}
 }
 

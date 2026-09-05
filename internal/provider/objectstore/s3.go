@@ -78,9 +78,26 @@ type S3 struct {
 	// Connection says the store speaks none.
 	Buckets BucketAPI
 	Admin   AdminAPI
+	// CACert is the PEM certificate this client verified the store against,
+	// where that was the platform's own CA rather than the host's roots. It
+	// is carried into every binding, because an application pod has no way
+	// to be told about a private authority otherwise.
+	CACert string
 }
 
 var _ CapableProvisioner = (*S3)(nil)
+var _ Addressable = (*S3)(nil)
+
+// Address is where this store answers and what vouches for it — the half of
+// a binding that belongs to the store rather than to a bucket.
+func (s *S3) Address() Address {
+	return Address{
+		Endpoint:       s.Config.Endpoint,
+		Region:         s.Config.Region,
+		ForcePathStyle: s.Config.ForcePathStyle,
+		CACert:         s.CACert,
+	}
+}
 
 // Provision creates or finds the claim's bucket and issues its credential.
 func (s *S3) Provision(ctx context.Context, res naming.Resource) (Instance, error) {
@@ -268,6 +285,7 @@ func (s *S3) ensureBucket(ctx context.Context, bucket string, versioning bool) (
 		AccessKeyID:     s.AccessKeyID,
 		SecretAccessKey: s.SecretAccessKey,
 		ForcePathStyle:  s.Config.ForcePathStyle,
+		CACert:          s.CACert,
 	}
 	if s.Admin == nil {
 		// The Connection says the store mints no credentials: the bucket is

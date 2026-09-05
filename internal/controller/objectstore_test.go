@@ -140,6 +140,51 @@ var _ = Describe("The bundled object store", func() {
 		Expect(meta.IsStatusConditionTrue(kitchen.Status.Conditions, condObjectStoreReady)).To(BeTrue())
 	})
 
+	It("seeds an https connection, with the CA, when the chart says the store serves TLS", func() {
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: objectStoreChartSecretName, Namespace: PlatformNamespace,
+		}, secret)).To(Succeed())
+		secret.StringData = map[string]string{
+			objectstore.SecretKeyHost:              "kitchen-objectstore.kitchen-system.svc",
+			objectstore.SecretKeyScheme:            objectstore.SchemeHTTPS,
+			objectstore.SecretKeyCAFile:            "/etc/kitchen/internal-ca/ca.crt",
+			objectstore.SecretKeyCertificateSecret: "kitchen-objectstore-tls",
+		}
+		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
+
+		reconcileOnce()
+
+		conn := &kitchenv1alpha1.Connection{}
+		Expect(k8sClient.Get(ctx, connectionKey, conn)).To(Succeed())
+		cfg := connectionConfig(conn)
+		Expect(cfg.Endpoint).To(Equal("https://kitchen-objectstore.kitchen-system.svc.cluster.local:9000"),
+			"the scheme is the store's own, read from the secret the chart wrote")
+		Expect(cfg.CAFile).To(Equal("/etc/kitchen/internal-ca/ca.crt"),
+			"without it the connection is encrypted and unverified, which is not what the "+
+				"platform's own clients settle for")
+
+		By("saying where the store is, on the singleton, in the scheme it answers on")
+		Expect(singleton().Status.ObjectStore.Endpoint).To(Equal(cfg.Endpoint))
+	})
+
+	It("refuses a scheme that is neither of the two the store is reached on", func() {
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: objectStoreChartSecretName, Namespace: PlatformNamespace,
+		}, secret)).To(Succeed())
+		secret.StringData = map[string]string{objectstore.SecretKeyScheme: "s3"}
+		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
+
+		reconcileOnce()
+
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, connectionKey, &kitchenv1alpha1.Connection{}))).
+			To(BeTrue(), "a connection built from a scheme nothing understands would be a "+
+				"store nothing can reach and a claim that never says why")
+		Expect(meta.FindStatusCondition(singleton().Status.Conditions, condObjectStoreReady).Reason).
+			To(Equal("CredentialUnavailable"))
+	})
+
 	It("leaves a seeded connection deleted rather than reinstating it", func() {
 		reconcileOnce()
 		conn := &kitchenv1alpha1.Connection{}

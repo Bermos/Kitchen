@@ -581,6 +581,91 @@ jobs:
             exit 1
           fi
 
+      - name: Check the object store does not answer in plaintext
+        run: |
+          set -euo pipefail
+          # The other half of #382, and the one store an application namespace
+          # is admitted to: what crosses in the clear here crosses between two
+          # namespaces, with the bucket credential in the request that uses it.
+          store() {
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              ${CHART_BASE} ${CHART_ACME} --set objectStore.enabled=true "$@"
+          }
+
+          # MinIO serves one port and a certificate in --certs-dir is what
+          # makes it TLS, so there is no plaintext listener to remove — but
+          # there is also nothing to fall back to, which is why the pod mounts
+          # the certificate rather than starting without it.
+          statefulset=$(store -s templates/objectstore/statefulset.yaml)
+          echo "${statefulset}" | grep -q -- '--certs-dir' || {
+            echo "::error::the object store is started with no --certs-dir, so MinIO finds no" \
+                 "certificate and answers every request in the clear."
+            exit 1
+          }
+          # cert-manager writes tls.crt and tls.key; MinIO reads public.crt and
+          # private.key and nothing else. The Secret mounted as it stands is a
+          # directory of the right bytes under the wrong names — which is a
+          # store serving plaintext and saying nothing.
+          for file in public.crt private.key; do
+            echo "${statefulset}" | grep -q "path: ${file}" || {
+              echo "::error::the certificate volume does not project ${file}; MinIO reads that" \
+                   "name alone and serves plaintext without it."
+              exit 1
+            }
+          done
+          echo "${statefulset}" | grep -q 'scheme: HTTPS' || {
+            echo "::error::the object store's probes still ask over plain HTTP, so a pod" \
+                 "serving TLS never becomes ready and the install never finishes."
+            exit 1
+          }
+
+          # What every client is told, in the same three keys the telemetry
+          # store's secret carries — one vocabulary, so one controller issues
+          # for both.
+          secret=$(store -s templates/objectstore/secret.yaml)
+          echo "${secret}" | grep -q 'scheme: "https"' || {
+            echo "::error::the store's secret does not say it speaks TLS, so the seeded" \
+                 "Connection — and every application's binding — carries http://."
+            exit 1
+          }
+          echo "${secret}" | grep -q 'caFile: "/etc/kitchen/internal-ca/ca.crt"' || {
+            echo "::error::the store's secret names no CA bundle: the operator would encrypt" \
+                 "without verifying."
+            exit 1
+          }
+          echo "${secret}" | grep -q 'certificateSecret: "kitchen-objectstore-tls"' || {
+            echo "::error::nothing asks the operator to issue the store a certificate, so its" \
+                 "pod waits forever for a Secret nothing writes."
+            exit 1
+          }
+
+          # The operator is a client of all three stores, so its CA mount
+          # follows any of them rather than the telemetry store alone.
+          operator=$(helm template kitchen charts/kitchen --namespace kitchen-system \
+            ${CHART_BASE} ${CHART_ACME} --set objectStore.enabled=true \
+            --set clickhouse.tls.enabled=false -s templates/deployment.yaml)
+          echo "${operator}" | grep -q 'mountPath: /etc/kitchen/internal-ca' || {
+            echo "::error::with only the object store encrypted the operator mounts no CA," \
+                 "so every bucket it provisions fails on a file that is not there."
+            exit 1
+          }
+
+          # Off is the one way to run it in the clear, and it has to be the
+          # whole way: no certificate mount to wait on, and a secret that says
+          # so rather than pointing clients at a scheme the store does not
+          # serve.
+          plain=$(store --set objectStore.tls.enabled=false \
+            -s templates/objectstore/secret.yaml -s templates/objectstore/statefulset.yaml)
+          echo "${plain}" | grep -q 'scheme: "http"' || {
+            echo "::error::objectStore.tls.enabled=false still tells clients the store speaks TLS"
+            exit 1
+          }
+          if echo "${plain}" | grep -q 'kitchen-objectstore-tls'; then
+            echo "::error::objectStore.tls.enabled=false still mounts a certificate the operator" \
+                 "will never be asked to issue; the store's pod would never start."
+            exit 1
+          fi
+
       - name: Check the collector is only rendered with somewhere to ship to
         run: |
           set -euo pipefail
@@ -1269,10 +1354,17 @@ jobs:
                 answer=\$(curl -s -o /dev/null -w '%{http_code}' \
                   --connect-timeout 8 --max-time 20 \"http://\${target}/\") || code=\$?
                 echo \"\${target}: HTTP \${answer:-none} (curl exit \${code})\"
-                [ \"\${code}\" = 0 ] || {
-                  echo \"\${target} did not answer, and the policy says it should\"
-                  exit 1
-                }
+                # 0 is an answer. 35 is a TLS server meeting a plaintext
+                # request — which the object store is, since #382 — and the
+                # handshake it refuses happened over a connection the policy
+                # allowed, which is the whole of what is under test here.
+                case \"\${code}\" in
+                  0|35) ;;
+                  *)
+                    echo \"\${target} did not answer, and the policy says it should\"
+                    exit 1
+                    ;;
+                esac
               done
               echo netpol-ok
             "
@@ -1473,6 +1565,117 @@ jobs:
               exit 1
             }
           done
+
+      - name: Verify the object store answers nothing in plaintext
+        # The leg that installs the store is the leg that can measure it.
+        if: contains(matrix.values, 'objectStore.enabled=true')
+        run: |
+          set -euo pipefail
+          # #382, and the store this matters most for: an objectStore claim
+          # hands an application pod this address, so what crossed in the clear
+          # crossed between two namespaces — with the credential scoped to that
+          # bucket in the request that used it.
+          ready=""
+          for _ in $(seq 60); do
+            ready=$(kubectl -n kitchen-system get certificate kitchen-objectstore-tls \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+            [ "${ready}" = True ] && break
+            sleep 5
+          done
+          [ "${ready}" = True ] || {
+            kubectl -n kitchen-system describe certificate kitchen-objectstore-tls || true
+            kubectl -n kitchen-system get pod -l app.kubernetes.io/component=objectstore || true
+            echo "::error::the object store's certificate is not issued, so its pod is waiting" \
+                 "for a Secret nothing wrote."
+            exit 1
+          }
+
+          # The seeded Connection is what every claim is provisioned through,
+          # so the scheme on it is the scheme every application is handed.
+          endpoint=$(kubectl -n kitchen-system get connection kitchen-objectstore \
+            -o jsonpath='{.spec.config.endpoint}')
+          echo "seeded endpoint: ${endpoint}"
+          case "${endpoint}" in
+            https://*) ;;
+            *)
+              echo "::error::the seeded object store Connection is ${endpoint}: every bucket" \
+                   "claimed through it would be reached in the clear."
+              exit 1
+              ;;
+          esac
+
+          # Base64 through the environment: a PEM is several lines, and one
+          # env var per line is not a thing kubectl run can be asked for.
+          ca=$(kubectl -n kitchen-system get configmap kitchen-internal-ca \
+            -o jsonpath='{.data.ca\.crt}' | base64 -w0)
+          [ -n "${ca}" ] || {
+            echo "::error::the internal CA bundle was never published"
+            exit 1
+          }
+          # From a pod, on the name an application's binding carries — the
+          # `.svc.cluster.local` form, which is a SAN only because the operator
+          # expands the address the chart wrote.
+          kubectl -n kitchen-system run objectstore-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --env="CA=${ca}" --command -- sh -ec '
+              set -eu
+              printf "%s" "$CA" | base64 -d > /tmp/ca.crt
+              url=https://kitchen-objectstore.kitchen-system.svc.cluster.local:9000/minio/health/live
+              # verify-full: the chain and the name, against the CA the platform mints.
+              code=$(curl -sS -o /dev/null -w "%{http_code}" --cacert /tmp/ca.crt \
+                --connect-timeout 8 --max-time 20 "$url")
+              echo "verified: HTTP $code"
+              [ "$code" = 200 ] || { echo "the store did not answer over verified TLS"; exit 1; }
+              # And nothing public vouches for that authority, so a client
+              # without it is refused rather than served.
+              rc=0
+              curl -sS -o /dev/null --connect-timeout 8 --max-time 20 "$url" || rc=$?
+              echo "unverified: curl exit $rc"
+              [ "$rc" != 0 ] || { echo "the store was accepted without the platform CA"; exit 1; }
+              # The whole point: there is no plaintext S3 API left on 9000.
+              rc=0
+              plain=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 8 --max-time 20 \
+                "http://kitchen-objectstore.kitchen-system.svc.cluster.local:9000/minio/health/live") || rc=$?
+              echo "plaintext: HTTP ${plain:-none} (curl exit $rc)"
+              [ "${plain:-000}" != 200 ] || { echo "the store still answers plain HTTP"; exit 1; }
+              echo objectstore-tls-ok
+            '
+          phase=""
+          for _ in $(seq 90); do
+            phase=$(kubectl -n kitchen-system get pod objectstore-probe \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-system logs objectstore-probe 2>&1 || true)
+          echo "probe phase=${phase}"
+          echo "${probe_output}"
+          kubectl -n kitchen-system delete pod objectstore-probe --wait=false || true
+          case "${probe_output}" in
+            *objectstore-tls-ok) ;;
+            *)
+              kubectl -n kitchen-system logs -l app.kubernetes.io/component=objectstore --tail=50 || true
+              echo "::error::the object store is not serving verified TLS on the address an" \
+                   "application is handed."
+              exit 1
+              ;;
+          esac
+
+          # And the platform's own report of it: the operator writes this after
+          # it has reached the store over verified TLS, so a True here is the
+          # end-to-end proof rather than the objects merely existing.
+          status=""
+          for _ in $(seq 30); do
+            status=$(kubectl get kitchen default \
+              -o jsonpath="{.status.conditions[?(@.type=='ObjectStoreReady')].status}")
+            [ "${status}" = True ] && break
+            sleep 5
+          done
+          [ "${status}" = True ] || {
+            kubectl get kitchen default -o jsonpath='{.status.conditions}' | jq .
+            echo "::error::ObjectStoreReady is '${status}': the platform is not reaching its own" \
+                 "object store over verified TLS."
+            exit 1
+          }
 
       - name: Verify the identity provider
         run: |

@@ -111,7 +111,8 @@ const (
 	// The two keys this controller reads out of a connection secret,
 	// whichever store the secret belongs to. Every bundled store's secret
 	// spells them the same way — clickhouse.SecretKeyHost and
-	// accountsdb.SecretKeyHost are these strings, and
+	// accountsdb.SecretKeyHost and objectstore.SecretKeyHost are these
+	// strings, and
 	// TestEveryStoreSpeaksOneConnectionSecretVocabulary holds them to it — so
 	// one controller issues for all of them and the chart adds a store by
 	// writing a secret rather than by teaching this file a name.
@@ -269,9 +270,10 @@ func (r *InternalTLSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Only stores with something to say end up here: one whose certificate the
 // platform issues, and one that is reached in the clear. A store whose
 // certificate is somebody else's — an external ClickHouse over TLS, an
-// external Postgres with an sslmode of its own — is not the internal CA's
-// business and contributes nothing, because a condition about a CA that is
-// not in the path would be noise in the one list this is said in.
+// external Postgres with an sslmode of its own, an s3 Connection to a store on
+// the internet — is not the internal CA's business and contributes nothing,
+// because a condition about a CA that is not in the path would be noise in the
+// one list this is said in.
 type internalTLSStore struct {
 	// certificate is the Secret the store's certificate is issued into, and
 	// empty for a store that is reached in the clear.
@@ -306,6 +308,9 @@ func (r *KitchenReconciler) reconcileInternalTLS(
 		stores = append(stores, store)
 	}
 	if store, ok := r.accountsDatabaseTLS(ctx, kitchen); ok {
+		stores = append(stores, store)
+	}
+	if store, ok := r.objectStoreTLS(ctx, kitchen); ok {
 		stores = append(stores, store)
 	}
 	if len(stores) == 0 {
@@ -357,9 +362,9 @@ func (r *KitchenReconciler) reconcileInternalTLS(
 	// It deliberately does not hold the platform short of Ready: nothing is
 	// broken, and a condition that could never go true would train an
 	// operator to ignore the one place this is said. It is said at all
-	// because a platform quietly shipping every log line, every session and
-	// its own passwords across its namespace is the finding this file exists
-	// for.
+	// because a platform quietly shipping every log line, every session, every
+	// object and its own passwords across its namespace is the finding this
+	// file exists for.
 	readable := []string{}
 	issued := []string{}
 	for _, store := range stores {
@@ -470,6 +475,55 @@ func (r *KitchenReconciler) accountsDatabaseTLS(
 		clear: "the accounts database is reached without TLS, so every session, every OAuth " +
 			"client's secret and the database's own password are readable (set " +
 			"postgres.tls.enabled, or postgres.external.sslmode for a database of your own)",
+	}, true
+}
+
+// objectStoreTLS reads the bundled object store's secret, on the same terms:
+// `certificateSecret` is the chart asking the operator to issue one, and
+// `scheme` is what every client of the store is told.
+//
+// It is the one bundled store application namespaces reach — the NetworkPolicy
+// opens its port to them, because an objectStore claim hands a pod this
+// address — so "readable inside kitchen-system" understates it: an object
+// crossing in the clear crosses between two namespaces, and the credential
+// scoped to that bucket crosses with the request that uses it.
+func (r *KitchenReconciler) objectStoreTLS(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) (internalTLSStore, bool) {
+	store := resolveObjectStore(kitchen)
+	if store == nil {
+		// No bundled store. An installation with an s3 Connection of its own
+		// is reaching somebody else's store, whose certificate is theirs.
+		return internalTLSStore{}, false
+	}
+
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: PlatformNamespace, Name: store.SecretName}
+	if err := r.Get(ctx, key, secret); err != nil {
+		// ObjectStoreReady already says the store's credential cannot be
+		// read, which is a bigger fact than its certificate.
+		return internalTLSStore{}, false
+	}
+
+	host := string(secret.Data[connectionSecretKeyHost])
+	if host == "" {
+		host = store.host()
+	}
+	certSecret := strings.TrimSpace(string(secret.Data[connectionSecretKeyCertificateSecret]))
+	if certSecret != "" {
+		return internalTLSStore{
+			certificate: certSecret,
+			what:        "the object store's certificate",
+			issued: "the object store serves " + host + " with a certificate signed by it, which " +
+				"every application that claimed a bucket is handed in its binding",
+		}, true
+	}
+	return internalTLSStore{
+		clear: "the object store is reached over plain HTTP, so every object, every upload and " +
+			"every bucket credential is readable — by this namespace and by every application " +
+			"namespace, which is the one namespace the store is open to (set " +
+			"objectStore.tls.enabled to have the platform issue it a certificate)",
 	}, true
 }
 

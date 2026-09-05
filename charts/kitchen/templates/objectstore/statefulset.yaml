@@ -47,6 +47,19 @@ spec:
             - /data
             - --address
             - {{ printf ":%d" (int .Values.objectStore.service.port) | quote }}
+            {{- if eq (include "kitchen.objectStoreTLSEnabled" .) "true" }}
+            # The certificate the operator had issued from the platform's
+            # internal CA (#382). MinIO takes a directory and reads
+            # `public.crt` and `private.key` out of it — see the volume below
+            # for how cert-manager's two keys arrive under those names.
+            #
+            # There is no second, plaintext listener to turn off: MinIO serves
+            # one port, and a certificate in this directory is what makes that
+            # port TLS. A client that will not do TLS is answered "Client sent
+            # an HTTP request to an HTTPS server" and gets no further.
+            - --certs-dir
+            - {{ include "kitchen.objectStoreTLSMountPath" . | quote }}
+            {{- end }}
           env:
             # The root credential: what the operator copies into the
             # Connection it seeds, and what mints every bucket's own scoped
@@ -78,22 +91,30 @@ spec:
             - name: s3
               containerPort: {{ int .Values.objectStore.service.port }}
               protocol: TCP
-          # MinIO answers these two without authentication.
+          # MinIO answers these two without authentication. The scheme
+          # follows the store's: the kubelet speaks to the port the server
+          # actually serves, and it does not verify the certificate it is
+          # shown — which is right, since the name it dials is a pod IP that
+          # no certificate carries.
+          {{- $probeScheme := ternary "HTTPS" "HTTP" (eq (include "kitchen.objectStoreTLSEnabled" .) "true") }}
           startupProbe:
             httpGet:
               path: /minio/health/live
               port: s3
+              scheme: {{ $probeScheme }}
             periodSeconds: 5
             failureThreshold: 60
           livenessProbe:
             httpGet:
               path: /minio/health/live
               port: s3
+              scheme: {{ $probeScheme }}
             periodSeconds: 20
           readinessProbe:
             httpGet:
               path: /minio/health/ready
               port: s3
+              scheme: {{ $probeScheme }}
             periodSeconds: 10
           securityContext:
             {{- toYaml .Values.objectStore.securityContext | nindent 12 }}
@@ -106,9 +127,35 @@ spec:
             # scratch here.
             - name: tmp
               mountPath: /tmp
+            {{- if eq (include "kitchen.objectStoreTLSEnabled" .) "true" }}
+            # The certificate, issued by the operator from the platform's
+            # internal CA. The pod does not start until the Secret exists,
+            # which on a first install is a wait and never a fallback: there
+            # is no configuration here in which this store answers a
+            # plaintext request because its certificate was late.
+            - name: tls
+              mountPath: {{ include "kitchen.objectStoreTLSMountPath" . }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if eq (include "kitchen.objectStoreTLSEnabled" .) "true" }}
+        - name: tls
+          secret:
+            secretName: {{ include "kitchen.objectStoreTLSSecretName" . }}
+            # cert-manager writes `tls.crt` and `tls.key`; MinIO reads
+            # `public.crt` and `private.key` and nothing else, so the two are
+            # projected under the names it looks for. `ca.crt` is deliberately
+            # left behind: a directory MinIO cannot parse every file in is one
+            # it refuses to start on, and this store verifies nobody — it is
+            # verified.
+            items:
+              - key: tls.crt
+                path: public.crt
+              - key: tls.key
+                path: private.key
+        {{- end }}
         {{- if not .Values.objectStore.persistence.enabled }}
         - name: data
           emptyDir: {}

@@ -1521,6 +1521,34 @@ objectStore:
   # -- The region every bucket reports. A formality every S3 client insists
   # on; the seeded Connection is told the same value.
   region: us-east-1
+  # TLS inside the cluster, for the store applications actually talk to.
+  #
+  # On by default. Until it existed every object, every upload and every
+  # bucket credential crossed the network in the clear — and this is the one
+  # bundled store `networkPolicy.enabled` opens to application namespaces, so
+  # that traffic crosses between namespaces as well as inside
+  # `kitchen-system`, readable by anything that lands in either and by the
+  # node under them.
+  #
+  # The certificate comes from the same internal CA the telemetry store uses,
+  # through the cert-manager this chart bundles.
+  # MinIO serves TLS on the one port it listens on, so there is no plaintext
+  # listener left beside it: a client that will not do TLS is refused rather
+  # than served. The operator verifies it `verify-full` against the CA it
+  # publishes, and every application's binding is handed that CA certificate
+  # in a `caCert` key — an application pod cannot mount the platform's
+  # ConfigMap, and no image the platform did not build has the CA in its
+  # trust store, so the certificate travels with the binding or the
+  # application cannot verify at all. Nothing here depends on
+  # `kitchen.tls.mode`: that decides how the platform is published to the
+  # internet, and this decides what two pods in one cluster say to each other.
+  tls:
+    # -- Serve the object store over HTTPS, with a certificate the operator
+    # requests from the platform's internal CA, and hand every binding the CA
+    # certificate to verify it against. Needs a cert-manager on the cluster —
+    # this chart bundles one — and the store's pod waits for its certificate
+    # rather than starting without it.
+    enabled: true
   service:
     # -- Service port fronting the store, and the port MinIO binds.
     port: 9000

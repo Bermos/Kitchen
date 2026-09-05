@@ -63,6 +63,25 @@ func NewS3(opts Options, transport http.RoundTripper) (*S3, error) {
 	if err != nil {
 		return nil, err
 	}
+	// What the store's certificate is verified against, where the Connection
+	// names a bundle — the bundled store's, signed by the platform's own CA,
+	// which no host's roots have heard of. A caller that brought its own
+	// transport (the tests, against an httptest store) keeps it: there is
+	// nothing here that could be verified anyway.
+	//
+	// A bundle that cannot be read fails the whole provisioner rather than
+	// leaving one that connects unverified. The claim goes Pending naming the
+	// file, which is the loud half of never falling back.
+	caCert := ""
+	if transport == nil {
+		verified, bundle, err := cfg.Verify()
+		if err != nil {
+			return nil, err
+		}
+		if verified != nil {
+			transport, caCert = verified, string(bundle)
+		}
+	}
 	creds := credentials.NewStaticV4(opts.AccessKeyID, opts.SecretAccessKey, "")
 	lookup := minio.BucketLookupDNS
 	if cfg.ForcePathStyle {
@@ -83,6 +102,7 @@ func NewS3(opts Options, transport http.RoundTripper) (*S3, error) {
 		AccessKeyID:     opts.AccessKeyID,
 		SecretAccessKey: opts.SecretAccessKey,
 		Buckets:         &minioBuckets{client: client},
+		CACert:          caCert,
 	}
 	if cfg.Scoped() {
 		admin, err := madmin.NewWithOptions(host, &madmin.Options{Creds: creds, Secure: secure, Transport: transport})

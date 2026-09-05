@@ -190,8 +190,9 @@ spec:
             {{- if eq (include "kitchen.internalTLSEnabled" .) "true" }}
             # The platform's internal CA, which the operator and the REST API
             # in this same process verify the platform's own stores against —
-            # the telemetry store on every query, and the accounts database on
-            # the backup schedule. See the volume below for why it is mounted
+            # the telemetry store on every query, the accounts database on the
+            # backup schedule, and the object store on every bucket it
+            # provisions. See the volume below for why it is mounted
             # optional.
             - name: internal-ca
               mountPath: {{ include "kitchen.internalCAMountPath" . }}
@@ -212,9 +213,9 @@ spec:
         # A kubelet fills the volume in place once the ConfigMap appears, and
         # every client of a store is built per use from its connection secret,
         # so the first reconcile after that picks the bundle up without a
-        # restart. Until then a query against a store fails naming the file it
-        # could not read, which is the loud half of never falling back to
-        # plaintext.
+        # restart. Until then a query against a store, or a bucket this had to
+        # provision, fails naming the file it could not read — which is the
+        # loud half of never falling back to plaintext.
         - name: internal-ca
           configMap:
             name: {{ include "kitchen.internalCAConfigMapName" . }}

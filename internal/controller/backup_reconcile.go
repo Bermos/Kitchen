@@ -97,6 +97,9 @@ const (
 	// operator's own pod, the telemetry agent and the identity provider all
 	// get it from there — and it is here because a backup run's pod is
 	// written by this operator rather than by the chart.
+	// `backup.InternalCAFile` is the file inside it that a destination inside
+	// this cluster is verified against; TestTheCABundleIsMountedWhereTheChartSaysItIs
+	// holds the two spellings together.
 	InternalCAMountPath = "/etc/kitchen/internal-ca"
 	internalCAVolume    = "internal-ca"
 )
@@ -213,16 +216,21 @@ func (r *KitchenReconciler) applyBackupCronJob(
 			Name:         backupScratchName,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		}, {
-			// The CA the accounts database's certificate is verified against.
-			// A run dumps that database, so it is a client of it, and the DSN
-			// it reads out of the connection secret names this file.
+			// The CA the platform's own stores are verified against. A run
+			// dumps the accounts database, so it is a client of it and the
+			// DSN it reads out of the connection secret names this file; and
+			// it uploads to whatever destination the platform's backup names,
+			// which where that is the store this platform bundles is served
+			// by a certificate no public root has heard of.
 			//
 			// Optional, unlike the identity provider's: the same CronJob is
 			// written on an installation whose database is reached in the
-			// clear, where the ConfigMap does not exist and a required mount
-			// would be a scheduled backup that never runs. The DSN is what
-			// decides whether the file is needed, and a run that needs it and
-			// cannot read it fails naming it rather than connecting anyway.
+			// clear and whose archives go to a store on the internet, where
+			// the ConfigMap does not exist and a required mount would be a
+			// scheduled backup that never runs at all. The DSN and the
+			// destination's endpoint are what decide whether the file is
+			// needed, and a run that needs it and cannot read it fails naming
+			// it rather than connecting anyway.
 			Name: internalCAVolume,
 			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: InternalCAConfigMapName},

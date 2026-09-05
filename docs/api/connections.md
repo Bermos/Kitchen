@@ -193,6 +193,7 @@ It takes `credential.accessKeyId` and `credential.secretAccessKey`, and a
 | `region` | `us-east-1` | What buckets are created in and what every binding carries — a formality S3 clients insist on |
 | `forcePathStyle` | `false` | Address a bucket as a path rather than a host name. MinIO needs it; AWS does not. It travels in every binding, so the application never guesses |
 | `scopedCredentials` | `true` | Mint a user and a policy per bucket through the MinIO admin API, so no application is handed this key pair. Set it `false` for a store without that API — S3, R2 — and every claim is handed the connection's own credential; a `size` on a claim is then refused, since a quota is set through the same API |
+| `caFile` | none | The bundle the store's certificate is verified against, in the operator's own pod. Only the platform's internal CA (`/etc/kitchen/internal-ca/ca.crt`) may be named — it is what the connection the operator seeds for the bundled store carries, and a request naming any other path is refused. A store of your own is verified against the host's roots, which is what leaving it out asks for; there is no value here that turns verification off |
 
 A store that is kept at `scopedCredentials: true` and does not answer the
 admin API is not a failed connection — the credential works — but every claim

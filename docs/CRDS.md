@@ -305,16 +305,18 @@ status:
 ```
 
 `InternalCAReady` is the platform's report on its own encryption, across every
-store it bundles: the telemetry store and the identity provider's accounts
-database. One condition rather than one each — the question is whether this
-namespace is readable, and the answer is as good as its weakest store.
+store it bundles: the telemetry store, the identity provider's accounts
+database, and the object store. One condition rather than one each — the
+question is whether this namespace is readable, and the answer is as good as
+its weakest store.
 
 There is no field for it on this object: whether a bundled store serves TLS is
-a chart value (`clickhouse.tls.enabled`, `postgres.tls.enabled`), and what
-reaches the operator is the connection secret the chart writes — which either
-names a Secret for that store's certificate or does not. The condition says
-which, and it is written by reading cert-manager's own `Certificate` objects
-rather than by remembering what the last reconcile did:
+a chart value (`clickhouse.tls.enabled`, `postgres.tls.enabled`,
+`objectStore.tls.enabled`), and what reaches the operator is the connection
+secret the chart writes — which either names a Secret for that store's
+certificate or does not. The condition says which, and it is written by reading
+cert-manager's own `Certificate` objects rather than by remembering what the
+last reconcile did:
 
 - **True** — the platform's internal CA is issued and every bundled store
   serves a certificate signed by it, and there is an `internal-ca` row in
@@ -322,14 +324,17 @@ rather than by remembering what the last reconcile did:
 - **False, `Issuing` or `CertManagerUnavailable`** — the CA or one store's
   certificate is not there yet, named, with cert-manager's own message. That
   store's pod is waiting for it, so this is also the answer to "why is
-  ClickHouse — or Postgres — in ContainerCreating".
+  ClickHouse — or Postgres, or MinIO — in ContainerCreating".
 - **False, `StoreInTheClear`** — a store is reached unencrypted, because
-  somebody set `clickhouse.tls.enabled=false` or `postgres.tls.enabled=false`,
-  or pointed the platform at an external store that offers no TLS. The message
-  names which store and what is readable in it. It is a choice, so it does not
-  hold the platform short of `Ready`; it is said here because a platform
-  quietly shipping every log line, every session and its own passwords across
-  its namespace is exactly the finding this exists to close.
+  somebody set `clickhouse.tls.enabled=false`, `postgres.tls.enabled=false` or
+  `objectStore.tls.enabled=false`, or pointed the platform at an external store
+  that offers no TLS. The message names which store and what is readable in it
+  — for the object store that is every object, every upload and every bucket
+  credential, readable by the application namespaces it is open to as well as
+  by the platform's own. It is a choice, so it does not hold the platform short
+  of `Ready`; it is said here because a platform quietly shipping every log
+  line, every session and its own passwords across its namespace is exactly the
+  finding this exists to close.
 - **Absent** — there are no bundled stores, or every one of them is external
   with a certificate of its own. Neither is the internal CA's business.
 
