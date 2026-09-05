@@ -71,9 +71,19 @@ type ConfigFile struct {
 	// naming the file itself rather than the directory it is in. Only that
 	// one path is replaced — the rest of the directory is the image's, which
 	// is what a config file dropped beside an application's own files needs.
+	//
+	// **It is optional, and a file with no path is placed in no container.**
+	// Such a file exists to be seeded into a volume by a workload's `init`
+	// (#348), and it has to be able to have no path because a mounted config
+	// file is read-only: mounted at the place the seed would write, it would
+	// shadow the volume's own copy for ever and the application could never
+	// rewrite what it was given. A file that neither names a path nor is
+	// seeded anywhere is inert, which is a declaration that does nothing
+	// rather than one that does something surprising.
 	// +kubebuilder:validation:Pattern=`^/([^/]+/)*[^/]+$`
 	// +kubebuilder:validation:MaxLength=1024
-	Path string `json:"path"`
+	// +optional
+	Path string `json:"path,omitempty"`
 
 	// Content is the file, verbatim. It is empty for a secret file, whose
 	// content the platform holds where nothing reads it back, and may be

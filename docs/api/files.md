@@ -44,13 +44,28 @@ omission, and the reasoning is at the bottom of this page.
 | | |
 |---|---|
 | `name` | A name for the file, and the key every surface refers to it by — letters, digits, `-`, `_` and `.`, at most 253 characters. It is **not** the path, so a file that moves keeps its name |
-| `path` | Where the file appears inside the container: absolute, naming the file itself rather than the directory holding it. Only that one path is replaced — the rest of the directory stays as the image left it, which is what a config file dropped beside an application's own files needs |
+| `path` | Where the file appears inside the container: absolute, naming the file itself rather than the directory holding it. Only that one path is replaced — the rest of the directory stays as the image left it, which is what a config file dropped beside an application's own files needs. **Optional**: a file with no path is placed in no container, and exists to be seeded into a volume — see below |
 | `content` | The file, verbatim, at most 128 KiB. Absent on a write **keeps what is stored**; absent on a read of a secret file means there is nothing to show |
 | `workloads` | The workloads that mount it — `web` for the web process, and a workload's own name for anything in the project's list. Empty is **every** workload of the unit, which is what a vendored application's single config file wants |
 | `secret` | The content is a credential: it is held where nothing reads it back, and written through a route of its own |
 
 Two files at one path on one workload is refused rather than resolved: the
-second mount would win and the first would silently never appear.
+second mount would win and the first would silently never appear. A file with
+no path is mounted nowhere and so collides with nothing.
+
+### A file the application will own
+
+A mounted config file is **read-only**, and that is right for a file the
+platform places and the application reads. It is wrong for the other kind:
+Home Assistant's `configuration.yaml` is a file the application rewrites, and
+mounting one where it expects to write would shadow its own copy for ever.
+
+That file is declared here with **no `path`** and copied into a volume by the
+workload's
+[`init`](projects.md#a-volume-the-process-cannot-start-on) instead — once,
+where the destination does not exist, after which it is the application's. It
+is still a configuration file in every other respect: it is held here, frozen
+into the release, and restored by a rollback.
 
 ## Reading them
 
@@ -238,4 +253,5 @@ kitchen files set configuration --path /config/configuration.yaml \
   --content-file ./configuration.yaml
 kitchen files set app-ini --path /data/gitea/conf/app.ini --secret \
   --content-file ./app.ini
+kitchen files set configuration --no-path --content-file ./configuration.yaml
 ```

@@ -292,6 +292,11 @@ type Process struct {
 	// a scheduled process and on a task, whose verdict is the run's exit
 	// status.
 	Health *Health `json:"health,omitempty"`
+	// Init is what this workload prepares inside the volumes it mounts
+	// before its own container starts: directories that have to exist, and
+	// configuration files seeded in once. Every type takes it, a task
+	// included.
+	Init []VolumeInit `json:"init,omitempty"`
 }
 
 // ProcessBuild is one workload's own build as a client sends it.
@@ -455,6 +460,11 @@ func ProcessSpec(request Process) (kitchenv1alpha1.ProcessSpec, error) {
 	if err := applyProcessResources(&process, request); err != nil {
 		return process, err
 	}
+	init, err := VolumeInits(request.Init, fmt.Sprintf("process %q", process.Name))
+	if err != nil {
+		return process, err
+	}
+	process.Init = init
 	return process, nil
 }
 
@@ -783,8 +793,11 @@ func applyProcessImage(process *kitchenv1alpha1.ProcessSpec, request Process) er
 type File struct {
 	Name string `json:"name"`
 	// Path is where the file appears in the container: absolute, naming the
-	// file rather than the directory holding it.
-	Path string `json:"path"`
+	// file rather than the directory holding it. Empty places it in no
+	// container: such a file exists to be seeded into a volume by a
+	// workload's init, since a mounted config file is read-only and would
+	// shadow the volume's own copy for ever.
+	Path string `json:"path,omitempty"`
 	// Content is the file, verbatim. Absent keeps the stored content;
 	// present replaces it. It is refused on a secret file, whose content has
 	// a route of its own that no response reads back.
@@ -836,7 +849,12 @@ func Files(requests []File, stored []kitchenv1alpha1.ConfigFile, workloads []str
 		seen[file.Name] = true
 		// Two files at one path is one file: the second mount wins and the
 		// first silently never appears, which is a config file that is
-		// declared, saved, shown on the screen and not there.
+		// declared, saved, shown on the screen and not there. A file with no
+		// path is mounted nowhere and collides with nothing.
+		if file.Path == "" {
+			files = append(files, file)
+			continue
+		}
 		for _, workload := range mountedOn(file, workloads) {
 			at := workload + ":" + file.Path
 			if other, taken := paths[at]; taken {
@@ -929,10 +947,14 @@ func ValidateFileName(name string) error {
 }
 
 // ValidateFilePath checks where a file is mounted: absolute, naming a file
-// rather than a directory, and not reaching for one with `..`.
+// rather than a directory, and not reaching for one with `..`. An empty path
+// is a file that is mounted nowhere — see [File.Path].
 func ValidateFilePath(name, path string) error {
 	if path == "" {
-		return fmt.Errorf("file %q names no path: say where in the container it is mounted, like /config/app.yaml", name)
+		// Placed in no container, and deliberately allowed: a file seeded
+		// into a volume must not also be mounted read-only where the seed
+		// writes, or the application could never rewrite what it was given.
+		return nil
 	}
 	if !configFilePath.MatchString(path) {
 		return fmt.Errorf(

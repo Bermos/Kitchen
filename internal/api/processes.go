@@ -134,6 +134,10 @@ type processView struct {
 	// worker that declared none — unlike the web process, a worker is
 	// probed only where it asked to be.
 	Health *healthView `json:"health,omitempty"`
+	// Init is what this workload prepares inside the volumes it mounts
+	// before its own container starts (#348), as the project declares it.
+	// Absent means it prepares nothing.
+	Init []volumeInitView `json:"init,omitempty"`
 	// Workload is the Deployment or CronJob behind it, absent for a process
 	// this environment does not run.
 	Workload string `json:"workload,omitempty"`
@@ -261,6 +265,7 @@ func newProcessView(
 		Build:       newProcessBuildView(process.Build),
 		ImageSource: newImageSourceView(process.Image),
 		Previews:    process.Previews,
+		Init:        newVolumeInitViews(process.Init),
 		Healthy:     true,
 	}
 	switch {

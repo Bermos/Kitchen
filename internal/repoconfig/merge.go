@@ -114,6 +114,15 @@ func Runtime(
 	if declared.Security != nil {
 		merged.Security = declared.Security.DeepCopy()
 	}
+	if len(declared.Init) > 0 {
+		// Deep, not a slice clone: each entry carries its own step lists, and
+		// a shallow copy would leave the merged runtime sharing them with the
+		// RepoConfig the build read.
+		merged.Init = make([]kitchenv1alpha1.VolumeInit, len(declared.Init))
+		for i := range declared.Init {
+			declared.Init[i].DeepCopyInto(&merged.Init[i])
+		}
+	}
 	if resources := declared.Resources; resources != nil {
 		for name, value := range map[corev1.ResourceName]string{
 			corev1.ResourceCPU:    resources.CPU,

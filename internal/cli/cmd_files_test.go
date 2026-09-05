@@ -254,3 +254,36 @@ func TestFilesListPrintsWhatThePlatformWillSay(t *testing.T) {
 		t.Fatalf("a secret file with no content yet should say so: %+v", answer.Items[1])
 	}
 }
+
+// A file with no path is placed in no container: it exists to be seeded into a
+// volume by a workload's init (#348), and a mounted config file is read-only,
+// so one mounted where the seed writes would shadow the copy the application
+// then owns. The command needs a way to say that, since a new file otherwise
+// has to have a path.
+func TestFilesSetPlacesAFileInNoContainer(t *testing.T) {
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+	h.platform.project = &project{Name: testProject}
+
+	if code := h.run("files", "set", "configuration", "--no-path", "--content", "logger: info\n", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	sent := sentFiles(t, h)
+	if len(sent) != 1 || sent[0].Name != "configuration" {
+		t.Fatalf("the file did not go: %+v", sent)
+	}
+	if sent[0].Path != "" {
+		t.Fatalf("the file was given a path: %+v", sent[0])
+	}
+}
+
+func TestFilesSetRefusesBothAPathAndNone(t *testing.T) {
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+	h.platform.project = &project{Name: testProject}
+
+	if code := h.run("files", "set", "configuration", "--no-path", "--path", "/config/app.yaml",
+		"--content", "x", "--json"); code != exitUsage {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+}

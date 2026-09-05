@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api, type Process } from "../lib/api";
+import VolumeInitEditor from "./VolumeInitEditor.vue";
 import { callerFor } from "../lib/me";
 import { may, refusal } from "../lib/policy";
 import {
@@ -402,6 +403,11 @@ async function save() {
                 <UInput v-model="draft.healthStartupFailures" :disabled="!mayEdit" type="number" class="w-full" />
               </UFormField>
             </div>
+
+            <!-- What this workload needs done inside the volumes it mounts
+                 before it starts. It is last because it is the rarest: a
+                 workload that mounts no volume has nothing to say here. -->
+            <VolumeInitEditor v-model="draft.init" :may-edit="mayEdit" heading="h3" />
           </div>
         </div>
       </div>

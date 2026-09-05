@@ -108,6 +108,7 @@ much of it.
 | `concurrencyPolicy` | cron | `Allow`, `Forbid` (the default) or `Replace`. A job that takes longer than its interval is far more often running behind than meant to run twice. |
 | `timeout` | cron, task | A Go duration bounding one run; an hour by default. It becomes the Job's `activeDeadlineSeconds` — and for a task it is how long the deploy waits before calling it failed. |
 | `health` | worker, service | A health check, the same shape the project's web process takes. A worker's **must name the `port`** it is made against, because a worker publishes none of its own; a service's falls back to its own port. Refused on a cron process and on a task: how a run went is its exit status, not a probe. |
+| `init` | all | What this workload needs done inside the volumes it mounts, before its own container starts: directories that have to exist, and configuration files seeded in once. It is [`runtime.init`](projects.md#a-volume-the-process-cannot-start-on) one level down and on identical terms — a volume claim names the one process that mounts it, so each workload declares its own — and every type takes it, a task included: a migration that writes into a volume needs the tree as much as the worker that reads it afterwards. |
 | `previews` | all | Whether it runs in preview environments. **Off for a worker and a scheduled job unless asked for; on for a service and a task unless they say otherwise** — see below. |
 
 A worker is probed only where it asked to be, which is the opposite of the web
@@ -392,7 +393,7 @@ and they are these three:
 | `kitchen.json` | Over the API |
 | --- | --- |
 | `build.strategy`, `build.dockerfilePath`, `build.dockerfileTarget` | `buildStrategy`, `dockerfilePath`, `dockerfileTarget` on [`PATCH /projects/{name}`](projects.md#changing-a-projects-settings) — a project with no repository builds nothing, so all three are refused there |
-| `runtime.port`, `replicas`, `singleton`, `notRequestDriven`, `command`, `args`, `previewArgs`, `resources.cpu`, `resources.memory`, `health`, `security` | the fields of the same names on `PATCH /projects/{name}` |
+| `runtime.port`, `replicas`, `singleton`, `notRequestDriven`, `command`, `args`, `previewArgs`, `resources.cpu`, `resources.memory`, `health`, `security`, `init` | the fields of the same names on `PATCH /projects/{name}` |
 | `env`, `previewEnv` | `value` and `previewValue` on [`PATCH /projects/{name}/env`](projects.md#changing-a-projects-environment-variables), which also takes the references a committed file may not: a variable in a repository is public by construction |
 | `processes` | `processes` on `PATCH /projects/{name}` — the list above, field for field, validated by the same code (`internal/appconfig`) so the file and the route cannot disagree about what a workload is |
 

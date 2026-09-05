@@ -109,11 +109,12 @@ func main() {
 	flag.StringVar(&gitWebhookAddr, "git-webhook-bind-address", ":8090",
 		"The address the git webhook receiver binds to.")
 	flag.StringVar(&qualityGateImage, "quality-gate-image", "",
-		"Image the publisher that carries a quality gate's findings out of its pod runs, and the same "+
-			"image the continuous re-evaluation pass runs its two halves from. It is this "+
-			"operator's own image — all three are further binaries in it — and a pod cannot read its own "+
-			"image back, so the chart passes it in. Without it, configured gates never run and nothing "+
-			"is rescanned.")
+		"Image the publisher that carries a quality gate's findings out of its pod runs, the image the "+
+			"continuous re-evaluation pass runs its two halves from, and the image the init container "+
+			"that prepares a workload's volumes runs. It is this "+
+			"operator's own image — all four are further binaries in it — and a pod cannot read its own "+
+			"image back, so the chart passes it in. Without it, configured gates never run, nothing "+
+			"is rescanned, and an environment whose project prepares a volume is refused with a sentence.")
 	flag.StringVar(&previewGateImage, "preview-gate-image", "",
 		"Image the forward-auth gate for protected previews runs. It is this operator's own image — "+
 			"the gate is a second binary in it — and a pod cannot read its own image back, so the chart passes it in. "+
@@ -460,6 +461,11 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Activity: recorder,
 		Audit:    auditor,
+		// The same image the quality gate publisher and the rescan halves
+		// run from, and for the same reason: `/volume-init` is another
+		// binary in this operator's own image, and a pod cannot read its own
+		// image back.
+		OperatorImage: qualityGateImage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Environment")
 		os.Exit(1)

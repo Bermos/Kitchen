@@ -121,6 +121,11 @@ type FileRuntime struct {
 	Resources        *FileResources      `json:"resources,omitempty"`
 	Health           *appconfig.Health   `json:"health,omitempty"`
 	Security         *appconfig.Security `json:"security,omitempty"`
+	// Init is what the web process prepares inside the volumes it mounts
+	// before it starts. A repository is where it belongs as much as the
+	// settings screen is: the commit knows which directories its image
+	// cannot start without.
+	Init []appconfig.VolumeInit `json:"init,omitempty"`
 }
 
 // FileResources is `runtime.resources`.
@@ -472,6 +477,13 @@ func (f File) runtimeConfig() (*kitchenv1alpha1.RepoRuntimeConfig, error) {
 			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
 		}
 		runtime.Security = security
+	}
+	if len(source.Init) > 0 {
+		init, err := appconfig.VolumeInits(source.Init, "runtime.init, the web process")
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		runtime.Init = init
 	}
 	return runtime, nil
 }

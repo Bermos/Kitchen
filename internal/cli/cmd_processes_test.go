@@ -220,3 +220,45 @@ func TestProcessesRemoveTakesOneOffAndRefusesANameTheProjectDoesNotHave(t *testi
 		t.Fatal("a refused removal still wrote")
 	}
 }
+
+// What a workload prepares inside its volumes before it starts (#348) is the
+// one part of a workload's declaration no flag of this command writes: it is a
+// nested list of typed steps, and `kitchen api PATCH /projects/{name}` is where
+// the whole of it is written — the same answer #291 gave for the security
+// posture, for the same reason.
+//
+// It still has to survive being read and sent back, and that is what this
+// pins. A command that dropped it would silently un-declare a workload's
+// volume preparation every time somebody changed its replica count, which is
+// exactly the defect a pointer-valued `replicas` exists to avoid one field
+// along.
+func TestProcessesSetKeepsAWorkloadsVolumePreparation(t *testing.T) {
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+	h.platform.project = &project{Name: testProject, Processes: []process{{
+		Name: "worker", Type: "worker", Replicas: ptr.To(int32(1)),
+		Init: []volumeInit{{
+			Volume:      "config",
+			Directories: []volumeInitDirectory{{Path: "custom_components", Mode: "0750"}},
+			Seed:        []volumeInitSeed{{File: "configuration", Path: "configuration.yaml"}},
+		}},
+	}}}
+
+	if code := h.run("processes", "set", "worker", "--replicas", "2", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+
+	sent := byWorkloadName(sentProcesses(t, h))["worker"]
+	if len(sent.Init) != 1 {
+		t.Fatalf("the volume preparation was dropped on the way back: %+v", sent)
+	}
+	if sent.Init[0].Volume != "config" || len(sent.Init[0].Directories) != 1 {
+		t.Fatalf("the steps did not survive: %+v", sent.Init[0])
+	}
+	if sent.Init[0].Directories[0].Mode != "0750" {
+		t.Fatalf("the declared mode did not survive: %+v", sent.Init[0].Directories[0])
+	}
+	if len(sent.Init[0].Seed) != 1 || sent.Init[0].Seed[0].File != "configuration" {
+		t.Fatalf("the seed did not survive: %+v", sent.Init[0])
+	}
+}

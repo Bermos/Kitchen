@@ -192,6 +192,11 @@ type projectView struct {
 	// workload runs under one, so a project that declared nothing is
 	// reported with the platform's rather than with nothing.
 	Security *securityView `json:"security,omitempty"`
+	// Init is what the web process prepares inside the volumes it mounts
+	// before its own container starts (#348). Absent means it prepares
+	// nothing, which is every project that mounts no volume and most that
+	// do. A named workload's own is on its row of `processes`.
+	Init []volumeInitView `json:"init,omitempty"`
 	// Command and Args are what the application is started with, in exec
 	// form; absent means the image's own entrypoint. PreviewArgs is what a
 	// preview runs instead of Args — the sibling of an environment
@@ -294,6 +299,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) p
 		Conditions:         conditionViews(project.Status.Conditions),
 		Health:             newHealthView(project.Spec.Runtime.Health),
 		Security:           newSecurityView(project.Spec.Runtime.Security),
+		Init:               newVolumeInitViews(project.Spec.Runtime.Init),
 		Command:            project.Spec.Runtime.Command,
 		Args:               project.Spec.Runtime.Args,
 		PreviewArgs:        project.Spec.Runtime.PreviewArgs,

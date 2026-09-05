@@ -1,4 +1,4 @@
-import type { ImageWrite, Process, ProcessWrite } from "./api";
+import type { ImageWrite, Process, ProcessWrite, VolumeInit } from "./api";
 
 // The workloads editor's side of a project's process list.
 //
@@ -67,6 +67,35 @@ export interface WorkloadDraft {
   healthTimeout: string;
   healthFailures: string;
   healthStartupFailures: string;
+  /** What this workload prepares inside the volumes it mounts before it
+   * starts. Empty for the great majority of workloads, which mount none. */
+  init: VolumeInitDraft[];
+}
+
+/** One volume's preparation as the form holds it (#348).
+ *
+ * A volume claim hands a workload an empty filesystem, and software the
+ * platform did not build often will not start on one. What a project declares
+ * is two kinds of typed step — a directory that has to exist, and a
+ * configuration file copied in once — which the platform runs itself before
+ * the workload's own container starts. There is no command here, and there is
+ * deliberately no field that could become one.
+ *
+ * The two step lists are held as text, one step per line, for the reason the
+ * command and the arguments are: a list is a list of lines, and a box per step
+ * would be a form nobody can paste into. */
+export interface VolumeInitDraft {
+  /** Stable across renders and never sent: `volume` is editable, so it cannot
+   * also be the key the list is rendered by. */
+  key: string;
+  volume: string;
+  /** One per line: a path inside the volume, and optionally an octal mode —
+   * `custom_components 0750`. */
+  directories: string;
+  /** One per line: the name of one of the project's files, where it goes
+   * inside the volume, and optionally an octal mode —
+   * `configuration configuration.yaml 0640`. */
+  seed: string;
 }
 
 let nextKey = 0;
@@ -126,7 +155,48 @@ export function workloadDrafts(processes: Process[] | undefined): WorkloadDraft[
     healthTimeout: numberField(workload.health?.timeoutSeconds),
     healthFailures: numberField(workload.health?.failureThreshold),
     healthStartupFailures: numberField(workload.health?.startupFailureThreshold),
+    init: volumeInitDrafts(workload.init),
   }));
+}
+
+/** A declaration read back as drafts. */
+export function volumeInitDrafts(inits: VolumeInit[] | undefined): VolumeInitDraft[] {
+  return (inits ?? []).map((init) => ({
+    key: `read-init-${nextKey++}`,
+    volume: init.volume,
+    directories: (init.directories ?? [])
+      .map((dir) => [dir.path, dir.mode].filter(Boolean).join(" "))
+      .join("\n"),
+    seed: (init.seed ?? []).map((seed) => [seed.file, seed.path, seed.mode].filter(Boolean).join(" ")).join("\n"),
+  }));
+}
+
+/** A volume the "Prepare a volume" button just made. */
+export function newVolumeInitDraft(): VolumeInitDraft {
+  return { key: `new-init-${nextKey++}`, volume: "", directories: "", seed: "" };
+}
+
+/** The steps as the route takes them. A line's words are its fields, in order,
+ * and a line with too few is left out rather than sent half-formed — the form
+ * says what is wrong beside the box, and the API is the one validator. */
+export function volumeInitWrites(drafts: VolumeInitDraft[]): VolumeInit[] {
+  return drafts
+    .filter((draft) => draft.volume.trim() !== "")
+    .map((draft) => {
+      const init: VolumeInit = { volume: draft.volume.trim() };
+      const directories = wordsOf(draft.directories)
+        .map((line) => line.split(/\s+/))
+        .filter((words) => words[0])
+        .map((words) => (words[1] ? { path: words[0], mode: words[1] } : { path: words[0] }));
+      if (directories.length) init.directories = directories;
+      const seed = wordsOf(draft.seed)
+        .map((line) => line.split(/\s+/))
+        .filter((words) => words.length >= 2)
+        .map((words) => (words[2] ? { file: words[0], path: words[1], mode: words[2] } : { file: words[0], path: words[1] }));
+      if (seed.length) init.seed = seed;
+      return init;
+    })
+    .filter((init) => (init.directories?.length ?? 0) + (init.seed?.length ?? 0) > 0);
 }
 
 /** A workload the "Add workload" button just made. It starts as a worker with
@@ -165,6 +235,7 @@ export function newWorkloadDraft(origin: ImageOrigin = "project"): WorkloadDraft
     healthTimeout: "",
     healthFailures: "",
     healthStartupFailures: "",
+    init: [],
   };
 }
 
@@ -232,6 +303,8 @@ export function processWrites(drafts: WorkloadDraft[]): ProcessWrite[] {
       }
       if (runsOnce(type) && draft.timeout.trim()) write.timeout = draft.timeout.trim();
       if (draft.previews !== "default") write.previews = draft.previews === "yes";
+      const init = volumeInitWrites(draft.init);
+      if (init.length) write.init = init;
 
       if (draft.origin === "image") {
         const image = imageWrite(draft);
@@ -313,6 +386,37 @@ export function workloadProblems(drafts: WorkloadDraft[]): string[] {
     }
     if (draft.origin === "image" && !draft.imageTag.trim() && !draft.imageDigest.trim()) {
       problems.push(`${name} needs a tag or a digest: a vendored image is pinned to a version.`);
+    }
+    problems.push(...volumeInitProblems(draft.init, name));
+  }
+  return problems;
+}
+
+/** What is wrong with a workload's volume preparation, in the words the API
+ * would use. Like the rest of this file it checks only what a form can check
+ * without the platform: whether a volume was named twice, whether an entry
+ * does anything, and whether a seed line says both what and where. */
+export function volumeInitProblems(drafts: VolumeInitDraft[], workload: string): string[] {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const draft of drafts) {
+    const volume = draft.volume.trim();
+    if (volume === "") {
+      problems.push(`${workload} prepares a volume without saying which.`);
+      continue;
+    }
+    if (seen.has(volume)) {
+      problems.push(`${workload} prepares ${volume} twice: one volume is one entry, with all of its steps in it.`);
+    }
+    seen.add(volume);
+    for (const line of wordsOf(draft.seed)) {
+      if (line.split(/\s+/).length < 2) {
+        problems.push(`${workload}, preparing ${volume}: a seeded file says which file and where it goes — "configuration configuration.yaml".`);
+      }
+    }
+    const steps = wordsOf(draft.directories).length + wordsOf(draft.seed).length;
+    if (steps === 0) {
+      problems.push(`${workload} prepares ${volume} and says nothing to do to it.`);
     }
   }
   return problems;

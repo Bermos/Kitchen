@@ -1047,6 +1047,14 @@ type process struct {
 	// worker and a scheduled job, on for a service and a task. What this
 	// environment does with it is Suspended below.
 	Previews *bool `json:"previews,omitempty"`
+	// Init is what this workload prepares inside the volumes it mounts before
+	// it starts: directories that have to exist, and configuration files
+	// seeded in once (#348). No flag of `processes set` writes it — it is a
+	// nested list of typed steps, and `kitchen api` is where the whole
+	// declaration is written, the way `runtime.security` is. It is read and
+	// carried here so that editing another field of a workload does not take
+	// it away, which is the same bargain Replicas being a pointer makes.
+	Init []volumeInit `json:"init,omitempty"`
 	// Suspended is a process this environment declares and does not run: a
 	// preview whose process was not opted in. Reason says so in a sentence.
 	Suspended bool   `json:"suspended,omitempty"`
@@ -1090,6 +1098,33 @@ type processWrite struct {
 	Timeout           string         `json:"timeout,omitempty"`
 	Previews          *bool          `json:"previews,omitempty"`
 	Health            *processHealth `json:"health,omitempty"`
+	Init              []volumeInit   `json:"init,omitempty"`
+}
+
+// volumeInit is what one workload prepares inside one of the volumes it
+// mounts, before its own container starts. It reads and writes with the same
+// shape, because nothing about it is resolved by the platform: the steps are
+// the project's declaration, verbatim.
+type volumeInit struct {
+	Volume      string                `json:"volume"`
+	Directories []volumeInitDirectory `json:"directories,omitempty"`
+	Seed        []volumeInitSeed      `json:"seed,omitempty"`
+}
+
+// volumeInitDirectory is one directory created if it is absent.
+type volumeInitDirectory struct {
+	Path string `json:"path"`
+	// Mode is octal as a string — "0750" — because the number is octal and
+	// JSON's is not.
+	Mode string `json:"mode,omitempty"`
+}
+
+// volumeInitSeed is one configuration file copied in, and only where the
+// destination does not exist.
+type volumeInitSeed struct {
+	File string `json:"file"`
+	Path string `json:"path"`
+	Mode string `json:"mode,omitempty"`
 }
 
 // imageWrite is a vendored image as the route takes it. It is imageSource
@@ -1125,6 +1160,10 @@ func declaredProcessWrites(declared []process) []processWrite {
 			Timeout:           workload.Timeout,
 			Previews:          workload.Previews,
 			Health:            workload.Health,
+			// Carried back untouched. No flag writes it, and a command that
+			// dropped it would silently un-declare a workload's volume
+			// preparation every time somebody changed its replica count.
+			Init: workload.Init,
 		}
 		if source := workload.ImageSource; source != nil {
 			write.Image = &imageWrite{

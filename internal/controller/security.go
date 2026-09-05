@@ -229,6 +229,28 @@ func (r *EnvironmentReconciler) startFailure(
 				refused
 		}
 	}
+	// The init container that prepares a workload's volumes runs before that
+	// workload's own container and, when a step fails, is the reason the
+	// application's never starts (#348). It is reported here rather than on a
+	// condition of its own: an environment that is not up has one place a
+	// reader looks, and a step that failed belongs in it — in the step's own
+	// words, which the kubelet copies out of the pod's termination log.
+	//
+	// It is looked for across every workload the environment keeps running,
+	// on the same argument the refusal above is: a worker whose volume was
+	// never prepared is a broken worker while the URL answers.
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if podRunsAJob(pod) {
+			continue
+		}
+		if failure := volumeInitFailure(pod); failure != "" {
+			return reasonVolumeInitFailed,
+				fmt.Sprintf("%s did not start: preparing its volumes failed. %s",
+					workloadOfPod(pod), failure),
+				nil
+		}
+	}
 	if webAvailable {
 		return "", "", nil
 	}
@@ -279,6 +301,12 @@ const (
 	// asserting a cause the platform cannot prove.
 	reasonContainerRefused       = "ContainerRefused"
 	reasonRestartingUnderPosture = "RestartingUnderPosture"
+
+	// reasonVolumeInitFailed is a step of a workload's volume preparation
+	// that did not succeed (#348). It is its own reason because it is its own
+	// cause: the application never ran, so nothing about the application
+	// explains it.
+	reasonVolumeInitFailed = "VolumeInitFailed"
 
 	// crashLoopUnderPosture stands in for the kubelet's message when there
 	// is none: a container that exits on its own leaves its reason in its

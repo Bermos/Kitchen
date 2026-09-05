@@ -112,6 +112,7 @@ lifecycle has no stages to inherit into.
 | `resources` | `{"cpu": "500m", "memory": "512Mi"}`, applied as request and limit alike. |
 | `health` | What the platform asks before it sends anyone to the application. `{}` is the default: a TCP connect to the port. |
 | `security` | The posture every workload of this project runs under. `{}` is the platform's default, which they run under anyway. |
+| `init` | What the web process needs done inside the volumes it mounts, before its own container starts. A named workload's own is on its entry of [`processes`](#processes). |
 
 ```json
 {
@@ -189,6 +190,59 @@ A workload that cannot start under what it asked for says so on its
 environment, naming the constraints in force, rather than sitting in
 `CrashLoopBackOff` with the reason three layers down.
 
+#### `runtime.init` — a volume the process cannot start on
+
+A [volume claim](api/claims.md) hands a workload an empty filesystem, and a
+good deal of software will not start on one: it wants its directory tree to
+exist, and sometimes a configuration file it can then rewrite for itself.
+`init` is what the platform does inside that volume before the process runs.
+
+```json
+{
+  "runtime": {
+    "init": [
+      {
+        "volume": "config",
+        "directories": [
+          {"path": "custom_components"},
+          {"path": "secrets", "mode": "0700"}
+        ],
+        "seed": [{"file": "configuration", "path": "configuration.yaml"}]
+      }
+    ]
+  }
+}
+```
+
+`volume` names one of the volume claims **this workload mounts** — a claim
+names the one process that mounts it, so each workload declares its own. Every
+path is relative to that claim's mount path, and a leading slash or a `..` is
+not spellable: there is no path here that leaves the volume.
+
+The two steps are the whole vocabulary, and there is deliberately no third that
+takes a command. `directories` are created if they are absent and **left
+exactly as they are** if they are there, mode and owner both. `seed` copies one
+of this project's [`files`](#files) in, and **only where the destination does
+not exist** — so a second deploy never clobbers what the application wrote,
+which is what makes running this on every start the same as running it once.
+
+A file used only as a seed is one with **no `path`**: it is placed in no
+container, because a mounted config file is read-only and, mounted where the
+seed writes, would shadow the copy the application then owns.
+
+Nothing is chowned. The steps run in an init container in the workload's own
+pod under this project's own `runtime.security`, so a directory they create
+comes out owned by the process that will use it — which is what
+`security.fsGroup` and `security.runAsUser` already decide. `mode` is octal
+written **as a string**, because JSON's numbers are not octal.
+
+It is frozen into the release with the rest of the runtime, so a rollback
+restores the tree and the seeds that release started with. A declaration that
+cannot be honoured — a volume this workload does not mount, one it mounts
+read-only, a seed from a file the project does not declare — stops the deploy
+with the reason on the environment; so does a step that fails, in the step's
+own words.
+
 ### `env` and `previewEnv`
 
 ```json
@@ -237,6 +291,7 @@ The workloads the project ships besides its web process —
 | `command`, `args` | Exec form, as above. |
 | `port` | A service's listening port, and the port its siblings reach it on. Required on a service and refused on anything else. |
 | `build` | This workload's own build: `strategy` (`auto`, `dockerfile` or `buildpacks`, defaulting to `auto`), `dockerfilePath`, `dockerfileTarget`, and `rootDirectory` relative to the repository root. `auto` is the project's own default read over *this workload's* root directory: a Dockerfile there wins and this is a dockerfile build; otherwise the framework detected there is built with buildpacks; otherwise the build fails with a message naming this workload, the file it looked for and the `strategy` that would settle it. It resolves the builder alone — a workload names its own port and command, which are the other two things detection would answer — and it does not inherit the project's `strategy`. That directory is the workload's build root — `dockerfilePath` is relative to it and nothing above it is part of the build — so a path that leaves it is refused here, exactly as `build.dockerfilePath` is for the project. `dockerfileTarget` is which stage of that file to ship, and it falls back to the project's stage rather than to the file's last one; a stage on a `buildpacks` workload is refused naming that workload. Absent means it runs the project's image with another command. Refused on a `cron`. |
+| `init` | What this workload needs done inside the volumes it mounts before its own container starts — [`runtime.init`](#runtimeinit--a-volume-the-process-cannot-start-on) for a named workload, on the same terms. Every type takes it, a `task` included. |
 | `image` | An image this platform did not build, and the third answer to the question `build` asks: `repository` (registry host included, without a tag or a digest), one or both of `tag` and `digest`, and an optional `connection` naming the Connection it is *pulled* with — left out for a public image, which is pulled anonymously. It excludes `build`: a workload is built from this repository or published elsewhere, never both. It also takes an optional `signature` — `publicKeySecret`, `identity`, `issuer` — saying whose signature on the image is acceptable; the platform looks either way, and a key is what makes a `verified` answer reachable (see [COMPLIANCE.md §18.5](COMPLIANCE.md)). A unit may mix the two, and they ship in one release that records the digest each workload resolved to, so the whole of it rolls back together. |
 | `replicas` | A worker's or a service's copy count. Zero is a workload that is declared and parked. |
 | `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1, and refused on a `cron` — that question is `concurrencyPolicy` — and on a `task`, which is one run per deploy. |
@@ -300,6 +355,14 @@ Each file is mounted **read-only at its path**, into every workload it names —
 [`processes`](#processes). A file that names none reaches all of them, which is
 what a vendored application's single config file wants. Only that one path is
 replaced; the rest of the directory stays as the image left it.
+
+`path` may be **left out**, and then the file is placed in no container at all:
+such a file exists to be copied into a volume by a workload's
+[`init`](#runtimeinit--a-volume-the-process-cannot-start-on). A mounted config
+file is read-only, so one mounted where the seed writes would shadow the copy
+the application then owns — which for Home Assistant's `configuration.yaml` is
+the difference between an application that can be configured and one that
+cannot.
 
 `content` is **required here**, unlike on the API, because a committed
 declaration has nowhere else to have put it. The file is placed exactly as

@@ -230,6 +230,9 @@ export interface Project {
    * present: every workload runs under one, so a project that declared
    * nothing is reported with the platform's rather than with nothing. */
   security?: Security;
+  /** What the web process prepares inside the volumes it mounts before its own
+   * container starts. A named workload's own is on its row of `processes`. */
+  init?: VolumeInit[];
   /** What the application is started with, in exec form — a list of words,
    * never a shell line. Absent means the image's own entrypoint. */
   command?: string[];
@@ -364,6 +367,9 @@ export interface ProjectSettings {
   /** Replace the security posture every workload of the project runs under.
    * `{}` takes a declared one back off, restoring the platform's default. */
   security?: SecuritySettings;
+  /** Replace what the web process prepares inside its volumes before it
+   * starts. It replaces the whole declaration and `[]` clears it. */
+  init?: VolumeInit[];
   /** Replace what the application is started with. Each replaces its whole
    * list and `[]` clears it — an application started with no arguments,
    * where leaving the field out keeps whatever it had. */
@@ -1484,6 +1490,8 @@ export interface Process {
   image?: string;
   /** This workload's own build, when it has one. */
   build?: ProcessBuild;
+  /** What it prepares inside the volumes it mounts before it starts. */
+  init?: VolumeInit[];
   /** What this workload declares when its image is one the platform did not
    * build. `image` above is what the release resolved that to; the two differ
    * exactly when the tag has moved since, which is the difference a rollback
@@ -1537,6 +1545,49 @@ export interface ProcessWrite {
    * default, which is what an absent declaration means. */
   previews?: boolean;
   health?: HealthSettings;
+  /** What this workload prepares inside the volumes it mounts before its own
+   * container starts. */
+  init?: VolumeInit[];
+}
+
+/** What one workload prepares inside one of the volumes it mounts, before its
+ * own container starts (#348).
+ *
+ * A volume claim hands a workload an empty filesystem, and software the
+ * platform did not build often will not start on one: it wants a directory
+ * tree that already exists, and sometimes a configuration file it may then
+ * rewrite. The steps are typed and the platform runs them itself — there is no
+ * command here — and every one of them is idempotent, so a second deploy never
+ * clobbers what the application wrote.
+ *
+ * It reads and writes with one shape, because nothing about it is resolved by
+ * the platform. */
+export interface VolumeInit {
+  /** The volume claim this prepares, by name. It has to be one this same
+   * workload mounts. */
+  volume: string;
+  directories?: VolumeInitDirectory[];
+  seed?: VolumeInitSeed[];
+}
+
+/** One directory created inside the volume if it is not there, and left
+ * exactly as it is if it is. */
+export interface VolumeInitDirectory {
+  /** Relative to the volume's mount path. */
+  path: string;
+  /** Octal as a string — "0750" — because the number is octal and JSON's is
+   * not. Applied only when the directory is created. */
+  mode?: string;
+}
+
+/** One configuration file copied into the volume, and only where the
+ * destination does not already exist. */
+export interface VolumeInitSeed {
+  /** The name of one of the project's files, not a path. */
+  file: string;
+  /** Where the copy goes inside the volume, relative to the mount. */
+  path: string;
+  mode?: string;
 }
 
 /** A vendored image as the route takes it: `ImageSource` without the derived

@@ -699,6 +699,17 @@ spec:
                                         # volume on every start
       allowPrivilegeEscalation: false   # the default, and the one the platform
       dropCapabilities: [ALL]           # tightens; there is no list to add one
+    init:                               # what the web process needs done inside the
+      - volume: config                  # volumes it mounts, before its container
+        directories:                    # starts. Names a volume claim this workload
+          - path: custom_components     # mounts; every path is relative to that
+          - path: secrets               # claim's mountPath, so nothing here can
+            mode: "0750"                # leave the volume. Created only if absent
+        seed:                           # a `files` entry copied in, and only where
+          - file: configuration         # the destination does not exist — so a
+            path: configuration.yaml    # second deploy never clobbers what the
+                                        # application wrote. Mode is octal *as a
+                                        # string*: JSON's numbers are not octal
   processes:                            # what it ships *besides* the web process
     - name: migrate                     # a batch/v1 Job, once per deploy, and
       type: task                        # nothing takes traffic until it succeeds
@@ -711,6 +722,10 @@ spec:
       singleton: false                  # two of this workload must never run at
                                         # once: Recreate, and replicas > 1 refused
       health: { port: 9000 }            # opt-in here, and it must name the port
+      init:                             # a workload's own volume preparation, the
+        - volume: spool                 # same declaration as runtime.init above:
+          directories: [{ path: jobs }] # a claim names the one process that mounts
+                                        # it, so each workload prepares its own
     - name: api                         # a Deployment and a ClusterIP Service,
       type: service                     # and still no route: never published
       port: 8080                        # required here, refused on the others
@@ -750,6 +765,12 @@ spec:
       content: |                        # itself: only that path is replaced
         logger: info
       workloads: [web]                  # who reads it; omit and everything does
+    - name: seed-only                   # no path: placed in no container at all.
+      content: |                        # Such a file exists to be seeded into a
+        logger: info                    # volume by runtime.init — a mounted config
+                                        # file is read-only, and mounted where the
+                                        # seed writes it would shadow the copy the
+                                        # application then owns
     - name: app-ini                     # a file whose content is a credential:
       path: /data/conf/app.ini          # it is held in a Secret the API writes
       secret: true                      # and no response ever reads back, so
@@ -1073,6 +1094,52 @@ the user it found and `runAsUser` as the fix. It is not refused at the API,
 because the same request is exactly right for an image whose `USER` is a
 number.
 
+`runtime.init` and `processes[].init` are what a workload needs done inside the
+volumes it mounts before its own process starts (#348). A `volume` claim hands
+a workload an empty filesystem, and a good deal of vendored software will not
+start on one: Gitea wants a directory tree that exists before it looks at it,
+Home Assistant a `configuration.yaml` it may then rewrite. `fsGroup` settled
+who *owns* a volume and `files` settled how a file reaches a *container* —
+neither creates a directory, and a file the platform mounts is read-only, so
+neither of them gets an empty volume into a state the process will accept.
+
+Three properties make it the shape it is, and they are the whole of why this
+is an init step in the model rather than a task allowed to mount another
+process's volume (which would change the one-process rule the `volume` claim
+exists to keep) or a documented boundary (which would leave two working
+features still adding up to an application that does not start):
+
+- **It is declarative, not a command.** The vocabulary is two typed steps and
+  there is deliberately no third that takes an argv. The platform runs them
+  itself, in an init container in the workload's own pod, from the operator's
+  own image — the same rule the KEDA install job follows, and no shell at any
+  point.
+- **It is idempotent by construction.** This runs on every start, not only the
+  first. A directory that is already there is left exactly as it is, mode and
+  owner included; a seed is written only where the destination does not exist.
+  A second deploy therefore never clobbers what the application wrote.
+- **It runs under the project's own posture.** The init container takes
+  `runtime.security` — the same user, the same dropped capabilities, the same
+  read-only root filesystem — so a directory it creates comes out owned by the
+  process that will use it. That is `fsGroup` doing the work, and it is why
+  there is no `owner` to declare here and no `chown` to run.
+
+Every path is relative to the claim's own `mountPath`, and the pattern that
+validates one admits no leading slash and no `..` — so a step cannot reach out
+of the volume because there is nothing spellable out there to reach. `mode` is
+octal written as a string, because JSON's numbers are not octal and `0750`
+decimal is 1356 octal.
+
+The declaration is snapshotted into the Release with the rest of the runtime
+and the process list, so a rollback restores the tree and the seeds that
+release started with. What cannot be honoured is refused before any pod
+exists — a volume this workload does not mount, one it mounts read-only, a
+seed from a file the release does not carry — with `Ready=False`, reason
+`VolumeInitInvalid`, on the Environment. A step that fails at run time lands on
+the same condition, reason `VolumeInitFailed`, in the step's own words: the
+program writes them to the pod's termination log and the environment reports
+them, rather than leaving a workload that never becomes ready.
+
 Reconcile: ensure per-project namespace, register the git webhook via the Connection
 (signing secret generated per project), validate that the referenced Connections carry
 the required capabilities. The production Environment is created by the first
@@ -1365,6 +1432,13 @@ spec:                                   # fully immutable (CEL rule on the CRD)
 status:
   environments: [my-shop-production, my-shop-pr-42]   # where it's live (informational)
 ```
+
+`configSnapshot.runtime.init` and each `configSnapshot.processes[].init` freeze
+what a workload prepares inside its volumes, which is what makes a rollback
+restore the tree and the seed content that release started with rather than
+today's. A seeded file's content comes from `configSnapshot.files` for a plain
+file and from the project's Secret for a secret one, on the same terms the
+mounted files do.
 
 `configSnapshot.files` freezes a *plain* configuration file's content, which is
 what makes a rollback restore the file that release ran with byte for byte.

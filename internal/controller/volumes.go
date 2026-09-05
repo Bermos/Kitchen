@@ -178,7 +178,7 @@ func podVolumes(mounts []mountedVolume) ([]corev1.Volume, []corev1.VolumeMount) 
 	volumes := make([]corev1.Volume, 0, len(mounts))
 	volumeMounts := make([]corev1.VolumeMount, 0, len(mounts))
 	for _, mount := range mounts {
-		name := "claim-" + mount.claim
+		name := claimVolumeName(mount.claim)
 		volumes = append(volumes, corev1.Volume{
 			Name: name,
 			VolumeSource: corev1.VolumeSource{
@@ -196,6 +196,12 @@ func podVolumes(mounts []mountedVolume) ([]corev1.Volume, []corev1.VolumeMount) 
 	}
 	return volumes, volumeMounts
 }
+
+// claimVolumeName is the pod volume one claim is mounted through. It is
+// spelled once so that the init container that prepares a volume and the
+// application container that uses it name the same volume — two spellings of
+// a generated name is a rename waiting to break one of them.
+func claimVolumeName(claim string) string { return "claim-" + claim }
 
 // capReplicas is the replica count a process mounting a volume that attaches
 // once may run: one, whatever it asked for. Anything else is what it asked

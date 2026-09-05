@@ -353,6 +353,20 @@ type ProcessSpec struct {
 	// write. It is [PreviewsSpec.Enabled]'s reasoning, one level down.
 	// +optional
 	Previews *bool `json:"previews,omitempty"`
+
+	// Init is what this workload needs done inside the volumes it mounts
+	// before its own container starts (#348). It is [RuntimeSpec.Init] for a
+	// named workload, on the same terms and for the same reason: a volume
+	// claim names one process, and the process that mounts an empty
+	// filesystem is the one that cannot start on it.
+	//
+	// Every type takes it, a deploy task included — a task's run is a pod
+	// like any other, and a migration that writes into a volume needs the
+	// tree as much as the worker that reads it afterwards.
+	// +optional
+	// +listType=map
+	// +listMapKey=volume
+	Init []VolumeInit `json:"init,omitempty"`
 }
 
 // ProcessBuildSpec is one workload's own build: which directory of the

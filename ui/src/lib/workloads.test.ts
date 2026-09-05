@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Process } from "./api";
-import { newWorkloadDraft, originOf, processWrites, workloadDrafts, workloadProblems } from "./workloads";
+import {
+  newWorkloadDraft,
+  originOf,
+  processWrites,
+  volumeInitDrafts,
+  volumeInitProblems,
+  volumeInitWrites,
+  workloadDrafts,
+  workloadProblems,
+} from "./workloads";
 
 function read(...processes: Partial<Process>[]) {
   return workloadDrafts(processes.map((p) => ({ name: "x", type: "worker", healthy: true, ...p }) as Process));
@@ -158,5 +167,71 @@ describe("what the form can refuse on its own", () => {
       { name: "migrate", type: "task" },
     );
     expect(workloadProblems(drafts)).toEqual([]);
+  });
+});
+
+// What a workload prepares inside the volumes it mounts before it starts
+// (#348). The editor holds the two step lists as text — a list is a list of
+// lines, the way the command and the arguments already are — so the round trip
+// through that text is the thing worth pinning: a workload nobody touched has
+// to be written back exactly as it came.
+describe("preparing a volume before the workload starts", () => {
+  it("reads a declaration back as lines and writes the same declaration", () => {
+    const drafts = volumeInitDrafts([
+      {
+        volume: "config",
+        directories: [{ path: "custom_components" }, { path: "secrets", mode: "0700" }],
+        seed: [{ file: "configuration", path: "configuration.yaml" }],
+      },
+    ]);
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0].volume).toBe("config");
+    expect(drafts[0].directories).toBe("custom_components\nsecrets 0700");
+    expect(drafts[0].seed).toBe("configuration configuration.yaml");
+
+    expect(volumeInitWrites(drafts)).toEqual([
+      {
+        volume: "config",
+        directories: [{ path: "custom_components" }, { path: "secrets", mode: "0700" }],
+        seed: [{ file: "configuration", path: "configuration.yaml" }],
+      },
+    ]);
+  });
+
+  it("carries a workload's declaration through the workloads editor untouched", () => {
+    const [draft] = read({
+      name: "hass",
+      type: "worker",
+      init: [{ volume: "config", directories: [{ path: "data", mode: "0750" }] }],
+    });
+    expect(draft.init).toHaveLength(1);
+    const [write] = processWrites([draft]);
+    expect(write.init).toEqual([{ volume: "config", directories: [{ path: "data", mode: "0750" }] }]);
+  });
+
+  it("leaves the field out for a workload that prepares nothing", () => {
+    const [write] = processWrites([{ ...newWorkloadDraft(), name: "worker" }]);
+    expect(write.init).toBeUndefined();
+  });
+
+  it("says what is wrong rather than sending it", () => {
+    expect(volumeInitProblems([{ key: "k", volume: "", directories: "data", seed: "" }], "worker")).toEqual([
+      "worker prepares a volume without saying which.",
+    ]);
+    expect(volumeInitProblems([{ key: "k", volume: "config", directories: "", seed: "" }], "worker")).toEqual([
+      "worker prepares config and says nothing to do to it.",
+    ]);
+    expect(
+      volumeInitProblems(
+        [
+          { key: "a", volume: "config", directories: "data", seed: "" },
+          { key: "b", volume: "config", directories: "more", seed: "" },
+        ],
+        "worker",
+      ),
+    ).toContain("worker prepares config twice: one volume is one entry, with all of its steps in it.");
+    expect(
+      volumeInitProblems([{ key: "k", volume: "config", directories: "", seed: "configuration" }], "worker")[0],
+    ).toContain("says which file and where it goes");
   });
 });

@@ -134,6 +134,7 @@ digest and a size and never as itself.`),
 func newFilesSetCommand(r *Runtime) *cobra.Command {
 	var (
 		path      string
+		noPath    bool
 		workloads []string
 		secret    bool
 		source    contentSource
@@ -154,6 +155,11 @@ path and its workloads, and one that only needs to move keeps its content.
   kitchen files set configuration --content-file ./configuration.yaml
   kitchen files set configuration --workloads web,worker
 
+--no-path places the file in no container at all. Such a file exists to be
+copied into a volume by a workload's init — a mounted config file is
+read-only, so one mounted where the seed writes would shadow the copy the
+application then owns.
+
 --secret says the content is a credential. It is then written through a route
 of its own and no request ever answers it again — which also means there is
 nothing to read back before replacing it, and nothing this command can print.
@@ -168,6 +174,7 @@ restarts whatever reads it.`),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			return setFile(commandContext(cmd), r, args[0], fileChange{
 				path:         path,
+				noPath:       noPath,
 				workloads:    workloads,
 				secret:       secret,
 				secretGiven:  cmd.Flags().Changed("secret"),
@@ -180,6 +187,8 @@ restarts whatever reads it.`),
 
 	flags := cmd.Flags()
 	flags.StringVar(&path, "path", "", "where the file is mounted in the container, like /config/app.yaml")
+	flags.BoolVar(&noPath, "no-path", false,
+		"place it in no container: a file that is only seeded into a volume by a workload's init")
 	flags.StringSliceVar(&workloads, "workloads", nil,
 		"the workloads that read it — \"web\" and the project's own; empty is all of them")
 	flags.BoolVar(&secret, "secret", false, "the content is a credential: it goes in and never comes back out")
@@ -252,6 +261,7 @@ handed it.`),
 // the flag off keeps the list it had.
 type fileChange struct {
 	path         string
+	noPath       bool
 	workloads    []string
 	workloadsSet bool
 	secret       bool
@@ -306,6 +316,47 @@ func (s contentSource) read(r *Runtime, name string) (string, error) {
 // goes back with every other file exactly as it came — by name, with no
 // content, which is what lets a list holding a secret file be edited by a
 // client that has never seen it.
+// fileEntry is one file's declaration as the write takes it: what the request
+// changed, and what the project already held for everything it did not.
+//
+// It is separated from the write itself because it is the whole of the
+// read-modify-write bargain this command rests on — anything left out keeps
+// what it had, which is what lets a client that was never shown a secret
+// file's content send the list back.
+func fileEntry(name string, change fileChange, existing *configFile) (fileWrite, error) {
+	entry := fileWrite{Name: name}
+	switch {
+	case change.noPath && change.path != "":
+		return entry, failf(codeUsage, "the file %s is given both a path and no path", name).
+			withHint("--no-path places it in no container at all, so it takes no --path")
+	case change.noPath:
+		// Placed nowhere: it exists to be copied into a volume by a
+		// workload's init, and a mounted config file is read-only.
+		entry.Path = ""
+	case change.path != "":
+		entry.Path = strings.TrimSpace(change.path)
+	case existing != nil:
+		entry.Path = existing.Path
+	default:
+		return entry, failf(codeUsage, "the file %s is new, so it needs a path", name).
+			withHint("pass --path, naming where in the container the file is mounted — like /config/app.yaml — " +
+				"or --no-path for a file that is only seeded into a volume")
+	}
+	switch {
+	case change.workloadsSet:
+		entry.Workloads = change.workloads
+	case existing != nil:
+		entry.Workloads = existing.Workloads
+	}
+	switch {
+	case change.secretGiven:
+		entry.Secret = change.secret
+	case existing != nil:
+		entry.Secret = existing.Secret
+	}
+	return entry, nil
+}
+
 func setFile(parent context.Context, r *Runtime, name string, change fileChange) error {
 	client, err := r.client()
 	if err != nil {
@@ -329,27 +380,9 @@ func setFile(parent context.Context, r *Runtime, name string, change fileChange)
 	}
 	existing := fileNamed(current.Files, name)
 
-	entry := fileWrite{Name: name}
-	switch {
-	case change.path != "":
-		entry.Path = strings.TrimSpace(change.path)
-	case existing != nil:
-		entry.Path = existing.Path
-	default:
-		return failf(codeUsage, "the file %s is new, so it needs a path", name).
-			withHint("pass --path, naming where in the container the file is mounted — like /config/app.yaml")
-	}
-	switch {
-	case change.workloadsSet:
-		entry.Workloads = change.workloads
-	case existing != nil:
-		entry.Workloads = existing.Workloads
-	}
-	switch {
-	case change.secretGiven:
-		entry.Secret = change.secret
-	case existing != nil:
-		entry.Secret = existing.Secret
+	entry, err := fileEntry(name, change, existing)
+	if err != nil {
+		return err
 	}
 
 	// The content, read before anything is written: a --content-file that is
@@ -496,9 +529,16 @@ func renderFiles(s tui.Styles, files []configFile) string {
 		if len(file.Workloads) > 0 {
 			workloads = strings.Join(file.Workloads, ", ")
 		}
+		// A file with no path is mounted nowhere and is seeded into a volume
+		// instead. The cell says so rather than being blank, which would read
+		// as a field nobody filled in.
+		path := file.Path
+		if path == "" {
+			path = s.Subtle.Render("seeded into a volume")
+		}
 		rows = append(rows, []string{
 			file.Name,
-			file.Path,
+			path,
 			s.Subtle.Render(workloads),
 			fileContentSummary(s, file),
 		})

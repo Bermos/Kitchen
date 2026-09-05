@@ -157,6 +157,13 @@ type EnvironmentReconciler struct {
 	// log. Unlike Activity it is waited on: a transition it refuses is a
 	// transition this reconciler does not make. May be nil.
 	Audit *audit.Recorder
+	// OperatorImage is this operator's own image, which the init container
+	// that prepares a workload's volumes runs `/volume-init` from (#348). A
+	// pod cannot read its own image back, so the chart passes it in — and an
+	// environment whose project declares an init is refused with a sentence
+	// where it is missing, rather than deployed onto a volume nothing
+	// prepared.
+	OperatorImage string
 }
 
 // git reports deploy status back to the repository the Environment's commit
@@ -275,6 +282,18 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	effects.unmountedInPreview = unmounted
 	recordClaimsBound(env, effects)
+	// What each workload of this unit does to its volumes before it starts
+	// (#348), worked out once for the whole pass and against the volumes each
+	// workload actually mounts. A declaration that cannot be honoured — a
+	// volume this workload does not mount, one it mounts read-only, a seed
+	// from a file this release does not carry — stops the pass here with the
+	// reason on the environment, which is where a step that fails has to be
+	// visible. It is before the deploy tasks deliberately: a task's own init
+	// is validated before the migration is started, not after.
+	inits, err := buildVolumeInits(release, mounts, env.Name, r.OperatorImage)
+	if err != nil {
+		return r.notReady(ctx, env, "VolumeInitInvalid", err)
+	}
 	// The platform's own variables go first, so that a project setting one of
 	// them wins: the kubelet takes the last value of a repeated name, and an
 	// application that has been told where to send its spans knows something
@@ -318,7 +337,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// and the volumes are resolved, since the run is the environment's own
 	// pod and needs all of it, and deliberately before the first thing that
 	// would move a pod.
-	tasks, err := r.reconcileDeployTasks(ctx, env, project, release, appNS, labels, podEnv, mounts)
+	tasks, err := r.reconcileDeployTasks(ctx, env, project, release, appNS, labels, podEnv, mounts, inits)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -351,7 +370,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, replicas, idle != nil,
-		len(effects.forcesRecreate) > 0 || attachesOnce(webMounts), webMounts); err != nil {
+		len(effects.forcesRecreate) > 0 || attachesOnce(webMounts), webMounts,
+		inits[kitchenv1alpha1.WebProcessName]); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.applyService(ctx, env, release, appNS, labels); err != nil {
@@ -363,7 +383,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// route: a worker is not addressed and a scheduled job is not either. A
 	// preview the platform will not publish still runs whatever its project
 	// asked it to run.
-	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv, mounts, tasks)
+	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv, mounts, inits, tasks)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -843,6 +863,10 @@ func (r *EnvironmentReconciler) applyDeployment(
 	// mounts are the web process's volume claims, mounted into its
 	// container.
 	mounts []mountedVolume,
+	// init is what the web process prepares inside those volumes before its
+	// own container starts: already validated, already rendered, and empty
+	// for a project that declares none.
+	init podInit,
 ) error {
 	runtimeSpec := release.Spec.ConfigSnapshot.Runtime
 	port := containerPort(runtimeSpec)
@@ -950,6 +974,11 @@ func (r *EnvironmentReconciler) applyDeployment(
 		files := configFilesOf(release, kitchenv1alpha1.WebProcessName)
 		configFilesOnPod(&deploy.Spec.Template.Spec, env.Name, files)
 		applyConfigFilesRevision(&deploy.Spec.Template.ObjectMeta, configFilesRevision(files))
+		// The init container that prepares this process's volumes, last of
+		// the pod's own shape and before the digest below — the plan is part
+		// of the template, so a project that changes what it prepares rolls
+		// the workload and the new steps run.
+		volumeInitOnPod(&deploy.Spec.Template.Spec, init)
 		// Last, over the template this mutation has just finished building: a
 		// Secret reaches a pod as a variable, as an `envFrom` or as a mounted
 		// file, and digesting the finished template covers every one of those

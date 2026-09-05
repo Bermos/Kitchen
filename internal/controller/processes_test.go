@@ -694,7 +694,7 @@ func TestProcessPodSpecProbes(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			spec := processPodSpec("env", release, project, nil, tc.process, nil)
+			spec := processPodSpec("env", release, project, nil, tc.process, nil, podInit{})
 			container := spec.Containers[0]
 			if !tc.wantProbes {
 				if container.StartupProbe != nil || container.ReadinessProbe != nil || container.LivenessProbe != nil {
@@ -741,7 +741,7 @@ func TestProcessPodSpecCarriesTheProjectsSecurityPosture(t *testing.T) {
 	}}
 
 	spec := processPodSpec("env", release, project,
-		nil, kitchenv1alpha1.ProcessSpec{Name: "worker", Type: kitchenv1alpha1.ProcessWorker}, nil)
+		nil, kitchenv1alpha1.ProcessSpec{Name: "worker", Type: kitchenv1alpha1.ProcessWorker}, nil, podInit{})
 
 	if spec.SecurityContext == nil || spec.SecurityContext.RunAsNonRoot == nil || !*spec.SecurityContext.RunAsNonRoot {
 		t.Fatalf("the posture did not reach the worker's pod: %+v", spec.SecurityContext)

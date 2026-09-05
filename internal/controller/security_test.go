@@ -299,7 +299,7 @@ func TestTheVolumeGroupReachesEveryWorkloadThatMountsAClaim(t *testing.T) {
 		"task":    {Name: "migrate", Type: kitchenv1alpha1.ProcessTask},
 	} {
 		t.Run(name, func(t *testing.T) {
-			spec := processPodSpec("env", release, project, nil, process, mounts)
+			spec := processPodSpec("env", release, project, nil, process, mounts, podInit{})
 			assertVolumeIsWritable(t, spec)
 		})
 	}
@@ -327,7 +327,7 @@ func TestTheVolumeGroupReachesEveryWorkloadThatMountsAClaim(t *testing.T) {
 		}
 		labels := map[string]string{labelEnvironment: env.Name}
 		if err := r.applyDeployment(context.Background(), env, release, project,
-			securityTestNamespace, labels, nil, 1, false, false, mounts); err != nil {
+			securityTestNamespace, labels, nil, 1, false, false, mounts, podInit{}); err != nil {
 			t.Fatal(err)
 		}
 		deploy := &appsv1.Deployment{}

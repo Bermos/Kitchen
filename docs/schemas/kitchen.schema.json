@@ -91,7 +91,12 @@
           }
         },
         "health": { "$ref": "#/$defs/health" },
-        "security": { "$ref": "#/$defs/security" }
+        "security": { "$ref": "#/$defs/security" },
+        "init": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/volumeInit" },
+          "description": "What the web process prepares inside the volumes it mounts before its own container starts: directories that have to exist, and configuration files seeded in once. A named workload's own is on its entry of `processes`."
+        }
       }
     },
     "env": {
@@ -173,10 +178,84 @@
         }
       }
     },
+    "volumeInit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["volume"],
+      "description": "What one workload prepares inside one of the volumes it mounts, before its own container starts. A volume claim hands a workload an empty filesystem, and software the platform did not build often will not start on one: it wants a directory tree that already exists, and sometimes a configuration file it may then rewrite. The steps are typed and the platform runs them itself, in an init container in the workload's own pod and under this project's own security posture — there is no command here and no shell — and every step is idempotent, so running them on every start is the same as running them once.",
+      "properties": {
+        "volume": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63,
+          "description": "The volume claim this prepares, by name. It has to be one this same workload mounts — a claim names the one process that mounts it — and an init naming a volume the workload does not mount is reported on the environment rather than deployed.",
+          "examples": ["config", "data"]
+        },
+        "directories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/volumeInitDirectory" },
+          "description": "Directories created inside the volume if they are not there, and left exactly as they are — mode and owner both — if they are. Ownership is not declared here: the init container runs as the pod runs, so a directory it creates comes out owned by the process that will use it, which is what runtime.security's fsGroup and runAsUser already decide."
+        },
+        "seed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/volumeInitSeed" },
+          "description": "Configuration files copied into the volume, each only where the destination does not already exist — so a second deploy never clobbers what the application wrote. The source is a file of this project's `files`, and a file used only as a seed is one with no `path`: a mounted config file is read-only and would shadow the copy the application then owns."
+        }
+      }
+    },
+    "volumeInitDirectory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "description": "One directory the process needs to find.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$",
+          "maxLength": 512,
+          "description": "Where it goes inside the volume, relative to the claim's mount path. Every segment starts with a letter, a digit or an underscore, which is what makes a leading slash and a \"..\" unspellable rather than merely refused.",
+          "examples": ["data", "custom_components"]
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0[0-7]{3}$",
+          "description": "The permission bits the directory is created with, in octal and written as a string because the number is octal and JSON's is not. It applies only when the directory is created; one that is already there keeps what it has. Default 0755.",
+          "examples": ["0750", "0700"]
+        }
+      }
+    },
+    "volumeInitSeed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "path"],
+      "description": "One configuration file copied into the volume, once.",
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^[-._a-zA-Z0-9]+$",
+          "maxLength": 253,
+          "description": "The name of a file in this project's `files` — the name, not a path.",
+          "examples": ["configuration", "app-ini"]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$",
+          "maxLength": 512,
+          "description": "Where the copy goes inside the volume, relative to the claim's mount path and naming the file itself. Parent directories are created as needed, so a seed deep in a tree needs no directories entry as well.",
+          "examples": ["configuration.yaml", "conf/app.ini"]
+        },
+        "mode": {
+          "type": "string",
+          "pattern": "^0[0-7]{3}$",
+          "description": "The permission bits the copy is written with, in octal as a string. Applied only when the file is written. Default 0644.",
+          "examples": ["0640"]
+        }
+      }
+    },
     "configFile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "path", "content"],
+      "required": ["name", "content"],
       "description": "One configuration file: what is in it, where it goes, and which of this project's workloads read it.",
       "properties": {
         "name": {
@@ -190,7 +269,7 @@
           "type": "string",
           "pattern": "^/([^/]+/)*[^/]+$",
           "maxLength": 1024,
-          "description": "Where the file appears inside the container: absolute, and naming the file itself rather than the directory holding it. Only that one path is replaced; the rest of the directory stays the image's.",
+          "description": "Where the file appears inside the container: absolute, and naming the file itself rather than the directory holding it. Only that one path is replaced; the rest of the directory stays the image's. Leave it out and the file is placed in no container: such a file exists to be seeded into a volume by a workload's `init`, since a mounted config file is read-only and would shadow the copy the application then owns.",
           "examples": ["/config/configuration.yaml", "/data/gitea/conf/app.ini"]
         },
         "content": {
@@ -343,7 +422,12 @@
           "type": "boolean",
           "description": "Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service and a task are on unless they say otherwise, because a preview missing one of its own services — or with a database branch nothing migrated — is a broken preview."
         },
-        "health": { "$ref": "#/$defs/health" }
+        "health": { "$ref": "#/$defs/health" },
+        "init": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/volumeInit" },
+          "description": "What this workload prepares inside the volumes it mounts before its own container starts: directories that have to exist, and configuration files seeded in once. Every type takes it, a task included."
+        }
       }
     },
     "imageSource": {

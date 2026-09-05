@@ -721,6 +721,15 @@ spec:
                             naming the file itself rather than the directory it is in. Only that
                             one path is replaced — the rest of the directory is the image's, which
                             is what a config file dropped beside an application's own files needs.
+
+                            **It is optional, and a file with no path is placed in no container.**
+                            Such a file exists to be seeded into a volume by a workload's `init`
+                            (#348), and it has to be able to have no path because a mounted config
+                            file is read-only: mounted at the place the seed would write, it would
+                            shadow the volume's own copy for ever and the application could never
+                            rewrite what it was given. A file that neither names a path nor is
+                            seeded anywhere is inert, which is a declaration that does nothing
+                            rather than one that does something surprising.
                           maxLength: 1024
                           pattern: ^/([^/]+/)*[^/]+$
                           type: string
@@ -749,7 +758,6 @@ spec:
                           x-kubernetes-list-type: atomic
                       required:
                       - name
-                      - path
                       type: object
                       x-kubernetes-validations:
                       - message: 'a secret file''s content is not written here: declare
@@ -1148,6 +1156,141 @@ spec:
                               one there is no way to say which version of the repository
                               to run'
                             rule: has(self.tag) || has(self.digest)
+                        init:
+                          description: |-
+                            Init is what this workload needs done inside the volumes it mounts
+                            before its own container starts (#348). It is [RuntimeSpec.Init] for a
+                            named workload, on the same terms and for the same reason: a volume
+                            claim names one process, and the process that mounts an empty
+                            filesystem is the one that cannot start on it.
+
+                            Every type takes it, a deploy task included — a task's run is a pod
+                            like any other, and a migration that writes into a volume needs the
+                            tree as much as the worker that reads it afterwards.
+                          items:
+                            description: |-
+                              VolumeInit is the preparation one workload needs done inside one of the
+                              volumes it mounts, before its own container starts.
+
+                              It names the volume claim rather than carrying absolute paths, and that is
+                              what makes the whole feature safe rather than carefully validated: every
+                              path in it is relative to that claim's mount, and the init container mounts
+                              nothing but the volumes named here and the platform's own copy of the files
+                              it seeds from. A step cannot reach out of the volume because there is
+                              nothing out there to reach.
+                            properties:
+                              directories:
+                                description: Directories are created inside the volume
+                                  if they are not there.
+                                items:
+                                  description: VolumeInitDirectory is one directory
+                                    the process needs to find.
+                                  properties:
+                                    mode:
+                                      description: |-
+                                        Mode is the permission bits the directory is created with, in octal
+                                        and written as a string — `"0750"`. A string because the number is
+                                        octal and JSON's is not: `0750` decimal is 1356 octal, which is the
+                                        classic way a mode field means something nobody intended.
+
+                                        It applies only when the directory is created. A directory that is
+                                        already there keeps whatever mode it has, because the volume belongs
+                                        to the application from its first start onwards.
+                                      pattern: ^0[0-7]{3}$
+                                      type: string
+                                    path:
+                                      description: |-
+                                        Path is where it goes inside the volume, relative to the claim's own
+                                        mount path: `data`, `custom_components/foo`.
+
+                                        The pattern is what makes it relative *by construction* rather than by
+                                        a check that could be forgotten: every segment starts with a letter, a
+                                        digit or an underscore, so `..`, `.` and a leading `/` are not
+                                        spellable and there is no path here that leaves the volume.
+                                      maxLength: 512
+                                      pattern: ^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$
+                                      type: string
+                                  required:
+                                  - path
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - path
+                                x-kubernetes-list-type: map
+                              seed:
+                                description: Seed copies configuration files into
+                                  the volume, once each.
+                                items:
+                                  description: |-
+                                    VolumeInitSeed is a configuration file copied into the volume, and only if
+                                    the destination is not there already.
+
+                                    The source is a file of `spec.files` (#311) — the same declaration, the
+                                    same content frozen into the Release — because a config file is the thing
+                                    the platform already knows how to hold, snapshot and roll back. What is
+                                    different is where it ends up: mounted, a config file is read-only and
+                                    would shadow the volume's own copy for ever; seeded, it is written once and
+                                    is the application's from then on.
+
+                                    A file used only as a seed is a file with no `path`: it is placed in no
+                                    container and exists to be copied in here. See [ConfigFile.Path].
+                                  properties:
+                                    file:
+                                      description: |-
+                                        File is the name of the configuration file to copy — the key in
+                                        `spec.files`, not a path.
+                                      maxLength: 253
+                                      pattern: ^[-._a-zA-Z0-9]+$
+                                      type: string
+                                    mode:
+                                      description: |-
+                                        Mode is the permission bits the copy is created with, in octal as a
+                                        string. Applied only when the file is written, for the reason a
+                                        directory's is.
+                                      pattern: ^0[0-7]{3}$
+                                      type: string
+                                    path:
+                                      description: |-
+                                        Path is where the copy goes inside the volume, relative to the claim's
+                                        mount path and naming the file itself: `configuration.yaml`,
+                                        `conf/app.ini`. Parent directories are created as needed, so a seed
+                                        deep in a tree does not need a `directories` entry as well.
+                                      maxLength: 512
+                                      pattern: ^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$
+                                      type: string
+                                  required:
+                                  - file
+                                  - path
+                                  type: object
+                                type: array
+                                x-kubernetes-list-map-keys:
+                                - path
+                                x-kubernetes-list-type: map
+                              volume:
+                                description: |-
+                                  Volume is the ResourceClaim of type `volume` this prepares, by name,
+                                  and it has to be one this same workload mounts.
+
+                                  A claim names the one process that mounts it (#267), so the pairing is
+                                  already decided elsewhere and this only points at it. An init naming a
+                                  volume this workload does not mount is refused where the two can be
+                                  compared — the environment's reconcile — and says so on the
+                                  environment rather than producing a pod that fails obscurely.
+                                maxLength: 63
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                            required:
+                            - volume
+                            type: object
+                            x-kubernetes-validations:
+                            - message: 'a volume init has to do something: give it
+                                directories to create, files to seed, or leave it
+                                out'
+                              rule: has(self.directories) || has(self.seed)
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - volume
+                          x-kubernetes-list-type: map
                         name:
                           description: |-
                             Name identifies the process within the project. It is a DNS label
@@ -1502,6 +1645,135 @@ spec:
                             minimum: 1
                             type: integer
                         type: object
+                      init:
+                        description: |-
+                          Init is what the web process prepares inside the volumes it mounts
+                          before it starts (#348). The commit is where it belongs: which
+                          directories an image cannot start without is a property of the image,
+                          and the commit that builds the image is the one that knows.
+                        items:
+                          description: |-
+                            VolumeInit is the preparation one workload needs done inside one of the
+                            volumes it mounts, before its own container starts.
+
+                            It names the volume claim rather than carrying absolute paths, and that is
+                            what makes the whole feature safe rather than carefully validated: every
+                            path in it is relative to that claim's mount, and the init container mounts
+                            nothing but the volumes named here and the platform's own copy of the files
+                            it seeds from. A step cannot reach out of the volume because there is
+                            nothing out there to reach.
+                          properties:
+                            directories:
+                              description: Directories are created inside the volume
+                                if they are not there.
+                              items:
+                                description: VolumeInitDirectory is one directory
+                                  the process needs to find.
+                                properties:
+                                  mode:
+                                    description: |-
+                                      Mode is the permission bits the directory is created with, in octal
+                                      and written as a string — `"0750"`. A string because the number is
+                                      octal and JSON's is not: `0750` decimal is 1356 octal, which is the
+                                      classic way a mode field means something nobody intended.
+
+                                      It applies only when the directory is created. A directory that is
+                                      already there keeps whatever mode it has, because the volume belongs
+                                      to the application from its first start onwards.
+                                    pattern: ^0[0-7]{3}$
+                                    type: string
+                                  path:
+                                    description: |-
+                                      Path is where it goes inside the volume, relative to the claim's own
+                                      mount path: `data`, `custom_components/foo`.
+
+                                      The pattern is what makes it relative *by construction* rather than by
+                                      a check that could be forgotten: every segment starts with a letter, a
+                                      digit or an underscore, so `..`, `.` and a leading `/` are not
+                                      spellable and there is no path here that leaves the volume.
+                                    maxLength: 512
+                                    pattern: ^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$
+                                    type: string
+                                required:
+                                - path
+                                type: object
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - path
+                              x-kubernetes-list-type: map
+                            seed:
+                              description: Seed copies configuration files into the
+                                volume, once each.
+                              items:
+                                description: |-
+                                  VolumeInitSeed is a configuration file copied into the volume, and only if
+                                  the destination is not there already.
+
+                                  The source is a file of `spec.files` (#311) — the same declaration, the
+                                  same content frozen into the Release — because a config file is the thing
+                                  the platform already knows how to hold, snapshot and roll back. What is
+                                  different is where it ends up: mounted, a config file is read-only and
+                                  would shadow the volume's own copy for ever; seeded, it is written once and
+                                  is the application's from then on.
+
+                                  A file used only as a seed is a file with no `path`: it is placed in no
+                                  container and exists to be copied in here. See [ConfigFile.Path].
+                                properties:
+                                  file:
+                                    description: |-
+                                      File is the name of the configuration file to copy — the key in
+                                      `spec.files`, not a path.
+                                    maxLength: 253
+                                    pattern: ^[-._a-zA-Z0-9]+$
+                                    type: string
+                                  mode:
+                                    description: |-
+                                      Mode is the permission bits the copy is created with, in octal as a
+                                      string. Applied only when the file is written, for the reason a
+                                      directory's is.
+                                    pattern: ^0[0-7]{3}$
+                                    type: string
+                                  path:
+                                    description: |-
+                                      Path is where the copy goes inside the volume, relative to the claim's
+                                      mount path and naming the file itself: `configuration.yaml`,
+                                      `conf/app.ini`. Parent directories are created as needed, so a seed
+                                      deep in a tree does not need a `directories` entry as well.
+                                    maxLength: 512
+                                    pattern: ^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$
+                                    type: string
+                                required:
+                                - file
+                                - path
+                                type: object
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - path
+                              x-kubernetes-list-type: map
+                            volume:
+                              description: |-
+                                Volume is the ResourceClaim of type `volume` this prepares, by name,
+                                and it has to be one this same workload mounts.
+
+                                A claim names the one process that mounts it (#267), so the pairing is
+                                already decided elsewhere and this only points at it. An init naming a
+                                volume this workload does not mount is refused where the two can be
+                                compared — the environment's reconcile — and says so on the
+                                environment rather than producing a pod that fails obscurely.
+                              maxLength: 63
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                              type: string
+                          required:
+                          - volume
+                          type: object
+                          x-kubernetes-validations:
+                          - message: 'a volume init has to do something: give it directories
+                              to create, files to seed, or leave it out'
+                            rule: has(self.directories) || has(self.seed)
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - volume
+                        x-kubernetes-list-type: map
                       notRequestDriven:
                         type: boolean
                       port:

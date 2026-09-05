@@ -578,6 +578,8 @@ kitchen files set configuration --content-file ./configuration.yaml   # just the
 kitchen files set configuration --workloads web,worker                # just who reads it
 kitchen files set app-ini --path /data/conf/app.ini --secret \
   --content-file ./app.ini
+kitchen files set configuration --no-path \
+  --content-file ./configuration.yaml            # seeded into a volume, mounted nowhere
 kitchen files rm configuration --yes
 ```
 
@@ -592,6 +594,13 @@ says why that is a decision.
 `--workloads` names the workloads that read it — `web` for the web process, and
 a workload's own name for anything the project runs. Left out, everything gets
 it.
+
+`--no-path` places the file in no container at all. That is the file a workload
+[seeds into a volume](api/projects.md#a-volume-the-process-cannot-start-on):
+mounted, a config file is read-only, so one mounted where the seed writes would
+shadow the copy the application then owns — which for Home Assistant's
+`configuration.yaml` is the difference between an application that can be
+configured and one that cannot.
 
 `--secret` says the content is a credential. It then travels on a route of its
 own and nothing answers it again: `kitchen files list` prints the whole list
@@ -692,6 +701,15 @@ kitchen processes rm nightly --yes
 `--command` and `--arg` are exec form — one word per occurrence, never a shell
 line, so an argument with a space in it is one `--arg`. `--previews` takes
 `yes`, `no` or `default`, which is how a declaration is taken back off.
+
+**One field it reads and never writes** is `init`, what a workload prepares
+inside the volumes it mounts before it starts
+([#348](https://github.com/Bermos/Kitchen/issues/348)). It is a nested list of
+typed steps, so it takes the answer `security` already took: `kitchen api`
+writes the whole of it, and `kitchen processes list --json` shows it. What
+`processes set` does do is carry it back untouched — a command that dropped it
+would silently un-declare a workload's volume preparation every time somebody
+changed its replica count.
 
 **All of them at once**, the JSON body is still the honest form: a list of
 records with commands, schedules, ports, builds and resources in it has no
@@ -817,7 +835,10 @@ kitchen api PATCH /projects/shop --data '{
   "command": ["./server"], "args": ["--config=prod.toml"],
   "previewArgs": ["--config=fake.toml"],
   "singleton": true,
-  "notRequestDriven": true}'
+  "notRequestDriven": true,
+  "init": [{"volume": "config",
+            "directories": [{"path": "custom_components"}],
+            "seed": [{"file": "configuration", "path": "configuration.yaml"}]}]}'
 ```
 
 `health` is what the platform asks before it sends anyone to a new replica;
@@ -826,7 +847,10 @@ preview override the sibling of an environment variable's preview value;
 `singleton` says two of the *web* process must never run at once, and refuses
 more than one replica rather than clamping it — a worker says the same thing on
 its own entry, above; `notRequestDriven` says the workload does work nobody
-asked for, so none of its environments idle down to no pods.
+asked for, so none of its environments idle down to no pods; `init` is what the
+web process prepares inside the volumes it mounts before it starts, which for
+software that cannot start on an empty filesystem is the difference between a
+deploy and a workload that never becomes ready.
 [Projects](api/projects.md#changing-a-projects-settings) is the whole of what
 the body takes.
 
@@ -1515,6 +1539,7 @@ cannot write it carries on and exchanges every time.
 | A workload's vendored image | `kitchen processes set <name> --image <ref>`, and `kitchen api` for a whole list | It is one more key on a record; `--image` and `--image-connection` set it on the one workload named, and a list of six workloads is still a JSON body |
 | Declaring workloads at all | `kitchen processes set` and `kitchen processes rm`, one workload at a time | [#299](https://github.com/Bermos/Kitchen/issues/299) filed no command for this because `kitchen.json` was the real surface and `kitchen api` carried the rest. That reasoning holds exactly as long as there is a file: a project whose source is an image has no repository and no file, so the API, the dashboard and this command are not a fallback for it — they are the only route, and "reachable through `kitchen api`" is a lower bar than the platform sets for anything done routinely ([#310](https://github.com/Bermos/Kitchen/issues/310)). The objection is answered rather than ignored: nothing here composes a *list* of records on a command line |
 | A project's configuration files | `kitchen files list/set/rm`, one file at a time | The content of a config file is a *file*, which is the one kind of value a terminal is better at than a form: it is already on disk, it is too long to type, and `--content-file` is the whole interaction. Leaving it to `kitchen api` would mean hand-assembling a JSON document with a file's bytes escaped into it, which nobody does twice. One file at a time, read-modify-write, the way `env set` works and for the same reason: the API keeps the content of a file whose `content` a request leaves out, so the whole list can be sent back by a client that was never shown a secret file's |
+| A workload's volume preparation | No command; `kitchen api PATCH /projects/{name}`, and `processes set` carries it back untouched | It is a nested list of typed steps — a volume, its directories, its seeded files, each with an optional mode — which is the same shape `security` has and takes the same answer [#291](https://github.com/Bermos/Kitchen/issues/291) gave it. A flag spelling of a two-level list would be worse to read than the JSON it stands for. What is *not* left to chance is the round trip: `kitchen processes set` reads the field and sends it back, with a test that says so, because a command that quietly dropped it would take a workload's volume preparation away as a side effect of changing its replica count |
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | The platform commands | Declared the dashboard's for now, in `--help`, in `kitchen schema` and in a refusal that names the screen | A key is a role on one project and those routes need the operator role, so no credential this CLI can store runs them — and `kitchen api` carries the same token, so it is no way round a *role*. Shipping them published and silently unrunnable was the state [#208](https://github.com/Bermos/Kitchen/issues/208) found; a platform-scoped key is the real answer and is [#349](https://github.com/Bermos/Kitchen/issues/349), designed with [#318](https://github.com/Bermos/Kitchen/issues/318) because both decide what a key is |
 | Notification subscriptions | No command; `kitchen api` for all of it, including the dead letters | A subscription is written once and then read when something is wrong, which is a screen's shape rather than a command's — and the one write carries a signing key, which is precisely the value not to have in a shell history when the same key is already being pasted into the receiver. What *is* worth reaching from a terminal is the dead-letter list on the morning a relay was down, and that is one `kitchen api GET /notifications/deliveries?phase=DeadLettered` away, with `POST /notifications/deliveries/{name}/retry` beside it |
