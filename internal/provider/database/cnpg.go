@@ -290,10 +290,22 @@ func (c *CNPG) Deprovision(ctx context.Context, instanceID string) error {
 	return c.deleteCluster(ctx, instanceID)
 }
 
-// DeleteBranch removes a preview's database. Always, under either deletion
-// policy: a preview's data is the preview's, and it goes when the preview
-// does.
+// DeleteBranch removes a preview's database, or a recovered sibling nobody
+// asked for any more. Always, under either deletion policy: a preview's data
+// is the preview's, and it goes when the preview does.
+//
+// The base backup schedule goes with it. A preview has none, but a recovery
+// inherits its source's (see cnpg_recovery.go) — and a ScheduledBackup left
+// behind naming a Cluster that is gone is a job failing nightly about a
+// database nobody has.
 func (c *CNPG) DeleteBranch(ctx context.Context, _, branchID string) error {
+	if strings.TrimSpace(branchID) == "" {
+		return nil
+	}
+	namespace, name := splitID(branchID, c.Namespace)
+	if err := c.deleteScheduledBackup(ctx, namespace, name); err != nil {
+		return err
+	}
 	return c.deleteCluster(ctx, branchID)
 }
 

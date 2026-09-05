@@ -795,10 +795,11 @@ database on every pass rather than echoed from the policy:
 ```
 
 `firstRecoverablePoint` is the field the feature exists for: the oldest moment
-the destination can still put this database back to. It is absent until the
-first base backup has been taken and read back, and `reason` says so in those
-words rather than leaving a green policy over an empty bucket. `destination`
-is described and never a credential.
+the destination can still put this database back to, and the earliest edge of
+the window [recovery](#recovering-the-data-to-a-moment-in-the-past) offers. It
+is absent until the first base backup has been taken and read back, and
+`reason` says so in those words rather than leaving a green policy over an
+empty bucket. `destination` is described and never a credential.
 
 `archiving` — `healthy`, `failing` or `unknown` — is reported apart from the
 schedule because the two fail independently: a base backup with no write-ahead
@@ -838,9 +839,10 @@ is the whole of what it configures.
 ## Recovering the data to a moment in the past
 
 Neither supported provider can rewind a database in place, and neither needs
-to. Neon branches at a parent timestamp; what comes back is a **second**
-database holding the old data. So the operation this API offers is *recover to
-a copy, then decide*, and it is two calls rather than one:
+to. Neon branches at a parent timestamp; CloudNativePG bootstraps a new
+Cluster from the claim's own archive at a `recoveryTarget`. Both hand back a
+**second** database holding the old data. So the operation this API offers is
+*recover to a copy, then decide*, and it is two calls rather than one:
 
 | | What it does | Who |
 |---|---|---|
@@ -874,26 +876,36 @@ curl -sS -H "authorization: Bearer $TOKEN" \
 }
 ```
 
-The window is the provider's own answer — for Neon, the project's history
-retention, which is hours on the free plan and up to weeks on a paid one —
-read on every reconcile and reported on the claim's status. It is **never** a
-capability somebody declares on the Connection: whether a provider can do this
-is a fact about the implementation, and a declared capability is one somebody
-can declare falsely. Same rule as residency: observed, never declared.
+The window is the provider's own answer, read on every reconcile and reported
+on the claim's status. It is **never** a capability somebody declares on the
+Connection: whether a provider can do this is a fact about the
+implementation, and a declared capability is one somebody can declare falsely.
+Same rule as residency: observed, never declared. What each provider is
+answering with differs, and the difference is worth knowing:
 
-A claim whose provider cannot do it at all says so and offers nothing:
+| Provider | Earliest | Latest |
+|---|---|---|
+| `neon` | the project's own history retention — hours on the free plan, up to weeks on a paid one | now: the history is continuous up to the present |
+| `cnpg` | the database's `firstRecoverabilityPoint`, which is also the [first recoverable point](#backing-up-what-a-claim-provisioned) the backup policy publishes | where the write-ahead log has been **shipped** to, not the present moment: one `archive_timeout` back while archiving is healthy, and the last base backup while it is not |
+
+A claim that cannot be recovered says so and offers nothing, in the provider's
+own words rather than as a greyed-out button:
 
 ```json
 {"claim": "shop-db", "available": false,
- "reason": "cnpg cannot recover a database to a point in time: there is no history at the provider to reach back into",
+ "reason": "claim cannot be satisfied: recovering a database this cluster runs means bootstrapping a new one from its archive, and kitchen-shop-db has no backup policy to archive to. Give the claim one — spec.backup, or the platform's own backup destination, which every claim inherits — and the window follows its first base backup",
  "recoveries": []}
 ```
 
-That asymmetry is deliberate and is said out loud rather than shown as a
-greyed-out button: a Neon claim offers recovery today, and a claim through the
-self-hosted provider does not, because there is nothing behind it to recover
-*from*. A timestamp outside the window is refused here, with the window in the
-refusal, rather than at the provider:
+Each such sentence names what would change it: a provider that cannot do it
+at all (there is no history to reach back into), a CloudNativePG database with
+no backup policy — a preview's database is always this one, since a preview is
+built from the shape of its parent and never carries an object store — a
+database that was **handed** to this platform rather than created by it, whose
+archives are whoever runs it's, and a policy whose first base backup has not
+been taken and read back yet. A timestamp
+outside the window is refused here, with the window in the refusal, rather
+than at the provider:
 
 ```json
 {"error": "2026-07-30T14:05:00Z is outside what this claim can be recovered to: its provider can reach back to 2026-08-24T09:12:00Z, and no further forward than 2026-08-31T09:12:00Z"}
@@ -926,6 +938,28 @@ construction rather than by policy.
 is refused with a `409` — that is not a discard, it is taking the
 application's database away — and the way out is to promote something else
 first.
+
+**What the copy actually is, for a database this cluster runs.** A `cnpg`
+recovery is a second CloudNativePG Cluster beside the first, in the platform's
+database namespace, bootstrapped from the claim's archive with
+`recoveryTarget.targetTime` set to the moment asked for. It is built from the
+source's own shape — the same image, the same storage size and class, the same
+number of instances — because a copy somebody promotes is production, and it
+takes several minutes to fetch a base backup and replay the write-ahead log
+over it, which is what `Pending` means here. Two details are decisions rather
+than defaults:
+
+- **It archives to the same destination under a prefix of its own**, and
+  inherits the source's base backup schedule once it is serving. A recovery
+  that carried no policy would become, the moment it was promoted, a
+  production database with nothing behind it — and CloudNativePG refuses to
+  share one archive prefix between two databases anyway, since the second
+  would write over the first.
+- **A copy is not a preview.** It is not parked when the project's previews
+  park and it does not count against the project's preview ceiling, exactly
+  like the database it was recovered from: both are real databases with real
+  cost, which is why every copy stays visible on the claim and on this
+  endpoint rather than being reaped on a timer.
 
 ### Promoting, and what it displaces
 
@@ -967,6 +1001,18 @@ during the cutover, is exactly what **retaining** that database keeps
 readable. So the window is one rolling deploy wide, some pods are still
 writing to the old database inside it, and both facts are said on the
 confirmation rather than left to be discovered.
+
+**A promote moves the binding and not the claim's record of its database.**
+`status.instanceId` still names the database the claim was provisioned with,
+which is what `retained` is about — so the backup policy on this claim goes on
+being applied to that database, and a *further* recovery is taken from that
+database's history and not from the promoted copy's. The promoted copy is not
+unprotected by it: a `cnpg` copy carries its own archive and inherits the
+schedule, and a Neon one is inside the same project's continuous history. It
+does mean the honest way to leave a promoted copy as the claim's database for
+good is to treat the recovery as the incident it came from and re-claim, and
+that is stated here rather than discovered from a window that reaches back
+into a database nobody is writing to any more.
 
 ### What this does not answer
 

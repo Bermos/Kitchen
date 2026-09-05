@@ -233,7 +233,8 @@ function whenLocal(iso: string | undefined): string {
               </h2>
               <p class="text-xs text-toned">
                 Anywhere from {{ whenLocal(data.window?.earliest) }} to {{ whenLocal(data.window?.latest) }}. Read from
-                the provider {{ timeAgo(data.window?.observedAt) }}, not declared here — it moves when the plan does.
+                the provider {{ timeAgo(data.window?.observedAt) }}, not declared here — it moves as the provider's
+                own history does.
               </p>
             </div>
 
