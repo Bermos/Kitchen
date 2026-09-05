@@ -286,7 +286,23 @@ func (c *CNPG) CreateBranch(ctx context.Context, instanceID, name string) (Branc
 // and why Retain is the default: under Retain the Cluster is left running in
 // the platform's database namespace, still costing storage, and a claim of
 // the same name created later finds it again by name and rebinds to it.
+//
+// The base backup schedule goes with it, for the same reason a discarded
+// recovery's does: a ScheduledBackup carries no owner reference to its Cluster
+// — deliberately, since backupOwnerReference: none is what keeps the Backup
+// records out of the Cluster's garbage collection — so nothing else would ever
+// remove it, and CloudNativePG would go on taking a base backup of a database
+// nobody has, nightly, for as long as the object is there. What is already at
+// the destination is untouched either way, which is the whole point of the
+// policy.
 func (c *CNPG) Deprovision(ctx context.Context, instanceID string) error {
+	if strings.TrimSpace(instanceID) == "" {
+		return nil
+	}
+	namespace, name := splitID(instanceID, c.Namespace)
+	if err := c.deleteScheduledBackup(ctx, namespace, name); err != nil {
+		return err
+	}
 	return c.deleteCluster(ctx, instanceID)
 }
 
