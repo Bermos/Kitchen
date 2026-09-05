@@ -41,7 +41,7 @@ object by object and saying which of those each one is.
 | A CronJob | a `cron` |
 | An install or upgrade hook Job | a `task`, which runs before the release takes traffic |
 | A PersistentVolumeClaim, or a `volumeClaimTemplates` entry | a [`volume` claim](api/claims.md#creating-a-claim), `source: provision` |
-| An inline `nfs:` volume, or a PersistentVolume somebody wrote | a [`volume` claim](api/claims.md#binding-a-volume-the-platform-did-not-create), `source: bind` |
+| An inline `nfs:` volume, or a PersistentVolume somebody wrote | a [`volume` claim](api/claims.md#binding-a-volume-the-platform-did-not-create), `source: bind`, over a [volume the operator wrote](api/volumes.md) |
 | A ConfigMap or Secret mounted as a configuration file | a [`files`](api/files.md) entry, `secret` where it holds a credential |
 | A Secret holding credentials | [the project's own secrets](api/secrets.md), and a variable that references one |
 | A bundled Postgres, Redis or object-store subchart | a [`ResourceClaim`](api/claims.md) |
@@ -189,9 +189,22 @@ Three things follow from those two lines without being asked for:
   existed before the claim and the platform does not own it, so teardown
   unmounts and never deletes.
 
-The PersistentVolume behind the export — `nas-media` — is written by whoever
-administers the cluster's storage. Nothing in the platform creates one, and
-[What is still open](#what-is-still-open) says so plainly.
+The PersistentVolume behind the export — `nas-media` — is written on the
+platform's own [Volumes screen](api/volumes.md), which is where an operator
+points the platform at storage that was already there:
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "nas-media", "capacity": "12Ti",
+       "accessModes": ["ReadWriteMany", "ReadOnlyMany"],
+       "nfs": {"server": "nas.lan", "path": "/export/media"}}' \
+  https://kitchen.apps.example.com/api/v1/persistent-volumes
+```
+
+Nothing is created on the NAS: the export is already there, and what this
+writes is the record that lets a claim name it. It retains its data by
+construction — the reclaim policy is `Retain` and cannot be set otherwise —
+so removing it removes the record and leaves every byte where it is.
 
 ### The project
 
@@ -406,13 +419,6 @@ useful than a translation that publishes a URL and never finds the radio.
   real cost, and it wants an argument of its own before it wants an issue. With
   #348 it is what stands between Gitea — the third of the five — and a Kitchen
   project.
-- **An external volume still needs a PersistentVolume somebody wrote.** A claim
-  binds one; nothing in the platform creates one, so an export that has no
-  PersistentVolume yet is written by whoever administers the cluster's storage.
-  It is the one step of a translation that is not on any of Kitchen's three
-  surfaces. [`GET /claim-volumes`](api/claims.md#what-a-volume-claim-could-bind)
-  is what keeps the rest of it a choice from a list rather than a name typed
-  from memory.
 
 **What would reopen the decision**, from the spike, stated so it can be checked
 rather than re-argued: a different estate — render ten more charts and re-run
@@ -433,6 +439,7 @@ Closing any single field gap above would not reopen it.
 | [The spike](spikes/helm-charts-2026-09.md) | Five charts, every object classified, and the numbers behind this page |
 | [`kitchen.json`](CONFIG.md) | Every key a repository may declare, and the short list it may not |
 | [Claims](api/claims.md) | Volumes provisioned and bound, databases, caches, object stores |
+| [Volumes](api/volumes.md) | Pointing the platform at an export or a share that already holds data |
 | [Projects](api/projects.md) | Creating one from an image, and acquiring a new digest |
 | [Workloads](api/processes.md) | Workers, services, scheduled jobs and tasks, and the file-to-route map |
 | [Configuration files](api/files.md) | What software configured by a file on disk needs |

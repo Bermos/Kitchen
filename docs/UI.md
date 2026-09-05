@@ -55,7 +55,8 @@ A screen is the developer's or the operator's, and it is whichever one entire.
   [`<OperatorOnly>`](../ui/src/components/OperatorOnly.vue). That element takes
   a slot and renders nothing around it, so it can wrap a table, a table row, a
   heading, or three words in the middle of a sentence.
-- **An operator screen** — everything under `/platform`, and connections — is
+- **An operator screen** — everything under `/platform`, connections, and the
+  volumes written for storage the platform did not create — is
   operator content throughout, and nothing inside it is gated a second time.
   Those routes stay open to an operator who is in developer mode, because a
   finding's evidence link is a link somebody pastes and it should land where it

@@ -298,7 +298,7 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 
 | Field | Default | What it does |
 |---|---|---|
-| `volume.bind.persistentVolume` | one of the two | The cluster PersistentVolume to mount — the object an operator writes for an NFS export, an SMB share or a CSI volume |
+| `volume.bind.persistentVolume` | one of the two | The cluster PersistentVolume to mount — the object an operator writes for an NFS export, an SMB share or a CSI volume, on the platform's own [Volumes screen and routes](volumes.md) |
 | `volume.bind.persistentVolumeClaim` | one of the two | An existing PersistentVolumeClaim **in this project's own application namespace**. That namespace and no other: a PersistentVolumeClaim is namespaced and a pod may only mount one of its own, so naming somebody else's would name a volume this project's pods cannot reach. A volume that lives elsewhere is bound by naming the PersistentVolume behind it |
 | `volume.bind.accessMode` | required | How **this project** mounts it: `ReadOnlyMany`, `ReadWriteOnce` or `ReadWriteMany`. It is declared rather than read off the volume, because what the volume can do and what this project may do with it are different questions — and only the second decides whether another project may write it. A mode the volume does not offer fails the claim, naming the modes it does |
 
@@ -367,7 +367,9 @@ one case that really does resolve on its own, and that one waits
 
 **What is bindable** is answered by [`GET
 /claim-volumes`](#what-a-volume-claim-could-bind), so that a name is chosen
-rather than typed from memory.
+rather than typed from memory. Where there is nothing to bind yet, [`POST
+/persistent-volumes`](volumes.md) is how an operator points the platform at
+the export in the first place.
 
 **`inngest`** asks a Connection with the `backgroundJobs` capability for the
 keys and the address an application reaches Inngest at, so that it gets
@@ -1025,6 +1027,7 @@ curl -sS -H "authorization: Bearer $TOKEN" \
       "phase": "Available",
       "identity": "nfs://nas.lan/export/media",
       "heldBy": ["sonarr/media"],
+      "managedByKitchen": true,
       "writable": false,
       "readable": true,
       "note": "another project already writes this storage, and one filesystem has one writer. Mount it read-only, or ask for a volume of its own"
@@ -1044,6 +1047,13 @@ rather than as a refusal afterwards; `note` is why a mount is refused where
 one is, in the words the claim would answer with. A volume that cannot be
 bound is still listed, with the reason — a name somebody was told to use must
 not simply fail to appear.
+
+`managedByKitchen` marks a volume the [platform wrote itself](volumes.md),
+and those come **first** in `persistentVolumes`. They are the ones it can
+vouch for: it knows what they point at, and it knows their reclaim policy
+retains the data. Anything else on the cluster is still offered — the list
+hides no storage — and simply carries none of that. The ordering is the
+API's rather than the form's, so every caller of this route gets it.
 
 **It is a list of storage, not a list of anybody's data**, which is why it is
 not the operator's alone: a PersistentVolume is cluster-scoped and holds no

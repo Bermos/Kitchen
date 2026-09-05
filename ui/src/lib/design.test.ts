@@ -43,7 +43,8 @@ const componentSources = import.meta.glob("../components/*.vue", {
 const STANDALONE = new Set(["LoginView.vue", "AuthCallbackView.vue", "NotFoundView.vue"]);
 
 /**
- * The operator's own screens: the platform section, and connections. The mode
+ * The operator's own screens: the platform section, connections, and the
+ * volumes written for storage the platform did not create. The mode
  * gate is per *screen*, not per block — a screen is the developer's or the
  * operator's — so these are wholly operator content and nothing inside them is
  * gated a second time. `docs/UI.md`, "The mode rule", is why.
@@ -60,6 +61,7 @@ const OPERATOR_VIEWS = new Set([
   "PlatformAuditView.vue",
   "PlatformSettingsView.vue",
   "ConnectionsView.vue",
+  "VolumesView.vue",
 ]);
 
 /**

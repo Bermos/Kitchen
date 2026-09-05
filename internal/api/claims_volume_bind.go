@@ -96,6 +96,16 @@ type bindableVolumeView struct {
 	// Note is why a mount is refused where one is, in the words the claim
 	// would answer with.
 	Note string `json:"note,omitempty"`
+
+	// ManagedByKitchen says the platform wrote this volume itself, through
+	// `POST /persistent-volumes` (#406). These come first in the listing and
+	// are marked in the picker, because they are the ones the platform can
+	// vouch for: it knows what they point at, it knows nothing else on the
+	// cluster is going to rewrite them, and it knows their reclaim policy is
+	// Retain. A volume somebody applied by hand is still offered — the whole
+	// point of the list is that it does not hide storage — it is simply not
+	// one the platform can say any of that about.
+	ManagedByKitchen bool `json:"managedByKitchen"`
 }
 
 // bindableVolumeClaimView is one PersistentVolumeClaim a project may bind by
@@ -162,7 +172,13 @@ func (s *Server) listBindableVolumes(w http.ResponseWriter, req *http.Request) {
 		body.PersistentVolumes = append(body.PersistentVolumes,
 			bindableVolume(&volumes.Items[i], held, written))
 	}
+	// The platform's own first, then by name. The ordering is the API's
+	// rather than the form's so that every caller gets it — the picker, and
+	// anybody reading the list with `kitchen api GET /claim-volumes`.
 	sort.Slice(body.PersistentVolumes, func(a, b int) bool {
+		if body.PersistentVolumes[a].ManagedByKitchen != body.PersistentVolumes[b].ManagedByKitchen {
+			return body.PersistentVolumes[a].ManagedByKitchen
+		}
 		return body.PersistentVolumes[a].Name < body.PersistentVolumes[b].Name
 	})
 
@@ -210,13 +226,14 @@ func (s *Server) listBindableVolumes(w http.ResponseWriter, req *http.Request) {
 func bindableVolume(pv *corev1.PersistentVolume, held map[string][]string, written map[string]bool) bindableVolumeView {
 	identity := volume.VolumeIdentity(pv)
 	view := bindableVolumeView{
-		Name:         pv.Name,
-		Capacity:     quantityOf(pv.Spec.Capacity),
-		AccessModes:  accessModeNames(pv.Spec.AccessModes),
-		StorageClass: pv.Spec.StorageClassName,
-		Phase:        string(pv.Status.Phase),
-		Identity:     identity,
-		HeldBy:       held[identity],
+		Name:             pv.Name,
+		ManagedByKitchen: pv.Labels[managedByLabelKey] == managedByLabelValue,
+		Capacity:         quantityOf(pv.Spec.Capacity),
+		AccessModes:      accessModeNames(pv.Spec.AccessModes),
+		StorageClass:     pv.Spec.StorageClassName,
+		Phase:            string(pv.Status.Phase),
+		Identity:         identity,
+		HeldBy:           held[identity],
 	}
 	offers := func(mode corev1.PersistentVolumeAccessMode) bool {
 		for _, offered := range pv.Spec.AccessModes {

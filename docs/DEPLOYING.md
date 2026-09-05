@@ -451,6 +451,9 @@ either:
 
 - **Connections** — a git provider, a registry, a database provider. Creating
   one requires the operator role.
+- **Volumes over storage that already exists** — the NFS export or the share
+  behind a [bound volume claim](api/claims.md#binding-a-volume-the-platform-did-not-create).
+  You write the claim; the operator writes [the volume it names](api/volumes.md).
 - **An account for a new colleague**, until the invitation gap above closes.
 - **The base domain, TLS, and the wildcard certificate.** Everything under
   `*.apps.example.com` is already routed; your custom domain is yours.

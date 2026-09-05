@@ -16,6 +16,7 @@ rules:
   - configmaps
   - namespaces
   - persistentvolumeclaims
+  - persistentvolumes
   - secrets
   - services
   verbs:
@@ -36,16 +37,6 @@ rules:
   verbs:
   - get
   - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - persistentvolumes
-  verbs:
-  - get
-  - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ""

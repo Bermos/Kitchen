@@ -126,6 +126,18 @@ const nav = computed(() =>
       count: undefined,
       shown: may("GET /api/v1/connections/{name}", callerFor()),
     },
+    {
+      // Storage that existed before the platform did, written so a project
+      // can mount it. The operator's outright, like Connections above it, and
+      // for the same reason: it is written once by whoever administers the
+      // installation and pointed at by projects afterwards.
+      label: "Volumes",
+      icon: "i-lucide-hard-drive",
+      to: "/volumes",
+      name: "volumes",
+      count: undefined,
+      shown: may("GET /api/v1/persistent-volumes", callerFor()),
+    },
   ].filter((item) => item.shown),
 );
 

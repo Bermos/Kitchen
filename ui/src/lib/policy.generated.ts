@@ -188,6 +188,9 @@ export type Route =
   | "GET /api/v1/connections/{name}"
   | "PATCH /api/v1/connections/{name}"
   | "DELETE /api/v1/connections/{name}"
+  | "GET /api/v1/persistent-volumes"
+  | "POST /api/v1/persistent-volumes"
+  | "DELETE /api/v1/persistent-volumes/{name}"
   | "GET /api/v1/domains"
   | "POST /api/v1/domains"
   | "GET /api/v1/domains/{name}"
@@ -343,6 +346,9 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/connections/{name}": { kind: "operator", doing: "reading a connection" },
   "PATCH /api/v1/connections/{name}": { kind: "operator", doing: "changing a connection" },
   "DELETE /api/v1/connections/{name}": { kind: "operator", doing: "deleting a connection" },
+  "GET /api/v1/persistent-volumes": { kind: "operator", doing: "reading the volumes the platform wrote" },
+  "POST /api/v1/persistent-volumes": { kind: "operator", doing: "writing a volume for storage that already exists" },
+  "DELETE /api/v1/persistent-volumes/{name}": { kind: "operator", doing: "removing a volume the platform wrote" },
   "GET /api/v1/domains": { kind: "visibleProjects" },
   "POST /api/v1/domains": { kind: "projectRole", role: "developer", doing: "attaching a domain" },
   "GET /api/v1/domains/{name}": { kind: "projectRole", role: "viewer", doing: "reading a domain" },

@@ -147,6 +147,15 @@ export const router = createRouter({
       component: () => import("./views/ConnectionsView.vue"),
       meta: { requires: "GET /api/v1/connections/{name}" },
     },
+    {
+      // Storage the platform did not create, written so that a project can
+      // mount it (#406). It is the operator's outright — the same standing as
+      // a connection, and next to it in the navigation for that reason.
+      path: "/volumes",
+      name: "volumes",
+      component: () => import("./views/VolumesView.vue"),
+      meta: { requires: "GET /api/v1/persistent-volumes" },
+    },
     // Where the settings screen lived before it moved under the platform
     // prefix it belongs to. A bookmark is the whole reason this is here.
     { path: "/settings", redirect: { name: "platform-settings" } },

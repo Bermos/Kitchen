@@ -179,7 +179,7 @@ func TestAVolumeClaimCanBindOneThatAlreadyExists(t *testing.T) {
 	if created.Volume.Size != "" || created.Volume.StorageClass != "" {
 		t.Errorf("nothing is being cut, so there is no size and no class: %+v", created.Volume)
 	}
-	if created.Volume.Bind == nil || created.Volume.Bind.PersistentVolume != "nas-media" ||
+	if created.Volume.Bind == nil || created.Volume.Bind.PersistentVolume != nasVolume ||
 		created.Volume.Bind.AccessMode != "ReadOnlyMany" {
 		t.Errorf("the answer carries what was named: %+v", created.Volume.Bind)
 	}
@@ -189,7 +189,7 @@ func TestAVolumeClaimCanBindOneThatAlreadyExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := claim.Volume()
-	if !got.Bound() || got.Bind == nil || got.Bind.PersistentVolume != "nas-media" {
+	if !got.Bound() || got.Bind == nil || got.Bind.PersistentVolume != nasVolume {
 		t.Errorf("spec.config carries the binding as the reconciler reads it: %+v", got)
 	}
 }
@@ -309,12 +309,12 @@ func TestPreviewsMaySharePlainlyReadableStorage(t *testing.T) {
 // rather than being offered and refused a moment later.
 func TestListingWhatAVolumeClaimCouldBind(t *testing.T) {
 	nas := &corev1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "nas-media"},
+		ObjectMeta: metav1.ObjectMeta{Name: nasVolume},
 		Spec: corev1.PersistentVolumeSpec{
 			Capacity:    corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("12Ti")},
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 			PersistentVolumeSource: corev1.PersistentVolumeSource{
-				NFS: &corev1.NFSVolumeSource{Server: "nas.lan", Path: "/export/media"},
+				NFS: &corev1.NFSVolumeSource{Server: nasServer, Path: nasExport},
 			},
 		},
 		Status: corev1.PersistentVolumeStatus{Phase: corev1.VolumeAvailable},
@@ -327,7 +327,7 @@ func TestListingWhatAVolumeClaimCouldBind(t *testing.T) {
 		Spec: corev1.PersistentVolumeSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 			PersistentVolumeSource: corev1.PersistentVolumeSource{
-				NFS: &corev1.NFSVolumeSource{Server: "nas.lan", Path: "/export/media"},
+				NFS: &corev1.NFSVolumeSource{Server: nasServer, Path: nasExport},
 			},
 		},
 	}
@@ -341,7 +341,7 @@ func TestListingWhatAVolumeClaimCouldBind(t *testing.T) {
 			Volume: &kitchenv1alpha1.ClaimVolumeStatus{
 				Source: kitchenv1alpha1.VolumeBind,
 				Bound: &kitchenv1alpha1.ClaimBoundVolume{
-					PersistentVolume: "nas-media",
+					PersistentVolume: nasVolume,
 					Identity:         "nfs://nas.lan/export/media",
 					Writable:         true,
 				},

@@ -320,6 +320,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/connections/{name}` | One connection | `operator` |
 | PATCH | `/connections/{name}` | Rotate the credential, change the config, or both | `operator` |
 | DELETE | `/connections/{name}` | Delete it, unless something still uses it | `operator` |
+| GET | `/persistent-volumes` | The volumes the platform wrote for storage that existed before the cluster did, and what each points at. Only the ones it wrote | `operator` |
+| POST | `/persistent-volumes` | Write one, `nfs` or `csi`, so that a claim can bind it. Nothing is created on the server; `hostPath` is refused in words, and the reclaim policy is always `Retain` | `operator` |
+| DELETE | `/persistent-volumes/{name}` | Remove the platform's record of it — never the data. Refused while a claim mounts it, naming the claim | `operator` |
 | GET | `/domains` | Every custom domain. `?environment=` filters | any account — filtered |
 | POST | `/domains` | Attach one — the response carries the DNS record to create | `developer` |
 | GET | `/domains/{name}` | One domain, verification instructions included | `viewer` |
@@ -356,6 +359,7 @@ such changes two changes to two different files.
 - [Workloads](api/processes.md) — the workloads a project ships besides its web one, how they reach each other, the work that runs before a release takes traffic, their runs, and running one now
 - [Addons](api/addons.md) — the dependencies the platform installs into the cluster it owns
 - [Connections](api/connections.md) — the credentials the platform holds
+- [Volumes the platform did not create](api/volumes.md) — pointing the platform at an export or a share that already holds data, so a claim can mount it
 - [Claims](api/claims.md) — asking for a resource, and what every provider declares about previews, idling and deploys
 - [Custom domains](api/domains.md) — putting an environment on an address of its own
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query
