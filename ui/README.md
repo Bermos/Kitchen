@@ -89,3 +89,19 @@ the chart's values so the issuer sends you back).
 
 `npm run build` + `npm run typecheck` + `npm test` is what CI runs;
 `make ui-build` at the repo root stages the build for embedding.
+
+### The one `overrides` entry, and when to remove it
+
+`package.json` pins `@tiptap/core` to `^3.30.4` through `overrides`. Nuxt UI
+ships a rich-text editor component, so its whole Tiptap tree is a dependency
+of this app whether or not a screen mounts one — and this dashboard mounts
+none. GHSA-cp6q-959q-f8rh (`mergeAttributes()` turning an own `__proto__` key
+into inherited executable DOM attributes) covers everything below 3.30.4, and
+`@nuxt/ui` asks for `^3.29.2`, which a resolver is free to satisfy with a
+version inside the advisory — the Tiptap extension packages pin `@tiptap/core`
+to an exact version, so several of them hold it there. The override is what
+makes the floor the advisory's rather than the resolver's.
+
+Take it out when `@nuxt/ui`'s own range starts at 3.30.4 or later: it is a
+floor and not a pin, so leaving it costs nothing but a line, and removing it
+early quietly puts the advisory back. `npm audit --omit=dev` is the check.

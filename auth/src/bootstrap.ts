@@ -1,7 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 
+import type { Pool } from "pg";
+
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
+import { BOOTSTRAP_LOCK_KEY, withAdvisoryLock } from "./db.js";
 import { listPeople, normalizeEmail } from "./identity.js";
 import { log } from "./log.js";
 
@@ -48,10 +51,18 @@ export type BootstrapResult =
  * Creates the first administrator. It writes the user and its credential
  * account directly instead of going through `/sign-up/email`, which stays
  * disabled: this is the one account that may exist without an invitation.
+ *
+ * "Is there an account yet?" and "create one" are one step, under the
+ * advisory lock: the check and the write are two round trips against a table
+ * with no constraint that would refuse the second account, so two valid POSTs
+ * arriving together — two browser tabs, a retried request, two replicas —
+ * would both read an empty table and both create a first administrator. The
+ * lock is what makes the link one-time rather than one-time-in-practice.
  */
 export async function bootstrapFirstUser(
 	auth: Auth,
 	config: Config,
+	pool: Pool,
 	request: BootstrapRequest,
 ): Promise<BootstrapResult> {
 	if (!config.bootstrapToken) {
@@ -60,6 +71,12 @@ export async function bootstrapFirstUser(
 	if (!tokenMatches(config.bootstrapToken, request.token)) {
 		return { ok: false, status: 401, error: "invalid bootstrap token" };
 	}
+
+	return withAdvisoryLock(pool, BOOTSTRAP_LOCK_KEY, () => createFirstUser(auth, config, request));
+}
+
+/** The half that runs under the lock: nobody has an account, so make one. */
+async function createFirstUser(auth: Auth, config: Config, request: BootstrapRequest): Promise<BootstrapResult> {
 	if (await isBootstrapped(auth, config)) {
 		return { ok: false, status: 410, error: "this installation already has an account" };
 	}

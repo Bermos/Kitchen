@@ -488,6 +488,38 @@ before it was built:
    application over HTTP and meets a login page — and it is why the
    declaration below says what it says about scale to zero.
 
+**What a branch environment does not isolate, and what does.** Branch
+environments share the account's event and signing keys — fact 4 above is
+Inngest's own documentation saying so — and `INNGEST_ENV` is what selects one.
+The platform writes that variable into each preview's binding, but the keys
+beside it are the whole account's: an application that overwrites `INNGEST_ENV`
+with another branch environment's name addresses that environment, whether or
+not it is a preview of the same project. Every preview of every project
+claiming through **one** `inngest` Connection therefore sits inside one
+tenancy boundary, and the boundary is the Inngest account rather than the
+project.
+
+There is no fix in the API. Inngest mints no per-environment credential —
+`GET /keys/signing` and `GET /keys/events` read the account's keys and there
+is no endpoint that creates or scopes one (fact 3) — so nothing the platform
+could call would hand a preview a key that only opens its own environment.
+What is left is where the account boundary is drawn, and that is an operator's
+decision on the Connections page:
+
+- **A Connection per project, each holding an API key for an Inngest account
+  of its own, is the isolation.** Two projects that must not reach each
+  other's events are two accounts; a claim names one Connection, so a
+  project's previews can only ever read the keys of the account behind it.
+  Projects that share an account are as isolated from each other as two
+  branches of one repository, which for most installations is the honest
+  description of what they are.
+- **`inngestSelfHosted` does not have this problem at all**, and is the other
+  answer. A preview there gets a whole Inngest server of its own — its own
+  event stream, function set, run history and keys — created with the preview
+  and destroyed with it, so there is no shared credential to point somewhere
+  else and no environment name to point it at. The section below says what
+  that costs.
+
 **Scale to zero, and the connection cap.** The worker's WebSocket never
 crosses the interceptor, so nothing can tell when the environment is idle;
 the provider declares `keepsPodsRunning`, every environment reading the

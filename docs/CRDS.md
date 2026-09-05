@@ -2064,6 +2064,15 @@ interceptor, so every environment of the project keeps its pods, and the
 worker connections on the free plan, 20 on paid), which the API does not
 expose.
 
+Those branch keys are the account's, and `INNGEST_ENV` is the only thing that
+picks an environment — Inngest mints no credential scoped to one, so a preview
+that overwrites the variable addresses any branch environment of the same
+account, another project's included. The tenancy boundary is the Inngest
+account rather than the project, and the two ways to move it are the
+operator's: a Connection per project, each holding a key for an account of its
+own, or the `inngestSelfHosted` provider, where a preview gets a whole server
+and keys of its own. [docs/api/claims.md](api/claims.md) says it at length.
+
 A provider that cannot be asked any of this — a hosted one — refuses the claim
 rather than provisioning it as though the block had not been written down.
 

@@ -117,7 +117,11 @@ func (p *printer) failure(f *failure) {
 		_ = p.writeJSON(p.out, map[string]*failure{"error": f})
 		return
 	}
-	_, _ = fmt.Fprintln(p.err, p.styles.Bad.Render("Error:")+" "+f.Error())
+	// A refusal's message is often the platform's own words quoted back —
+	// an admission webhook's, a provider's, an application's — so it is text
+	// this process did not write and goes through safeText like every other
+	// relayed line. The hint is always ours and needs nothing.
+	_, _ = fmt.Fprintln(p.err, p.styles.Bad.Render("Error:")+" "+safeText(f.Error()))
 	if f.Hint != "" {
 		_, _ = fmt.Fprintln(p.err, p.styles.Subtle.Render("  "+f.Hint))
 	}

@@ -255,14 +255,17 @@ func instant(value string) (string, error) {
 func renderLogLine(s tui.Styles, line logLine, withSource bool) string {
 	parts := []string{s.Subtle.Render(line.Timestamp.Local().Format("15:04:05"))}
 	if workload := line.workload(); workload != "" {
-		parts = append(parts, s.Accent.Render(workload))
+		parts = append(parts, s.Accent.Render(safeText(workload)))
 	} else if withSource && line.Container != "" {
-		parts = append(parts, s.Subtle.Render(line.Container))
+		parts = append(parts, s.Subtle.Render(safeText(line.Container)))
 	}
 	if line.Level != "" {
-		parts = append(parts, s.Level(line.Level))
+		parts = append(parts, s.Level(safeText(line.Level)))
 	}
-	parts = append(parts, line.Message)
+	// The message is whatever the application printed, and everything else
+	// here is a name the platform read off a pod that ran it — so every
+	// field of it is somebody else's text. safe.go says what that costs.
+	parts = append(parts, safeText(line.Message))
 	return strings.Join(parts, " ")
 }
 

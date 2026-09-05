@@ -39,6 +39,17 @@ things follow from it, and they are the contract:
   appear in a pipe.
 - **Exit codes are a contract**: one per kind of failure, published in the
   schema, never reused. A script can branch on `$?` without parsing anything.
+- **Text the platform relayed is stripped of control sequences before a person
+  is shown it.** A log line is whatever an application printed and a build's
+  output is whatever a repository's Dockerfile printed, so `kitchen logs` on
+  somebody's pull request is a terminal an untrusted party writes to — and
+  `ESC [ 2 J` clears it, `ESC ] 0 ;` retitles it and `ESC [ 32 m` paints the
+  rest of the tail whatever colour makes a failure look like a success. So
+  the printers for a person drop every non-printable rune except newline and
+  tab. `--json` is **not** touched: it is the platform's bytes, a caller that
+  asked for JSON asked for exactly them, and `jq` acts on none of it. Nor is a
+  `kitchen api` body written to a pipe, so redirecting the command to a file
+  gives the same file whichever way it ran.
 - **`kitchen api` reaches whatever has no command yet**, so a route added to the
   API is usable from the command line the day it lands.
 

@@ -634,24 +634,30 @@ func (d *deployment) emit(event deployEvent) {
 }
 
 // renderDeployEvent is one event as a person reads it.
+//
+// Everything interpolated here came back over the wire — a branch name from
+// a repository, a stall reason quoting whatever the cluster said, a log line
+// an application printed — so all of it goes through safeText first. See
+// safe.go for what a terminal does with the sequences that are otherwise in
+// there.
 func renderDeployEvent(s tui.Styles, event deployEvent) string {
 	switch event.Type {
 	case eventLog:
 		return renderLogLine(s, *event.Line, false)
 	case eventBuild:
 		b := event.Build
-		line := fmt.Sprintf("%s %s %s %s", s.Accent.Render("build"), b.Name,
-			s.Phase(b.Phase), s.Subtle.Render(short(b.Git.SHA)+" "+b.Git.Branch))
+		line := fmt.Sprintf("%s %s %s %s", s.Accent.Render("build"), safeText(b.Name),
+			s.Phase(safeText(b.Phase)), s.Subtle.Render(safeText(short(b.Git.SHA)+" "+b.Git.Branch)))
 		if reason := b.stalledReason(); reason != "" {
-			line += "\n" + s.Bad.Render("stalled: "+reason)
+			line += "\n" + s.Bad.Render("stalled: "+safeText(reason))
 		}
 		return line
 	case eventRelease:
-		return fmt.Sprintf("%s %s %s", s.Accent.Render("release"), event.Release.Name,
-			s.Subtle.Render(event.Release.Image))
+		return fmt.Sprintf("%s %s %s", s.Accent.Render("release"), safeText(event.Release.Name),
+			s.Subtle.Render(safeText(event.Release.Image)))
 	case eventEnvironment:
-		return fmt.Sprintf("%s %s %s %s", s.Accent.Render("environment"), event.Environment.Name,
-			s.Phase(event.Environment.Phase), s.Subtle.Render(event.Environment.URL))
+		return fmt.Sprintf("%s %s %s %s", s.Accent.Render("environment"), safeText(event.Environment.Name),
+			s.Phase(safeText(event.Environment.Phase)), s.Subtle.Render(safeText(event.Environment.URL)))
 	case eventResult:
 		return renderDeployResult(s, event)
 	default:
@@ -668,7 +674,7 @@ func renderDeployResult(s tui.Styles, event deployEvent) string {
 		return ""
 	}
 	if event.Build.Phase != phaseSucceeded {
-		return s.Bad.Render("✗ build " + strings.ToLower(event.Build.Phase))
+		return s.Bad.Render("✗ build " + strings.ToLower(safeText(event.Build.Phase)))
 	}
 	built := s.OK.Render("✓ build succeeded")
 	// Why it took as long as it did, where the platform knows: a build with
@@ -683,15 +689,15 @@ func renderDeployResult(s tui.Styles, event deployEvent) string {
 	}
 	lines := []string{built}
 	if event.Environment != nil {
-		where := event.Environment.Name
+		where := safeText(event.Environment.Name)
 		if event.URL != "" {
-			where += " " + s.Accent.Render(event.URL)
+			where += " " + s.Accent.Render(safeText(event.URL))
 		}
 		mark := s.OK.Render("✓")
 		if event.Environment.Phase == phaseDegraded {
 			mark = s.Bad.Render("✗")
 		}
-		lines = append(lines, fmt.Sprintf("%s %s %s", mark, where, s.Phase(event.Environment.Phase)))
+		lines = append(lines, fmt.Sprintf("%s %s %s", mark, where, s.Phase(safeText(event.Environment.Phase))))
 	}
 	return strings.Join(lines, "\n")
 }

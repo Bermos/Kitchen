@@ -700,6 +700,89 @@ jobs:
             exit 1
           }
 
+      - name: Check every workload the chart runs is bounded and closed
+        run: |
+          set -euo pipefail
+          # The chart-lint findings of issue #325, each pinned so it cannot
+          # come back: a pod that may write to its own image, a Job nothing
+          # reclaims, and a container with no requests or limits — which is a
+          # BestEffort pod, first to be evicted when a node runs short.
+          render() {
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              ${CHART_BASE} ${CHART_ACME} "$@"
+          }
+
+          # The two stores the chart runs itself. Everything either image
+          # writes is a volume — see the note on the ClickHouse StatefulSet —
+          # so neither has any business writing to its own filesystem.
+          for store in clickhouse postgres; do
+            render -s "templates/${store}/statefulset.yaml" \
+              | grep -q 'readOnlyRootFilesystem: true' || {
+              echo "::error::the ${store} container may write to its own image"
+              exit 1
+            }
+          done
+          # ClickHouse only survives that with somewhere to stage the user
+          # definition and somewhere to write its own log.
+          for path in /tmp /var/log/clickhouse-server; do
+            render -s templates/clickhouse/statefulset.yaml \
+              | grep -q "mountPath: ${path}$" || {
+              echo "::error::ClickHouse is read-only with no writable ${path}"
+              exit 1
+            }
+          done
+
+          # The restore Job is reclaimed, and asks for what it needs.
+          restore=$(render -s templates/restore.yaml \
+            --set restore.enabled=true --set restore.secretName=kitchen-backup)
+          grep -q 'ttlSecondsAfterFinished:' <<<"${restore}" || {
+            echo "::error::the restore Job is never reclaimed: no ttlSecondsAfterFinished"
+            exit 1
+          }
+          for field in 'cpu: ' 'memory: '; do
+            [ "$(grep -c "${field}" <<<"${restore}")" -ge 1 ] || {
+              echo "::error::the restore container asks for no ${field%%:*}"
+              exit 1
+            }
+          done
+          grep -q 'requests:' <<<"${restore}" && grep -q 'limits:' <<<"${restore}" || {
+            echo "::error::the restore container has no requests or no limits"
+            exit 1
+          }
+
+          # The bundled cert-manager. Its own chart ships no resources at all,
+          # so these come from this chart's values and would silently go back
+          # to BestEffort if a key were renamed under a subchart bump.
+          for template in deployment webhook-deployment cainjector-deployment startupapicheck-job; do
+            render -s "charts/cert-manager/templates/${template}.yaml" \
+              | grep -q 'requests:' || {
+              echo "::error::cert-manager's ${template} runs BestEffort: no resource requests"
+              exit 1
+            }
+          done
+
+          # The collector mounts the node's root filesystem for the node
+          # metrics scraper and for nothing else, so an installation that has
+          # switched that scraper off does not get the mount. The container
+          # log files are their own read-only /var/log mount and stay.
+          hostfs() {
+            render -s templates/collector/daemonset.yaml "$@" | grep -c 'name: hostfs' || true
+          }
+          [ "$(hostfs)" != 0 ] || {
+            echo "::error::the node metrics scraper is on by default and has nothing to read"
+            exit 1
+          }
+          [ "$(hostfs --set collector.metrics.node.enabled=false)" = 0 ] || {
+            echo "::error::the node's root filesystem is mounted with no scraper reading it"
+            exit 1
+          }
+          render -s templates/collector/daemonset.yaml \
+            --set collector.metrics.node.enabled=false \
+            | grep -q 'mountPath: "/var/log"' || {
+            echo "::error::the collector stopped mounting the container log files"
+            exit 1
+          }
+
       - name: Check the chart does not try to bundle KEDA
         run: |
           set -euo pipefail
@@ -1480,11 +1563,35 @@ jobs:
             kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
               clickhouse-client --secure --accept-invalid-certificate "$@"
           }
+          # With TLS on, the store's entrypoint is given no CLICKHOUSE_DB — it
+          # would have to create the database over a plaintext native port that
+          # no longer exists — so the *operator* creates it, on a reconcile of
+          # the Kitchen singleton, which is a Helm post-install hook and so
+          # arrives at the very end of the install. That work therefore
+          # finishes some seconds after `helm install --wait` returns, and
+          # asking immediately is asking too early: this step failed on the
+          # kindnet leg with `Database kitchen does not exist` while the Cilium
+          # leg, which runs a two-minute step in between, passed on identical
+          # code. So wait for the condition the operator publishes when it is
+          # done rather than for a number of seconds.
+          schema='{.status.conditions[?(@.type=="TelemetrySchemaReady")]}'
+          ready=""
+          for _ in $(seq 60); do
+            ready=$(kubectl get kitchen default \
+              -o jsonpath='{.status.conditions[?(@.type=="TelemetrySchemaReady")].status}' \
+              2>/dev/null || true)
+            [ "${ready}" = True ] && break
+            sleep 2
+          done
+          [ "${ready}" = True ] || {
+            kubectl get kitchen default -o jsonpath="${schema}" || true
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100 || true
+            echo "::error::the operator never applied the telemetry schema"
+            exit 1
+          }
           # The credentials in the secret are the ones ClickHouse actually took.
-          # No `--database kitchen` here: since #414 the operator creates that
-          # database (the image's entrypoint no longer does), so naming it
-          # races the first reconcile; that the database exists is proved
-          # further down by TelemetrySchemaReady.
+          # No `--database kitchen` here either: this asks about the credential
+          # and nothing else, and the database is the wait above's to prove.
           answer=$(ch --user kitchen --password "${password}" \
             --query 'SELECT 1')
           [ "${answer}" = 1 ] || {
