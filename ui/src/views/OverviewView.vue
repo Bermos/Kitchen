@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { buildLink, environmentLink } from "../lib/links";
+import type { RouteLocationRaw } from "vue-router";
 import { api, type Build, type Environment, type PlatformEvent, type ProjectTraffic } from "../lib/api";
 import { clearDismissals, incidentsFrom, undismissed } from "../lib/attention";
 import { buildFailureLine } from "../lib/builds";
@@ -119,9 +121,9 @@ const anyProjectTraffic = computed(() =>
 );
 
 // What a feed entry links to: the most specific object it names.
-function eventTarget(event: PlatformEvent): { name: string; params: Record<string, string> } | null {
-  if (event.build) return { name: "build", params: { name: event.build } };
-  if (event.environment) return { name: "environment", params: { name: event.environment } };
+function eventTarget(event: PlatformEvent): RouteLocationRaw | null {
+  if (event.build) return buildLink(event.build, event.project);
+  if (event.environment) return environmentLink(event.environment, event.project);
   if (event.project) return { name: "project", params: { name: event.project } };
   return null;
 }
@@ -393,7 +395,7 @@ function host(url?: string): string {
             <td class="px-3 py-2">
               <RouterLink
                 v-if="row.latestBuild"
-                :to="{ name: 'build', params: { name: row.latestBuild.name } }"
+                :to="buildLink(row.latestBuild.name, row.name)"
                 class="inline-flex items-center gap-2"
               >
                 <PhaseBadge :phase="row.latestBuild.phase" />

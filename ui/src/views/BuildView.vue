@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import {
   api,
   type EvidenceSet,
@@ -19,7 +19,6 @@ import { useAsync, usePoll } from "../lib/useAsync";
 import ArtifactEvidenceCell from "../components/ArtifactEvidenceCell.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import LogViewer from "../components/LogViewer.vue";
-import OperatorOnly from "../components/OperatorOnly.vue";
 import CommitBody from "../components/CommitBody.vue";
 import SourceLink from "../components/SourceLink.vue";
 import PageHeader from "../components/PageHeader.vue";
@@ -27,11 +26,30 @@ import PhaseBadge from "../components/PhaseBadge.vue";
 import VEXPanel from "../components/VEXPanel.vue";
 
 const route = useRoute();
+const router = useRouter();
 const toast = useToast();
-const name = computed(() => route.params.name as string);
+// `:build` under a project, `:name` at the address this screen used to have.
+const name = computed(() => (route.params.build ?? route.params.name) as string);
 
 const { data: build, error, loading, refresh } = useAsync(() => api.build(name.value));
 watch(name, () => void refresh());
+
+// A build's address is its project's now, and `/builds/:name` cannot be
+// redirected by the route table: only the build knows which project it is in.
+// So the old address opens this screen and the payload finishes the move — a
+// redirect that had to ask a question first. `/builds/:name` is emitted by the
+// API as a finding's evidence (`buildEvidence`), so it goes on working
+// unchanged; what it does not do is leave the reader on an address that no
+// longer says which project they are looking at.
+watch(build, (loaded) => {
+  if (!loaded || route.name !== "build") return;
+  void router.replace({
+    name: "project-build",
+    params: { name: loaded.project, build: loaded.name },
+    query: route.query,
+    hash: route.hash,
+  });
+});
 
 // Cancelling is the project developer's, and a Build carries no role of its
 // own — the project it belongs to does. It is fetched apart from the build so
@@ -846,9 +864,9 @@ const logRunLabels = computed<Record<string, string>>(() => {
         :role="project.data.value?.role"
       />
 
-      <OperatorOnly>
-        <ConditionsTable :conditions="build.conditions" />
-      </OperatorOnly>
+      <!-- Everybody's since #469: a build's conditions are a fact about that
+           build, and the single most diagnostic thing on this page. -->
+      <ConditionsTable :conditions="build.conditions" />
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Build output</h2>

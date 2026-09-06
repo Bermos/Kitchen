@@ -1,16 +1,16 @@
 # The dashboard's design guide
 
-The dashboard is one product with two audiences and about forty screens. This
+The dashboard is one product with four audiences and about forty screens. This
 is what makes them look like one product: the frame every screen is built in,
 the scale everything inside it is measured against, and the one rule that
-decides which of the two audiences a screen is talking to.
+decides which of the four a screen is talking to.
 
 It exists because none of that was written down, and a UI with nothing written
 down drifts — not by anybody deciding differently, but by each new screen
 guessing at a shape the last one never stated. By the time it was noticed the
 dashboard had three page widths, three vertical rhythms, four table paddings,
-two weights for the same heading, and three screens showing the operator's
-answers to somebody who had asked for the developer's.
+two weights for the same heading, and one flat navigation listing four
+audiences' screens at once.
 
 So: the rules are here, and **the ones a machine can hold are held by
 [`ui/src/lib/design.test.ts`](../ui/src/lib/design.test.ts)**, which runs in
@@ -18,78 +18,104 @@ So: the rules are here, and **the ones a machine can hold are held by
 and a rule that has stopped being true is worse than no rule, because the next
 person reads it and believes it.
 
-## The mode rule
+## The scope rule
 
-**Role decides what is permitted. Mode decides what is rendered.**
+**The dashboard has four scopes, the address says which one you are in, and
+the scope decides what may be on the screen.**
 
-The role half is [docs/AUTH.md](AUTH.md), enforced twice over — the API's route
-table, and the dashboard's generated copy of it. The mode half is this
-document, and it had exactly one enforcement mechanism until now: whoever wrote
-the screen remembering to write `v-if="operatorMode"`.
+| Scope | Root | Whose |
+|---|---|---|
+| **Fleet** | `/` | Everybody's, and the only place that spans projects |
+| **Project** | `/projects/:name/…` | The developer's, scoped by the address |
+| **Platform** | `/platform/…` | The operator's, and where an operator lands on sign-in |
+| **Compliance** | `/compliance/…` | The auditor's, who is not necessarily an operator |
 
-Four screens remembered. The environment screen's pod table, the crash report's
-Kubernetes events and the log screen's cluster switch did not — so an operator
-who chose the developer's view kept being handed the operator's answers on the
-screens they use most, which is where this guide started.
+The scope lives on the route ([`ui/src/routes.ts`](../ui/src/routes.ts)), so it
+is one fact read three times: by the shell, which draws the switcher and the
+scope's own navigation; by the route guard, which asks the policy table whether
+this account may open the address; and by
+[`design.test.ts`](../ui/src/lib/design.test.ts), which reads a screen's scope
+off the same table rather than being told per file.
 
-### What operator content is
+### What may be on a screen
 
-Anything that names a Kubernetes object: a Pod, a Node, a namespace, a
-manifest, a `status.conditions` row, a cluster Event, a PersistentVolume, a
-PersistentVolumeClaim, a StorageClass, a workload the platform runs on its own
-behalf. [docs/SCOPE.md](SCOPE.md) is the reason —
+**A Fleet- or Project-scope screen may not name a Kubernetes object.** Not a
+Pod, not a Node, not a namespace, not a manifest, not a cluster Event, not a
+PersistentVolume, PersistentVolumeClaim or StorageClass.
+[docs/SCOPE.md](SCOPE.md) is the reason —
 
 > The developer should never need the words "namespace" or "Deployment".
 
-— and it is not about secrecy. The API decides what may be *read*, by role. This
-decides what is *worth reading*, and a Kubernetes noun is the wrong answer to
-every question a developer is asking. "Is my app up" is answered by the health
-strip, the crash report and the findings; it is not answered better by a pod
-name.
+— and it is not about secrecy. The API decides what may be *read*, by role.
+This decides what is *worth reading*, and a Kubernetes noun is the wrong answer
+to every question those two scopes exist to ask. "Is my app up" is answered by
+the health strip, the crash report and the findings; it is not answered better
+by a pod name.
 
-### The gate is per screen, not per block
+**A Platform- or Compliance-scope screen is about the cluster**, so it says all
+of those words freely and nothing inside it is gated a second time.
 
-A screen is the developer's or the operator's, and it is whichever one entire.
+### Why it is the screen and not the reader
 
-- **A developer screen** carries no operator content except behind
-  [`<OperatorOnly>`](../ui/src/components/OperatorOnly.vue). That element takes
-  a slot and renders nothing around it, so it can wrap a table, a table row, a
-  heading, or three words in the middle of a sentence.
-- **An operator screen** — everything under `/platform`, connections, and the
-  volumes written for storage the platform did not create — is
-  operator content throughout, and nothing inside it is gated a second time.
-  Those routes stay open to an operator who is in developer mode, because a
-  finding's evidence link is a link somebody pastes and it should land where it
-  says it does. Gating blocks *within* such a screen is how the settings page
-  came to show its top half and not its bottom to an operator who had followed
-  a link there.
+There used to be a mode toggle — a header switch, derived from the platform
+role, that rewrote the contents of six screens — and an `<OperatorOnly>`
+element that wrapped the blocks it rewrote. Both are gone (#469), and the
+reason is worth keeping:
 
-The corollary, and the case that is easy to miss: **a preference that turns on
-operator content is narrowed by the mode too, not only the control that sets
-it.** The log screen's cluster switch is hidden in developer mode — and
-`?cluster=1` in a pasted URL is ignored there as well, because the switch was
-never the only way in. `ObservabilityView.vue` derives the effective value the
-way `mode.ts` derives the mode: a preference, narrowed by what the viewer may
-act on.
+- **A gate keyed to the reader makes a project's troubleshooting depend on who
+  staffs it.** A project managed by somebody who also holds the operator role
+  would get strictly better diagnostics than an identical project managed by a
+  plain member. That is an accident of staffing becoming a product difference.
+- **Half of what was gated was never operator content at all.**
+  `status.conditions` was wrapped in four places — on a project, an
+  environment, a build and an incident — so a developer whose build was broken
+  could not read the single most diagnostic thing on the page. Conditions are a
+  fact about the reader's own object and are shown to everybody.
+- **The other half was a fact about the cluster on a developer's screen**, and
+  the answer to that is not a gate but an address: the pod table, the
+  materialized objects, the bound `PersistentVolume`, the destination namespace
+  and the cluster's Warning events are the Platform scope's, where the reader
+  who wants them is already going.
+- **What is left is an instruction only an operator can act on** — "enable
+  Hubble in Cilium and point…" on an empty traffic map. On a Project-scope
+  screen that becomes a statement of fact: *no flow data reaches this project*.
+  A developer is never told nothing, and never handed a button they cannot
+  press.
+
+So the line is what a thing *is*, not who is reading it, and it is checkable
+from the route rather than from anybody remembering to write `v-if`.
 
 ### What the test checks
 
 `design.test.ts` reads the rendered *words* — text nodes, and the attributes
 that become text (`title`, `aria-label`, `placeholder`, `label`, `description`,
-`empty`, `hint`, `alt`) — and refuses a developer screen that says one of the
-Kubernetes nouns outside a gate. An expression like `pod.name` is not caught: a
-field name is not a label, and what leaks is a screen *saying* Pod.
+`empty`, `hint`, `alt`) — and refuses a Fleet- or Project-scope screen that
+says one of the Kubernetes nouns. An expression like `pod.name` is not caught:
+a field name is not a label, and what leaks is a screen *saying* Pod. A view
+with no route at all is checked as though it were a developer's, which is the
+strict reading — a screen nothing addresses cannot argue that its address
+exempts it.
 
 Two lists in that file are the escape hatches, and both are meant to be argued
 with rather than added to quietly:
 
-- `OPERATOR_COMPONENTS` — a component that is only ever mounted behind a gate
-  *and* speaks the vocabulary in its own text. It is deliberately the shortest
-  list that works, three entries long, rather than every component an operator
-  screen happens to use: a component that is clean today stays checked, and so
-  stays clean. Adding one means saying where its gate is.
+- `OPERATOR_COMPONENTS` — a component that is only ever mounted on a Platform-
+  or Compliance-scope screen *and* speaks the vocabulary in its own text. It is
+  deliberately the shortest list that works, three entries long, rather than
+  every component such a screen happens to use: a component that is clean today
+  stays checked, and so stays clean. Adding one means saying which screens
+  mount it.
 - `NOT_ABOUT_KUBERNETES` — the handful of phrases that contain one of the words
   and mean something else. Log *clustering* is the standing example.
+
+### A screen that needs a project and was not given one
+
+`/observability` is not a screen: it is a question about a project nobody
+named. Such an address keeps the address it was asked for, renders the fleet
+dashboard, and opens the project picker over it; choosing a project completes
+the sentence and carries the query the link was asking with. The alternative —
+guessing a project from a dropdown's last value — is what made a pasted
+developer link mean something different for every reader.
 
 ## The page
 
@@ -249,9 +275,9 @@ inventory with holes in it is worse than one that repeats itself.
   reasons kept here would drift from the operator the first time somebody added
   one.
 
-The `conditions` in the expanded row are operator content like any other, and
-sit behind `<OperatorOnly>`; the error line and the failing step's output are
-the developer's and are not gated.
+The `conditions` in the expanded row are a fact about the object that is
+failing, so they are shown to everybody the row is shown to, like the error
+line and the failing step's output beside them.
 
 ## Tables
 
@@ -348,5 +374,5 @@ Both halves move together. A rule that changes here changes in
 `design.test.ts`, and a rule that is loosened there is loosened here with the
 reason — otherwise the file drifts into an allowlist and the guide into
 folklore. Adding a screen is the cheap case: it inherits all of this from
-`PageHeader`, `PageSection` and `OperatorOnly`, and the test tells you the one
-thing you forgot.
+`PageHeader` and `PageSection`, it declares its scope in `routes.ts`, and the
+test tells you the one thing you forgot.

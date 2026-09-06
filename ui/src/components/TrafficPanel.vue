@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { api, type TrafficEdge } from "../lib/api";
 import { compactCount } from "../lib/format";
-import { useFreshness } from "../lib/freshness";
-import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
-import OperatorOnly from "../components/OperatorOnly.vue";
-import PageHeader from "../components/PageHeader.vue";
 
-// The traffic screen draws what the flow collector shipped: aggregated
-// Hubble flow edges out of ClickHouse, via GET /api/v1/traffic. The map is a
-// reading of the last window, not a live packet view — rates are averages
-// over the window the store answered for.
+// The traffic tab draws what the flow collector shipped: aggregated Hubble
+// flow edges out of ClickHouse, via GET /api/v1/traffic. The map is a reading
+// of the last window, not a live packet view — rates are averages over the
+// window the store answered for.
+//
+// It was a cross-project screen with a project dropdown, which is the shape
+// this dashboard is moving away from: the project is the address now (#469)
+// and this panel is handed it.
+const props = defineProps<{ project: string }>();
 
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
@@ -20,29 +21,19 @@ const ranges = [
   { label: "Last 24 hours", value: 1440 },
 ];
 const rangeMinutes = ref(60);
-const project = ref<string>("");
 const mode = ref<"all" | "http" | "network">("all");
 const dropsOnly = ref(false);
-
-const projects = useAsync(() => api.projects());
-const projectItems = computed(() => [
-  { label: "All projects", value: "" },
-  ...(projects.data.value ?? []).map((p) => ({ label: p.name, value: p.name })),
-]);
 
 const { data, error, loading, refresh } = useAsync(() =>
   api.traffic({
     since: new Date(Date.now() - rangeMinutes.value * 60000).toISOString(),
-    project: project.value || undefined,
+    project: props.project || undefined,
   }),
 );
-// How old this screen is, and the reader's hold on it: every fetch above
-// reports into it and the header renders it.
-const freshness = useFreshness();
+// The screen's freshness is the host's — every fetch here reports into it
+// through `useAsync`, and the one control lives in the one header.
 usePoll(() => void refresh(), 15000, () => true);
-function rerun() {
-  void refresh();
-}
+watch([() => props.project, rangeMinutes], () => void refresh());
 
 const edges = computed<TrafficEdge[]>(() => {
   let edges = data.value ?? [];
@@ -52,13 +43,13 @@ const edges = computed<TrafficEdge[]>(() => {
   return edges;
 });
 
-// The second line under a box on the map. A namespace is a Kubernetes noun and
-// so the operator's; what a developer needs from the same field is the one
-// thing it says in their vocabulary — whether the other end of the edge is on
-// this platform at all, which is exactly the case where it is missing.
+// The second line under a box on the map. The field is a namespace, which is
+// the cluster's vocabulary and belongs in the Platform scope; what this screen
+// needs from it is the one thing it says in a developer's — whether the other
+// end of the edge is on this platform at all, which is exactly the case where
+// it is missing.
 function boxDetail(box: Node): string {
-  if (!box.namespace) return "off the platform";
-  return operatorMode.value ? box.namespace : "";
+  return box.namespace ? "" : "off the platform";
 }
 
 // The map draws the busiest edges; the table below has all of them.
@@ -154,15 +145,12 @@ function edgeLabel(edge: TrafficEdge): string {
 
 <template>
   <div class="space-y-6">
-    <PageHeader :freshness="freshness" title="Traffic">
-      <template #description>
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+      <p class="text-xs text-muted max-w-2xl">
         The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
-      </template>
-      <template #actions>
-        <USelect v-model="project" :items="projectItems" value-key="value" size="sm" class="w-36 sm:w-40" @change="rerun" />
-        <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" @change="rerun" />
-      </template>
-    </PageHeader>
+      </p>
+      <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" />
+    </div>
 
     <div class="flex items-center gap-2 flex-wrap">
       <UButton
@@ -201,23 +189,15 @@ function edgeLabel(edge: TrafficEdge): string {
       class="rounded-md border border-default px-6 py-14 text-center text-sm text-muted space-y-2"
     >
       <p>{{ loading ? "Loading…" : dropsOnly ? "Nothing was dropped in this window." : "No flow data in this window." }}</p>
-      <!-- Turning the flow pipeline on is the operator's job and reads as an
-           instruction; a developer who cannot act on it is only being told
-           their screen is empty for a reason nobody named. -->
-      <template v-if="!loading && !dropsOnly">
-        <OperatorOnly>
-          <p class="text-xs text-dimmed max-w-xl mx-auto">
-            The traffic view needs the flow pipeline: enable Hubble in Cilium and point
-            <span class="font-mono">Kitchen.spec.observability.hubble.relayAddress</span> at Hubble Relay (typically
-            <span class="font-mono">hubble-relay.kube-system.svc.cluster.local:80</span>). The operator follows the
-            stream from there and this screen fills in.
-          </p>
-        </OperatorOnly>
-        <p v-if="!operatorMode" class="text-xs text-dimmed max-w-xl mx-auto">
-          The platform is not measuring flows yet — an operator has to turn the pipeline on before this screen has
-          anything to draw.
-        </p>
-      </template>
+      <!-- An empty answer is an answer and says why. It used to say it twice:
+           an instruction addressed to an operator, and a sentence for everyone
+           else. The instruction is not something the reader of a project's
+           screen can act on and naming what they cannot do is not telling them
+           anything, so what is left is the fact (#469). -->
+      <p v-if="!loading && !dropsOnly" class="text-xs text-dimmed max-w-xl mx-auto">
+        No flow data reaches this project — the platform is not measuring flows yet, and until it is there is nothing
+        for this map to draw.
+      </p>
     </div>
 
     <template v-else>
@@ -285,11 +265,6 @@ function edgeLabel(edge: TrafficEdge): string {
                 <span class="text-toned">{{ edge.source }}</span>
                 <span class="text-dimmed mx-1.5">→</span>
                 <span class="text-toned">{{ edge.destination }}</span>
-                <OperatorOnly>
-                  <span v-if="edge.destinationNamespace" class="text-dimmed ml-1.5">
-                    {{ edge.destinationNamespace }}
-                  </span>
-                </OperatorOnly>
               </td>
               <td class="px-3 py-2 text-xs text-muted">{{ edge.protocol }}</td>
               <td class="px-3 py-2 text-right font-mono text-xs text-toned">

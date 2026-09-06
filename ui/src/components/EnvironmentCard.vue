@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { environmentLink } from "../lib/links";
 import { computed, watch } from "vue";
 import { api, type Environment } from "../lib/api";
 import { compactCount } from "../lib/format";
@@ -58,7 +59,7 @@ const tone = computed(() => {
 
 <template>
   <RouterLink
-    :to="{ name: 'environment', params: { name: environment.name } }"
+    :to="environmentLink(environment.name, environment.project)"
     class="rounded-md border border-default bg-muted px-4 py-3 block hover:border-accented"
   >
     <div class="flex items-center gap-2 min-w-0">

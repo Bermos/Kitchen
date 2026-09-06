@@ -10,7 +10,6 @@ import {
   type Connection,
   type NewClaim,
 } from "../lib/api";
-import OperatorOnly from "./OperatorOnly.vue";
 import { DESTRUCTIVE_POLICY, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
 import { callerFor } from "../lib/me";
@@ -845,15 +844,6 @@ async function save() {
                 :placeholder="bindableLoaded && !bindOptions.length ? 'There is none to bind' : 'Select the storage to mount'"
                 class="w-full"
               />
-              <OperatorOnly>
-                <p v-if="chosenVolume" class="mt-1 text-xs text-muted">
-                  PersistentVolume {{ chosenVolume.name }}<template v-if="chosenVolume.storageClass">, storageClass
-                  {{ chosenVolume.storageClass }}</template><template v-if="chosenVolume.identity">, {{ chosenVolume.identity }}</template
-                  ><template v-if="chosenVolume.phase">, {{ chosenVolume.phase }}</template>. A PersistentVolumeClaim
-                  of this project's own namespace is bound by name instead; one of another project's cannot be, because
-                  a pod only mounts its own.
-                </p>
-              </OperatorOnly>
             </UFormField>
 
             <UFormField

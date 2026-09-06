@@ -7,6 +7,7 @@ import { claimCautions, deletionGatedByName, destroysData, destroysDataRefusal, 
 import { duration, exactTime, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
+import { buildLink, environmentLink } from "../lib/links";
 import { may } from "../lib/policy";
 import { pipelineShown } from "../lib/promotions";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
@@ -26,7 +27,6 @@ import EnvironmentCard from "../components/EnvironmentCard.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
 import NotificationsPanel from "../components/NotificationsPanel.vue";
-import OperatorOnly from "../components/OperatorOnly.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import SourceLink from "../components/SourceLink.vue";
@@ -44,7 +44,7 @@ const name = computed(() => route.params.name as string);
 function openBuild(build: string, event: MouseEvent) {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
   if ((event.target as HTMLElement | null)?.closest("a")) return;
-  void router.push({ name: "build", params: { name: build } });
+  void router.push(buildLink(build, name.value));
 }
 
 /** The build whose commit message is open, if any. One at a time, so the list
@@ -999,7 +999,7 @@ function host(url?: string): string {
         <div>
           <p class="text-xs text-muted mb-1">Release</p>
           <RouterLink
-            :to="{ name: 'environment', params: { name: production.name } }"
+            :to="environmentLink(production.name, name)"
             class="font-mono text-sm text-highlighted hover:underline"
             >{{ production.release }}</RouterLink
           >
@@ -1034,9 +1034,10 @@ function host(url?: string): string {
         :promotions="promotions"
       />
 
-      <OperatorOnly>
-        <ConditionsTable :conditions="project.conditions" />
-      </OperatorOnly>
+      <!-- Everybody's since #469. Conditions are a fact about this project;
+           they were gated in four places, so a developer whose project was
+           unhappy could not read the statement saying why. -->
+      <ConditionsTable :conditions="project.conditions" />
 
       <!-- Seven tabs do not fit across a phone, and a tab abbreviated to
            "Dep…" names nothing: the strip scrolls instead. -->
@@ -1094,11 +1095,11 @@ function host(url?: string): string {
                 <p v-if="release.environments?.length" class="text-xs text-muted mt-1 flex flex-wrap gap-x-1.5">
                   <span>Serving</span>
                   <RouterLink
-                    v-for="name in release.environments"
-                    :key="name"
-                    :to="{ name: 'environment', params: { name } }"
+                    v-for="served in release.environments"
+                    :key="served"
+                    :to="environmentLink(served, name)"
                     class="font-mono text-toned hover:text-highlighted hover:underline"
-                    >{{ name }}</RouterLink
+                    >{{ served }}</RouterLink
                   >
                 </p>
               </td>
@@ -1171,7 +1172,7 @@ function host(url?: string): string {
               >#{{ preview.preview?.pullRequest ?? "—" }}</SourceLink
             >
             <RouterLink
-              :to="{ name: 'environment', params: { name: preview.name } }"
+              :to="environmentLink(preview.name, name)"
               class="text-sm text-highlighted font-medium hover:underline"
               >{{ preview.name }}</RouterLink
             >
@@ -1205,7 +1206,7 @@ function host(url?: string): string {
                   </td>
                   <td class="px-3 py-2">
                     <RouterLink
-                      :to="{ name: 'build', params: { name: build.name } }"
+                      :to="buildLink(build.name, name)"
                       class="block max-w-2xl truncate text-toned hover:text-highlighted hover:underline"
                       :title="build.git.message || build.name"
                       >{{ build.git.message || build.name }}</RouterLink
@@ -1256,7 +1257,7 @@ function host(url?: string): string {
                 <td class="px-3 py-2">
                   <span class="flex items-center gap-1 max-w-2xl">
                     <RouterLink
-                      :to="{ name: 'build', params: { name: build.name } }"
+                      :to="buildLink(build.name, name)"
                       class="block min-w-0 truncate text-highlighted hover:underline"
                       :title="build.git.message || build.name"
                     >
@@ -1324,7 +1325,7 @@ function host(url?: string): string {
               </td>
               <td class="px-3 py-2">
                 <RouterLink
-                  :to="{ name: 'environment', params: { name: domain.environment } }"
+                  :to="environmentLink(domain.environment, name)"
                   class="text-toned hover:underline"
                   >{{ domain.environment }}</RouterLink
                 >
@@ -1475,12 +1476,6 @@ function host(url?: string): string {
                     >
                       shared with {{ claim.volume.bound.sharedWith.join(", ") }}
                     </span>
-                    <OperatorOnly>
-                      <span v-if="claim.volume.bound" class="block text-dimmed">
-                        PersistentVolume {{ claim.volume.bound.persistentVolume }}
-                        <template v-if="claim.volume.bound.identity"> · {{ claim.volume.bound.identity }}</template>
-                      </span>
-                    </OperatorOnly>
                   </template>
                   <template v-else-if="claim.redirectURIs?.length">
                     <span :title="claim.redirectURIs.join('\n')">
@@ -1494,19 +1489,6 @@ function host(url?: string): string {
                   <span v-if="claimRecoveryPoint(claim)" class="block text-dimmed">
                     {{ claimRecoveryPoint(claim) }}
                   </span>
-                  <!-- Where the archives actually are, and what the database
-                       said about its own archiving: the bucket the operator
-                       configured, in the operator's vocabulary. -->
-                  <OperatorOnly>
-                    <span v-if="claim.backup?.destination" class="block text-dimmed">
-                      {{ claim.backup.destination }}
-                      <template v-if="claim.backup.schedule"> · {{ claim.backup.schedule }}</template>
-                      <template v-if="claim.backup.retentionPolicy"> · keep {{ claim.backup.retentionPolicy }}</template>
-                    </span>
-                    <span v-if="claim.backup?.archivingMessage" class="block text-dimmed">
-                      {{ claim.backup.archivingMessage }}
-                    </span>
-                  </OperatorOnly>
                 </td>
                 <td class="px-3 py-2"><PhaseBadge :phase="claim.phase" /></td>
                 <!-- What the binding is: the secret the env vars read, or
@@ -2135,7 +2117,7 @@ function host(url?: string): string {
             >
               <td class="px-3 py-2">
                 <RouterLink
-                  :to="{ name: 'environment', params: { name: environment.name } }"
+                  :to="environmentLink(environment.name, name)"
                   class="text-highlighted font-medium hover:underline"
                   >{{ environment.name }}</RouterLink
                 >

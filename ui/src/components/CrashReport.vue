@@ -4,7 +4,6 @@ import { api, type LogLine } from "../lib/api";
 import { compactCount, formatBytes, timeAgo } from "../lib/format";
 import { correlatedLogsQuery } from "../lib/requests";
 import { useAsync, usePoll } from "../lib/useAsync";
-import OperatorOnly from "./OperatorOnly.vue";
 import RequestRows from "./RequestRows.vue";
 import ResourceChart from "./ResourceChart.vue";
 
@@ -107,9 +106,10 @@ function levelClass(line: LogLine): string {
               {{ headline }}
             </h2>
             <p class="text-xs text-muted mt-1 font-mono">
-              <!-- Which pod and which container is the operator's half of the
-                   sentence; when it happened is everybody's. -->
-              <OperatorOnly>{{ crash.pod }} · {{ crash.container }} · </OperatorOnly>{{ timeAgo(crash.finishedAt) }}
+              <!-- Which container crashed and when: both facts about this
+                   environment. The pod's name was here too and is the
+                   cluster's, so it is on the Platform scope's screens (#469). -->
+              {{ crash.container }} · {{ timeAgo(crash.finishedAt) }}
               <template v-if="crash.previous"> · the run before the current one</template>
             </p>
           </div>
@@ -202,35 +202,6 @@ function levelClass(line: LogLine): string {
           </RouterLink>
         </div>
 
-        <OperatorOnly>
-          <div>
-            <h3 class="text-xs font-medium text-highlighted mb-1.5">
-              What the cluster said
-              <span class="text-dimmed font-normal">— Warnings, which run past the crash because a loop keeps announcing itself</span>
-            </h3>
-            <div class="rounded-md border border-default overflow-x-auto">
-              <p v-if="!report.events.length" class="px-4 py-2.5 text-xs text-muted">
-                No Warning events for this environment in the window.
-              </p>
-              <table v-else class="w-full text-xs">
-                <tbody>
-                  <tr v-for="(event, i) in report.events" :key="i" class="border-b border-muted last:border-0 align-top">
-                    <td class="px-3 py-1 text-dimmed font-mono whitespace-nowrap">{{ time(event.timestamp) }}</td>
-                    <td class="px-3 py-1 font-mono text-warning whitespace-nowrap">{{ event.reason }}</td>
-                    <td class="px-3 py-1 font-mono text-dimmed whitespace-nowrap">
-                      {{ event.kind }}<template v-if="event.name">/{{ event.name }}</template>
-                    </td>
-                    <td class="px-3 py-1 text-toned w-full break-all">{{ event.message }}</td>
-                    <td class="px-3 py-1 text-dimmed font-mono text-right whitespace-nowrap">
-                      <template v-if="event.count > 1">×{{ event.count }}</template>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </OperatorOnly>
-
         <div>
           <h3 class="text-xs font-medium text-highlighted mb-1.5">
             What the edge was serving
@@ -245,8 +216,8 @@ function levelClass(line: LogLine): string {
 
         <p class="text-[11px] text-dimmed leading-relaxed">
           Assembled over {{ time(report.since) }} – {{ time(report.until) }}. The lines and the memory series stop at the
-          termination instant, because they are what led up to it; the events run past it; the requests are the seconds
-          either side. The report is all-or-nothing — a section that came back empty is a section that was empty.
+          termination instant, because they are what led up to it; the requests are the seconds either side. The report
+          is all-or-nothing — a section that came back empty is a section that was empty.
         </p>
       </div>
     </div>

@@ -16,11 +16,12 @@
  * a screen says, how it is laid out inside its sections, or which chart it
  * draws — those are judgement, and a test that pretended to make them would
  * only be in the way. What is here is the frame: one page width, one rhythm,
- * one header, one heading scale, one table, one palette, and the mode rule.
+ * one header, one heading scale, one table, one palette, and the scope rule.
  */
 
 import { parse } from "@vue/compiler-sfc";
 import { describe, expect, it } from "vitest";
+import { routes, type Scope } from "../routes";
 
 // The sources themselves, pulled in by the bundler rather than read off the
 // disk: it keeps this test to the same module graph as everything else here,
@@ -43,35 +44,43 @@ const componentSources = import.meta.glob("../components/*.vue", {
 const STANDALONE = new Set(["LoginView.vue", "AuthCallbackView.vue", "NotFoundView.vue"]);
 
 /**
- * The operator's own screens: the platform section, connections, and the
- * volumes written for storage the platform did not create. The mode
- * gate is per *screen*, not per block — a screen is the developer's or the
- * operator's — so these are wholly operator content and nothing inside them is
- * gated a second time. `docs/UI.md`, "The mode rule", is why.
+ * The scopes a screen may name a Kubernetes object on.
+ *
+ * The dashboard has four scopes and the route says which one a screen is in
+ * (`src/routes.ts`). Platform is the operator's estate and Compliance is the
+ * auditor's, and both are *about* the cluster — so both may say Pod, Node,
+ * namespace, manifest and cluster Event. Fleet and Project are the
+ * developer's, and on those the nouns are not hidden, they are absent: this is
+ * a rule about what a screen is, not about who is reading it. `docs/UI.md`,
+ * "The scope rule", is the reasoning.
  */
-const OPERATOR_VIEWS = new Set([
-  "PlatformView.vue",
-  "PlatformAddonsView.vue",
-  "PlatformNodesView.vue",
-  "PlatformWorkloadsView.vue",
-  "PlatformEdgeView.vue",
-  "PlatformStorageView.vue",
-  "PlatformEventsView.vue",
-  "PlatformBackupView.vue",
-  "PlatformAuditView.vue",
-  "PlatformSettingsView.vue",
-  "ConnectionsView.vue",
-  "VolumesView.vue",
-]);
+const SCOPES_THAT_MAY: Set<Scope> = new Set<Scope>(["platform", "compliance"]);
 
 /**
- * Components that are only ever mounted on an operator screen, or inside an
- * `<OperatorOnly>` on a developer one, *and* that speak the operator's
- * vocabulary in their own text.
+ * Which scopes a view file is reached in, from the route table itself.
+ *
+ * A file with no route — and there is none today — is treated as the
+ * developer's, which is the strict reading: a screen nothing addresses cannot
+ * argue that its address exempts it.
+ */
+function scopesOf(view: string): Scope[] {
+  return routes
+    .filter((route) => route.meta?.view === view && route.meta?.scope)
+    .map((route) => route.meta!.scope as Scope);
+}
+
+function mayNameKubernetes(view: string): boolean {
+  const scopes = scopesOf(view);
+  return scopes.length > 0 && scopes.every((scope) => SCOPES_THAT_MAY.has(scope));
+}
+
+/**
+ * Components that are only ever mounted on a Platform- or Compliance-scope
+ * screen *and* that speak the operator's vocabulary in their own text.
  *
  * It is deliberately the shortest list that works rather than every component
- * an operator screen happens to use: a component that is clean today is
- * checked, and stays clean. Adding one means saying where its gate is.
+ * such a screen happens to use: a component that is clean today is checked,
+ * and stays clean. Adding one means saying which scope's screens mount it.
  */
 const OPERATOR_COMPONENTS = new Set([
   // Both are inside PlatformUpdatePanel, on the platform's settings screen.
@@ -92,11 +101,11 @@ const CELL_PADDING_Y = new Set(["py-2", "py-1", "py-0.5"]);
 const EMPTY_ROW_PADDING_Y = "py-8";
 
 /**
- * The Kubernetes nouns. A developer screen never prints one — not because they
- * are secret (the API decides that, and it decides it by role) but because
- * they are the wrong answer to every question a developer is asking. See
- * docs/SCOPE.md: "the developer should never need the words namespace or
- * Deployment".
+ * The Kubernetes nouns. A Fleet- or Project-scope screen never prints one —
+ * not because they are secret (the API decides that, and it decides it by
+ * role) but because they are the wrong answer to every question asked in those
+ * scopes. See docs/SCOPE.md: "the developer should never need the words
+ * namespace or Deployment".
  *
  * They are matched as whole words in what a person actually reads: text, and
  * the attributes that become text. An expression like `pod.name` is not on the
@@ -124,8 +133,8 @@ const OPERATOR_WORDS = [
   "etcd",
   // The storage nouns. A volume claim may bind one that already exists
   // (#346), which puts the operator's whole vocabulary within reach of a
-  // developer's form — so a screen offering that says "storage" and names
-  // the object only behind the gate.
+  // developer's form — so a Project-scope screen offering that says "storage"
+  // and leaves the object to the Platform scope.
   "persistentvolume",
   "persistentvolumes",
   "persistentvolumeclaim",
@@ -401,18 +410,7 @@ describe("the palette", () => {
   });
 });
 
-describe("the mode rule", () => {
-  /** Whether an element gates its subtree on operator mode. */
-  function gates(node: Node): boolean {
-    if (node.tag === "OperatorOnly") return true;
-    return (node.props ?? []).some(
-      (p) =>
-        p.type === DIRECTIVE &&
-        (p.name === "if" || p.name === "show") &&
-        (p.exp?.content ?? "").includes("operatorMode"),
-    );
-  }
-
+describe("the scope rule", () => {
   /** Every operator word a piece of rendered text says. */
   function operatorWordsIn(text: string): string[] {
     let rest = text;
@@ -421,34 +419,46 @@ describe("the mode rule", () => {
     return OPERATOR_WORDS.filter((w) => words.has(w));
   }
 
+  // Everything reachable in the Fleet or the Project scope, and every
+  // component that is not exclusively an operator screen's. There is no gate
+  // to be behind any more: `<OperatorOnly>` is gone, because a project managed
+  // by somebody who also holds the operator role would otherwise get strictly
+  // better diagnostics than an identical project managed by a plain member —
+  // an accident of staffing becoming a product difference (#469).
   const developerScreens = [
-    ...views.filter((v) => !OPERATOR_VIEWS.has(v.name) && !STANDALONE.has(v.name)),
+    ...views.filter((v) => !mayNameKubernetes(v.name) && !STANDALONE.has(v.name)),
     ...components.filter((c) => !OPERATOR_COMPONENTS.has(c.name)),
   ];
 
-  it.each(developerScreens)("$name says nothing about Kubernetes outside an operator gate", (file) => {
+  it("has screens on both sides of it", () => {
+    // A rule with nothing under it has stopped being a rule, and a rule with
+    // everything under it is a rule nobody could have written.
+    expect(views.some((v) => mayNameKubernetes(v.name))).toBe(true);
+    expect(developerScreens.length).toBeGreaterThan(10);
+  });
+
+  it.each(developerScreens)("$name says nothing about Kubernetes", (file) => {
     const leaks: string[] = [];
-    const check = (text: string, gated: boolean) => {
-      if (gated) return;
+    const check = (text: string) => {
       const words = operatorWordsIn(text);
       if (words.length) leaks.push(`${words.join(", ")} — in ${JSON.stringify(text.trim().slice(0, 80))}`);
     };
 
-    walk(templateOf(file), (node, ancestors) => {
-      const gated = gates(node) || ancestors.some(gates);
+    walk(templateOf(file), (node) => {
       for (const prop of node.props ?? []) {
         if (prop.type === ATTRIBUTE && HUMAN_ATTRIBUTES.has(prop.name) && prop.value) {
-          check(prop.value.content, gated);
+          check(prop.value.content);
         }
       }
       for (const child of node.children ?? []) {
-        if (child.type === TEXT) check(textOf(child), gated);
+        if (child.type === TEXT) check(textOf(child));
       }
     });
 
     expect(
       leaks,
-      `${file.name}: role decides what is permitted, mode decides what is rendered — wrap this in <OperatorOnly> (docs/UI.md)`,
+      `${file.name}: a Fleet- or Project-scope screen does not name a Kubernetes object — ` +
+        `the fact belongs on a Platform-scope screen, or is not worth saying here at all (docs/UI.md)`,
     ).toEqual([]);
   });
 });

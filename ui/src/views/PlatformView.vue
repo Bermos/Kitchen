@@ -68,7 +68,12 @@ const sections = [
   { label: "Addons", to: "/platform/addons", icon: "i-lucide-puzzle", hint: "what this platform installs into its own cluster" },
   { label: "Storage", to: "/platform/storage", icon: "i-lucide-hard-drive", hint: "volumes, and the store's own health" },
   { label: "Events", to: "/platform/events", icon: "i-lucide-list", hint: "the cluster's warning history" },
-  { label: "Audit", to: "/platform/audit", icon: "i-lucide-shield-check", hint: "what the platform did, and whether the record holds" },
+  { label: "Connections", to: "/platform/connections", icon: "i-lucide-plug", hint: "the forges this platform builds from" },
+  // The one tile here that leaves the scope. The audit log is the auditor's
+  // rather than the operator's (#469), and an operator following this arrives
+  // in the Compliance scope — which is where the register they are looking
+  // for is, and where the switcher will say they are.
+  { label: "Audit", to: "/compliance/audit", icon: "i-lucide-shield-check", hint: "what the platform did, and whether the record holds" },
 ];
 </script>
 

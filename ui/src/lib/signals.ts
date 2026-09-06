@@ -176,7 +176,13 @@ export function evidenceLabel(evidence: string | undefined): string {
     "/platform/addons": "Addons",
     "/platform/storage": "Storage",
     "/platform/events": "Events",
-    "/builds": "Builds",
+    // The fleet's deploy list, and the address it answered to before the four
+    // scopes moved it. The API still emits `/builds` as evidence and the
+    // router still redirects it, so a finding written a month ago and one
+    // written today both say the same word.
+    "/platform/connections": "Connections",
+    "/deploys": "Deploys",
+    "/builds": "Deploys",
   };
   if (named[location.path]) return named[location.path];
   const [, section] = location.path.split("/");
@@ -186,6 +192,7 @@ export function evidenceLabel(evidence: string | undefined): string {
     case "projects":
       return "Project";
     case "builds":
+    case "deploys":
       return "Build";
     default:
       return "Evidence";

@@ -14,13 +14,13 @@ import {
 import { compactCount, formatBytes, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
-import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
 import LogHistogram from "../components/LogHistogram.vue";
-import OperatorOnly from "../components/OperatorOnly.vue";
 import PageHeader from "../components/PageHeader.vue";
 import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
+import TracesPanel from "../components/TracesPanel.vue";
+import TrafficPanel from "../components/TrafficPanel.vue";
 
 // The observability view asks one selection four ways: the lines, when they
 // happened, what else is in them, and what they are actually saying. The
@@ -38,6 +38,12 @@ import StatusDot from "../components/StatusDot.vue";
 //
 // The bar has no default: an empty one asks for everything in the window, which
 // is the question someone opening this page is asking.
+//
+// Since #469 it is a *project's* screen, and the four ways of asking are four
+// tabs of it rather than three screens each beginning by asking which project:
+// the lines, the patterns they collapse to, the flow edges between workloads
+// and the traces the applications themselves reported. The project is the
+// address, so what is on screen is a link somebody else can open.
 
 const route = useRoute();
 const router = useRouter();
@@ -46,34 +52,47 @@ const toast = useToast();
 const query = ref((route.query.q as string) ?? "");
 const limit = ref(Number(route.query.limit) || 200);
 const limits = [200, 500, 1000, 5000];
-const tab = ref<"lines" | "patterns">(route.query.view === "patterns" ? "patterns" : "lines");
+/** The project this screen is about — `/projects/:name/observability`. */
+const project = computed(() => (route.params.name as string | undefined) ?? "");
+
+/** The four tabs. Two of them are two readings of the same log selection, so
+ * they share everything below; the other two are their own panels. */
+const VIEWS = ["lines", "patterns", "traffic", "traces"] as const;
+type View = (typeof VIEWS)[number];
+const TAB_LABELS: Record<View, string> = {
+  lines: "Logs",
+  patterns: "Patterns",
+  traffic: "Traffic",
+  traces: "Traces",
+};
+function viewFrom(value: unknown): View {
+  return (VIEWS as readonly string[]).includes(String(value)) ? (String(value) as View) : "lines";
+}
+const tab = ref<View>(viewFrom(route.query.view));
+/** Whether the log half of the screen is the one being read. */
+const readingLogs = computed(() => tab.value === "lines" || tab.value === "patterns");
+watch(
+  () => route.query.view,
+  (value) => (tab.value = viewFrom(value)),
+);
 
 // Kitchen collects every container on every node, so the store also holds the
 // logs of things Kitchen did not deploy — the CNI, the CSI sidecars, whatever
-// else the cluster runs. They are worth having (a sick node is exactly when
-// Kitchen looks broken) and they are not what someone opening this page is
-// looking for, so they are scoped out unless asked for. It rides in the query
-// language as a clause of its own, which is what lets the chips below take it
-// back off again.
+// else the cluster runs. Every request from this screen scopes them out.
+//
+// There used to be a switch that took the scoping off, gated on operator mode,
+// and a `?cluster=1` that did the same from a pasted link. Both are gone with
+// the mode (#469): this is a project's screen, and what the cluster's own
+// workloads are logging is not a fact about anybody's project. It is the
+// Platform scope's question, and the Platform scope has no log screen yet
+// (#481).
 const clusterClause: Clause = { field: "source", value: "cluster", negated: true };
 
-// Whether the cluster's own lines are in the answer — a preference, narrowed
-// by the mode, exactly as `mode.ts` narrows the mode by the role.
-//
-// The narrowing is the point. Everything the cluster runs that Kitchen did not
-// deploy is the operator's to look at, and the switch below is theirs; but the
-// switch is not the only way in. `?cluster=1` rides in the URL so a view can be
-// shared, and a pasted link is precisely how an operator's screen ends up in
-// front of somebody in the developer's view. So the preference is stored and
-// the *effective* value is the preference and the mode, which is what every
-// read below asks for.
-const clusterPreference = ref(route.query.cluster === "1");
-const includeCluster = computed<boolean>({
-  get: () => clusterPreference.value && operatorMode.value,
-  set: (on: boolean) => {
-    if (operatorMode.value) clusterPreference.value = on;
-  },
-});
+/** The scope, as a clause. It is applied to the request rather than typed into
+ * the bar because it is not a filter somebody chose — it is what the address
+ * says this screen is about, and the API narrows to the caller's projects
+ * around it either way. */
+const projectClause = computed<Clause>(() => ({ field: "project", value: project.value, negated: false }));
 
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
@@ -104,7 +123,10 @@ const expanded = ref<number | null>(null);
 
 /** What every request this page makes is asked over. */
 function selection(): LogSelection {
-  const scoped = includeCluster.value ? query.value : toQueryWithCluster();
+  let scoped = withoutClusterLines();
+  if (project.value && !hasClause(scoped, projectClause.value)) {
+    scoped = toggleClause(scoped, projectClause.value);
+  }
   const window = pinned.value ?? {
     since: rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined,
     until: undefined,
@@ -116,7 +138,7 @@ function selection(): LogSelection {
   };
 }
 
-function toQueryWithCluster(): string {
+function withoutClusterLines(): string {
   return hasClause(query.value, clusterClause) ? query.value : toggleClause(query.value, clusterClause);
 }
 
@@ -194,12 +216,6 @@ function startStream() {
     });
 }
 
-function toggleCluster() {
-  // The watch below re-runs it — a write the mode refuses changes nothing and
-  // should ask the store nothing.
-  includeCluster.value = !includeCluster.value;
-}
-
 function toggleLiveTail() {
   liveTail.value = !liveTail.value;
   if (liveTail.value && !streamBroken.value) startStream();
@@ -213,7 +229,6 @@ function toggleLiveTail() {
 function syncURL() {
   const params: Record<string, string> = {};
   if (query.value.trim()) params.q = query.value.trim();
-  if (includeCluster.value) params.cluster = "1";
   if (limit.value !== 200) params.limit = String(limit.value);
   if (tab.value !== "lines") params.view = tab.value;
   if (pinned.value) {
@@ -288,20 +303,19 @@ onMounted(() => {
       icon: "i-lucide-triangle-alert",
     });
   }
-  void run();
+  // Only the two log tabs are a log query; opening on Traffic or Traces asks
+  // the store nothing until the reader goes there.
+  if (readingLogs.value) void run();
 });
 usePoll(() => void run(false), 5000, () => liveTail.value && !streaming.value && !loading.value);
 
 watch(tab, (next) => {
+  syncURL();
+  // Arriving on a log tab with nothing fetched — the screen opened on Traffic,
+  // or this is the first look at the patterns.
   if (next === "patterns" && !patterns.value.length) void run();
-  else syncURL();
+  else if (next === "lines" && lines.value === null) void run();
 });
-
-// The switch above is not the only thing that moves `includeCluster`: leaving
-// operator mode narrows it, and the lines already on the screen were answered
-// under the old value. Re-asking is what makes the mode a property of what is
-// rendered rather than of what happens to be fetched next.
-watch(includeCluster, () => void run());
 
 /** A preset range releases whatever the histogram pinned. */
 function chooseRange(minutes: number) {
@@ -372,8 +386,11 @@ async function saveQuery() {
       query: query.value.trim() || undefined,
       rangeMinutes: savedRange(),
       limit: limit.value,
-      view: tab.value,
-      includeCluster: includeCluster.value,
+      // A saved query is a log query, and the two tabs that are not log
+      // readings have nothing to save. The control is only on the log half.
+      view: tab.value === "patterns" ? "patterns" : "lines",
+      // Nothing on this screen asks for the cluster's own lines any more.
+      includeCluster: false,
     });
     toast.add({ title: `Saved “${savedTitle.value.trim()}”`, color: "success", icon: "i-lucide-bookmark" });
     naming.value = false;
@@ -415,7 +432,6 @@ function applySaved(entry: SavedQuery) {
   rangeMinutes.value = entry.rangeMinutes;
   pinned.value = null;
   tab.value = entry.view === "patterns" ? "patterns" : "lines";
-  includeCluster.value = entry.includeCluster ?? false;
   void run();
 }
 
@@ -548,7 +564,11 @@ const placeholder = `level:error service:shop`;
 
 <template>
   <div class="space-y-6">
-    <PageHeader :freshness="freshness" title="Observability">
+    <PageHeader
+      :freshness="freshness"
+      title="Observability"
+      :breadcrumb="[{ label: 'Projects', to: '/projects' }, { label: project, mono: true }, { label: 'Observability' }]"
+    >
       <template #description>
         ClickHouse<template v-if="settings.data.value?.logRetentionDays">
           · {{ settings.data.value.logRetentionDays }} day retention</template
@@ -559,29 +579,15 @@ const placeholder = `level:error service:shop`;
       </template>
       <template #actions>
         <USelect
+          v-if="readingLogs"
           :model-value="pinned ? -1 : rangeMinutes"
           :items="pinned ? [{ label: 'Selected range', value: -1 }, ...ranges] : ranges"
           size="sm"
           class="w-36 sm:w-44"
           @update:model-value="chooseRange"
         />
-        <OperatorOnly>
-          <UButton
-            size="sm"
-            :color="includeCluster ? 'primary' : 'neutral'"
-            :variant="includeCluster ? 'soft' : 'subtle'"
-            icon="i-lucide-server"
-            :title="
-              includeCluster
-                ? 'Showing everything on the node, Kitchen\'s and the cluster\'s'
-                : 'Showing Kitchen\'s own logs. The cluster\'s other pods are collected too.'
-            "
-            @click="toggleCluster"
-          >
-            Cluster
-          </UButton>
-        </OperatorOnly>
         <UButton
+          v-if="readingLogs"
           size="sm"
           :color="liveTail ? 'success' : 'neutral'"
           :variant="liveTail ? 'soft' : 'subtle'"
@@ -593,6 +599,25 @@ const placeholder = `level:error service:shop`;
       </template>
     </PageHeader>
 
+    <!-- The four ways of asking one question about one project. They were
+         three screens — two of them cross-project with a project dropdown —
+         and the tab is in the address, so what is on screen is a link. -->
+    <div class="flex items-center gap-1 text-sm border-b border-default -mb-2">
+      <button
+        v-for="view in VIEWS"
+        :key="view"
+        class="px-3 py-1.5 -mb-px border-b-2"
+        :class="tab === view ? 'border-primary text-highlighted' : 'border-transparent text-muted hover:text-toned'"
+        @click="tab = view"
+      >
+        {{ TAB_LABELS[view] }}
+      </button>
+    </div>
+
+    <TrafficPanel v-if="tab === 'traffic'" :project="project" />
+    <TracesPanel v-else-if="tab === 'traces'" :project="project" />
+
+    <template v-else>
     <!-- What the store saw in the last 24 hours, hourly. -->
     <div v-if="headline" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <div
@@ -683,14 +708,11 @@ const placeholder = `level:error service:shop`;
       >
         {{ clause.negated ? "−" : "" }}{{ clause.field }}:{{ clause.value }} ×
       </button>
-      <!-- What can be typed here. The last example is only worth knowing about
-           if the cluster's own lines are in the answer, and they are the
-           operator's. -->
+      <!-- What can be typed here. -->
       <span class="text-dimmed">
         <template v-if="!activeClauses.length">
           <span class="font-mono">level:error</span> · <span class="font-mono">service:shop</span> ·
           <span class="font-mono">http.status:&gt;=500</span>
-          <OperatorOnly> · <span class="font-mono">-source:cluster</span></OperatorOnly>
         </template>
       </span>
     </div>
@@ -711,20 +733,9 @@ const placeholder = `level:error service:shop`;
          for one; narrower than that they follow the results down the page. -->
     <div class="flex flex-col lg:flex-row gap-4 items-stretch lg:items-start">
       <div class="flex-1 min-w-0 space-y-2">
-        <div class="flex items-center gap-1 text-xs">
-          <button
-            v-for="view in (['lines', 'patterns'] as const)"
-            :key="view"
-            class="px-2 py-1 rounded capitalize"
-            :class="tab === view ? 'bg-elevated text-highlighted' : 'text-muted hover:text-toned'"
-            @click="tab = view"
-          >
-            {{ view }}
-          </button>
-          <span v-if="tab === 'patterns'" class="text-dimmed ml-2">
-            the newest lines in the window, collapsed to templates
-          </span>
-        </div>
+        <p v-if="tab === 'patterns'" class="text-xs text-dimmed">
+          The newest lines in the window, collapsed to templates.
+        </p>
 
         <div
           v-if="tab === 'lines'"
@@ -857,6 +868,7 @@ const placeholder = `level:error service:shop`;
         <p class="text-dimmed leading-relaxed">Counts are over the whole window, not the returned page.</p>
       </aside>
     </div>
+    </template>
 
     <UModal
       :open="naming"

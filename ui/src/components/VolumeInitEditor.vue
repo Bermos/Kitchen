@@ -12,8 +12,8 @@ import { newVolumeInitDraft, type VolumeInitDraft } from "../lib/workloads";
 // for the two to drift.
 //
 // Nothing here is operator vocabulary. A volume is named by the claim the
-// project made; the PersistentVolumeClaim behind it is the claims screen's,
-// and behind `<OperatorOnly>` there.
+// project made; the object the cluster binds behind it is a fact about the
+// cluster, and so is the Platform scope's rather than any project screen's.
 
 const drafts = defineModel<VolumeInitDraft[]>({ required: true });
 

@@ -558,11 +558,11 @@ docs/COMPLIANCE.md §12.6.
 
 ## 6. API and dashboard surfaces
 
-The dashboard already scopes by project and has an operator mode; today that
-mode is a client-side toggle and the API enforces authentication but not
-authorization (an open item in AUTH.md). The surfaces below are designed to
-the *intended* boundary — project-scoped screens read project-scoped
-endpoints — so when RBAC lands, enforcement is a middleware, not a redesign.
+The dashboard scopes by project and by audience: four scopes, each with its
+own root, and the scope is in the address (docs/UI.md). The surfaces below are
+designed to that boundary — project-scoped screens read project-scoped
+endpoints, platform-scoped screens read platform-scoped ones — so admission is
+one table asked twice rather than a redesign.
 
 ### 6.1 For the application developer (project-scoped)
 
@@ -614,13 +614,16 @@ health), so a project owner sees all previews and production at a glance.
 `/metrics/overview`'s per-project traffic numbers switch source to
 `http_requests_1m` (correcting the gate/interceptor misattribution).
 
-The existing `/observability` log analytics screen stays the log surface —
-search bar, histogram, facets, patterns, saved queries — and gains nothing
-but a route from request rows into it (the correlated-logs click above).
+The log analytics screen stays the log surface — search bar, histogram,
+facets, patterns, saved queries — and gains nothing but a route from request
+rows into it (the correlated-logs click above). It is a project's screen at
+`/projects/:name/observability` since #469, with traffic and traces as two
+more tabs of it.
 
-### 6.2 For the operator (platform-scoped, operator mode)
+### 6.2 For the operator (the Platform scope)
 
-A new **Platform** section of the sidebar, visible in operator mode:
+The **Platform** scope, `/platform/…`, which the switcher offers to an account
+the policy table admits and which is where an operator lands on sign-in:
 
 - **Overview** — the platform's front page: a health strip (nodes N/N,
   components M/M, ingest, store, edge, certificates, builds — each green or

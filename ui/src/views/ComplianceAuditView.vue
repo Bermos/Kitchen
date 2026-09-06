@@ -11,6 +11,8 @@ import PageHeader from "../components/PageHeader.vue";
 import { api, type AuditRecord } from "../lib/api";
 import { anchorNote } from "../lib/audit";
 import { timeAgo } from "../lib/format";
+import { callerFor } from "../lib/me";
+import { may } from "../lib/policy";
 import { useAsync } from "../lib/useAsync";
 
 // The audit log: what the platform did, as evidence rather than as prose.
@@ -24,6 +26,15 @@ import { useAsync } from "../lib/useAsync";
 // the rows are only worth reading if the chain holds. The verdict is asked for
 // rather than polled: verifying is a scan, and a number that changes on its own
 // every thirty seconds invites nobody to look at it.
+//
+// It is the Compliance scope's screen rather than the Platform section's,
+// because an auditor may be a third party rather than an operator and should
+// not have to land in the operator's estate to read the evidence (#469). That
+// is also why the admission here is the audit log's own — anybody who can see
+// a project can read the records of it — and why the three blocks the API
+// answers for an operator alone ask for themselves rather than the whole
+// screen asking on their behalf. Gating the scope on the posture's
+// requirement would refuse a member the routes the API is willing to answer.
 
 const route = useRoute();
 const router = useRouter();
@@ -54,7 +65,7 @@ function apply(patch: Record<string, string | number | undefined>) {
     const text = value === undefined || value === null ? "" : String(value);
     if (text) query[key] = text;
   }
-  void router.replace({ path: "/platform/audit", query });
+  void router.replace({ path: "/compliance/audit", query });
 }
 
 function selection() {
@@ -84,7 +95,14 @@ function togglePrivileged() {
 }
 
 const records = useAsync(() => api.audit(selection()));
-const compliance = useAsync(() => api.compliance());
+/** The posture, the evidence pack and the access recertifications are the
+ *  operator's three: everything else on this screen is answered for anybody
+ *  who can see a project. A control nobody may use is not rendered. */
+const mayReadPosture = computed(() => may("GET /api/v1/compliance", callerFor()));
+const mayVerify = computed(() => may("GET /api/v1/audit/verify", callerFor()));
+const mayExportPack = computed(() => may("GET /api/v1/projects/{name}/audit-pack", callerFor()));
+const mayReview = computed(() => may("GET /api/v1/access/reviews", callerFor()));
+const compliance = useAsync(() => api.compliance(), { immediate: mayReadPosture.value });
 // The classification inventory: one request, exportable as it is.
 const inventory = useAsync(() => api.complianceInventory());
 
@@ -104,7 +122,7 @@ function exportInventory() {
 watch(
   () => route.fullPath,
   (path) => {
-    if (path.startsWith("/platform/audit")) void records.refresh();
+    if (path.startsWith("/compliance/audit")) void records.refresh();
   },
 );
 
@@ -140,7 +158,7 @@ function narrow(field: string, value: string) {
 }
 
 function clearAll() {
-  void router.replace({ path: "/platform/audit" });
+  void router.replace({ path: "/compliance/audit" });
 }
 
 function time(iso: string): string {
@@ -179,7 +197,7 @@ const note = computed(() => anchorNote(verification.value));
 
 <template>
   <div class="space-y-6">
-    <PageHeader title="Audit" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Audit' }]">
+    <PageHeader title="Audit" :breadcrumb="[{ label: 'Compliance', to: '/compliance' }, { label: 'Audit' }]">
       <template #description>
         Every state transition the platform made, chained so that a record edited, removed or slipped in afterwards says
         so.
@@ -218,8 +236,11 @@ const note = computed(() => anchorNote(verification.value));
     </PageHeader>
 
     <!-- The chain's verdict, first, because the rows below are only worth
-         reading if it holds. -->
-    <div class="rounded-md border border-default px-4 py-3 space-y-2">
+         reading if it holds. Both halves of it — what the platform says about
+         its own recording, and re-deriving the hashes — are answered for an
+         operator alone, so for anybody else this block is not here rather
+         than here and empty. -->
+    <div v-if="mayReadPosture || mayVerify" class="rounded-md border border-default px-4 py-3 space-y-2">
       <div class="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <p class="text-sm text-highlighted font-medium">The chain</p>
@@ -246,7 +267,7 @@ const note = computed(() => anchorNote(verification.value));
             <span class="text-muted"> {{ compliance.data.value.policy.message }}</span>
           </p>
         </div>
-        <UButton size="xs" color="neutral" variant="subtle" :loading="verifying" @click="verify">
+        <UButton v-if="mayVerify" size="xs" color="neutral" variant="subtle" :loading="verifying" @click="verify">
           Verify the chain
         </UButton>
       </div>
@@ -403,13 +424,13 @@ const note = computed(() => anchorNote(verification.value));
          this screen with a deadline it is what they came to do. Every panel
          under it is one section of the pack shown on its own; this is all of
          them in one file, signed, for a window. -->
-    <AuditPackPanel />
+    <AuditPackPanel v-if="mayExportPack" />
 
     <!-- Access recertification sits directly under the log, because it is the
          one control in this suite that is about the people reading the rest
          of it. Everything above records what the platform did; this records
          who was allowed to do it, and who last checked that. -->
-    <AccessReviewPanel />
+    <AccessReviewPanel v-if="mayReview" />
 
     <!-- The exception register sits right above the decisions it changes:
          every standing waiver, prominent and permanent, because the loudness

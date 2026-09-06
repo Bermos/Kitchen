@@ -3,9 +3,9 @@ import { ref } from "vue";
 import { api, type PlatformWrittenVolume } from "../lib/api";
 import { timeAgo } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
-import PageHeader from "../components/PageHeader.vue";
-import StatusDot from "../components/StatusDot.vue";
-import VolumeModal from "../components/VolumeModal.vue";
+import PageSection from "./PageSection.vue";
+import StatusDot from "./StatusDot.vue";
+import VolumeModal from "./VolumeModal.vue";
 
 // The storage an operator points the platform at: an NFS export on a NAS
 // older than the cluster, a volume a storage appliance's driver hands out. A
@@ -13,11 +13,12 @@ import VolumeModal from "../components/VolumeModal.vue";
 // existed the object behind that claim was the one step of the whole platform
 // that needed kubectl.
 //
-// It sits beside Connections rather than under /platform because it has a
-// connection's standing: cluster-scoped, written once by whoever administers
-// the installation, and pointed at by projects afterwards. Like Connections
-// it is the operator's entire, so nothing inside it is gated a second time —
-// docs/UI.md, "The gate is per screen, not per block".
+// It was a screen of its own in the developer's navigation, which is where a
+// cluster-scoped inventory written once by whoever administers the
+// installation should never have been. It is a section of the platform's
+// Storage screen now (#469): the same subject as the volumes above it, seen
+// from the other end — what projects claimed, and what somebody pointed the
+// platform at so a project could claim it.
 //
 // The screen lists what the platform wrote and only that. A PersistentVolume
 // somebody applied by hand is still bindable and still appears in the claim
@@ -65,27 +66,26 @@ function tone(volume: PlatformWrittenVolume): "success" | "warning" | "neutral" 
 </script>
 
 <template>
-  <div class="space-y-6">
-    <PageHeader title="Volumes">
-      <template #description>
-        Storage that existed before this platform did — an NFS export, a volume a storage driver already knows about —
-        written so that a project can mount it with a volume claim. The platform never formats one and never deletes
-        the data on one.
-      </template>
-      <template #actions>
-        <UButton
-          icon="i-lucide-refresh-cw"
-          color="neutral"
-          variant="ghost"
-          size="sm"
-          :loading="loading"
-          aria-label="Refresh"
-          @click="refresh"
-        />
-        <VolumeModal @saved="refresh" />
-      </template>
-    </PageHeader>
+  <PageSection title="Storage the platform did not create">
+    <template #description>
+      Storage that existed before this platform did — an NFS export, a volume a storage driver already knows about —
+      written so that a project can mount it with a volume claim. The platform never formats one and never deletes the
+      data on one.
+    </template>
+    <template #actions>
+      <UButton
+        icon="i-lucide-refresh-cw"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        :loading="loading"
+        aria-label="Refresh"
+        @click="refresh"
+      />
+      <VolumeModal @saved="refresh" />
+    </template>
 
+    <div class="space-y-3">
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
 
     <p v-if="data && !data.length" class="text-sm text-muted py-8 text-center">
@@ -168,5 +168,6 @@ function tone(volume: PlatformWrittenVolume): "success" | "warning" | "neutral" 
         </div>
       </template>
     </UModal>
-  </div>
+    </div>
+  </PageSection>
 </template>

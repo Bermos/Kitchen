@@ -515,7 +515,7 @@ export function buildsTile(status: PlatformStatus | null): HealthTile {
       builds.queued > 0
         ? `${builds.queued} waiting for a slot against a concurrency of ${builds.capacity}`
         : "nothing is waiting for a slot",
-    to: "/builds",
+    to: "/deploys",
   };
 }
 
