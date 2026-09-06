@@ -538,6 +538,12 @@ kitchen env set --from-file .env
 kitchen env rm LOG_LEVEL --yes
 ```
 
+`--from-secret` names a Secret of the project's — its own secrets above, a
+claim's binding, or one an operator put in its namespace. The platform's own
+credentials in that namespace (`kitchen-registry-…`, `kitchen-git-…`) are
+refused by the API, and the CLI prints the refusal:
+[the boundary](api/projects.md#what-a-fromsecret-may-name).
+
 Variables land in the next release's snapshot: what is already running keeps the
 configuration it was released with until the next deploy.
 

@@ -712,7 +712,8 @@ spec:
       value: https://api.example.com
       previewValue: https://api-staging.example.com    # previews get this instead
     - name: SESSION_SECRET
-      secretRef: { name: shop-secrets, key: session }  # Infisical-synced
+      secretRef: { name: shop-secrets, key: session }  # any Secret in the application
+                                        # namespace except the platform's own — see below
   runtime:
     port: 3000                          # omit to take the detected framework's
     replicas: 2                         # previews always get 1
@@ -864,6 +865,20 @@ says why. A file marked `secret` carries no `content` here: the API writes it
 into `kitchen-project-files-<project>`, which the reconciler mirrors into the
 application namespace beside the project's secrets, and no route reads it
 back.
+
+An `env` entry's `secretRef` is resolved in the *application* namespace, and
+that namespace holds the platform's own synced credentials as well as the
+project's — `kitchen-registry-<connection>`, the docker config the build
+pushes and the kubelet pulls with, and `kitchen-git-<connection>`, the token
+it clones with, each shared by every project on that Connection. So the
+`kitchen-` prefix there is reserved: a `secretRef` naming one is refused by
+the API, and an Environment refuses to materialize a Release carrying one
+(`Ready=False`, reason `EnvSecretRefRefused`) so that a Project written with
+`kubectl` is caught too. The exceptions are the two objects the platform puts
+there for the application — `kitchen-project-secrets` and
+`kitchen-project-files` — and everything without the prefix is unaffected: a
+claim's binding, a Secret an external operator syncs in, a Secret somebody
+created for this project.
 
 `initialBuildRef` is what makes a new project deploy without waiting for a
 push: the reconciler resolves the production branch's tip and creates one

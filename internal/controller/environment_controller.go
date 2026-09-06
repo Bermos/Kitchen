@@ -243,6 +243,17 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.notReady(ctx, env, "ReleaseMissing", err)
 	}
 
+	// What the release froze is checked before any of it becomes a pod. The
+	// API refuses a `fromSecret` naming one of the platform's own synced
+	// credentials, but a Project written with kubectl never went through the
+	// API and a reference stored before the rule existed went through a door
+	// that had no rule — and the reference is only dangerous here, where it
+	// turns into a SecretKeyRef the kubelet resolves in the application
+	// namespace (#426).
+	if err := CheckEnvSecretRefs(release.Spec.ConfigSnapshot.Env); err != nil {
+		return r.notReady(ctx, env, "EnvSecretRefRefused", err)
+	}
+
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
 		return r.notReady(ctx, env, "PlatformConfigMissing", err)
