@@ -107,7 +107,7 @@ lifecycle has no stages to inherit into.
 | `replicas` | Copies in production environments. Previews always run one. |
 | `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1 rather than clamping it. |
 | `notRequestDriven` | This workload does work nobody asked for, so no environment of the project is ever idled to zero — previews included, which is where it matters. |
-| `command`, `args` | What the web process runs, in exec form: a list of words, never a shell line. What it does to the image depends on which strategy built it — see [what `command` means under each strategy](#what-command-means-under-each-strategy). |
+| `command`, `args` | What the web process runs, in exec form: a list of words, never a shell line. Leave `command` out to take the detected framework's — `node .output/server/index.mjs` for Nuxt, `node build` for SvelteKit, `node dist/main` for NestJS, `npm start` for Next.js and Remix. What it does to the image depends on which strategy built it — see [what `command` means under each strategy](#what-command-means-under-each-strategy). |
 | `previewArgs` | Replace `args` in preview environments — same commit, same artifact, different flags. |
 | `resources` | `{"cpu": "500m", "memory": "512Mi"}`, applied as request and limit alike. |
 | `health` | What the platform asks before it sends anyone to the application. `{}` is the default: a TCP connect to the port. |
@@ -226,6 +226,15 @@ that happens and nothing supplies a `command`, the build fails saying so
 rather than shipping a release that crash-loops. Give the workload a `command`
 or add a buildpack that declares a process; a `Procfile` in the repository is
 the shortest way to the second.
+
+For the frameworks that end up there by construction, the platform supplies
+one already. A Nuxt, SvelteKit, NestJS or Astro-with-adapter repository writes
+its server into a directory that does not exist while the buildpacks are
+deciding what to run, so none of the three start buildpacks fires — and the
+detected framework's own documented start command fills `runtime.command` in
+the Release, under the same precedence `port` has: what this file says wins,
+then the project's setting, then the framework's. Setting `command` yourself
+is how a project overrules it.
 
 #### `runtime.init` — a volume the process cannot start on
 

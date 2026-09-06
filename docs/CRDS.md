@@ -1544,11 +1544,32 @@ then `go.mod`, `requirements.txt`/`pyproject.toml`/`Pipfile`, `Gemfile`,
 `pom.xml`/`build.gradle`, a `.csproj`, and last a bare `index.html`. Whatever it finds
 lands in `status.detectedFramework`, and the build page shows it.
 
-A framework that has no server of its own — a Vite or create-react-app bundle, an Astro
-site with no adapter, a directory that is already a website — is built into an image
-that serves it with NGINX, by telling the lifecycle so (`BP_WEB_SERVER`,
-`BP_WEB_SERVER_ROOT`, and the project's own `build` script through
-`BP_NODE_RUN_SCRIPTS`).
+What detection finds is also what the lifecycle is told, because the Cloud Native
+Buildpacks lifecycle takes its whole configuration as `BP_*` variables and there is no
+other channel to say any of it:
+
+| Variable | Set for | What it says |
+|---|---|---|
+| `BP_NODE_RUN_SCRIPTS` | every Node framework whose manifest has a `build` script | run it — without it the repository's own build never runs at all |
+| `BP_NODE_VERSION` | every Node framework whose manifest names `engines.node` | build and run under that range, rather than under whatever is newest that day |
+| `BP_WEB_SERVER`, `BP_WEB_SERVER_ROOT`, `BP_WEB_SERVER_ENABLE_PUSH_STATE` | the frameworks with no server of their own — a Vite or create-react-app bundle, an Astro site with no adapter, a directory that is already a website | serve that directory with NGINX on `$PORT`, answering every path with `index.html` where the application routes in the browser |
+| `NODE_OPTIONS=--max-old-space-size=…` | every framework whose *build* runs under Node, the static ones included | hold the heap to three quarters of `Kitchen.spec.builds.resources.memory` — V8 sizes its old space from the machine rather than from the cgroup, so an uncapped front-end build grows past the limit and is killed with exit 137 and no explanation |
+
+A detected framework also answers **how the image is started**, and it is the same
+precedence `port` has: the commit's own `kitchen.json` wins, then `spec.runtime.command`,
+then the framework's. It exists because a buildpacks image is not guaranteed to
+declare anything to start — a process type comes from a `start` script, a `server.js`
+or a `main` that exists, or a `Procfile`, and a framework that writes its server into a
+directory that does not exist until *after* the build satisfies none of them, so the
+lifecycle exports `processes: []` and the workload cannot run. Nuxt starts with
+`node .output/server/index.mjs`, SvelteKit with `node build`, NestJS with
+`node dist/main`, Astro's Node adapter with `node ./dist/server/entry.mjs`, and Next.js
+and Remix with `npm start` — each the framework's own documented command. Plain Node
+names none on purpose: it is recognised from four different shapes and the buildpacks
+that turn those into a process type read the same signals, so a command here would be
+the platform guessing between them. Whatever the command turns out to be, it is frozen
+into the Release and handed to the buildpacks launcher rather than replacing the image's
+entrypoint — see [what `command` means under each strategy](CONFIG.md#what-command-means-under-each-strategy).
 
 Two things do not happen. A repository nothing matches **fails the build** with *"no
 Dockerfile and no framework detected"* rather than handing a builder a repository it
