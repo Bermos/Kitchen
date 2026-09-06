@@ -2752,6 +2752,11 @@ export interface LogLine {
   build: string;
   pod: string;
   container: string;
+  /** Which of the project's processes printed this, empty for the web
+   * process's own lines — the web process is what an environment's logs meant
+   * before the field existed, so an empty `process` is "the published one"
+   * rather than "unknown". */
+  process?: string;
   /** The Job the line's pod belongs to, for the lines that have one: a
    * scheduled job's firing, or the build of one workload of a unit that
    * builds several images. */
