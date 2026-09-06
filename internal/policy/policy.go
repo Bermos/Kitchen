@@ -32,9 +32,13 @@ limitations under the License.
 //     compiles bundles against a capability set with http.send, every net.*
 //     builtin and opa.runtime removed, so a bundle that tries is refused at
 //     compile time (a test proves it).
-//   - **Everything is named by digest.** A bundle is content-addressed
-//     (Digest), the input is content-addressed (Input.Digest), and a stored
-//     decision carries both — which is the whole of what replay needs.
+//   - **Everything is named by digest, and the name is re-derived on read.**
+//     A bundle is content-addressed (Digest), the input is content-addressed
+//     (Input.Digest), and a stored decision carries both — which is the whole
+//     of what replay needs. Loading either by the digest that names it goes
+//     through VerifyBundle or VerifyInput first, because content addressing
+//     that nobody re-derives is a claim about a store rather than a check on
+//     it.
 package policy
 
 import (
