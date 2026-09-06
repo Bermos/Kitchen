@@ -1,4 +1,4 @@
-import type { Condition } from "./api";
+import type { Claim, Condition } from "./api";
 import { effectiveProjectRole, projectAtLeast, type Caller } from "./policy";
 import { conditionSeverity } from "./status";
 
@@ -132,4 +132,193 @@ export function claimCautions(
         message: condition.message ?? "",
       })),
   );
+}
+
+/**
+ * What a claim asked its resource to be, as short badges.
+ *
+ * These four functions are how an attached resource is *read*, and they live
+ * here rather than on a screen because since #470 two screens read one:
+ * the project's Overview lists what the project depends on, and the Settings
+ * screen's Attached resources pane is where one is asked for and given up.
+ * Two copies of "what does this claim say about itself" would be two answers
+ * the moment either was edited.
+ */
+export function claimRequirements(claim: Claim): string[] {
+  // A volume's is the mount itself: which process, where, how big, and — once
+  // the platform has looked — whether it attaches to one copy or many.
+  if (claim.volume) {
+    const volume = claim.volume;
+    // A bound volume asked for no size and no class — it was there before the
+    // claim was — so what it says instead is that it was bound, what it holds,
+    // and whether this project may write it.
+    if (volume.source === "bind") {
+      return [
+        `${volume.process}:${volume.mountPath}`,
+        "bound",
+        volume.bound?.capacity,
+        volume.accessMode,
+        volume.bound && !volume.bound.writable ? "read-only" : undefined,
+      ].filter((badge): badge is string => Boolean(badge));
+    }
+    return [`${volume.process}:${volume.mountPath}`, volume.size, volume.storageClass, volume.accessMode].filter(
+      (badge): badge is string => Boolean(badge),
+    );
+  }
+  if (claim.redis) {
+    // What it is for leads, because it is the fact that decides whether the
+    // instance may drop what is in it.
+    return [
+      claim.redis.usage ?? "cache",
+      ...(claim.redis.maxMemory ? [claim.redis.maxMemory] : []),
+      ...(claim.redis.version ? [`valkey ${claim.redis.version}`] : []),
+    ];
+  }
+  if (claim.inngest) {
+    // What the worker connects as and where: the app ID is the thing the
+    // application has to match, so it is the badge. The mode is beside it when
+    // it is not the usual one, because serve and connect are opposite answers
+    // to "what holds this environment up".
+    return [
+      `app ${claim.inngest.app}`,
+      claim.inngest.environment,
+      ...(claim.inngest.mode && claim.inngest.mode !== "connect" ? [claim.inngest.mode] : []),
+    ];
+  }
+  const postgres = claim.postgres;
+  if (postgres) {
+    return [
+      ...(postgres.version ? [`pg ${postgres.version}`] : []),
+      ...(postgres.extensions ?? []),
+      ...(postgres.storageSize ? [postgres.storageSize] : []),
+      ...(postgres.storageClass ? [postgres.storageClass] : []),
+    ];
+  }
+  const bucket = claim.objectStore;
+  if (bucket) {
+    return [
+      ...(bucket.versioning ? ["versioned"] : []),
+      ...(bucket.publicRead ? ["public read"] : []),
+      ...(bucket.size ? [bucket.size] : []),
+    ];
+  }
+  return [];
+}
+
+/**
+ * What is keeping a claim's data, and how far back it can be put — the two
+ * facts a backup policy is worth anything for (#245 phase 2).
+ *
+ * Three states rather than two, because "backed up by somebody else" is a real
+ * answer: a hosted Postgres keeps its own continuous history, and showing such
+ * a claim as unprotected would be wrong.
+ */
+export function claimBackupBadge(
+  claim: Claim,
+): { label: string; color: "neutral" | "warning"; title: string } | null {
+  const backup = claim.backup;
+  if (!backup) return null;
+  if (backup.providerManaged) {
+    return { label: "backups: by the provider", color: "neutral", title: backup.reason ?? "" };
+  }
+  if (!backup.enabled) {
+    return { label: "backups: off", color: "warning", title: backup.reason ?? "" };
+  }
+  if (backup.archiving === "failing") {
+    // The failure that loses data quietly: a base backup with no write-ahead
+    // log after it can only be put back to the base backup.
+    return {
+      label: "backups: archiving failing",
+      color: "warning",
+      title: backup.archivingMessage || backup.reason || "",
+    };
+  }
+  return { label: "backups: on", color: "neutral", title: backup.reason ?? "" };
+}
+
+/** How far back this claim's data can be put, in a sentence. The absence is
+ * said out loud: a database whose first backup has not been taken and read
+ * back yet has no recovery point, and that is the state worth seeing. */
+export function claimRecoveryPoint(claim: Claim): string {
+  const backup = claim.backup;
+  if (!backup || backup.providerManaged || !backup.enabled) return "";
+  if (!backup.firstRecoverablePoint) return "no recovery point yet";
+  return `recoverable to any moment since ${new Date(backup.firstRecoverablePoint).toLocaleString()}`;
+}
+
+/** The refusal a failed claim carries, which is the whole point of failing as
+ * a claim rather than as an application: the Ready condition's message names
+ * what could not be supplied and what is available instead. */
+export function claimRefusal(claim: Claim): string {
+  const ready = claim.conditions?.find((condition) => condition.type === "Ready");
+  return ready?.message || "the platform could not provision this claim";
+}
+
+/**
+ * What deleting this claim does, in one line for the row and at length for the
+ * confirmation.
+ *
+ * The blast radius is the `deletionPolicy`'s call, and the two sentences say
+ * which it is before asking for the click. An OAuth client is not data and has
+ * no policy — it always goes, which is the whole point of deleting the claim.
+ */
+export function claimDeletionOutcome(claim: Claim): string {
+  if (claim.type === "oidcClient") {
+    return "The OAuth client is deregistered: nothing can be signed in with it again.";
+  }
+  if (claim.type === "objectStore") {
+    return claim.deletionPolicy === DESTRUCTIVE_POLICY
+      ? "The bucket, its objects and its credential are being deleted at the store."
+      : "The bucket and its objects are kept at the store; only the platform's binding is removed.";
+  }
+  if (claim.type === "redis") {
+    return claim.deletionPolicy === DESTRUCTIVE_POLICY
+      ? "The instance and everything in it are being destroyed."
+      : "The instance is kept, with whatever is in it.";
+  }
+  // An inngest claim is two different things, and only one of them has a
+  // policy: through Inngest Cloud the platform destroys nothing at all.
+  if (claim.type === "inngest") {
+    if (!claim.inngest?.selfHosted) {
+      return "The preview branch environments are archived; the app and the account's keys stay at Inngest.";
+    }
+    return claim.deletionPolicy === DESTRUCTIVE_POLICY
+      ? "The Inngest server, its Postgres and its queue are being destroyed, with every run on them."
+      : "The Inngest server stops; its Postgres, its queue and every run and queued event on them are kept.";
+  }
+  if (claim.type === "volume") {
+    if (claim.volume?.source === "bind") {
+      return "The storage is unmounted and nothing on it is touched: it was never the platform's to delete.";
+    }
+    return claim.deletionPolicy === DESTRUCTIVE_POLICY
+      ? "The volume and the data on it are being deleted."
+      : "The volume is kept; a claim of the same name binds to it again.";
+  }
+  return claim.deletionPolicy === DESTRUCTIVE_POLICY
+    ? "The database and its data are being deprovisioned."
+    : "The database is kept at the provider; only the platform's binding is removed.";
+}
+
+/** The confirmation's own sentence, which says what the policy does to the
+ * data before asking for the click — for the kind of resource this claim is. */
+export function claimDeletionWarning(claim: Claim): string {
+  if (claim.type === "volume") {
+    if (claim.volume?.source === "bind") {
+      return "This claim binds storage the platform did not create: deleting it unmounts the storage and leaves every byte where it is. The process that mounted it deploys without it, and any other project holding the same storage is unaffected.";
+    }
+    return claim.deletionPolicy === DESTRUCTIVE_POLICY
+      ? "This claim's policy is Delete: the volume and ALL THE DATA ON IT are deleted. Preview volumes go too. There is no undo."
+      : "This claim's policy is Retain: the volume and its data are kept, even if the project is later deleted, and a claim of the same name binds to it again. Preview volumes are removed, and the process that mounted it deploys without it until then.";
+  }
+  if (claim.type === "inngest") {
+    if (!claim.inngest?.selfHosted) {
+      return `This claim binds an Inngest Cloud account through ${claim.connection}: deleting it removes the binding and archives the preview branch environments, and nothing at Inngest is destroyed — the app record and the account's keys stay where they are.`;
+    }
+    return claim.deletionPolicy === DESTRUCTIVE_POLICY
+      ? "This claim's policy is Delete: the Inngest server, the Postgres and the queue behind it and EVERY EVENT AND FUNCTION RUN THEY HOLD are destroyed — including work that was accepted and has not run yet. There is no undo."
+      : "This claim's policy is Retain: the Inngest server stops, because there is no claim left to serve, and its Postgres, its queue and every run and queued event on them are kept — a claim of the same name binds to them again. Preview servers and the binding secrets are removed, and environments referencing this claim will fail to deploy until the variable is removed.";
+  }
+  return claim.deletionPolicy === DESTRUCTIVE_POLICY
+    ? `This claim's policy is Delete: the ${claim.type} database and ALL ITS DATA are destroyed at ${claim.connection}. Preview branches and the binding secrets go too. There is no undo.`
+    : `This claim's policy is Retain: the ${claim.type} database and its data are kept at ${claim.connection}, but the platform forgets it — preview branches and the binding secrets are removed, and environments referencing it will fail to deploy until the variable is removed.`;
 }
