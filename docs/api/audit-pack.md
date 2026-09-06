@@ -422,7 +422,10 @@ and expired or resolved no earlier than `from`.
 | `items[].privileged`, `privilegeClass` | Whether the record moved a *control* rather than a workload, and which: `break-glass`, `requirements`, `classification`, `access`, `credential`, `integrity`. Lifted out of the details for reading; the details still carry them verbatim, because that is what the chain covers | GR-D8, GR-E3 |
 | `items[].prevHash`, `hash` | The chain. Shown because hiding them would be asking to be believed | GR-D8 |
 | `privileged` | How many of the records moved a control — the count an examiner reads first | GR-E3 |
-| `anchor` | Where the chain ends according to an object *outside* the table. A tail cut off the end rehashes perfectly, so this is the only way it is visible at all | GR-D8 |
+| `anchorPresent` | Whether there is an anchor at all. `false` means the head object outside the table is not there, and this pack's slice of the log is bounded by nothing | GR-D8 |
+| `anchor` | Where the chain ends according to that object. `null` — never `0` — when there is no anchor, because `0` is a real answer about a chain nothing has been appended to | GR-D8 |
+| `anchorOrigin` | How the anchor came to exist: `genesis` (it predates the first record), `adopted` (it was seeded from the log's own last record), or `unknown` (a head written before the platform recorded this) | GR-D8 |
+| `anchorMessage` | Why there is no anchor, or where an adopted one was taken from — the sequence at and below which the log is bounded by the hash chain alone | GR-D8 |
 | `truncated`, `limit`, `message` | Whether the window held more records than one read returns | GR-L3 |
 | `note` | That platform-level records carry no project and are therefore not in a project's pack — they are in `GET /audit` | GR-D8 |
 

@@ -19,6 +19,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -187,27 +188,285 @@ func TestReleaseLeavesTheHeadAloneOnceSomethingElseHasAppended(t *testing.T) {
 	}
 }
 
-func TestHeadIsTheAnchorAndClaimsNothingWhenItIsNotThere(t *testing.T) {
+// The anchor's absence is an answer of its own. It used to be 0, which is also
+// the answer for a chain nothing has been appended to — so deleting the object
+// and emptying the table agreed with each other, and the platform reported a
+// sound chain (#428).
+func TestHeadReportsAnAbsentAnchorRatherThanSequenceZero(t *testing.T) {
 	recorder := headRecorder(t)
 
-	sequence, err := recorder.Head(context.Background())
+	anchor, err := recorder.Head(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sequence != 0 {
-		t.Errorf("a missing head answered %d, want 0 — which claims nothing", sequence)
+	if anchor.Present {
+		t.Errorf("a missing head answered a present anchor at %d", anchor.Sequence)
+	}
+	if anchor.Absence() == "" {
+		t.Error("an absent anchor says nothing about why it is absent")
 	}
 
 	if _, _, err := recorder.claim(context.Background(),
 		clickhouse.AuditRecord{Kind: KindProject, Name: "shop"}, emptyChain); err != nil {
 		t.Fatal(err)
 	}
-	sequence, err = recorder.Head(context.Background())
+	anchor, err = recorder.Head(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sequence != 1 {
-		t.Errorf("the anchor reads %d after one append, want 1", sequence)
+	if !anchor.Present || anchor.Sequence != 1 {
+		t.Errorf("the anchor reads %+v after one append, want a present anchor at 1", anchor)
+	}
+	// An anchor created before anything was appended, and one taken from a
+	// table that already held records, are different claims. This chain and
+	// its anchor started together.
+	if anchor.Origin != OriginGenesis {
+		t.Errorf("the anchor's origin is %q, want %q", anchor.Origin, OriginGenesis)
+	}
+}
+
+// A head object written before the origin was recorded still anchors; it just
+// cannot say how it came about, and inventing "genesis" for it would be
+// claiming provenance nobody wrote down.
+func TestAnAnchorFromBeforeThisAnswersAnUnknownOrigin(t *testing.T) {
+	recorder := headRecorder(t, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: HeadName, Namespace: headNamespace},
+		Data:       map[string]string{headKeySequence: "412", headKeyHash: strings.Repeat("a", 64)},
+	})
+
+	anchor, err := recorder.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !anchor.Present || anchor.Sequence != 412 {
+		t.Fatalf("the anchor reads %+v, want a present anchor at 412", anchor)
+	}
+	if anchor.Origin != OriginUnknown {
+		t.Errorf("the anchor's origin is %q, want %q", anchor.Origin, OriginUnknown)
+	}
+}
+
+// stubStore is the log's store as the anchor's establishment needs it: where
+// the table says the chain ends, and somewhere for the record that says the
+// anchor was taken from there.
+type stubStore struct {
+	head      clickhouse.AuditRecord
+	inserted  []clickhouse.AuditRecord
+	insertErr error
+}
+
+func (s *stubStore) AuditHead(context.Context) (clickhouse.AuditRecord, error) {
+	return s.head, nil
+}
+
+func (s *stubStore) InsertAuditRecord(_ context.Context, record clickhouse.AuditRecord) error {
+	if s.insertErr != nil {
+		return s.insertErr
+	}
+	s.inserted = append(s.inserted, record)
+	s.head = record
+	return nil
+}
+
+// A genuinely fresh installation gets its anchor before its first record, and
+// nothing is appended to say so: there is nothing to admit to. That is the
+// case the whole mechanism turns on — an anchor that exists from the moment
+// the platform keeps a log is an anchor whose absence means one thing.
+func TestEnsureAnchorSeedsAFreshInstallationOnceAndSaysNothing(t *testing.T) {
+	recorder := headRecorder(t)
+	store := &stubStore{}
+
+	for range 3 {
+		recorder.anchored = false // as if a new process each time
+		if err := recorder.establishAnchor(context.Background(), store); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(store.inserted) != 0 {
+		t.Errorf("a fresh installation recorded %d anchor record(s), want none: %+v",
+			len(store.inserted), store.inserted)
+	}
+	config := headConfig(t, recorder)
+	if config.Data[headKeyOrigin] != string(OriginGenesis) {
+		t.Errorf("the anchor's origin is %q, want %q", config.Data[headKeyOrigin], OriginGenesis)
+	}
+	if config.Data[headKeySequence] != "0" {
+		t.Errorf("a fresh anchor starts at %q, want 0", config.Data[headKeySequence])
+	}
+
+	// And the chain that follows verifies against it.
+	sealed, _, err := recorder.claim(context.Background(),
+		clickhouse.AuditRecord{Kind: KindProject, Name: "shop"}, store.AuditHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor, err := recorder.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := Verify([]clickhouse.AuditRecord{sealed}, clickhouse.AuditRecord{}).AgainstAnchor(anchor, false)
+	if !result.Intact {
+		t.Errorf("a fresh installation's first record does not verify: %+v", result.Findings)
+	}
+}
+
+// An installation whose anchor exists only in the table — one upgrading from
+// before the head object was kept — is adopted once, and the adoption is a
+// record in the chain rather than a silent re-seed. Doing it twice, or not
+// recording it at all, is the laundering step #428 is about.
+func TestEnsureAnchorAdoptsATableOnlyChainOnceAndRecordsIt(t *testing.T) {
+	recorder := headRecorder(t)
+	existing := Seal(clickhouse.AuditRecord{Kind: KindProject, Name: "shop"}, clickhouse.AuditRecord{})
+	existing.Sequence = 412
+	existing.Hash = ChainHash(existing)
+	store := &stubStore{head: existing}
+
+	for range 3 {
+		recorder.anchored = false
+		if err := recorder.establishAnchor(context.Background(), store); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(store.inserted) != 1 {
+		t.Fatalf("the adoption was recorded %d time(s), want exactly one: %+v",
+			len(store.inserted), store.inserted)
+	}
+	record := store.inserted[0]
+	if record.Kind != KindAuditAnchor {
+		t.Errorf("the adoption was recorded as kind %q, want %q", record.Kind, KindAuditAnchor)
+	}
+	if record.Sequence != 413 || record.PrevHash != existing.Hash {
+		t.Errorf("the adoption record is %d linked to %s, want 413 linked to the table's last record",
+			record.Sequence, record.PrevHash)
+	}
+	// It is in the chain, not beside it: removing it later is a break the
+	// verifier reports, which is what makes a second adoption impossible to
+	// tidy away.
+	if ChainHash(record) != record.Hash {
+		t.Error("the adoption record is not sealed into the chain")
+	}
+	class, privileged := PrivilegeOf(record.Details)
+	if !privileged || class != PrivilegeIntegrity {
+		t.Errorf("the adoption is classified %q/%v, want an integrity act", class, privileged)
+	}
+	if !strings.Contains(record.Details, ChangeAuditAnchorAdopted) {
+		t.Errorf("the adoption record does not name the change: %s", record.Details)
+	}
+	if !strings.Contains(record.Reason, "412") {
+		t.Errorf("the adoption record does not say where the numbering was taken from: %s", record.Reason)
+	}
+
+	config := headConfig(t, recorder)
+	if config.Data[headKeyOrigin] != string(OriginAdopted) {
+		t.Errorf("the anchor's origin is %q, want %q", config.Data[headKeyOrigin], OriginAdopted)
+	}
+	if config.Data[headKeyAdoptedFrom] != "412" {
+		t.Errorf("the anchor was adopted from %q, want 412", config.Data[headKeyAdoptedFrom])
+	}
+	if config.Data[headKeyAdoptionRecorded] != headAdoptionDone {
+		t.Error("the head does not record that the adoption reached the log")
+	}
+	anchor, err := recorder.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anchor.Origin != OriginAdopted || anchor.AdoptedFrom != 412 {
+		t.Errorf("the published anchor is %+v, want an adopted one from 412", anchor)
+	}
+}
+
+// An adoption whose record did not land is not an adoption. The head keeps
+// saying so until the append succeeds, because a process that gave up here
+// would leave exactly the silent re-seed this exists to prevent.
+func TestAnAdoptionWhoseRecordDidNotLandIsTriedAgain(t *testing.T) {
+	recorder := headRecorder(t)
+	existing := Seal(clickhouse.AuditRecord{Kind: KindProject, Name: "shop"}, clickhouse.AuditRecord{})
+	existing.Sequence = 412
+	existing.Hash = ChainHash(existing)
+	store := &stubStore{head: existing, insertErr: errors.New("the store is unreachable")}
+
+	if err := recorder.establishAnchor(context.Background(), store); err == nil {
+		t.Fatal("an adoption nothing recorded was reported as done")
+	}
+	if headConfig(t, recorder).Data[headKeyAdoptionRecorded] != "false" {
+		t.Fatal("the head claims the adoption was recorded when the append failed")
+	}
+
+	store.insertErr = nil
+	recorder.anchored = false
+	if err := recorder.establishAnchor(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.inserted) != 1 {
+		t.Errorf("the retry recorded %d adoption(s), want one", len(store.inserted))
+	}
+	if headConfig(t, recorder).Data[headKeyAdoptionRecorded] != headAdoptionDone {
+		t.Error("the head still does not record that the adoption reached the log")
+	}
+}
+
+// The head going backwards because this replica put a number back is not the
+// head going backwards. A failed insert costs a retry by design, and a refusal
+// here would turn every briefly unreachable store into a wedged log.
+func TestAReleasedNumberIsNotAHeadThatHasGoneBackwards(t *testing.T) {
+	recorder := headRecorder(t)
+	for range 2 {
+		if _, _, err := recorder.claim(context.Background(),
+			clickhouse.AuditRecord{Kind: KindProject, Name: "shop"}, emptyChain); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sealed, previous, err := recorder.claim(context.Background(),
+		clickhouse.AuditRecord{Kind: KindProject, Name: "blog"}, emptyChain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As Record does when the store refuses the insert.
+	recorder.release(context.Background(), sealed, previous)
+	if headConfig(t, recorder).Data[headKeySequence] != "2" {
+		t.Fatalf("the number was not given back: %s", headConfig(t, recorder).Data[headKeySequence])
+	}
+
+	retried, _, err := recorder.claim(context.Background(),
+		clickhouse.AuditRecord{Kind: KindProject, Name: "blog"}, emptyChain)
+	if err != nil {
+		t.Fatalf("the retry after a released number was refused: %v", err)
+	}
+	if retried.Sequence != 3 {
+		t.Errorf("the retry took sequence %d, want the number that was given back", retried.Sequence)
+	}
+}
+
+// The head only ever moves forward. One that has gone backwards under a
+// running platform — wound back by hand, or deleted and re-seeded from a table
+// somebody has since truncated — would renumber records the log already holds,
+// so the append fails and says so rather than carrying on.
+func TestClaimRefusesAHeadThatHasGoneBackwards(t *testing.T) {
+	recorder := headRecorder(t)
+	for range 3 {
+		if _, _, err := recorder.claim(context.Background(),
+			clickhouse.AuditRecord{Kind: KindProject, Name: "shop"}, emptyChain); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Somebody winds the anchor back to where a truncated tail would put it.
+	config := headConfig(t, recorder)
+	config.Data[headKeySequence] = "1"
+	if err := recorder.Client.Update(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := recorder.claim(context.Background(),
+		clickhouse.AuditRecord{Kind: KindProject, Name: "blog"}, emptyChain)
+	if err == nil {
+		t.Fatal("a claim against a head that had gone backwards was allowed")
+	}
+	if !strings.Contains(err.Error(), "backwards") {
+		t.Errorf("the refusal does not say what happened: %v", err)
 	}
 }
 

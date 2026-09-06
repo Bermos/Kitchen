@@ -9,6 +9,7 @@ import DriftPanel from "../components/DriftPanel.vue";
 import ExceptionsPanel from "../components/ExceptionsPanel.vue";
 import PageHeader from "../components/PageHeader.vue";
 import { api, type AuditRecord } from "../lib/api";
+import { anchorNote } from "../lib/audit";
 import { timeAgo } from "../lib/format";
 import { useAsync } from "../lib/useAsync";
 
@@ -168,13 +169,12 @@ const operationColour: Record<string, string> = {
   delete: "text-error",
 };
 
-/** A gap between the last record and the anchor is the one edit the chain
- *  cannot see on its own: a tail cut off rehashes perfectly. */
-const truncated = computed(() => {
-  const result = verification.value;
-  if (!result || result.truncated) return 0;
-  return Math.max(0, result.anchor - result.to);
-});
+/** What the anchor says, in one line under the verdict. The gap itself is no
+ *  longer computed here: the server compares the run against the anchor and
+ *  reports a `truncated` or `unanchored` finding like any other break, so
+ *  every reader of the endpoint gets the answer this screen used to work out
+ *  for itself (#428). The sentence is in `lib/audit` so a test can hold it. */
+const note = computed(() => anchorNote(verification.value));
 </script>
 
 <template>
@@ -225,8 +225,15 @@ const truncated = computed(() => {
           <p class="text-sm text-highlighted font-medium">The chain</p>
           <p class="text-xs text-muted mt-0.5">
             <template v-if="compliance.data.value?.audit.recording">
-              Recording. {{ compliance.data.value.audit.sequence.toLocaleString("en-GB") }} records, kept
-              {{ compliance.data.value.audit.retentionDays }} days.
+              Recording.
+              <template v-if="compliance.data.value.audit.anchored">
+                {{ compliance.data.value.audit.sequence.toLocaleString("en-GB") }} records, kept
+                {{ compliance.data.value.audit.retentionDays }} days.
+              </template>
+              <template v-else>
+                Kept {{ compliance.data.value.audit.retentionDays }} days.
+                <span class="text-error">The chain has no anchor, so the platform cannot say where it ends.</span>
+              </template>
             </template>
             <template v-else-if="compliance.data.value">
               <span class="text-warning">Not recording.</span>
@@ -266,10 +273,8 @@ const truncated = computed(() => {
             <span class="text-toned"> — {{ finding.detail }}</span>
           </p>
         </div>
-        <p v-if="truncated > 0" class="text-xs text-error">
-          The chain verifies up to {{ verification.to }}, but the platform's own anchor says it ends at
-          {{ verification.anchor }}: {{ truncated }} record(s) have been cut off the end. A rewritten tail rehashes
-          perfectly, so this is the only place that shows.
+        <p v-if="note" class="text-xs" :class="note.bad ? 'text-error' : 'text-dimmed'">
+          {{ note.text }}
         </p>
       </template>
       <p v-else class="text-[11px] text-dimmed">

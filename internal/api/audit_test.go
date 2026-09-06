@@ -87,6 +87,7 @@ func TestListAuditRecordsPassesTheFiltersThrough(t *testing.T) {
 func TestVerifyAuditChainReportsASoundLog(t *testing.T) {
 	h := newHarness(t, nil)
 	h.logs.auditRecords = auditChain(4)
+	h.anchorAt(t, 4)
 
 	response := h.do(t, http.MethodGet, "/api/v1/audit/verify", "")
 	if response.Code != http.StatusOK {
@@ -99,6 +100,15 @@ func TestVerifyAuditChainReportsASoundLog(t *testing.T) {
 	if body.Checked != 4 || body.From != 1 || body.To != 4 {
 		t.Errorf("checked %d records over %d..%d, want 4 over 1..4", body.Checked, body.From, body.To)
 	}
+	// The anchor is a number and a claim that there is one. Both are in the
+	// answer, and neither of them is spelled by the other's absence (#428).
+	if !body.AnchorPresent || body.Anchor == nil || *body.Anchor != 4 {
+		t.Errorf("the anchor came back present=%v at %v, want a present anchor at 4",
+			body.AnchorPresent, body.Anchor)
+	}
+	if body.AnchorOrigin != string(audit.OriginGenesis) {
+		t.Errorf("the anchor's origin is %q, want %q", body.AnchorOrigin, audit.OriginGenesis)
+	}
 }
 
 func TestVerifyAuditChainReportsAnEditedRecord(t *testing.T) {
@@ -106,6 +116,7 @@ func TestVerifyAuditChainReportsAnEditedRecord(t *testing.T) {
 	records := auditChain(4)
 	records[1].Actor = "mallory@example.com"
 	h.logs.auditRecords = records
+	h.anchorAt(t, 4)
 
 	response := h.do(t, http.MethodGet, "/api/v1/audit/verify", "")
 	if response.Code != http.StatusOK {
@@ -135,6 +146,7 @@ func TestVerifyAuditChainRefusesARunWithNothingBeforeIt(t *testing.T) {
 func TestVerifyAuditChainLinksARunToTheRecordBeforeIt(t *testing.T) {
 	h := newHarness(t, nil)
 	h.logs.auditRecords = auditChain(6)
+	h.anchorAt(t, 6)
 
 	response := h.do(t, http.MethodGet, "/api/v1/audit/verify?from=4", "")
 	if response.Code != http.StatusOK {
@@ -248,5 +260,91 @@ func TestTheAuditLogSaysSoWhenTheInstallationKeepsNone(t *testing.T) {
 	}
 	if h.logs.lastAudit.Limit != 0 {
 		t.Errorf("the store was read for a log this installation does not keep: %+v", h.logs.lastAudit)
+	}
+}
+
+// The act #428 is about, in the two halves it is made of. Cutting the tail
+// leaves a log that rehashes perfectly; deleting the anchor leaves nothing to
+// notice with. Each half on its own is now a break, and `intact` is false for
+// both — a machine consumer reading `intact` gets the same answer the
+// dashboard used to compute for itself.
+func TestVerifyAuditChainReportsATailCutOffTheEnd(t *testing.T) {
+	h := newHarness(t, nil)
+	h.logs.auditRecords = auditChain(4)
+	// The chain reached 9; the last five records are gone.
+	h.anchorAt(t, 9)
+
+	response := h.do(t, http.MethodGet, "/api/v1/audit/verify", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	body := decode[auditVerificationBody](t, response)
+	if body.Intact {
+		t.Fatal("a log cut short from the end verified as intact")
+	}
+	if len(body.Findings) != 1 || body.Findings[0].Break != audit.BreakTruncated {
+		t.Fatalf("findings %+v, want one truncation", body.Findings)
+	}
+	if !strings.Contains(body.Findings[0].Detail, "9") ||
+		!strings.Contains(body.Findings[0].Detail, "5 record(s)") {
+		t.Errorf("the finding does not say how much is missing: %s", body.Findings[0].Detail)
+	}
+	if body.Anchor == nil || *body.Anchor != 9 {
+		t.Errorf("the anchor came back as %v, want 9", body.Anchor)
+	}
+}
+
+func TestVerifyAuditChainReportsAChainWithNoAnchor(t *testing.T) {
+	h := newHarness(t, nil)
+	h.logs.auditRecords = auditChain(4)
+	h.unanchor(t)
+
+	response := h.do(t, http.MethodGet, "/api/v1/audit/verify", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	body := decode[auditVerificationBody](t, response)
+	if body.Intact {
+		t.Fatal("a run checked against no anchor verified as intact")
+	}
+	if len(body.Findings) != 1 || body.Findings[0].Break != audit.BreakUnanchored {
+		t.Fatalf("findings %+v, want one unanchored run", body.Findings)
+	}
+	if body.AnchorPresent {
+		t.Error("a deleted anchor came back present")
+	}
+	// The distinction the whole issue turns on: a missing anchor is not an
+	// anchor at sequence 0, which is a real answer about a chain nothing has
+	// been appended to.
+	if body.Anchor != nil {
+		t.Errorf("a missing anchor is spelled %d, want null", *body.Anchor)
+	}
+	if !strings.Contains(response.Body.String(), `"anchor":null`) {
+		t.Errorf("the answer does not distinguish a missing anchor from zero: %s", response.Body.String())
+	}
+	if body.AnchorMessage == "" {
+		t.Error("the answer does not say why there is no anchor")
+	}
+}
+
+// An installation whose anchor was taken from the log's own last record says
+// so, and says where the line falls: everything at or below it is bounded by
+// the hash chain alone.
+func TestVerifyAuditChainPublishesAnAdoptedAnchor(t *testing.T) {
+	h := newHarness(t, nil)
+	h.logs.auditRecords = auditChain(4)
+	h.anchorAt(t, 4, func(data map[string]string) {
+		data["origin"] = string(audit.OriginAdopted)
+		data["adoptedFrom"] = "2"
+	})
+
+	response := h.do(t, http.MethodGet, "/api/v1/audit/verify", "")
+	body := decode[auditVerificationBody](t, response)
+	if !body.Intact {
+		t.Errorf("an adopted anchor is not a break in itself: %+v", body.Findings)
+	}
+	if body.AnchorOrigin != string(audit.OriginAdopted) || body.AnchorAdoptedFrom != 2 {
+		t.Errorf("the anchor came back as %q from %d, want adopted from 2",
+			body.AnchorOrigin, body.AnchorAdoptedFrom)
 	}
 }

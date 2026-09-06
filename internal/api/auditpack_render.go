@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,6 +141,15 @@ var packFuncs = template.FuncMap{
 			return value
 		}
 		return value[:19] + "…"
+	},
+	// deref is a number that may not be there. The anchor is one: null is
+	// "there is no anchor", which is a different statement from 0 and prints
+	// as a word rather than as a figure somebody could read as a sequence.
+	"deref": func(value *int64) string {
+		if value == nil {
+			return packAbsent
+		}
+		return strconv.FormatInt(*value, 10)
 	},
 }
 
@@ -371,7 +381,8 @@ Reasons, in order: {{range .Pack.Exceptions}}<em>{{.Name}}</em> — {{.Reason}}.
   <td class="mono">{{short .Hash}}<br><span class="empty">← {{short .PrevHash}}</span></td>
 </tr>{{else}}<tr><td colspan="5" class="empty">no records for this project in this window</td></tr>{{end}}
 </tbody></table>
-<p class="note">The chain ends at sequence {{.Pack.AuditLog.Anchor}} according to an object outside the table.</p>
+{{if .Pack.AuditLog.AnchorPresent}}<p class="note">The chain ends at sequence {{deref .Pack.AuditLog.Anchor}} according to an object outside the table.{{if .Pack.AuditLog.AnchorMessage}} {{.Pack.AuditLog.AnchorMessage}}.{{end}}</p>
+{{else}}<p class="note"><strong>There is no anchor outside the table.</strong> {{.Pack.AuditLog.AnchorMessage}}.</p>{{end}}
 
 <h2>11 · Signed statements carried whole</h2>
 <p class="note">{{.Pack.SignedRecords.Note}}</p>

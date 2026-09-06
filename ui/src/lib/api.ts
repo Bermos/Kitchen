@@ -794,7 +794,10 @@ export interface AuditQuery {
 /** A break in the chain: a record edited, removed, or slipped in. */
 export interface AuditFinding {
   sequence: number;
-  break: "mutated" | "missing" | "unlinked";
+  /** The last three are the anchor's: `truncated` is a log that stops short of
+   *  where the anchor says the chain ends, `unclaimed` one that runs past it,
+   *  and `unanchored` a run with no anchor to check against at all. */
+  break: "mutated" | "missing" | "unlinked" | "truncated" | "unclaimed" | "unanchored";
   detail: string;
 }
 
@@ -802,11 +805,25 @@ export interface AuditVerification {
   from: number;
   to: number;
   checked: number;
+  /** The whole verdict, and it consults the anchor: a run that ends below the
+   *  anchor and a run with no anchor are both false. The subtraction used to
+   *  be done here, client-side, which meant every other reader of this
+   *  endpoint saw `intact: true` on a log cut short (#428). */
   intact: boolean;
   findings: AuditFinding[];
-  /** Where the platform believes the chain ends, held outside the table. A
-   *  run that is intact but ends below this is a log cut short from the end. */
-  anchor: number;
+  /** Whether there is an anchor at all — the head object outside the table,
+   *  which is the only thing that bounds a log rewritten from the end. */
+  anchorPresent: boolean;
+  /** Where the chain ends according to it. Null, never 0, when there is none:
+   *  0 is a real answer, about a chain nothing has been appended to. */
+  anchor: number | null;
+  /** How the anchor came to exist. `adopted` means it was seeded from the
+   *  log's own last record — `anchorAdoptedFrom` — and everything at or below
+   *  that is bounded by the hash chain alone. */
+  anchorOrigin?: "genesis" | "adopted" | "unknown";
+  anchorAdoptedFrom?: number;
+  /** Why there is no anchor, or where an adopted one was taken from. */
+  anchorMessage?: string;
   truncated: boolean;
 }
 
@@ -817,6 +834,10 @@ export interface Compliance {
     recording: boolean;
     retentionDays: number;
     sequence: number;
+    /** Whether the chain has an anchor. `sequence` is a statement about the
+     *  log only when this is true. */
+    anchored: boolean;
+    anchorMessage?: string;
     message?: string;
   };
   attestation: {

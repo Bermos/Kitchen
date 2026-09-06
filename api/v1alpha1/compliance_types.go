@@ -569,11 +569,28 @@ type AuditStatus struct {
 	// Recording is true when the operator has a store to append to.
 	Recording bool `json:"recording"`
 
-	// Sequence is the number of the last record appended, so that a jump
-	// backwards is visible without reading the log itself. Zero means
-	// nothing has been recorded yet.
+	// Sequence is the number of the last record appended, according to the
+	// anchor outside the table, so that a jump backwards is visible without
+	// reading the log itself. Zero means nothing has been recorded yet —
+	// and it means that only when Anchored is true.
 	// +optional
 	Sequence int64 `json:"sequence,omitempty"`
+
+	// Anchored is true when the chain has an anchor: the head object the
+	// next sequence number is claimed through, which is the only thing that
+	// bounds a log rewritten from the end.
+	//
+	// The platform creates it as soon as it keeps a log at all, so false on
+	// an installation that is recording means the object was removed — and
+	// a verification run against no anchor is not intact, however well the
+	// records hash against each other (#428).
+	// +optional
+	Anchored bool `json:"anchored,omitempty"`
+
+	// AnchorMessage explains a chain with no anchor, or one whose anchor was
+	// adopted from the log's own last record rather than starting with it.
+	// +optional
+	AnchorMessage string `json:"anchorMessage,omitempty"`
 
 	// Immutable is true when the store has taken the audit table's mutation
 	// privileges away from the platform's own credential — so a compromised

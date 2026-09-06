@@ -267,7 +267,9 @@ status:
   compliance:
     audit:
       recording: true                   # false with a message when there is nowhere to append to
+      anchored: true                    # false: the head object is gone, so nothing bounds a cut tail
       sequence: 1428                    # where the chain ends, published outside the table
+      anchorMessage: ""                 # why there is no anchor, or where an adopted one came from
     attestation:
       signing: true
       keyID: 9f2c...                    # SHA-256 of the public key's DER encoding

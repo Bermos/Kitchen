@@ -151,6 +151,15 @@ type Recorder struct {
 	// platform publishes. It is this replica's view and not the chain's: the
 	// head object is the chain's.
 	sequence int64
+	// anchored records that this process has already checked the chain has
+	// an anchor, and that an adopted one has said so in the log. It is an
+	// optimization over the head object's own keys, which are what decide.
+	anchored bool
+	// floor is the highest sequence this process has itself claimed and not
+	// given back. The head only moves forward, so a read below it is the
+	// anchor being wound back — see claim, which refuses to append across
+	// it, and release, which lowers it again when a number is returned.
+	floor int64
 	// unavailable explains a recorder that is not recording, for the status
 	// the Kitchen reconciler publishes.
 	unavailable string
@@ -225,6 +234,14 @@ func (r *Recorder) Record(ctx context.Context, transition Transition) error {
 	}
 	if store == nil {
 		return nil
+	}
+
+	// The anchor comes before the number claimed against it. An installation
+	// whose anchor was taken from the table says so in the chain itself
+	// before anything else is appended, which is what stops a re-seed being
+	// a laundering step (#428).
+	if err := r.establishAnchor(ctx, store); err != nil {
+		return err
 	}
 
 	sealed, previous, err := r.claim(ctx, record, store.AuditHead)

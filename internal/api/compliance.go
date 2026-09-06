@@ -74,6 +74,15 @@ type complianceBody struct {
 		Recording     bool  `json:"recording"`
 		RetentionDays int32 `json:"retentionDays"`
 		Sequence      int64 `json:"sequence"`
+		// Anchored is whether the chain has an anchor — the head object
+		// outside the table, which is the only thing that bounds a log
+		// rewritten from the end. Sequence is a statement about the log
+		// only when this is true, because 0 is what a missing anchor
+		// answered before it could say it was missing (#428).
+		// AnchorMessage explains an anchor that is not there, or one
+		// adopted from the log's own last record.
+		Anchored      bool   `json:"anchored"`
+		AnchorMessage string `json:"anchorMessage,omitempty"`
 		// Immutable is whether the store has taken the audit table's
 		// mutation privileges away from the platform's own credential, so
 		// that a compromised operator or API can append to the log and
@@ -129,6 +138,8 @@ func (s *Server) getCompliance(w http.ResponseWriter, req *http.Request) {
 		if status.Audit != nil {
 			body.Audit.Recording = status.Audit.Recording
 			body.Audit.Sequence = status.Audit.Sequence
+			body.Audit.Anchored = status.Audit.Anchored
+			body.Audit.AnchorMessage = status.Audit.AnchorMessage
 			body.Audit.Message = status.Audit.Message
 			body.Audit.Immutable = status.Audit.Immutable
 			body.Audit.ImmutabilityMessage = status.Audit.ImmutabilityMessage

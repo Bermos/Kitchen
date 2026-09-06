@@ -721,13 +721,24 @@ type auditPackAuditLog struct {
 	// Privileged is how many of the records moved a control rather than a
 	// workload — the count an examiner reads first.
 	Privileged int `json:"privileged"`
+	// AnchorPresent says whether the chain has an anchor at all — the head
+	// object outside the table. False is the finding: without it a log cut
+	// short from the end rehashes perfectly and nothing in this pack would
+	// show it (#428).
+	AnchorPresent bool `json:"anchorPresent"`
 	// Anchor is the sequence the platform published outside the table. A
 	// pack whose newest record sits below it is looking at a log that has
 	// been cut short from the end, which is the one edit the chain cannot
-	// see on its own.
-	Anchor  int64  `json:"anchor"`
-	Message string `json:"message,omitempty"`
-	Note    string `json:"note"`
+	// see on its own. It is null rather than 0 when there is no anchor,
+	// because 0 is a real answer about a chain nothing has been appended to.
+	Anchor *int64 `json:"anchor"`
+	// AnchorOrigin is how the anchor came to exist — `genesis`, `adopted`
+	// or `unknown` — and AnchorMessage explains one that is not there or was
+	// adopted from the log's own last record.
+	AnchorOrigin  string `json:"anchorOrigin,omitempty"`
+	AnchorMessage string `json:"anchorMessage,omitempty"`
+	Message       string `json:"message,omitempty"`
+	Note          string `json:"note"`
 }
 
 // auditPackRecords carries the signed statements that have no registry to

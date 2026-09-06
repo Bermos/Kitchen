@@ -136,6 +136,49 @@ end is visible without reading the log at all. Anchoring further out (a
 transparency log, an operator-signed checkpoint) is the natural next step and
 is deliberately not in this first cut.
 
+#### The anchor has to survive its own removal
+
+An anchor is worth exactly what its absence is worth. It answered `0` when the
+head object was not there, which is also what it answers for a chain nothing
+has been appended to — so deleting `kitchen-audit-head` and truncating the
+table produced two statements that agreed with each other, and the platform
+reported an intact chain with a consistent anchor and no trace of either act
+(#428). Three things together are what make it mean something now:
+
+- **Absence is an answer of its own.** `GET /api/v1/audit/verify` carries
+  `anchorPresent` beside `anchor`, and `anchor` is `null` — never `0` — when
+  there is none. A missing anchor is a *finding*, `unanchored`, not an empty
+  field.
+- **`intact` consults it.** A run that ends below a present anchor is
+  `truncated`; a run with no anchor at all is `unanchored`; both make `intact`
+  false. The comparison used to be the dashboard's, done client-side, so every
+  other reader of the endpoint — `kitchen api`, a script, the audit pack's own
+  reader — saw `intact: true` on a log that had been cut short.
+- **The anchor exists from the moment the platform keeps a log.** The
+  compliance reconcile establishes it, not the first append, so *empty because
+  nothing was ever written* and *empty because somebody emptied it* are
+  different answers rather than the same silence.
+
+**Adoption, and the one migration this needed.** An installation upgrading
+from before the head object existed has its anchor only in the table, and the
+platform still seeds one from the log's own last record — seeding from zero
+would restart the numbering on top of an existing log, which is the one
+mistake that turns a sound chain into a broken one. What is new is that it
+does it *once*, and says so: the head records `origin: adopted` and the
+sequence it was taken from, and the chain gets an `AuditAnchor` record
+classified `integrity` naming that sequence. Records at or below it are
+bounded by the hash chain alone; everything after is bounded by the anchor as
+well, and `GET /api/v1/audit?kind=AuditAnchor` is the query that says where
+the line falls.
+
+That record is *inside* the chain, which is what makes it load-bearing:
+removing it is a break the verifier reports. So an attacker who deletes the
+anchor and cuts the tail leaves a second adoption record next to the first and
+cannot tidy either away. Under a running platform they do not even get that
+far — the head only moves forward, and an append against one that has gone
+backwards is refused and fails the write that caused it, on the same principle
+as everywhere else here: an unrecorded change is not one the platform makes.
+
 ### 4.4 One appender, across replicas
 
 A chain needs its appends serialized: the next hash is a function of the last
@@ -207,7 +250,9 @@ it, and a log that has already aged out cannot substantiate the report.
   chain fields come back with every record: an audit view that hid them would
   be asking to be believed, which is the thing the chain exists to avoid.
 - `GET /api/v1/audit/verify` — re-derives the hashes over a run and reports
-  every break, together with the anchor. A run that starts partway through is
+  every break, *including* the two only the anchor can show: a log that stops
+  short of where the anchor says the chain ends, and a run with no anchor to
+  check against. Both make `intact` false. A run that starts partway through is
   linked to the record before it; without that, a tail lifted out of another
   chain would verify.
 
@@ -1500,7 +1545,8 @@ What Kitchen does about it:
   platform's back still lands in the log — attributed to the reconciler that
   noticed it, which is honest about how it was learned.
 - **Bound.** The chain's anchor lives outside the table (§4.3), so a log
-  truncated from the end is visible without reading the log.
+  truncated from the end is visible without reading the log — and removing the
+  anchor is itself reported, rather than making the log look sound.
 - **Surface.** The privileged classification exists so that the handful of
   records that matter are one filter away rather than buried under deploys.
 - **Recertify.** The operator list is reviewed on the same cadence as
@@ -2492,9 +2538,19 @@ minutes.
   digest against what each environment pins, and repin the ones that have
   moved. `docs/api/decisions.md` describes the listing;
   `charts/kitchen/README.md` says the same thing under Upgrade.
-- **`kitchen-audit-head` is load-bearing.** Deleting it does not lose the log —
-  it is re-seeded from the table's own last record — but it does lose the
-  anchor that would have shown a truncated tail.
+- **`kitchen-audit-head` is load-bearing, and deleting it is now loud.**
+  Deleting it does not lose the log — a later reconcile seeds a new anchor from
+  the table's own last record — but the platform no longer does that quietly.
+  Until it is re-established, `GET /api/v1/audit/verify` answers `intact:
+  false` with an `unanchored` finding and `status.compliance.audit.anchored`
+  is false, and the re-seed appends an `AuditAnchor` record saying which
+  sequence the numbering was taken from. Deleting it is therefore an audit
+  finding rather than a tidy-up. Deleting it *and* cutting the table's tail —
+  the pair of acts that used to cancel each other out — is worse than a
+  finding: a recorder that has already appended in this process refuses to
+  append across a head that has come back behind where it last saw it, so the
+  writes that would have been recorded fail with it until somebody accounts
+  for the numbering (#428).
 - **`nonCritical` and undesignated are different answers, and so are
   `unclassified` and blank.** Somebody having looked at a function and decided
   it supports nothing critical is a determination; nobody having looked is a

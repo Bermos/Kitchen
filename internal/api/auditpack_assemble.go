@@ -29,6 +29,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/attestation"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/policy"
 	"github.com/Bermos/Kitchen/internal/provider"
@@ -1320,17 +1321,34 @@ func (s *Server) packAuditLog(ctx context.Context, in assembly) (auditPackAuditL
 		return auditPackAuditLog{}, fmt.Errorf("the audit log could not be read: %w", err)
 	}
 
+	anchor := s.auditAnchor(ctx)
 	section := auditPackAuditLog{
-		Items:  []auditRecordBody{},
-		Limit:  maxAuditPackAuditRecords,
-		Anchor: s.auditAnchor(ctx),
+		Items:         []auditRecordBody{},
+		Limit:         maxAuditPackAuditRecords,
+		AnchorPresent: anchor.Present,
+		AnchorOrigin:  string(anchor.Origin),
 		Note: "Every record here names this project. Changes to the platform itself — a setting, " +
 			"a connection, an upgrade — carry no project and are not in a project's pack; they " +
 			"are in the log, at `GET /api/v1/audit`. Each record carries its own hash and the " +
 			"hash before it, so a record here can be located in the chain and checked; the " +
 			"verification itself is a statement about the whole log and is `GET " +
 			"/api/v1/audit/verify`. `anchor` is where the chain ends according to an object " +
-			"outside the table, which is the only way a tail cut off the end is visible at all.",
+			"outside the table, which is the only way a tail cut off the end is visible at all; " +
+			"`anchorPresent: false` means there is no such object, and this pack's slice of the " +
+			"log is bounded by nothing.",
+	}
+	switch {
+	case anchor.Present:
+		sequence := anchor.Sequence
+		section.Anchor = &sequence
+		if anchor.Origin == audit.OriginAdopted {
+			section.AnchorMessage = fmt.Sprintf(
+				"the anchor was adopted from the log's own last record, sequence %d: records up to "+
+					"there are bounded by the hash chain alone", anchor.AdoptedFrom)
+		}
+	default:
+		section.AnchorMessage = "this chain has no anchor: " + anchor.Absence() +
+			". A log cut short from the end rehashes perfectly, so nothing here would show it"
 	}
 	for _, record := range records {
 		body := auditBody(record)

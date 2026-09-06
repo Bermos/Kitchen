@@ -122,6 +122,19 @@ const (
 	// policy means no data is ever destroyed either way, which is exactly
 	// why the record is the only trace left.
 	KindPersistentVolume = "PersistentVolume"
+
+	// KindAuditAnchor is the eighth, and it is the log recording something
+	// about itself: the object the chain's end is claimed through being
+	// established, and in particular being established by adopting the
+	// table's own last record (#428).
+	//
+	// It is its own kind because it is the one record whose absence is the
+	// finding. "Has this chain's numbering ever been taken from the table it
+	// is supposed to bound, and when" has to be one query and has to be
+	// answerable years later; folded into KindKitchen it would sit among
+	// every settings change the platform ever had, which is where nobody
+	// looks.
+	KindAuditAnchor = "AuditAnchor"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of
@@ -140,4 +153,10 @@ const (
 	// platform recommends, and why" is a question that must be answerable
 	// from the log alone.
 	ChangeAuditFloorOverride = "audit-floor-override"
+
+	// ChangeAuditAnchorAdopted marks the chain's anchor being seeded from
+	// the log's own last record rather than starting with the chain. The
+	// record names the sequence it was taken from, which is the line
+	// everything before is bounded by the hash chain alone.
+	ChangeAuditAnchorAdopted = "audit-anchor-adopted"
 )

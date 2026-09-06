@@ -26,9 +26,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/attestation"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/retention"
 )
@@ -129,11 +131,41 @@ func (r *KitchenReconciler) reconcileCompliance(
 		Immutable:           immutability.Revoked,
 		ImmutabilityMessage: immutability.Message,
 	}
+	// The chain's anchor is established here rather than by the first append,
+	// so that its absence means one thing. An anchor created lazily cannot
+	// tell an installation that has never recorded anything from one whose
+	// log and anchor were both removed — both are "no object, no records" —
+	// and that ambiguity is what let a truncated chain report itself sound
+	// (#428). An anchor adopted from the log's own last record appends a
+	// record saying so, which is why this can fail and why failing it is
+	// only a message: the next append tries again.
+	anchorFailure := ""
+	if err := r.Audit.EnsureAnchor(ctx); err != nil {
+		log.FromContext(ctx).Error(err, "the audit chain's anchor could not be established")
+		anchorFailure = err.Error()
+		status.Audit.AnchorMessage = anchorFailure
+	}
 	// The sequence published here is the chain's, read from the head object
 	// rather than from whatever this replica last appended — the number is
-	// only worth publishing if it is the whole platform's.
-	if sequence, err := r.Audit.Head(ctx); err == nil {
-		status.Audit.Sequence = sequence
+	// only worth publishing if it is the whole platform's. It is published
+	// with Anchored beside it, because a sequence of 0 from an anchor that
+	// is not there is not a statement about the log.
+	if anchor, err := r.Audit.Head(ctx); err == nil {
+		status.Audit.Anchored = anchor.Present
+		status.Audit.Sequence = anchor.Sequence
+		switch {
+		case !anchor.Present && anchorFailure != "":
+			// Establishing it is what just failed, and why it failed is a
+			// better answer than the fact that it is missing.
+			status.Audit.AnchorMessage = "the chain has no anchor: " + anchorFailure
+		case !anchor.Present:
+			status.Audit.AnchorMessage = "the chain has no anchor: " + audit.HeadName +
+				" is not in " + PlatformNamespace + ", so a log cut short from the end would not be visible"
+		case anchor.Origin == audit.OriginAdopted:
+			status.Audit.AnchorMessage = fmt.Sprintf(
+				"the anchor was adopted from the log's own last record, sequence %d: records up to "+
+					"there are bounded by the hash chain alone", anchor.AdoptedFrom)
+		}
 	}
 
 	message := fmt.Sprintf("audit log is in place, retaining %d days", days)
