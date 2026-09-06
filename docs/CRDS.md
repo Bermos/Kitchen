@@ -215,13 +215,28 @@ spec:
         bucket: kitchen-backups         # give it its own bucket: it becomes this cluster's root
         prefix: prod                    # credential store — see docs/BACKUP.md
         region: eu-central-1
-        endpoint: ""                    # empty is AWS
+        endpoint: ""                    # empty is AWS. Anything else must be https:// — the archive is
+                                        # every credential this platform holds — and is refused at
+                                        # admission otherwise
+        allowInsecureEndpoint: false    # an endpoint that is not https, on purpose. For a store on a
+                                        # network you actually trust, and never a default
         forcePathStyle: false           # <endpoint>/<bucket>; every store reached by IP needs it
-        serverSideEncryption: AES256    # AES256 | aws:kms — the archive is every secret, in the clear
+        serverSideEncryption: AES256    # AES256 | aws:kms — ask the store to encrypt it as well. It is
+                                        # a different question from encryption below: a store that
+                                        # encrypts at rest decrypts for anybody it answers
         credentialsSecretRef:           # accessKeyId + secretAccessKey; written by
           name: kitchen-backup-destination   # PUT /platform/backup/destination and never read back.
                                         # Absent = the ambient chain (IRSA, Pod Identity, an instance
                                         # role), which is the better answer where it is available
+    encryption:                         # what protects the archive at the destination
+      mode: aes256-gcm                  # aes256-gcm | none. Empty means aes256-gcm: the archive is
+                                        # encrypted before it is uploaded, and `none` is an opt-out an
+                                        # installation makes out loud. A run that should encrypt and
+                                        # has no key fails rather than uploading in the clear
+      keySecretRef:                     # 32 bytes under `key`; supplied through
+        name: kitchen-backup-encryption-key   # PUT /platform/backup/destination and never read back —
+                                        # and deliberately NOT in the archive, so the copy you kept is
+                                        # the only one that survives this cluster. See docs/BACKUP.md
     retention:                          # both bounds apply where both are set; empty keeps everything,
       keepLast: 30                      # which is the safe default. It is not a safety property:
       keepDays: 90                      # retention deletes, and Object Lock is the store's answer
@@ -292,8 +307,11 @@ status:
     schedule: 0 3 * * *                 # feature that matters most, because a backup system's
     suspended: false                    # characteristic failure is six weeks of no archive that
     destination: s3://kitchen-backups/prod   # nobody noticed. Also a BackupReady condition and a
-    lastRun: 2026-08-24T03:00:00Z       # `backup` row in status.components, which is the list an
-    lastSuccess: 2026-08-24T03:01:44Z   # operator already reads
+    encryption: aes256-gcm              # `backup` row in status.components, which is the list an
+                                        # operator already reads. `encryption` is what is actually
+                                        # protecting the archives there, reported rather than inferred
+    lastRun: 2026-08-24T03:00:00Z
+    lastSuccess: 2026-08-24T03:01:44Z
     lastSuccessArchive: prod/kitchen-backup-prod-2026-08-24T030102Z.tar.gz
     lastSuccessBytes: 4718592
     lastFailure: null

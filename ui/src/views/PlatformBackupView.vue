@@ -141,6 +141,7 @@ const endpoint = ref("");
 const pathStyle = ref(false);
 const encryption = ref("");
 const kmsKeyId = ref("");
+const allowInsecureEndpoint = ref(false);
 const accessKeyId = ref("");
 const secretAccessKey = ref("");
 const ambient = ref(false);
@@ -154,6 +155,34 @@ const encryptions = [
   { label: "aws:kms", value: "aws:kms" },
 ];
 
+// The archive's own encryption, which is a different question from the one
+// above: server-side encryption asks the store to protect the object and the
+// store decrypts it for anybody it answers, and this protects it from the
+// store. The key is supplied here and never read back, so the field is empty
+// however many times this screen is opened.
+const archiveModes = [
+  { label: "Encrypted with a key you supply", value: "aes256-gcm" },
+  { label: "Not encrypted", value: "none" },
+];
+const archiveMode = ref<"aes256-gcm" | "none">("aes256-gcm");
+const archiveKey = ref("");
+const generatedKey = ref(false);
+
+const keyStored = computed(() => schedule.value?.encryption?.key === "stored");
+const archiveUnencrypted = computed(() => schedule.value?.encryption?.mode === "none");
+
+// A key is generated in this browser and never by the platform. A key the
+// platform minted and answered once would live in a shell history, a
+// browser's memory and whatever logged the response — and the day it is
+// needed is the day this cluster is gone, so it has to be one somebody
+// deliberately kept.
+function generateArchiveKey() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  archiveKey.value = btoa(String.fromCharCode(...bytes));
+  generatedKey.value = true;
+}
+
 watch(
   () => schedule.value?.destination,
   (target) => {
@@ -164,6 +193,10 @@ watch(
     pathStyle.value = target?.forcePathStyle ?? false;
     encryption.value = target?.serverSideEncryption ?? "";
     kmsKeyId.value = target?.kmsKeyId ?? "";
+    allowInsecureEndpoint.value = target?.allowInsecureEndpoint ?? false;
+    archiveMode.value = schedule.value?.encryption?.mode ?? "aes256-gcm";
+    archiveKey.value = "";
+    generatedKey.value = false;
     accessKeyId.value = "";
     secretAccessKey.value = "";
     ambient.value = false;
@@ -184,8 +217,13 @@ async function saveDestination() {
       forcePathStyle: pathStyle.value,
       serverSideEncryption: encryption.value,
       kmsKeyId: kmsKeyId.value.trim(),
+      allowInsecureEndpoint: allowInsecureEndpoint.value,
     },
+    // The mode travels every time; the key only when this screen has one to
+    // send, because an empty key means "leave the stored one alone".
+    encryption: { mode: archiveMode.value },
   };
+  if (archiveKey.value.trim()) body.encryption = { mode: archiveMode.value, key: archiveKey.value.trim() };
   if (ambient.value) body.s3.ambientCredentials = true;
   else if (accessKeyId.value || secretAccessKey.value) {
     body.s3.accessKeyId = accessKeyId.value.trim();
@@ -392,8 +430,14 @@ async function runNow() {
               <p class="font-mono text-sm text-highlighted mt-1 truncate" :title="schedule?.destination?.described">
                 {{ schedule?.destination?.described || "nowhere" }}
               </p>
-              <p class="text-[11px] text-dimmed mt-0.5">
-                {{ schedule?.destination ? `${schedule.destination.credential} credential` : "off this cluster" }}
+              <p class="text-[11px] mt-0.5" :class="archiveUnencrypted ? 'text-warning' : 'text-dimmed'">
+                {{
+                  schedule?.destination
+                    ? `${schedule.destination.credential} credential, ${
+                        archiveUnencrypted ? "archives unencrypted" : "archives encrypted"
+                      }`
+                    : "off this cluster"
+                }}
               </p>
             </div>
             <div>
@@ -481,7 +525,15 @@ async function runNow() {
             variant="soft"
             icon="i-lucide-shield-alert"
             title="This bucket becomes the platform's root credential store"
-            description="An archive holds every secret this platform has, in the clear. Give it its own bucket, no public access, server-side encryption, and a key that can write and list and is not one of the keys the platform itself holds. Keep that key outside the platform too — it is inside the archive, and the archive is inside the bucket."
+            description="An archive holds every secret this platform has. Give it its own bucket, no public access, server-side encryption, and a key that can write and list and is not one of the keys the platform itself holds. Keep that key outside the platform too — it is inside the archive, and the archive is inside the bucket."
+          />
+          <UAlert
+            v-if="archiveUnencrypted"
+            color="error"
+            variant="soft"
+            icon="i-lucide-unlock"
+            title="Archives are written to this bucket unencrypted"
+            description="Every credential this platform holds — the Cloudflare token, the git app keys, the attestation signing key, the identity provider's signing secret — is readable by anybody who can read that bucket. This installation asked for that; encrypting the archive below is how to stop."
           />
           <UAlert
             v-if="destinationError"
@@ -504,8 +556,17 @@ async function runNow() {
             >
               <UInput v-model="region" placeholder="eu-central-1" class="w-full" />
             </UFormField>
-            <UFormField label="Endpoint" help="Empty is AWS. Anything else — MinIO, R2, Garage — is named here.">
+            <UFormField
+              label="Endpoint"
+              help="Empty is AWS. Anything else — MinIO, R2, Garage — is named here, and it has to be https:// unless the switch below says otherwise."
+            >
               <UInput v-model="endpoint" placeholder="https://minio.example.com" class="w-full" />
+            </UFormField>
+            <UFormField
+              label="Allow an endpoint that is not https"
+              help="The archive is every credential this platform holds, so an endpoint that is not https puts it on the wire in the clear. Only for a store on a network you actually trust."
+            >
+              <USwitch v-model="allowInsecureEndpoint" />
             </UFormField>
             <UFormField
               label="Path-style addressing"
@@ -522,6 +583,50 @@ async function runNow() {
             <UFormField v-if="encryption === 'aws:kms'" label="KMS key" help="Which key encrypts it.">
               <UInput v-model="kmsKeyId" class="w-full" />
             </UFormField>
+          </div>
+
+          <div class="rounded-md border border-default px-4 py-3 space-y-4">
+            <h3 class="text-xs font-medium text-highlighted">Archive encryption</h3>
+            <p class="text-[11px] text-dimmed leading-relaxed">
+              A different question from server-side encryption above, and the one that matters more: a store that
+              encrypts at rest still decrypts for anybody it answers, so that rests every credential this platform
+              holds on the bucket&apos;s own configuration. Encrypting here rests it on a key that is not in the
+              bucket and not in the archive. The platform does not generate one for you — a key it minted and showed
+              once would live in a shell history and a browser&apos;s memory, and the day it is needed is the day
+              this cluster is gone.
+            </p>
+            <div class="grid gap-4 sm:grid-cols-2">
+              <UFormField
+                label="Archives are"
+                :help="
+                  keyStored
+                    ? 'A key is stored. Leave the field beside this empty to keep it.'
+                    : 'A destination is saved with a key, or with this set to not encrypted.'
+                "
+              >
+                <USelect v-model="archiveMode" :items="archiveModes" class="w-full" />
+              </UFormField>
+              <UFormField
+                v-if="archiveMode === 'aes256-gcm'"
+                label="Key"
+                help="32 bytes as base64 or hex — openssl rand -base64 32. Written into a Secret this platform owns, and never served again."
+              >
+                <div class="flex gap-2">
+                  <UInput v-model="archiveKey" autocomplete="off" class="w-full font-mono" />
+                  <UButton color="neutral" variant="subtle" icon="i-lucide-key" @click="generateArchiveKey">
+                    Generate
+                  </UButton>
+                </div>
+              </UFormField>
+            </div>
+            <UAlert
+              v-if="generatedKey"
+              color="warning"
+              variant="soft"
+              icon="i-lucide-clipboard-copy"
+              title="Copy this key somewhere off this cluster now"
+              description="It was generated in this browser and nothing will ever show it again. Without it, not one archive at the destination can be restored — the key is deliberately not in the archive."
+            />
           </div>
 
           <div class="rounded-md border border-default px-4 py-3 space-y-4">

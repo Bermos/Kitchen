@@ -135,12 +135,18 @@ other.
 **Platform → Backup** on the dashboard. The screen says what an archive would
 carry before you take one; the button streams it to your browser.
 
-The archive is a credential. It holds every secret the platform has, in the
-clear. Keep it where you would keep the cluster's root credentials, and keep it
-**off the cluster it came from** — a backup that only exists on the machine
-that died is not a backup. Taking one is recorded in the audit log as an
-`export` against the Kitchen object, because "who took a copy of everything,
-and when" is exactly the sentence an audit log exists to be able to produce.
+The archive is a credential. It holds every secret the platform has, and an
+archive you downloaded is in the clear: it came over the API's own TLS to
+somebody who asked for it, and encrypting it would only mean handing you a file
+and a key at the same moment. Keep it where you would keep the cluster's root
+credentials, and keep it **off the cluster it came from** — a backup that only
+exists on the machine that died is not a backup. An archive a *schedule*
+uploads is a different situation and is encrypted; see [What protects the
+archive at the destination](#what-protects-the-archive-at-the-destination).
+
+Taking one is recorded in the audit log as an `export` against the Kitchen
+object, because "who took a copy of everything, and when" is exactly the
+sentence an audit log exists to be able to produce.
 
 The same thing from a terminal, which is what a scheduled backup is built out
 of — a backup that only happens when somebody remembers to click is not a
@@ -204,11 +210,14 @@ settings; the destination has a route of its own because it carries a
 credential, and the settings route must never carry one:
 
 ```sh
-# where archives go, once — the response echoes the bucket and no key
+# where archives go, once — the response echoes the bucket and neither key.
+# `encryption.key` is what the archive itself is encrypted under: 32 bytes,
+# yours, and the one thing a restore needs that is not in the archive
 kitchen api PUT /platform/backup/destination --data '{
   "type": "s3",
   "s3": {"bucket": "kitchen-backups", "prefix": "prod", "region": "eu-central-1",
-         "accessKeyId": "…", "secretAccessKey": "…"}
+         "accessKeyId": "…", "secretAccessKey": "…"},
+  "encryption": {"key": "'"$(openssl rand -base64 32)"'"}
 }'
 
 # when it runs and how much is kept
@@ -305,8 +314,19 @@ matters, and the bucket is the only thing that can disprove it.
   Secret uses the ambient credential chain — IRSA, EKS Pod Identity, an
   instance role — which is the better answer wherever it is available, because
   there is then nothing to leak.
-- **Ask the store to encrypt it.** `serverSideEncryption: AES256` or
-  `aws:kms` with a `kmsKeyId`. See the next section for why.
+- **The archive is encrypted before it is uploaded**, under a key you supply.
+  It is what an installation gets without asking; turning it off is an explicit
+  `encryption.mode: none`. The next section is the whole of it.
+- **The endpoint has to be `https://`.** Empty is AWS, which is https either
+  way; anything else is refused at admission and by the API, naming
+  `allowInsecureEndpoint` — which is how an installation whose store really is
+  on a network it trusts says so. It is the rule notification webhooks already
+  keep, applied to the one upload that carries every credential this platform
+  holds.
+- **Ask the store to encrypt it too.** `serverSideEncryption: AES256` or
+  `aws:kms` with a `kmsKeyId`. It is a different question from the one above —
+  a store that encrypts at rest decrypts for anybody it answers — and both are
+  worth having.
 - **Retention is not a safety property.** It deletes, so it is something
   whoever reaches the credential can use. Object Lock or object versioning is
   the store's answer to that, and Kitchen does not manage it.
@@ -319,17 +339,73 @@ matters, and the bucket is the only thing that can disprove it.
 ### And where the archive goes is now a credential store
 
 This is worth settling before the first upload rather than after. An archive
-holds every secret the platform has, in the clear — the Cloudflare token, the
-git app keys, the attestation signing key, the identity provider's signing
-secret, and every connection credential the API wrote. Putting one in a bucket
-nightly makes **that bucket the cluster's root credential store**, and it should
-be locked down as one: its own bucket, no public access, server-side encryption,
+holds every secret the platform has — the Cloudflare token, the git app keys,
+the attestation signing key, the identity provider's signing secret, and every
+connection credential the API wrote. Putting one in a bucket nightly makes
+**that bucket the cluster's root credential store**, and it should be locked
+down as one: its own bucket, no public access, server-side encryption,
 credentials that can write and list but that are not the same credentials the
 platform holds, and object versioning or object lock if the threat you care
 about includes somebody deleting the backups before deleting the cluster.
 
 Keep the destination's own credential outside the platform too. It is in the
 archive, and the archive is in the destination.
+
+### What protects the archive at the destination
+
+Everything above is about locking the bucket down, and it is worth doing. It
+is also not enough on its own: a store that encrypts at rest decrypts for
+anybody it answers, so a bucket's own configuration is the whole of what stands
+between a stranger and the cluster's root credentials. So two things are true
+of an archive on its way to a destination, and both are the default:
+
+**It is encrypted before it leaves this cluster.** AES-256-GCM, under a key you
+supply — 32 bytes, `openssl rand -base64 32` — with a per-archive salt and an
+HKDF-derived subkey, framed in chunks so that the run can still verify its
+upload by reading the first 64 KiB back. The key goes in on the Backup screen
+(the Generate button mints one in your browser; the platform never mints one)
+or on the destination route:
+
+```sh
+kitchen api PUT /platform/backup/destination --data '{
+  "s3": {"bucket": "kitchen-backups"},
+  "encryption": {"key": "'"$(openssl rand -base64 32)"'"}}'
+```
+
+It is written into the Secret `kitchen-backup-encryption-key` in
+`kitchen-system`, is never read back by anything, and — this is the sentence
+that matters — **it is deliberately not in the archive.** An archive carrying
+the key that opens it is an archive with no encryption. So the copy you keep is
+the only one that survives the cluster, and an archive whose key is gone
+restores into nothing. Keep it where you keep the cluster's root credentials.
+
+Turning it off is a decision and looks like one, on the screen and in the audit
+log:
+
+```sh
+kitchen api PUT /platform/backup/destination --data '{
+  "s3": {"bucket": "kitchen-backups"}, "encryption": {"mode": "none"}}'
+```
+
+There is no third state. A destination whose archives would be neither
+encrypted nor deliberately unencrypted is refused when it is written, and an
+installation that reaches a scheduled run without a key gets a failed run and
+`BackupReady: false` with reason `EncryptionKeyMissing` — never an archive
+uploaded in the clear as a fallback.
+
+**And it travels over TLS.** The destination's `endpoint` must be `https://`
+unless `allowInsecureEndpoint` says otherwise; empty is the AWS endpoint, which
+is https either way. It is refused at admission by a CEL rule on the CRD, by
+the API with a message naming the opt-in, and again by the run itself — the
+last one because an object written before the rule existed must not go on
+quietly uploading over plain HTTP. An endpoint on a `.svc` name over https is
+the object store this platform bundles and is verified against the platform's
+own CA, as before.
+
+**A restore reads both kinds.** An encrypted archive starts with a header a
+reader recognises, and a plain gzip does not, so an archive written before any
+of this existed restores unchanged — the restore Job says which of the two it
+found in its first line of log.
 
 ## The databases the platform runs itself
 
@@ -508,7 +584,22 @@ already are: cluster bootstrap, the exception
 2. **Wait for the identity provider.** It creates its own tables on first
    start, and the accounts dump has nowhere to go until it has.
 
-3. **Put the archive somewhere the cluster can read it, and run the Job.**
+3. **Put the key back, if the archive is encrypted.** It is not in the archive
+   and it is not in the bucket, so it is the copy you kept. The restore Job
+   reads it out of `kitchen-backup-encryption-key` in the platform namespace —
+   `restore.encryptionKeySecretName` names another Secret where you would
+   rather it did.
+
+   ```sh
+   kubectl -n kitchen-system create secret generic kitchen-backup-encryption-key \
+     --from-literal=key='<the key you kept>'
+   ```
+
+   A plain archive needs none of this, and a restore that meets an encrypted
+   archive with no key says exactly that rather than failing as though the file
+   were corrupt.
+
+4. **Put the archive somewhere the cluster can read it, and run the Job.**
 
    ```sh
    kubectl -n kitchen-system create secret generic kitchen-backup \
@@ -522,12 +613,12 @@ already are: cluster bootstrap, the exception
    A Secret is bounded by etcd's object limit, about 1 MiB. Past that, put the
    archive on a volume and set `restore.existingClaim` instead.
 
-4. **Watch the reconcilers catch up.** Everything comes back with the status it
+5. **Watch the reconcilers catch up.** Everything comes back with the status it
    had, which is what keeps a restored platform from re-running every build in
    its history. The operator then reconverges: namespaces, Deployments,
    HTTPRoutes and certificates are rebuilt from the restored objects.
 
-5. **Take a backup of the restored platform.** It is the cheapest way to find
+6. **Take a backup of the restored platform.** It is the cheapest way to find
    out whether the restore actually worked.
 
 `--set restore.id=2` runs it again: a Job's pod template is immutable, so the

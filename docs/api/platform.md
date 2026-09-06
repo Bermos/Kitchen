@@ -484,6 +484,7 @@ takes one:
               "destination": {"type": "s3", "described": "s3://kitchen-backups/prod",
                               "bucket": "kitchen-backups", "prefix": "prod",
                               "region": "eu-central-1", "credential": "stored"},
+              "encryption": {"mode": "aes256-gcm", "key": "stored"},
               "keepLast": 30,
               "lastSuccess": "2026-08-19T03:01:44Z",
               "lastSuccessArchive": "prod/kitchen-backup-prod-2026-08-19T030102Z.tar.gz",
@@ -565,13 +566,22 @@ must never carry one.**
  "s3": {"bucket": "kitchen-backups", "prefix": "prod", "region": "eu-central-1",
         "endpoint": "https://minio.example.com", "forcePathStyle": true,
         "serverSideEncryption": "AES256",
-        "accessKeyId": "…", "secretAccessKey": "…"}}
+        "accessKeyId": "…", "secretAccessKey": "…"},
+ "encryption": {"key": "…"}}
 ```
 
 `s3` is any S3-compatible store — AWS, MinIO, R2, Backblaze, Wasabi, Ceph,
 Garage — because `endpoint` and `forcePathStyle` make those one code path
 rather than six backends. `region` is wanted even by stores where it means
 nothing; `us-east-1` is the conventional answer for those.
+
+`endpoint` must be `https://`. Empty is the AWS endpoint, which is https either
+way; anything else is `400` naming `allowInsecureEndpoint`, which is how an
+installation whose store really is reached over a network it trusts says so.
+The archive is every credential this platform holds, and this is the rule
+notification webhooks already keep. A CEL rule on the CRD refuses the same
+write from any other direction, and the run refuses it a third time — an object
+written before the rule existed must not go on uploading over plain HTTP.
 
 An `endpoint` on a `.svc` name over `https://` is a store inside this cluster,
 and no public authority issues for a name nobody owns — so it is verified
@@ -594,12 +604,43 @@ prefix, and no key, ever**. The three things the credential half can say:
 - Neither: the destination is rewritten and whatever credential is stored
   stays. An unmentioned key must survive an edit of the bucket's prefix.
 
+`encryption` is what protects the archive **at** the destination, which is a
+different question from `serverSideEncryption`: a store that encrypts at rest
+decrypts for anybody it answers, so that rests the confidentiality of the
+cluster's root credentials on the bucket's own configuration. `mode` is
+`aes256-gcm` — the default, and what an unset mode means — or `none`, and
+`key` is 32 bytes as base64 or hex.
+
+- The key is **supplied and never generated here**, for the reason a
+  notification subscription's signing key is: a key this platform minted and
+  answered once would live in a shell history, a browser's memory and whatever
+  logged the response, and the day it is needed is the day this cluster is
+  gone. The dashboard's Generate button mints one in the browser.
+- It is written into `kitchen-backup-encryption-key`, carries the same
+  `managed-by` label, and **is never read back**. Leaving `key` out means
+  "leave the stored one alone", exactly as it does for the bucket's credential.
+- A destination whose archives would be neither encrypted nor deliberately
+  unencrypted is **refused**: `400`, naming both ways out. There is no state in
+  which this platform uploads the archive in the clear without having been
+  asked to.
+- The key is deliberately **not in the archive**, so a restore needs the copy
+  whoever supplied it kept. See [docs/BACKUP.md](../BACKUP.md#what-protects-the-archive-at-the-destination).
+
+`GET /platform/backup` answers `encryption` as `{"mode": …, "key": "stored" |
+"absent"}` — whether there is a key, never what it is. An installation whose
+mode is `aes256-gcm` with no key stored is one whose next run will refuse to
+upload, and the `BackupReady` condition says so with reason
+`EncryptionKeyMissing` rather than waiting for 02:00.
+
 `DELETE /platform/backup/destination` removes the destination and, with it, the
 Secret this API wrote — and only that one: a Secret something else put there
 carries no `managed-by` label and is left where it is. The retention goes too,
 because it prunes what is at the destination and with none it overrides
 nothing. A destination still carrying a schedule is `409`, naming the field to
-clear first, rather than handing back a CEL rule's message.
+clear first, rather than handing back a CEL rule's message. The archive's
+encryption key is deliberately *not* removed with it: the bucket's credential
+opens a destination nothing writes to any more, and the key opens the archives
+that are still sitting in it.
 
 #### Runs
 

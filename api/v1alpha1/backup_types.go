@@ -50,7 +50,93 @@ const (
 	ServerSideEncryptionKMS = "aws:kms"
 )
 
+// BackupEncryptionMode is how an archive is protected on its way to a
+// destination, and it has exactly two honest answers.
+//
+// The archive is every credential the platform holds. Server-side encryption
+// is worth asking for and is not this: a store that encrypts at rest still
+// decrypts for anybody it answers, so it rests the confidentiality of the
+// cluster's root credentials on that bucket's configuration and its ACL.
+// Encrypting before the upload rests it on a key that is not in the bucket,
+// is not in the archive, and never leaves this cluster except in the
+// operator's own hands.
+// +kubebuilder:validation:Enum=aes256-gcm;none
+type BackupEncryptionMode string
+
+const (
+	// BackupEncryptionAES256GCM encrypts the archive under the operator's own
+	// key before it is uploaded. It is the default, and an empty mode means
+	// it: an archive of every platform credential going to somebody's bucket
+	// in the clear should be something an installation asked for out loud.
+	BackupEncryptionAES256GCM BackupEncryptionMode = "aes256-gcm"
+
+	// BackupEncryptionNone uploads the archive as it is. It is a decision an
+	// installation makes rather than a state it drifts into, which is the
+	// whole reason this field exists.
+	BackupEncryptionNone BackupEncryptionMode = "none"
+)
+
+// BackupEncryptionSpec is what protects an archive at the destination.
+//
+// The key is the operator's and is supplied, never generated here — the rule
+// a notification subscription's signing key already keeps. A key this
+// platform minted and answered once would live in a shell history, a
+// browser's memory and whatever logged the response; a key the operator
+// generated is one they still have on the day the cluster is gone, which is
+// the only day it is needed.
+type BackupEncryptionSpec struct {
+	// Mode is how the archive is encrypted before it is uploaded. Empty means
+	// BackupEncryptionAES256GCM: encryption is what an installation gets
+	// without saying anything, and BackupEncryptionNone is the explicit
+	// opt-out.
+	// +optional
+	Mode BackupEncryptionMode `json:"mode,omitempty"`
+
+	// KeySecretRef names a Secret in the platform namespace holding the
+	// 32-byte key under `key`. It is written by
+	// PUT /platform/backup/destination and never read back, like every other
+	// credential this API stores.
+	//
+	// **Keep a copy of that key off this cluster.** It is deliberately not in
+	// the archive — an archive carrying the key that opens it is an archive
+	// with no encryption — so an archive whose key was only ever in the
+	// cluster that died restores into nothing.
+	// +optional
+	KeySecretRef *LocalObjectReference `json:"keySecretRef,omitempty"`
+}
+
+// Encrypted is whether archives are encrypted before they are uploaded. An
+// unset mode is encrypted: this is the field that decides it, and it decides
+// it the safe way round.
+func (e BackupEncryptionSpec) Encrypted() bool {
+	return e.EffectiveMode() == BackupEncryptionAES256GCM
+}
+
+// EffectiveMode is the mode as a run would actually apply it.
+func (e BackupEncryptionSpec) EffectiveMode() BackupEncryptionMode {
+	if e.Mode == "" {
+		return BackupEncryptionAES256GCM
+	}
+	return e.Mode
+}
+
+// The CEL rule below spells "empty" as size() == 0 rather than as a comparison
+// against an empty string literal, and it has to: gofmt reformats doc comments,
+// and a pair of adjacent single quotes in one is rewritten into a typographic
+// quote — which would leave the marker generating a CRD whose CEL does not
+// parse, with nothing but a stale-manifests failure to say why. This note is
+// out here rather than in the doc comment so that it does not become part of
+// the field's description in the CRD.
+
 // S3Destination is a bucket at an S3-compatible store.
+//
+// The endpoint rule is the same rule notification webhooks keep, applied to
+// the one upload that carries every credential the platform holds: an archive
+// travelling to `http://minio.internal:9000` travels in the clear, over
+// whatever is between this cluster and that store. It is refused at admission
+// rather than reported afterwards, and AllowInsecureEndpoint is how an
+// installation that means it says so.
+// +kubebuilder:validation:XValidation:rule="!has(self.endpoint) || self.endpoint.size() == 0 || self.endpoint.startsWith('https://') || (has(self.allowInsecureEndpoint) && self.allowInsecureEndpoint)",message="spec.backup.destination.s3.endpoint must be an https:// URL: the archive is every credential this platform holds, and an endpoint that is not https carries it in the clear. Set allowInsecureEndpoint if the store is genuinely reached over a network you trust."
 type S3Destination struct {
 	// Bucket archives are written into. It should be a bucket of its own:
 	// see the retention note below, and docs/BACKUP.md on why this bucket is
@@ -71,8 +157,22 @@ type S3Destination struct {
 
 	// Endpoint overrides AWS. This is what makes MinIO, R2, Backblaze,
 	// Wasabi, Ceph and Garage the same code path rather than five backends.
+	//
+	// It must be an `https://` URL. Empty is the AWS endpoint, which is
+	// https either way.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
+
+	// AllowInsecureEndpoint permits an endpoint that is not `https://`.
+	//
+	// It exists because a store on a cluster-internal network is a real
+	// installation and not a mistake, and it is explicit for the reason
+	// every other opt-out here is: an archive going to a plaintext endpoint
+	// is every credential this platform holds on somebody else's wire, and
+	// that should be a sentence in the object rather than a silent default.
+	// The archive's own encryption is a separate decision and still applies.
+	// +optional
+	AllowInsecureEndpoint bool `json:"allowInsecureEndpoint,omitempty"`
 
 	// ForcePathStyle addresses the bucket as <endpoint>/<bucket> rather than
 	// <bucket>.<endpoint>. Every store that is reached by IP address or by a
@@ -182,6 +282,13 @@ type BackupSpec struct {
 	// +optional
 	Destination *BackupDestination `json:"destination,omitempty"`
 
+	// Encryption is what protects an archive at the destination. Left empty
+	// it is AES-256-GCM under a key the operator supplied, and a run with no
+	// key to hand fails rather than uploading the platform's credentials in
+	// the clear.
+	// +optional
+	Encryption BackupEncryptionSpec `json:"encryption,omitempty"`
+
 	// Retention is how many archives the destination keeps. Left empty,
 	// nothing is ever pruned, which is the safe default: an archive costs
 	// pennies and the failure this feature exists to prevent is having too
@@ -229,6 +336,14 @@ type BackupStatus struct {
 	// Destination described, and never its credential: "s3://bucket/prefix".
 	// +optional
 	Destination string `json:"destination,omitempty"`
+
+	// Encryption is what is actually protecting the archives there:
+	// "aes256-gcm", or "none" where the installation opted out. It is
+	// reported rather than left to be inferred from the spec, because "what
+	// is in that bucket, and what would it take to read it" is the question
+	// somebody asks about a destination and not about a field.
+	// +optional
+	Encryption string `json:"encryption,omitempty"`
 
 	// LastRun is when a run last started, whatever became of it.
 	// +optional

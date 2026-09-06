@@ -36,9 +36,14 @@ import (
 // S3Config is a bucket at an S3-compatible store, as the spec describes it
 // plus the credential the spec only points at.
 type S3Config struct {
-	Bucket   string
-	Prefix   string
-	Region   string
+	Bucket string
+	Prefix string
+	Region string
+	// Endpoint overrides AWS. It is an https URL unless the destination said
+	// allowInsecureEndpoint out loud — backup.CheckEndpoint is where that is
+	// decided, before anything here is built, because the archive travelling
+	// to it is every credential the platform holds. Empty is the AWS
+	// endpoint.
 	Endpoint string
 	// ForcePathStyle addresses the bucket as <endpoint>/<bucket>. Every store
 	// reached by IP address, or by a name with no wildcard certificate behind
@@ -156,6 +161,12 @@ func trustBundle(file string) (*http.Transport, error) {
 }
 
 // Put uploads one archive.
+//
+// The body is whatever internal/backup staged, which is ciphertext unless the
+// installation opted out of encryption. The name and the content type are the
+// same either way — the prune matches archives by name, and a name that
+// changed with the encryption mode would leave an installation's older
+// archives invisible to it on the day it switched.
 func (s *S3) Put(ctx context.Context, name string, size int64, body io.Reader) (Object, error) {
 	key := s.key(name)
 	input := &s3.PutObjectInput{

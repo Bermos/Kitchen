@@ -31,7 +31,11 @@ limitations under the License.
 // --upload is the scheduled half, and it is what the operator's CronJob runs:
 // it reads spec.backup.destination off the singleton, exports, uploads,
 // verifies the archive by reading its manifest back off the destination, and
-// only then prunes by the configured retention. Only then, because a prune
+// only then prunes by the configured retention. The archive is encrypted
+// under the operator's own key on the way — spec.backup.encryption, which is
+// on unless an installation turned it off out loud — because an archive at a
+// destination is every credential the platform holds, sitting in somebody's
+// bucket for as long as the retention keeps it. Only then, because a prune
 // that ran first would delete last week's archive on the night this week's
 // failed. The run's result is left on the pod's termination message as JSON,
 // which is where the operator reads status.backup from.
@@ -256,8 +260,18 @@ func uploadArchive(
 	if err != nil {
 		return err
 	}
+	// The key the archive is encrypted under, or nothing where this
+	// installation opted out. A run that should encrypt and has no key fails
+	// here, before it has read a single secret: uploading the platform's
+	// whole credential store in the clear is not the fallback for a missing
+	// key.
+	key, err := backup.EncryptionKey(ctx, cluster, namespace, spec)
+	if err != nil {
+		return err
+	}
 
 	run := &backup.Run{
+		Key:         key,
 		Exporter:    exporter,
 		Destination: target,
 		Retention: backup.RetentionPolicy{
@@ -272,7 +286,12 @@ func uploadArchive(
 		return runErr
 	}
 
-	fmt.Printf("wrote %s (%d bytes) to %s and read it back\n", result.Archive, result.Bytes, result.Destination)
+	protection := "encrypted"
+	if !result.Encrypted {
+		protection = "unencrypted, as this installation asked for"
+	}
+	fmt.Printf("wrote %s (%d bytes, %s) to %s and read it back\n",
+		result.Archive, result.Bytes, protection, result.Destination)
 	fmt.Printf("  %d objects, %d secrets, %d account rows\n",
 		result.Objects, result.Secrets, result.AccountRows)
 	if result.AccountsMessage != "" {

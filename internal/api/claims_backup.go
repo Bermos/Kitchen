@@ -76,6 +76,12 @@ type claimBackupDestinationWrite struct {
 	ForcePathStyle       bool   `json:"forcePathStyle,omitempty"`
 	ServerSideEncryption string `json:"serverSideEncryption,omitempty"`
 
+	// AllowInsecureEndpoint admits an endpoint that is not https. The same
+	// rule and the same opt-in as the platform's own destination, because it
+	// is the same object underneath: a database's backups on somebody's wire
+	// in the clear is a decision, not a default.
+	AllowInsecureEndpoint bool `json:"allowInsecureEndpoint,omitempty"`
+
 	// AccessKeyID and SecretAccessKey are the credential: both or neither,
 	// because half a key pair is a destination that cannot authenticate and
 	// that should be refused here rather than discovered at 03:00. Neither
@@ -226,6 +232,17 @@ func (s *Server) claimBackupSpec(
 			kitchenv1alpha1.ServerSideEncryptionAES256, kitchenv1alpha1.ServerSideEncryptionKMS, encryption)
 		return nil, false
 	}
+	// The same endpoint rule the platform's own destination keeps, refused
+	// here rather than left to the CRD's CEL: it is the same S3Destination
+	// underneath, so without this the route would hand back an admission
+	// message instead of a sentence naming the flag that answers it.
+	endpoint := strings.TrimSpace(write.Endpoint)
+	if endpoint != "" && !strings.HasPrefix(endpoint, "https://") && !write.AllowInsecureEndpoint {
+		badRequest(w, "backup.destination.endpoint must be an https:// URL (got %q): a backup travelling "+
+			"to it travels in the clear. Set backup.destination.allowInsecureEndpoint if the store really "+
+			"is reached over a network you trust. Empty is the AWS endpoint.", write.Endpoint)
+		return nil, false
+	}
 	hasKey := write.AccessKeyID != "" || write.SecretAccessKey != ""
 	if hasKey && (write.AccessKeyID == "" || write.SecretAccessKey == "") {
 		badRequest(w, "backup.destination.accessKeyId and secretAccessKey go together: half a key pair is "+
@@ -236,12 +253,13 @@ func (s *Server) claimBackupSpec(
 	destination := &kitchenv1alpha1.BackupDestination{
 		Type: kitchenv1alpha1.BackupDestinationS3,
 		S3: &kitchenv1alpha1.S3Destination{
-			Bucket:               strings.TrimSpace(write.Bucket),
-			Prefix:               strings.Trim(strings.TrimSpace(write.Prefix), "/"),
-			Region:               strings.TrimSpace(write.Region),
-			Endpoint:             strings.TrimSpace(write.Endpoint),
-			ForcePathStyle:       write.ForcePathStyle,
-			ServerSideEncryption: write.ServerSideEncryption,
+			Bucket:                strings.TrimSpace(write.Bucket),
+			Prefix:                strings.Trim(strings.TrimSpace(write.Prefix), "/"),
+			Region:                strings.TrimSpace(write.Region),
+			Endpoint:              endpoint,
+			ForcePathStyle:        write.ForcePathStyle,
+			ServerSideEncryption:  write.ServerSideEncryption,
+			AllowInsecureEndpoint: write.AllowInsecureEndpoint,
 		},
 	}
 	if hasKey {

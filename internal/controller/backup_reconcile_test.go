@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -33,7 +34,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/backup"
 )
+
+// plaintextEndpoint is a destination that would carry the archive — every
+// credential the platform holds — over plain HTTP. Three tests need one: the
+// admission rule that refuses it, the opt-in that admits it, and the
+// reconcile-time backstop for an object written before either existed.
+const plaintextEndpoint = "http://minio.internal:9000"
 
 func s3Destination() *kitchenv1alpha1.BackupDestination {
 	return &kitchenv1alpha1.BackupDestination{
@@ -98,6 +106,25 @@ var _ = Describe("Kitchen backup admission", func() {
 		// The state every installation predating the field is in, and the
 		// state a fresh install starts in. It has to be writable.
 		Expect(k8sClient.Create(ctx, kitchenWith(kitchenv1alpha1.BackupSpec{}))).To(Succeed())
+	})
+
+	It("refuses a destination endpoint that would carry the archive in the clear", func() {
+		destination := s3Destination()
+		destination.S3.Endpoint = plaintextEndpoint
+		err := k8sClient.Create(ctx, kitchenWith(kitchenv1alpha1.BackupSpec{
+			Schedule: "0 3 * * *", Destination: destination,
+		}))
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected a validation failure, got %v", err)
+		Expect(err.Error()).To(ContainSubstring("must be an https:// URL"))
+	})
+
+	It("admits a plaintext endpoint an installation asked for out loud", func() {
+		destination := s3Destination()
+		destination.S3.Endpoint = plaintextEndpoint
+		destination.S3.AllowInsecureEndpoint = true
+		Expect(k8sClient.Create(ctx, kitchenWith(kitchenv1alpha1.BackupSpec{
+			Schedule: "0 3 * * *", Destination: destination,
+		}))).To(Succeed())
 	})
 
 	It("admits a schedule with a destination and a retention", func() {
@@ -240,6 +267,70 @@ var _ = Describe("Kitchen scheduled backup", func() {
 		Expect(k8sClient.Get(ctx, cronKey, cron)).To(Succeed())
 		Expect(cron.Spec.Schedule).To(Equal("30 1 * * *"))
 		Expect(cron.Spec.Suspend).To(Equal(ptr.To(true)))
+	})
+
+	It("says on the condition when the next run could not encrypt the archive", func() {
+		// Encryption is what an installation gets without saying anything, so
+		// an installation that has not supplied a key has a schedule whose
+		// next run will refuse to upload. It finds that out here, on the
+		// platform's own status, rather than from a Job's log at 02:00.
+		singletonWith(kitchenv1alpha1.BackupSpec{Schedule: "0 3 * * *", Destination: s3Destination()})
+		kitchen := reconcileBackup()
+
+		condition := meta.FindStatusCondition(kitchen.Status.Conditions, ConditionBackupReady)
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+		Expect(condition.Reason).To(Equal("EncryptionKeyMissing"))
+		Expect(condition.Message).To(ContainSubstring("encryption.mode to none"))
+		Expect(kitchen.Status.Backup.Encryption).To(Equal("aes256-gcm"))
+
+		By("and going quiet once the key is there")
+		key := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: PlatformNamespace, Name: backup.EncryptionKeySecretName,
+			},
+			Data: map[string][]byte{
+				backup.EncryptionKeySecretKey: []byte(base64.StdEncoding.EncodeToString(
+					backup.NewEncryptionKey())),
+			},
+		}
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, key))).To(Succeed())
+		defer func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, key))).To(Succeed()) }()
+
+		kitchen = reconcileBackup()
+		condition = meta.FindStatusCondition(kitchen.Status.Conditions, ConditionBackupReady)
+		Expect(condition.Reason).NotTo(Equal("EncryptionKeyMissing"))
+
+		By("and saying nothing about a key on an installation that opted out")
+		singletonWith(kitchenv1alpha1.BackupSpec{
+			Schedule:    "0 3 * * *",
+			Destination: s3Destination(),
+			Encryption: kitchenv1alpha1.BackupEncryptionSpec{
+				Mode: kitchenv1alpha1.BackupEncryptionNone,
+			},
+		})
+		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, key))).To(Succeed())
+		kitchen = reconcileBackup()
+		Expect(meta.FindStatusCondition(kitchen.Status.Conditions, ConditionBackupReady).Reason).
+			NotTo(Equal("EncryptionKeyMissing"))
+		Expect(kitchen.Status.Backup.Encryption).To(Equal("none"))
+	})
+
+	It("says on the condition when the destination would carry the archive in the clear", func() {
+		// Admission refuses this now, so the object under test is one written
+		// before that rule existed — which is exactly the installation this
+		// backstop is for.
+		destination := s3Destination()
+		destination.S3.Endpoint = plaintextEndpoint
+		kitchen := &kitchenv1alpha1.Kitchen{
+			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
+			Spec: kitchenv1alpha1.KitchenSpec{Backup: kitchenv1alpha1.BackupSpec{
+				Schedule: "0 3 * * *", Destination: destination,
+			}},
+		}
+		message, reason := reconciler.backupProtection(ctx, kitchen)
+		Expect(reason).To(Equal("InsecureDestination"))
+		Expect(message).To(ContainSubstring("allowInsecureEndpoint"))
 	})
 
 	It("removes the CronJob when the schedule is cleared", func() {

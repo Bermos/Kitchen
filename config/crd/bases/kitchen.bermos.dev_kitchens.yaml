@@ -303,9 +303,27 @@ spec:
                     description: Destination is where archives are written.
                     properties:
                       s3:
-                        description: S3Destination is a bucket at an S3-compatible
-                          store.
+                        description: |-
+                          S3Destination is a bucket at an S3-compatible store.
+
+                          The endpoint rule is the same rule notification webhooks keep, applied to
+                          the one upload that carries every credential the platform holds: an archive
+                          travelling to `http://minio.internal:9000` travels in the clear, over
+                          whatever is between this cluster and that store. It is refused at admission
+                          rather than reported afterwards, and AllowInsecureEndpoint is how an
+                          installation that means it says so.
                         properties:
+                          allowInsecureEndpoint:
+                            description: |-
+                              AllowInsecureEndpoint permits an endpoint that is not `https://`.
+
+                              It exists because a store on a cluster-internal network is a real
+                              installation and not a mistake, and it is explicit for the reason
+                              every other opt-out here is: an archive going to a plaintext endpoint
+                              is every credential this platform holds on somebody else's wire, and
+                              that should be a sentence in the object rather than a silent default.
+                              The archive's own encryption is a separate decision and still applies.
+                            type: boolean
                           bucket:
                             description: |-
                               Bucket archives are written into. It should be a bucket of its own:
@@ -334,6 +352,9 @@ spec:
                             description: |-
                               Endpoint overrides AWS. This is what makes MinIO, R2, Backblaze,
                               Wasabi, Ceph and Garage the same code path rather than five backends.
+
+                              It must be an `https://` URL. Empty is the AWS endpoint, which is
+                              https either way.
                             type: string
                           forcePathStyle:
                             description: |-
@@ -370,6 +391,15 @@ spec:
                         required:
                         - bucket
                         type: object
+                        x-kubernetes-validations:
+                        - message: 'spec.backup.destination.s3.endpoint must be an
+                            https:// URL: the archive is every credential this platform
+                            holds, and an endpoint that is not https carries it in
+                            the clear. Set allowInsecureEndpoint if the store is genuinely
+                            reached over a network you trust.'
+                          rule: '!has(self.endpoint) || self.endpoint.size() == 0
+                            || self.endpoint.startsWith(''https://'') || (has(self.allowInsecureEndpoint)
+                            && self.allowInsecureEndpoint)'
                       type:
                         description: |-
                           Type is the kind of store. The enum lives on BackupDestinationType
@@ -386,6 +416,42 @@ spec:
                       rule: self.type != 's3' || has(self.s3)
                     - message: an s3 block belongs to a destination of type s3 alone.
                       rule: self.type == 's3' || !has(self.s3)
+                  encryption:
+                    description: |-
+                      Encryption is what protects an archive at the destination. Left empty
+                      it is AES-256-GCM under a key the operator supplied, and a run with no
+                      key to hand fails rather than uploading the platform's credentials in
+                      the clear.
+                    properties:
+                      keySecretRef:
+                        description: |-
+                          KeySecretRef names a Secret in the platform namespace holding the
+                          32-byte key under `key`. It is written by
+                          PUT /platform/backup/destination and never read back, like every other
+                          credential this API stores.
+
+                          **Keep a copy of that key off this cluster.** It is deliberately not in
+                          the archive — an archive carrying the key that opens it is an archive
+                          with no encryption — so an archive whose key was only ever in the
+                          cluster that died restores into nothing.
+                        properties:
+                          name:
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      mode:
+                        description: |-
+                          Mode is how the archive is encrypted before it is uploaded. Empty means
+                          BackupEncryptionAES256GCM: encryption is what an installation gets
+                          without saying anything, and BackupEncryptionNone is the explicit
+                          opt-out.
+                        enum:
+                        - aes256-gcm
+                        - none
+                        type: string
+                    type: object
                   retention:
                     description: |-
                       Retention is how many archives the destination keeps. Left empty,
@@ -1840,6 +1906,14 @@ spec:
                   destination:
                     description: 'Destination described, and never its credential:
                       "s3://bucket/prefix".'
+                    type: string
+                  encryption:
+                    description: |-
+                      Encryption is what is actually protecting the archives there:
+                      "aes256-gcm", or "none" where the installation opted out. It is
+                      reported rather than left to be inferred from the spec, because "what
+                      is in that bucket, and what would it take to read it" is the question
+                      somebody asks about a destination and not about a field.
                     type: string
                   lastFailure:
                     description: LastFailure is when a run last failed.

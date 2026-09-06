@@ -88,6 +88,12 @@ type backupScheduleView struct {
 	// Destination is where archives go, described and never echoed.
 	Destination *backupDestinationView `json:"destination,omitempty"`
 
+	// Encryption is what protects an archive at the destination, and it is
+	// served whether or not a destination is configured: an installation
+	// deciding where to write its archives should be able to read what will
+	// happen to them before it does.
+	Encryption backupEncryptionView `json:"encryption"`
+
 	// KeepLast and KeepDays are the retention. Absent is "keep everything",
 	// which is the safe default.
 	KeepLast *int32 `json:"keepLast,omitempty"`
@@ -123,15 +129,37 @@ type backupDestinationView struct {
 	ForcePathStyle       bool   `json:"forcePathStyle,omitempty"`
 	ServerSideEncryption string `json:"serverSideEncryption,omitempty"`
 	KMSKeyID             string `json:"kmsKeyId,omitempty"`
+	// AllowInsecureEndpoint is an endpoint that is not https, admitted on
+	// purpose. It is served because it is the kind of thing somebody should
+	// be able to find out about an installation they have inherited.
+	AllowInsecureEndpoint bool `json:"allowInsecureEndpoint,omitempty"`
 	// Credential says *how* the destination authenticates and never what
 	// with: a key this platform stores, or the ambient chain.
 	Credential string `json:"credential"`
+}
+
+// backupEncryptionView is what protects an archive at the destination, and —
+// like every credential surface here — says only whether there is a key, never
+// what it is.
+type backupEncryptionView struct {
+	// Mode is "aes256-gcm" or "none".
+	Mode string `json:"mode"`
+	// Key is "stored" or "absent". An installation encrypting its archives
+	// with no key stored is one whose next run will refuse to upload, which is
+	// the whole reason this is served rather than inferred.
+	Key string `json:"key"`
 }
 
 // The two things `credential` can say. Neither is a key.
 const (
 	backupCredentialStored  = "stored"
 	backupCredentialAmbient = "ambient"
+)
+
+// The two things `encryption.key` can say. Neither is a key either.
+const (
+	backupKeyStored = "stored"
+	backupKeyAbsent = "absent"
 )
 
 // newBackupScheduleView reads the singleton into the answer.
@@ -143,6 +171,13 @@ func newBackupScheduleView(kitchen *kitchenv1alpha1.Kitchen) backupScheduleView 
 		TimeoutMinutes: int32(controller.BackupTimeoutOf(kitchen).Minutes()),
 		KeepLast:       spec.Retention.KeepLast,
 		KeepDays:       spec.Retention.KeepDays,
+		Encryption: backupEncryptionView{
+			Mode: string(spec.Encryption.EffectiveMode()),
+			Key:  backupKeyAbsent,
+		},
+	}
+	if spec.Encryption.KeySecretRef != nil {
+		view.Encryption.Key = backupKeyStored
 	}
 	if destination := spec.Destination; destination != nil {
 		described := &backupDestinationView{
@@ -158,6 +193,7 @@ func newBackupScheduleView(kitchen *kitchenv1alpha1.Kitchen) backupScheduleView 
 			described.ForcePathStyle = s3.ForcePathStyle
 			described.ServerSideEncryption = s3.ServerSideEncryption
 			described.KMSKeyID = s3.KMSKeyID
+			described.AllowInsecureEndpoint = s3.AllowInsecureEndpoint
 			if s3.CredentialsSecretRef != nil {
 				described.Credential = backupCredentialStored
 			}
@@ -197,6 +233,27 @@ type putBackupDestinationRequest struct {
 	// Type is the destination kind. Empty means s3, which is the only one.
 	Type string              `json:"type,omitempty"`
 	S3   *s3DestinationWrite `json:"s3,omitempty"`
+
+	// Encryption is what will protect the archives written there. Absent
+	// leaves whatever this installation already decided — and on a first
+	// destination, "absent" is encrypted, because that is what an unset mode
+	// means everywhere else too.
+	Encryption *backupEncryptionWrite `json:"encryption,omitempty"`
+}
+
+// backupEncryptionWrite is the encryption half of that request. The key is
+// write-only: nothing in this package ever serializes it back out.
+type backupEncryptionWrite struct {
+	// Mode is "aes256-gcm" or "none". Empty leaves the mode alone.
+	Mode string `json:"mode,omitempty"`
+
+	// Key is 32 bytes as base64 or hex — `openssl rand -base64 32`. It is
+	// supplied and never generated here, for the reason a notification
+	// subscription's signing key is: a key this platform minted and answered
+	// once would live in a shell history, a browser's memory and whatever
+	// logged the response, and the day it is needed is the day this cluster
+	// is gone.
+	Key string `json:"key,omitempty"`
 }
 
 type s3DestinationWrite struct {
@@ -207,6 +264,12 @@ type s3DestinationWrite struct {
 	ForcePathStyle       bool   `json:"forcePathStyle,omitempty"`
 	ServerSideEncryption string `json:"serverSideEncryption,omitempty"`
 	KMSKeyID             string `json:"kmsKeyId,omitempty"`
+
+	// AllowInsecureEndpoint admits an endpoint that is not https. It is
+	// explicit because the archive is every credential this platform holds,
+	// and an endpoint that is not https puts it on somebody's wire in the
+	// clear — the rule notification webhooks already keep.
+	AllowInsecureEndpoint bool `json:"allowInsecureEndpoint,omitempty"`
 
 	// AccessKeyID and SecretAccessKey are the credential. Both or neither:
 	// half a key pair is a destination that cannot authenticate, and it
@@ -268,6 +331,15 @@ func (s *Server) putBackupDestination(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	endpoint := strings.TrimSpace(body.S3.Endpoint)
+	if endpoint != "" && !strings.HasPrefix(endpoint, "https://") && !body.S3.AllowInsecureEndpoint {
+		badRequest(w, "endpoint must be an https:// URL (got %q). The archive is every credential this "+
+			"platform holds, and an endpoint that is not https carries it in the clear — set "+
+			"allowInsecureEndpoint if the store really is reached over a network you trust. Empty is "+
+			"the AWS endpoint.", body.S3.Endpoint)
+		return
+	}
+
 	hasKey := body.S3.AccessKeyID != "" || body.S3.SecretAccessKey != ""
 	switch {
 	case hasKey && (body.S3.AccessKeyID == "" || body.S3.SecretAccessKey == ""):
@@ -280,17 +352,25 @@ func (s *Server) putBackupDestination(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	// What is going to protect the archive at that destination.
+	encryption, newEncryptionKey, problem := resolveBackupEncryption(kitchen.Spec.Backup.Encryption, body.Encryption)
+	if problem != "" {
+		badRequest(w, "%s", problem)
+		return
+	}
+
 	base := kitchen.DeepCopy()
 	destination := &kitchenv1alpha1.BackupDestination{
 		Type: kitchenv1alpha1.BackupDestinationS3,
 		S3: &kitchenv1alpha1.S3Destination{
-			Bucket:               strings.TrimSpace(body.S3.Bucket),
-			Prefix:               strings.Trim(strings.TrimSpace(body.S3.Prefix), "/"),
-			Region:               strings.TrimSpace(body.S3.Region),
-			Endpoint:             strings.TrimSpace(body.S3.Endpoint),
-			ForcePathStyle:       body.S3.ForcePathStyle,
-			ServerSideEncryption: body.S3.ServerSideEncryption,
-			KMSKeyID:             strings.TrimSpace(body.S3.KMSKeyID),
+			Bucket:                strings.TrimSpace(body.S3.Bucket),
+			Prefix:                strings.Trim(strings.TrimSpace(body.S3.Prefix), "/"),
+			Region:                strings.TrimSpace(body.S3.Region),
+			Endpoint:              endpoint,
+			ForcePathStyle:        body.S3.ForcePathStyle,
+			ServerSideEncryption:  body.S3.ServerSideEncryption,
+			KMSKeyID:              strings.TrimSpace(body.S3.KMSKeyID),
+			AllowInsecureEndpoint: body.S3.AllowInsecureEndpoint,
 		},
 	}
 
@@ -320,17 +400,35 @@ func (s *Server) putBackupDestination(w http.ResponseWriter, req *http.Request) 
 		}
 	}
 
+	// The archive's own key, where this request carried one. It is a Secret
+	// the operator owns and never reads back, exactly like the bucket's
+	// credential above — and the *only* copy that matters is the one whoever
+	// supplied it kept, because this one is on the cluster the archive exists
+	// to survive the loss of.
+	if newEncryptionKey != nil {
+		if err := s.writeCredentialsSecret(req, backup.EncryptionKeySecretName, map[string][]byte{
+			backup.EncryptionKeySecretKey: newEncryptionKey,
+		}, corev1.SecretTypeOpaque); err != nil {
+			s.writeError(w, err)
+			return
+		}
+		encryption.KeySecretRef = &kitchenv1alpha1.LocalObjectReference{Name: backup.EncryptionKeySecretName}
+	}
+
 	kitchen.Spec.Backup.Destination = destination
+	kitchen.Spec.Backup.Encryption = encryption
 	if !s.recorded(w, req, audit.Transition{
 		Object:    kitchen,
 		Kind:      audit.KindKitchen,
 		Operation: clickhouse.AuditUpdate,
 		Reason: "the platform's backup destination was set to " + backup.Describe(destination) +
-			", which makes that bucket this cluster's root credential store",
+			", which makes that bucket this cluster's root credential store; archives written there are " +
+			protectedAs(encryption),
 		Details: map[string]any{
 			"change":      "backupDestination",
 			"destination": backup.Describe(destination),
 			"credential":  credentialKind(destination),
+			"encryption":  string(encryption.EffectiveMode()),
 		},
 	}) {
 		return
@@ -378,6 +476,11 @@ func (s *Server) deleteBackupDestination(w http.ResponseWriter, req *http.Reques
 	// pair, so leaving it behind would turn this route's success into the
 	// API server's rejection.
 	kitchen.Spec.Backup.Retention = kitchenv1alpha1.BackupRetentionSpec{}
+	// The archive's encryption key deliberately does *not* go with it, unlike
+	// the bucket's credential. The credential opens a destination nothing is
+	// writing to any more; the key opens the archives that are still sitting
+	// in it, and deleting it here would be this route quietly destroying the
+	// only thing that can read them.
 	if !s.recorded(w, req, audit.Transition{
 		Object:    kitchen,
 		Kind:      audit.KindKitchen,
@@ -433,6 +536,65 @@ func existingDestinationCredential(kitchen *kitchenv1alpha1.Kitchen) *kitchenv1a
 		return nil
 	}
 	return destination.S3.CredentialsSecretRef
+}
+
+// resolveBackupEncryption reads the request's encryption half against what the
+// installation already decided, and answers the spec to write, the key to
+// store where the request carried one, and the refusal where there is one.
+//
+// The mode is a standing decision, so a request that says nothing keeps it; on
+// a first destination that is encryption, because an unset mode means
+// encrypted here as it does on the object. The refusal at the end is what
+// makes "encrypted by default" something an installation can rely on: there is
+// no fallback to uploading the platform's whole credential store in the clear,
+// so the decision is made here, once, with both ways out named.
+func resolveBackupEncryption(
+	stored kitchenv1alpha1.BackupEncryptionSpec,
+	requested *backupEncryptionWrite,
+) (kitchenv1alpha1.BackupEncryptionSpec, []byte, string) {
+	encryption := stored
+	var key []byte
+	if requested != nil {
+		switch mode := kitchenv1alpha1.BackupEncryptionMode(strings.TrimSpace(requested.Mode)); mode {
+		case "":
+		case kitchenv1alpha1.BackupEncryptionAES256GCM, kitchenv1alpha1.BackupEncryptionNone:
+			encryption.Mode = mode
+		default:
+			return encryption, nil, fmt.Sprintf("encryption.mode must be %q or %q (got %q)",
+				kitchenv1alpha1.BackupEncryptionAES256GCM, kitchenv1alpha1.BackupEncryptionNone,
+				requested.Mode)
+		}
+		if strings.TrimSpace(requested.Key) != "" {
+			parsed, err := backup.ParseEncryptionKey(requested.Key)
+			if err != nil {
+				return encryption, nil, err.Error()
+			}
+			key = parsed
+		}
+	}
+	if encryption.Encrypted() && key == nil && encryption.KeySecretRef == nil {
+		return encryption, nil,
+			"archives are encrypted before they are uploaded, and this platform has no key to " +
+				"encrypt them with. Supply encryption.key — 32 bytes as base64 or hex, `openssl rand " +
+				"-base64 32` — and keep a copy of it off this cluster, because it is deliberately not " +
+				"in the archive and an archive whose key is gone restores into nothing. To write " +
+				"archives in the clear on purpose, send encryption.mode: \"" +
+				string(kitchenv1alpha1.BackupEncryptionNone) + "\"."
+	}
+	return encryption, key, ""
+}
+
+// protectedAs is what happens to an archive at the destination, in the words
+// an audit record should carry it in. An installation that turned encryption
+// off should be able to find the moment it did in the audit log, and read
+// there what it means — that is the difference between a decision and an
+// omission.
+func protectedAs(encryption kitchenv1alpha1.BackupEncryptionSpec) string {
+	if encryption.Encrypted() {
+		return "encrypted with this platform's own key before they are uploaded"
+	}
+	return "uploaded unencrypted, so every credential this platform holds is readable by whoever can " +
+		"read that bucket"
 }
 
 // credentialKind says how a destination authenticates, for the audit record.

@@ -51,8 +51,16 @@ import (
 // `kitchen backup run` takes one to the destination now, which is how an
 // operator finds out on the day they configure it whether the credential
 // works. Configuring the destination stays `kitchen api PUT
-// /platform/backup/destination`: a one-time operator setup with a credential
-// in it, which is exactly what that fallback is for.
+// /platform/backup/destination`: a one-time operator setup with two
+// credentials in it — the bucket's key, and the key the archive itself is
+// encrypted under — which is exactly what that fallback is for.
+//
+// The archive `kitchen backup` writes is not encrypted, and that is the whole
+// difference between the two halves. It came over this API's own TLS to
+// somebody who asked for it, so encrypting it would mean handing them a file
+// and its key in the same breath; an archive a schedule uploads sits in
+// somebody's bucket, and is encrypted before it leaves the cluster. See
+// docs/BACKUP.md.
 //
 // There is no `kitchen restore`, and there cannot be. A restore happens into a
 // cluster whose accounts database is gone, so the credentials this command

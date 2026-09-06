@@ -300,7 +300,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | PATCH | `/platform/retention` | Change any class's retention. Refuses an audit retention under the documented floor without an explicit override | `operator` |
 | GET | `/platform/backup` | What an export would carry, what it would not, and whether this cluster can snapshot volumes | `operator` |
 | POST | `/platform/backup` | Export the platform's state as one gzipped tar | `operator` |
-| PUT | `/platform/backup/destination` | Set where scheduled archives are written. Carries the bucket's credential; echoes none of it | `operator` |
+| PUT | `/platform/backup/destination` | Set where scheduled archives are written, and what encrypts them there. Carries the bucket's credential and the archive's key; echoes neither | `operator` |
 | DELETE | `/platform/backup/destination` | Remove the destination and the credential this API wrote for it | `operator` |
 | GET | `/platform/backup/runs` | What the destination actually holds: key, size, time | `operator` |
 | POST | `/platform/backup/runs` | Take a backup to the destination now. `202` with the Job's name | `operator` |
