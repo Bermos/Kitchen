@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.33.4](https://github.com/Bermos/Kitchen/compare/v0.33.3...v0.33.4) (2026-09-06)
+
+
+### Bug fixes
+
+* **api:** give every condition a severity, so a setting is not a failure ([#453](https://github.com/Bermos/Kitchen/issues/453)) ([720316a](https://github.com/Bermos/Kitchen/commit/720316a01a0e271e971d35a0f8d76fc1d75c489e))
+* **claims:** give a self-hosted inngest claim a deletionPolicy ([#454](https://github.com/Bermos/Kitchen/issues/454)) ([ab039fb](https://github.com/Bermos/Kitchen/commit/ab039fb8db3705e519747f2ab945087eb8b697d5)), closes [#407](https://github.com/Bermos/Kitchen/issues/407)
+* **clickhouse:** cast resource aggregates before coercing non-finite ones ([#452](https://github.com/Bermos/Kitchen/issues/452)) ([a757a7b](https://github.com/Bermos/Kitchen/commit/a757a7bb6dea3ff44d075158f19f26f97ffe0553))
+
 ## [0.33.3](https://github.com/Bermos/Kitchen/compare/v0.33.2...v0.33.3) (2026-09-06)
 
 
