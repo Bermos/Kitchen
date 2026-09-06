@@ -43,6 +43,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
+	"github.com/Bermos/Kitchen/internal/platformhost"
 )
 
 const (
@@ -61,6 +62,12 @@ const (
 	// not. It is absent on a project with no ceiling and on one that gets no
 	// previews at all.
 	condPreviewCapacity = "PreviewCapacity"
+
+	// condHostnameAvailable says whether this project's name is one it may
+	// publish under. It is only ever False: an ordinary project carries no
+	// such condition, because "the name is fine" is true of every project
+	// and worth a line on none of them.
+	condHostnameAvailable = "HostnameAvailable"
 
 	// reasonNoRepository is a repository's answer asked of a project that has
 	// none, because its source is an image somebody else built (#307).
@@ -188,6 +195,12 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		retryInitialBuild bool
 		err               error
 	)
+	// A name the API would have refused (#423). Only a Project written
+	// straight to the cluster gets this far, and it gets no route from any of
+	// its environments — so the reason is said here too, where somebody
+	// looking at the project will find it.
+	nameRefusal := r.checkHostname(ctx, project, setCond)
+
 	r.setPreviewsCondition(project, setCond)
 	if err := r.measurePreviewCapacity(ctx, project, setCond); err != nil {
 		return ctrl.Result{}, err
@@ -225,6 +238,8 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// look at but a sub-condition.
 	initialBuild := meta.FindStatusCondition(project.Status.Conditions, condInitialBuild)
 	switch {
+	case nameRefusal != nil:
+		setCond(condReady, metav1.ConditionFalse, reasonReservedHostname, nameRefusal.Error())
 	case !sourceOK || !registryOK:
 		setCond(condReady, metav1.ConditionFalse, "ConnectionsNotReady", "one or more connections are not ready")
 	case initialBuild != nil && initialBuild.Status == metav1.ConditionFalse &&
@@ -402,6 +417,33 @@ func (r *ProjectReconciler) deleteDependents(ctx context.Context, project *kitch
 		}
 	}
 	return len(doomed), nil
+}
+
+// checkHostname records whether the project's name is one it may publish
+// under. The rule is the API's — platformhost.CheckProjectName, the same call
+// POST /api/v1/projects makes — so the two cannot say different things about
+// one name; this is the backstop for a Project that never went through the
+// API. The base domain is read best effort and only for the message: a
+// platform whose singleton cannot be read still reserves the same labels.
+func (r *ProjectReconciler) checkHostname(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+	setCond func(string, metav1.ConditionStatus, string, string),
+) error {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	baseDomain := ""
+	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err == nil {
+		baseDomain = kitchen.Spec.BaseDomain
+	}
+	refusal := platformhost.CheckProjectName(project.Name, baseDomain)
+	if refusal == nil {
+		meta.RemoveStatusCondition(&project.Status.Conditions, condHostnameAvailable)
+		return nil
+	}
+	setCond(condHostnameAvailable, metav1.ConditionFalse, reasonReservedHostname,
+		refusal.Error()+". No environment of this project is published; delete it and create one "+
+			"under another name")
+	return refusal
 }
 
 // checkConnection loads a Connection and records a condition. When the
@@ -589,7 +631,7 @@ func apiExternalURL(kitchen *kitchenv1alpha1.Kitchen) string {
 	if kitchen.Spec.API.ExternalURL != "" {
 		return kitchen.Spec.API.ExternalURL
 	}
-	return platformScheme(kitchen) + "://kitchen." + kitchen.Spec.BaseDomain
+	return platformScheme(kitchen) + "://" + platformhost.Host(platformhost.API, kitchen.Spec.BaseDomain)
 }
 
 // mapBuildToProject enqueues the project a Build belongs to, so that

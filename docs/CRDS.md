@@ -836,9 +836,11 @@ spec:
                                         # `content` is refused here
 status:
   conditions: [...]                     # Ready, Previews, PreviewCapacity, SourceConnected,
-                                        # RegistryConnected, WebhookRegistered, InitialBuild. The
-                                        # last three belong to a repository and are absent without
-                                        # one; PreviewCapacity is absent where there is no ceiling
+                                        # RegistryConnected, WebhookRegistered, InitialBuild,
+                                        # HostnameAvailable. The middle three belong to a
+                                        # repository and are absent without one; PreviewCapacity
+                                        # is absent where there is no ceiling, and
+                                        # HostnameAvailable only ever appears False
   productionEnvironmentRef: { name: my-shop-production }
   latestBuildRef: { name: my-shop-bld-8f3a2c1 }
   initialBuildRef: { name: my-shop-bld-8f3a2c1 }   # the build the platform made
@@ -884,6 +886,24 @@ there for the application — `kitchen-project-secrets` and
 `kitchen-project-files` — and everything without the prefix is unaffected: a
 claim's binding, a Secret an external operator syncs in, a Secret somebody
 created for this project.
+
+**A project's name becomes a hostname, so some names are not a project's to
+take.** The name has to work as a DNS label of at most 46 characters — every
+name the platform derives from it has to fit Kubernetes' 63-character limit —
+and beyond that it may not be one the platform already publishes under
+`spec.baseDomain`: `kitchen` (the API and the dashboard), `auth` (the identity
+provider), `previews` (the preview gate) or `registry` (the bundled registry).
+Nor may it have the shape `<name>-pr-<number>`, which is where the platform
+publishes another project's pull request preview. The list is
+`internal/platformhost`, which is also where the operator's own hostnames come
+from.
+
+`POST /api/v1/projects` refuses such a name outright. A Project written
+straight to the cluster never met that refusal, so the reconciler repeats it:
+`HostnameAvailable=False` with reason `ReservedHostname` on the Project, and
+`Ready=False` alongside it — and every one of its Environments stops short of
+its route, carrying `RouteProgrammed=False` for the same reason. The workloads
+still run; publishing them is the part that would collide.
 
 `initialBuildRef` is what makes a new project deploy without waiting for a
 push: the reconciler resolves the production branch's tip and creates one

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/platformhost"
 	"github.com/Bermos/Kitchen/internal/previewgate"
 )
 
@@ -39,8 +40,9 @@ const (
 	PreviewGateClientSecretName = "kitchen-preview-gate-oidc"
 
 	// PreviewGateHostPrefix is the subdomain the gate finishes logins on:
-	// previews.<baseDomain>.
-	PreviewGateHostPrefix = "previews"
+	// previews.<baseDomain>. It comes from platformhost because the same
+	// label is what a project may not be named (#423).
+	PreviewGateHostPrefix = platformhost.PreviewGate
 
 	// previewGatePort is the Service port protected routes send traffic to,
 	// and the container port behind it.

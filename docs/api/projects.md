@@ -188,6 +188,36 @@ rather than being handed the API server's account of an object in a namespace:
 {"error": "the project name \"shop\" is taken: names are one flat namespace under the platform's base domain, since every URL the platform generates is a subdomain of it, so they are first-come-first-served — choose another name"}
 ```
 
+**Some names in that namespace are the platform's own, and a few more are
+another project's previews.** They are refused with a `400` that names the
+hostname rather than left to collide on the shared Gateway:
+
+- The labels the platform publishes under the base domain — `kitchen` (this
+  API and the dashboard), `auth` (the identity provider), `previews` (the gate
+  protected previews are signed in at) and `registry` (the bundled container
+  registry). A project of one of those names would write a second HTTPRoute
+  for an address the platform already answers on, on the same Gateway and
+  under the same wildcard certificate.
+- Anything of the form `<name>-pr-<number>`. That is the shape of a generated
+  preview hostname, so a project named `shop-pr-7` would publish
+  `shop-pr-7.<baseDomain>` — which is also where project `shop` publishes pull
+  request 7.
+
+```json
+{"error": "name \"auth\" is reserved: the platform publishes auth.apps.example.com — the identity provider every sign-in goes through. Choose another name"}
+```
+
+The list is [`internal/platformhost`](../../internal/platformhost), which is
+also where the operator's own hostnames are spelled, so a platform hostname
+cannot be added without being reserved. The operator repeats the refusal as a
+backstop for a Project written straight to the cluster: the Project carries
+`HostnameAvailable=False` and none of its environments is published
+(`RouteProgrammed=False`, reason `ReservedHostname`).
+
+The same rule is why a custom domain *under* the base domain is refused
+outright — see [domains](domains.md): names there are generated and routed
+already.
+
 Answers `201` with the new project. The operator takes it from there:
 namespace, webhook, and — once the first build of the production branch
 lands — the production environment.
