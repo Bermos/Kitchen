@@ -23,6 +23,15 @@ export function timeAgo(iso: string | undefined): string {
   return `${rounded} ${unit}${rounded === 1 ? "" : "s"} ago`;
 }
 
+/** A timestamp in full, for the tooltip behind a relative one. Empty for a
+ *  timestamp that is absent or unreadable, so a `title` binding disappears
+ *  rather than reading "Invalid Date". */
+export function exactTime(iso: string | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("en-GB");
+}
+
 /** Duration between two timestamps as the mockup renders it: `1m 43s`. */
 export function duration(from?: string, to?: string): string {
   if (!from) return "—";

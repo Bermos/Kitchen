@@ -356,7 +356,7 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 
 	s.log().Info("environment requirements changed through the api",
 		"environment", env.Name, "project", env.Spec.ProjectRef.Name, "caller", callerName(caller))
-	writeJSON(w, http.StatusOK, newEnvironmentView(env))
+	writeJSON(w, http.StatusOK, s.environmentView(ctx, env))
 }
 
 // eligibilityBody is what GET .../eligibility answers: the environment's bar,

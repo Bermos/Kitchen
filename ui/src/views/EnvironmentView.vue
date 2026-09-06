@@ -10,7 +10,7 @@ import {
   type Release,
   type WorkloadPod,
 } from "../lib/api";
-import { shortImage, timeAgo, uptime } from "../lib/format";
+import { exactTime, shortImage, shortSHA, timeAgo, uptime } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { operatorMode } from "../lib/mode";
@@ -32,6 +32,7 @@ import RequestsPanel from "../components/RequestsPanel.vue";
 import RequirementsPanel from "../components/RequirementsPanel.vue";
 import ResourceHistory from "../components/ResourceHistory.vue";
 import RollbackPanel from "../components/RollbackPanel.vue";
+import SourceLink from "../components/SourceLink.vue";
 import StatusDot from "../components/StatusDot.vue";
 
 const route = useRoute();
@@ -357,8 +358,11 @@ function historyBy(entry: { reason: string; by?: string }): string {
           </UBadge>
         </template>
         <template #meta>
+          <!-- A preview exists because of a pull request, and the platform is
+               the only thing that knows which one. -->
           <span v-if="environment.preview" class="font-mono">
-            #{{ environment.preview.pullRequest }} · {{ environment.preview.branch }}
+            <SourceLink :href="environment.preview.pullRequestUrl">#{{ environment.preview.pullRequest }}</SourceLink> ·
+            <SourceLink :href="environment.preview.branchUrl">{{ environment.preview.branch }}</SourceLink>
           </span>
           <span>created {{ timeAgo(environment.createdAt) }}</span>
         </template>
@@ -461,6 +465,15 @@ function historyBy(entry: { reason: string; by?: string }): string {
             observed {{ environment.observedRelease || "—"
             }}<template v-if="environment.observedRelease && environment.observedRelease !== environment.release">
               — still rolling</template
+            >
+          </p>
+          <!-- The commit this is actually running, which is what a release
+               name stands for and does not say. -->
+          <p v-if="environment.git?.sha" class="text-xs text-dimmed font-mono mt-0.5">
+            <SourceLink :href="environment.git.commitUrl">{{ shortSHA(environment.git.sha) }}</SourceLink> ·
+            <SourceLink :href="environment.git.branchUrl">{{ environment.git.branch }}</SourceLink
+            ><span v-if="environment.git.committedAt" :title="exactTime(environment.git.committedAt)">
+              · committed {{ timeAgo(environment.git.committedAt) }}</span
             >
           </p>
         </div>

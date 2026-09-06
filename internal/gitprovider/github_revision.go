@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
@@ -31,8 +32,12 @@ type githubCommit struct {
 	Commit struct {
 		Message string `json:"message"`
 		Author  struct {
-			Name string `json:"name"`
+			Name string    `json:"name"`
+			Date time.Time `json:"date"`
 		} `json:"author"`
+		Committer struct {
+			Date time.Time `json:"date"`
+		} `json:"committer"`
 	} `json:"commit"`
 	Author *struct {
 		Login string `json:"login"`
@@ -63,12 +68,21 @@ func (g *GitHub) HeadRevision(ctx context.Context, repo, ref string) (Revision, 
 	if commit.Author != nil && commit.Author.Login != "" {
 		author = commit.Author.Login
 	}
+	// The committer's date is when this commit came to be on this branch,
+	// which is the question "how old is what we are running" is asking. A
+	// rebased or cherry-picked commit keeps an author date from before it
+	// existed here, so that is the fallback rather than the answer.
+	committedAt := commit.Commit.Committer.Date
+	if committedAt.IsZero() {
+		committedAt = commit.Commit.Author.Date
+	}
 	subject, body := kitchenv1alpha1.SplitCommitMessage(commit.Commit.Message)
 	return Revision{
-		SHA:     commit.SHA,
-		Branch:  ref,
-		Message: subject,
-		Body:    body,
-		Author:  author,
+		SHA:         commit.SHA,
+		Branch:      ref,
+		Message:     subject,
+		Body:        body,
+		Author:      author,
+		CommittedAt: committedAt,
 	}, nil
 }

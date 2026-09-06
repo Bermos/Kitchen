@@ -129,9 +129,12 @@ type fileWrite struct {
 
 // project is `GET /projects/{name}`.
 type project struct {
-	Name                  string      `json:"name"`
-	Role                  string      `json:"role"`
-	Repo                  string      `json:"repo"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+	Repo string `json:"repo"`
+	// RepositoryURL is where that repository is on the provider's own site,
+	// composed by the API from the connection (#435).
+	RepositoryURL         string      `json:"repositoryUrl,omitempty"`
 	Connection            string      `json:"connection"`
 	Registry              string      `json:"registry"`
 	ProductionBranch      string      `json:"productionBranch"`
@@ -221,12 +224,23 @@ type detection struct {
 }
 
 // revision is the commit a build was of.
+//
+// The three URLs are the API's own answer, composed from the project's
+// connection because the host is the connection's — a GitLab or Gitea
+// connection can name a forge anybody self-hosted — so nothing here derives
+// one and `--json` carries what the platform said (#435). CommittedAt is when
+// the commit was made, which is not when the build was: a rebuild, a first
+// build and a redeploy are all of a commit older than themselves.
 type revision struct {
-	SHA         string `json:"sha"`
-	Branch      string `json:"branch"`
-	Message     string `json:"message,omitempty"`
-	Author      string `json:"author,omitempty"`
-	PullRequest *int32 `json:"pullRequest,omitempty"`
+	SHA            string     `json:"sha"`
+	Branch         string     `json:"branch"`
+	Message        string     `json:"message,omitempty"`
+	Author         string     `json:"author,omitempty"`
+	PullRequest    *int32     `json:"pullRequest,omitempty"`
+	CommittedAt    *time.Time `json:"committedAt,omitempty"`
+	CommitURL      string     `json:"commitUrl,omitempty"`
+	BranchURL      string     `json:"branchUrl,omitempty"`
+	PullRequestURL string     `json:"pullRequestUrl,omitempty"`
 }
 
 // artifact is what a build produced, by content.
@@ -841,6 +855,9 @@ type release struct {
 	Image        string    `json:"image"`
 	Environments []string  `json:"environments,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
+	// Git is the commit this release froze, on the single release read alone
+	// — answering it means reading the build behind the release (#435).
+	Git *revision `json:"git,omitempty"`
 }
 
 // configDiff is what a move between two releases would change: the answer to
@@ -899,6 +916,10 @@ type processChange struct {
 type preview struct {
 	PullRequest int32  `json:"pullRequest"`
 	Branch      string `json:"branch"`
+	// PullRequestURL and BranchURL are where that request and its branch are
+	// on the provider's own site (#435).
+	PullRequestURL string `json:"pullRequestUrl,omitempty"`
+	BranchURL      string `json:"branchUrl,omitempty"`
 }
 
 // releaseHistory is one stint of a release being current on an environment:
@@ -915,17 +936,20 @@ type releaseHistory struct {
 // environment is `GET /environments/{name}`. Phase is one of Pending,
 // Deploying, Live, Degraded or Terminating.
 type environment struct {
-	Name            string           `json:"name"`
-	Project         string           `json:"project"`
-	Type            string           `json:"type"`
-	Release         string           `json:"release"`
-	ObservedRelease string           `json:"observedRelease,omitempty"`
-	Phase           string           `json:"phase,omitempty"`
-	URL             string           `json:"url,omitempty"`
-	Preview         *preview         `json:"preview,omitempty"`
-	History         []releaseHistory `json:"history,omitempty"`
-	CreatedAt       time.Time        `json:"createdAt"`
-	Conditions      []condition      `json:"conditions,omitempty"`
+	Name            string   `json:"name"`
+	Project         string   `json:"project"`
+	Type            string   `json:"type"`
+	Release         string   `json:"release"`
+	ObservedRelease string   `json:"observedRelease,omitempty"`
+	Phase           string   `json:"phase,omitempty"`
+	URL             string   `json:"url,omitempty"`
+	Preview         *preview `json:"preview,omitempty"`
+	// Git is the commit this environment is currently running, on the single
+	// environment read alone (#435).
+	Git        *revision        `json:"git,omitempty"`
+	History    []releaseHistory `json:"history,omitempty"`
+	CreatedAt  time.Time        `json:"createdAt"`
+	Conditions []condition      `json:"conditions,omitempty"`
 }
 
 // The two conditions a followed deploy reads an environment's phase through,

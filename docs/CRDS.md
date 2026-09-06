@@ -1288,6 +1288,11 @@ spec:
     branch: feat/checkout               # resolves a digest and runs no builder. A SHA and a
     message: "Add checkout flow"        # branch, or neither: half a commit is refused at
     author: bermos                      # admission, and nothing fakes one
+    committedAt: 2026-07-11T09:30:00Z   # when the commit was made, as the provider reported it — not when
+                                        # this Build was created, which is the only date anything carried
+                                        # before. A first build, a rebuild and a redeploy are all of a
+                                        # commit older than themselves. Unset where the provider did not
+                                        # say, which is "unknown" and never "now"
     pullRequest: 42                     # unset for direct pushes
     forkRepo: stranger/my-shop          # set only when the pull request's head lives somewhere other than
                                         # the project's own repository — so a non-empty value is "this is a

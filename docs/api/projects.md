@@ -24,6 +24,13 @@ their defaults:
 {"productionBranch": "main", "previews": true}
 ```
 
+A project reads back with `repositoryUrl` beside `repo`: where that repository
+is on the provider's own site, composed by the API from the connection because
+the host is the connection's — see
+[Builds](builds.md#the-date-and-the-links-back-to-the-source). It is absent for
+a project with no repository, and for a connection the platform has no web
+routing for.
+
 ### A project whose software this platform did not build
 
 A project's source is one of two things, and exactly one of them is sent: a

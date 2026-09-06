@@ -158,7 +158,12 @@ type projectView struct {
 	// web process running an image this platform did not build — and the two
 	// groups never both carry anything: a project's source is one or the
 	// other (#307).
-	Repo               string           `json:"repo"`
+	Repo string `json:"repo"`
+	// RepositoryURL is where that repository is on the provider's own site,
+	// composed from the Connection because the host is the connection's
+	// (#435). Absent for a project with no repository, and for a connection
+	// the platform has no web routing for.
+	RepositoryURL      string           `json:"repositoryUrl,omitempty"`
 	Connection         string           `json:"connection"`
 	Registry           string           `json:"registry"`
 	Image              *imageSourceView `json:"image,omitempty"`
@@ -286,11 +291,12 @@ func newImageSourceView(image *kitchenv1alpha1.ImageSourceSpec) *imageSourceView
 	}
 }
 
-func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole) projectView {
+func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole, links sourceLinks) projectView {
 	view := projectView{
 		Name:               project.Name,
 		Role:               role.String(),
 		Repo:               project.Spec.Source.GitSource().Repo,
+		RepositoryURL:      links.repositoryURL(),
 		Connection:         project.Spec.Source.GitSource().ConnectionRef.Name,
 		Registry:           project.Spec.RegistryConnection(),
 		Image:              newImageSourceView(project.Spec.Source.Image),
@@ -485,26 +491,50 @@ type revisionView struct {
 	Body        string `json:"body,omitempty"`
 	Author      string `json:"author,omitempty"`
 	PullRequest *int32 `json:"pullRequest,omitempty"`
+	// CommittedAt is when the commit was made, which is not when the build
+	// was: a first build, a rebuild and a redeploy are all of a commit older
+	// than themselves, and a truncated SHA says nothing about its own age
+	// (#435). Absent where the provider did not say.
+	CommittedAt *time.Time `json:"committedAt,omitempty"`
+	// CommitURL, BranchURL and PullRequestURL are where this commit, its
+	// branch and its pull request are on the provider's own site. They are
+	// composed here, from the project's Connection, because the host is the
+	// connection's and not a constant — the same reason the API URL is.
+	//
+	// Each is absent where there is nothing to link: a build with no commit,
+	// a project whose connection is gone, a provider the platform has no web
+	// routing for. A commit pushed from a fork addresses the fork, which is
+	// the only repository it is in.
+	CommitURL      string `json:"commitUrl,omitempty"`
+	BranchURL      string `json:"branchUrl,omitempty"`
+	PullRequestURL string `json:"pullRequestUrl,omitempty"`
 }
 
 // newRevisionView answers the subject and the body separately whatever the
 // Build holds. One recorded before the platform split them has the whole
 // message under `message` and its spec is immutable, so the split happens
 // here rather than in each of the three clients.
-func newRevisionView(build *kitchenv1alpha1.Build) revisionView {
+func newRevisionView(build *kitchenv1alpha1.Build, links sourceLinks) revisionView {
 	git := build.Spec.Git
 	body := git.Body
 	if body == "" {
 		body = kitchenv1alpha1.CommitBody(git.Message)
 	}
-	return revisionView{
-		SHA:         git.SHA,
-		Branch:      git.Branch,
-		Message:     kitchenv1alpha1.CommitSubject(git.Message),
-		Body:        body,
-		Author:      git.Author,
-		PullRequest: build.PullRequestNumber(),
+	view := revisionView{
+		SHA:            git.SHA,
+		Branch:         git.Branch,
+		Message:        kitchenv1alpha1.CommitSubject(git.Message),
+		Body:           body,
+		Author:         git.Author,
+		PullRequest:    build.PullRequestNumber(),
+		CommitURL:      links.commitURL(git),
+		BranchURL:      links.branchURL(git),
+		PullRequestURL: links.pullRequestURL(build.PullRequestNumber()),
 	}
+	if at := git.CommittedAt; at != nil {
+		view.CommittedAt = &at.Time
+	}
+	return view
 }
 
 type buildView struct {
@@ -977,12 +1007,12 @@ func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
 	return view
 }
 
-func newBuildView(build *kitchenv1alpha1.Build) buildView {
+func newBuildView(build *kitchenv1alpha1.Build, links sourceLinks) buildView {
 	view := buildView{
 		Name:              build.Name,
 		Project:           build.Spec.ProjectRef.Name,
 		Phase:             string(build.Status.Phase),
-		Git:               newRevisionView(build),
+		Git:               newRevisionView(build, links),
 		DetectedFramework: build.Status.DetectedFramework,
 		DockerfileTarget:  build.Status.DockerfileTarget,
 		Config:            newRepoConfigView(build.Status.Config),
@@ -1023,6 +1053,12 @@ type releaseView struct {
 	// when some do. It is on the single release read and not on a listing,
 	// because answering it means reading the build that produced the release.
 	Attestation *unitAttestationView `json:"attestation,omitempty"`
+	// Git is the commit this release froze, with its links back to the
+	// provider (#435). It is on the single release read for the same reason
+	// the attestation is — the commit is the build's, and the build has to be
+	// read to answer it — and absent where that build has been pruned, or
+	// where it acquired an image rather than building a commit.
+	Git *revisionView `json:"git,omitempty"`
 }
 
 // unitAttestationView is the Release-level answer to "is this attested",
@@ -1096,9 +1132,19 @@ func newReleaseView(release *kitchenv1alpha1.Release) releaseView {
 	}
 }
 
+// previewView is the pull request a preview environment exists for. The URL
+// is the sharpest of the source links (#435): a preview exists *because* of a
+// pull request, the platform is the only thing that knows the number, and
+// getting to the discussion it belongs to used to mean copying that number
+// into a URL bar.
 type previewView struct {
 	PullRequest int32  `json:"pullRequest"`
 	Branch      string `json:"branch"`
+	// PullRequestURL is where that request is, absent where the project's
+	// connection cannot be addressed.
+	PullRequestURL string `json:"pullRequestUrl,omitempty"`
+	// BranchURL is the branch the request is from, on the same terms.
+	BranchURL string `json:"branchUrl,omitempty"`
 }
 
 // releaseHistoryView is one completed stint of a release being current on an
@@ -1179,6 +1225,12 @@ type environmentView struct {
 	// pod behind it, which is the operator's half and is why it is a field
 	// rather than more words in the message (#393).
 	Refusal *refusalView `json:"refusal,omitempty"`
+	// Git is the commit this environment is currently running, with its links
+	// back to the provider (#435) — the answer to "what is actually deployed
+	// here", which was a release name and a build name and no commit at all.
+	// It is on the single environment read alone, because answering it means
+	// reading the release and then the build behind it.
+	Git *revisionView `json:"git,omitempty"`
 }
 
 // refusalView is the kubelet's refusal of one of this environment's
@@ -1192,7 +1244,7 @@ type refusalView struct {
 	Message   string `json:"message,omitempty"`
 }
 
-func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
+func newEnvironmentView(env *kitchenv1alpha1.Environment, links sourceLinks) environmentView {
 	view := environmentView{
 		Name:            env.Name,
 		Project:         env.Spec.ProjectRef.Name,
@@ -1212,7 +1264,12 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment) environmentView {
 		Conditions:      conditionViews(env.Status.Conditions),
 	}
 	if preview := env.Spec.Preview; preview != nil {
-		view.Preview = &previewView{PullRequest: preview.PullRequest, Branch: preview.Branch}
+		view.Preview = &previewView{
+			PullRequest:    preview.PullRequest,
+			Branch:         preview.Branch,
+			PullRequestURL: links.pullRequestURL(&preview.PullRequest),
+			BranchURL:      links.branchURL(kitchenv1alpha1.GitRevision{Branch: preview.Branch}),
+		}
 	}
 	if refusal := env.Status.Refusal; refusal != nil {
 		view.Refusal = &refusalView{

@@ -3,11 +3,12 @@ import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build } from "../lib/api";
 import { buildFailureLine, buildStallLine } from "../lib/builds";
-import { duration, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
+import { duration, exactTime, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { useAsync, usePoll } from "../lib/useAsync";
 import CommitBody from "../components/CommitBody.vue";
 import CommitBodyToggle from "../components/CommitBodyToggle.vue";
+import SourceLink from "../components/SourceLink.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 
@@ -167,9 +168,18 @@ const visible = computed(() => (project.value ? (data.value ?? []).filter((b) =>
                     @toggle="toggleMessage(build.name)"
                   />
                 </span>
+                <!-- The commit, its branch and its request, each a link back
+                     to the code — and how old the commit is, which is the one
+                     thing a truncated SHA cannot say about itself. -->
                 <span class="block text-xs text-muted font-mono mt-0.5">
-                  {{ shortSHA(build.git.sha) }} · {{ build.git.branch
-                  }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>
+                  <SourceLink :href="build.git.commitUrl">{{ shortSHA(build.git.sha) }}</SourceLink> ·
+                  <SourceLink :href="build.git.branchUrl">{{ build.git.branch }}</SourceLink
+                  ><span v-if="build.git.pullRequest">
+                    ·
+                    <SourceLink :href="build.git.pullRequestUrl">#{{ build.git.pullRequest }}</SourceLink></span
+                  ><span v-if="build.git.committedAt" :title="exactTime(build.git.committedAt)">
+                    · committed {{ timeAgo(build.git.committedAt) }}</span
+                  >
                 </span>
                 <!-- Why it failed, on the row, so that a list of failures is
                      readable as a list of *different* failures. -->

@@ -185,6 +185,14 @@ func buildForRevision(
 	revision gitprovider.Revision,
 	branch string,
 ) *kitchenv1alpha1.Build {
+	// A first build is the one build that is routinely of an old commit: the
+	// repository existed before the project did, and its trunk was last
+	// touched whenever it was last touched. Carrying the date is what stops
+	// that reading as a commit made just now (#435).
+	var committedAt *metav1.Time
+	if !revision.CommittedAt.IsZero() {
+		committedAt = &metav1.Time{Time: revision.CommittedAt}
+	}
 	return &kitchenv1alpha1.Build{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      kitchenv1alpha1.BuildNameFor(project.Name, revision.SHA),
@@ -197,11 +205,12 @@ func buildForRevision(
 		Spec: kitchenv1alpha1.BuildSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
 			Git: kitchenv1alpha1.GitRevision{
-				SHA:     revision.SHA,
-				Branch:  branch,
-				Message: revision.Message,
-				Body:    revision.Body,
-				Author:  revision.Author,
+				SHA:         revision.SHA,
+				Branch:      branch,
+				Message:     revision.Message,
+				Body:        revision.Body,
+				Author:      revision.Author,
+				CommittedAt: committedAt,
 			},
 		},
 	}

@@ -151,6 +151,21 @@ type GitRevision struct {
 	// +optional
 	Author string `json:"author,omitempty"`
 
+	// CommittedAt is when the commit was made, as the provider reported it —
+	// not when this Build was created, which is the only date anything showed
+	// before it existed (#435). The two are the same for a push and can be
+	// months apart for anything else: a first build of an existing
+	// repository, a rebuild, a redeploy of a release. A seven-character SHA
+	// says nothing about its own age, so a stale commit deploying for hours
+	// looked exactly like a fresh one.
+	//
+	// Empty for a Build whose provider did not say — a pull request event
+	// carries the head SHA and no date on GitHub and Gitea — and for every
+	// Build recorded before this field existed. Empty is "unknown", never
+	// "now".
+	// +optional
+	CommittedAt *metav1.Time `json:"committedAt,omitempty"`
+
 	// Pull request number, when the commit belongs to one.
 	// +optional
 	PullRequest *int32 `json:"pullRequest,omitempty"`

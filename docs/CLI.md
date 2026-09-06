@@ -1532,6 +1532,16 @@ warnings go to stderr as `{"type":"note"}` and `{"type":"warning"}` objects.
 the same words unstyled when it is not, so `kitchen logs | grep` is not full of
 escape sequences.
 
+**The links back to the source are the API's.** A build, a release, an
+environment and a project carry `git.commitUrl`, `git.branchUrl`,
+`git.pullRequestUrl` and `repositoryUrl` in `--json` exactly as the platform
+composed them: the host is a fact about the project's connection — a GitLab or
+Gitea connection can name a forge anybody self-hosted — so nothing here derives
+a URL. `git.committedAt` beside them is when the commit was *made*, which is
+not when the build was created. The text tables print the short SHA they always
+did: a URL is not a column, and `--json` is where anything that wants one
+reads it.
+
 A failure is one shape in both modes — on stdout under `--json`, on stderr
 otherwise:
 

@@ -311,6 +311,22 @@ URL, a duration, a count. Sentence case for everything a person reads. An em
 dash — like this — rather than parentheses, which is the voice the rest of this
 repository is written in and the dashboard is written in too.
 
+### An identifier that links back to the source
+
+A SHA, a branch name, a pull request number and a repository are linked with
+[`SourceLink`](../ui/src/components/SourceLink.vue), and the dashboard composes
+no URL of its own. The API serves `commitUrl`, `branchUrl`, `pullRequestUrl`
+and `repositoryUrl` on the objects that carry the facts, because the host is a
+fact about the project's connection rather than a constant — a GitLab or Gitea
+connection can name a forge anybody self-hosted (#435).
+
+`SourceLink` takes the URL it is given and renders a link when there is one and
+the same text unchanged when there is not, which is the state every one of
+these fields has: a build with no commit, a connection that is gone, a provider
+with no web routing. A linked identifier takes the primary colour and an
+unlinked one keeps the colour of the row it is in, so the colour is the
+difference between "this goes somewhere" and "this is text".
+
 ## What is not in this guide
 
 What a screen *says*, how a section is laid out inside itself, which chart it

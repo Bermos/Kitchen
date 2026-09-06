@@ -124,8 +124,9 @@ type pushPayload struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
 	HeadCommit struct {
-		Message string `json:"message"`
-		Author  struct {
+		Message   string `json:"message"`
+		Timestamp string `json:"timestamp"`
+		Author    struct {
 			Username string `json:"username"`
 			Name     string `json:"name"`
 		} `json:"author"`
@@ -169,8 +170,9 @@ type gitlabPushPayload struct {
 		PathWithNamespace string `json:"path_with_namespace"`
 	} `json:"project"`
 	Commits []struct {
-		Message string `json:"message"`
-		Author  struct {
+		Message   string `json:"message"`
+		Timestamp string `json:"timestamp"`
+		Author    struct {
 			Name     string `json:"name"`
 			Username string `json:"username"`
 		} `json:"author"`
@@ -188,8 +190,9 @@ type gitlabMRPayload struct {
 		// arrives as the same "update" action with this empty.
 		OldRev     string `json:"oldrev"`
 		LastCommit struct {
-			ID      string `json:"id"`
-			Message string `json:"message"`
+			ID        string `json:"id"`
+			Message   string `json:"message"`
+			Timestamp string `json:"timestamp"`
 		} `json:"last_commit"`
 		// GitLab says where a merge request's source branch lives with a
 		// numeric project id rather than a path: a fork is a source project
@@ -218,8 +221,9 @@ type giteaPushPayload struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
 	HeadCommit struct {
-		Message string `json:"message"`
-		Author  struct {
+		Message   string `json:"message"`
+		Timestamp string `json:"timestamp"`
+		Author    struct {
 			Username string `json:"username"`
 			Name     string `json:"name"`
 		} `json:"author"`
@@ -369,7 +373,7 @@ func (r *GitWebhookReceiver) dispatchGitHub(
 			author = payload.HeadCommit.Author.Name
 		}
 		return r.createBuild(ctx, project, pushRevision(
-			payload.After, branch, payload.HeadCommit.Message, author))
+			payload.After, branch, payload.HeadCommit.Message, author, payload.HeadCommit.Timestamp))
 
 	case eventPullRequest:
 		payload := prPayload{}
@@ -421,17 +425,19 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 		}
 		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
 		message := ""
+		committedAt := ""
 		author := prefer(payload.Username, payload.User)
 		if n := len(payload.Commits); n > 0 {
 			last := payload.Commits[n-1]
 			message = last.Message
+			committedAt = last.Timestamp
 			if last.Author.Username != "" {
 				author = last.Author.Username
 			} else if last.Author.Name != "" {
 				author = last.Author.Name
 			}
 		}
-		return r.createBuild(ctx, project, pushRevision(payload.After, branch, message, author))
+		return r.createBuild(ctx, project, pushRevision(payload.After, branch, message, author, committedAt))
 	case eventPullRequest:
 		payload := gitlabMRPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
@@ -455,6 +461,7 @@ func (r *GitWebhookReceiver) dispatchGitLab(
 				Message:     subject,
 				Body:        commitBody,
 				Author:      prefer(payload.User.Username, payload.User.Name),
+				CommittedAt: commitTime(attrs.LastCommit.Timestamp),
 				PullRequest: &attrs.IID,
 				ForkRepo:    gitlabForkRepo(attrs.SourceProjectID, attrs.TargetProjectID, attrs.Source.PathWithNamespace),
 			})
@@ -494,7 +501,7 @@ func (r *GitWebhookReceiver) dispatchGitea(
 		author = prefer(author, payload.Pusher.FullName)
 		branch := strings.TrimPrefix(payload.Ref, "refs/heads/")
 		return r.createBuild(ctx, project, pushRevision(
-			payload.After, branch, payload.HeadCommit.Message, author))
+			payload.After, branch, payload.HeadCommit.Message, author, payload.HeadCommit.Timestamp))
 	case eventPullRequest:
 		payload := prPayload{}
 		if err := json.Unmarshal(body, &payload); err != nil {
@@ -553,15 +560,39 @@ func (r *GitWebhookReceiver) createBuild(
 // to the base repository's webhook; verified against GitHub, whose `push`
 // event fires on the repository the branch is in, which for a fork is the
 // fork's own webhook and not this one.
-func pushRevision(sha, branch, message, author string) kitchenv1alpha1.GitRevision {
+func pushRevision(sha, branch, message, author, committedAt string) kitchenv1alpha1.GitRevision {
 	subject, commitBody := kitchenv1alpha1.SplitCommitMessage(message)
 	return kitchenv1alpha1.GitRevision{
-		SHA:     sha,
-		Branch:  branch,
-		Message: subject,
-		Body:    commitBody,
-		Author:  author,
+		SHA:         sha,
+		Branch:      branch,
+		Message:     subject,
+		Body:        commitBody,
+		Author:      author,
+		CommittedAt: commitTime(committedAt),
 	}
+}
+
+// commitTime is a provider's own timestamp for a commit, as a date the
+// platform can show beside the SHA (#435).
+//
+// Every provider sends one on a push and every one of them spells it
+// differently enough to matter: GitHub and Gitea send RFC 3339, GitLab sends
+// ISO 8601 with a space in place of the T on some versions and a zone offset
+// with no colon on others. A timestamp that will not parse is not worth
+// failing a webhook over — the build is the point and the date is a nicety —
+// so it becomes no date at all, which is exactly what every provider that
+// sent nothing gets.
+func commitTime(value string) *metav1.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05Z0700", "2006-01-02 15:04:05 Z0700", "2006-01-02 15:04:05 -0700"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return &metav1.Time{Time: parsed.UTC()}
+		}
+	}
+	return nil
 }
 
 // pullRequestBuild is createBuild with the fork gate in front of it (#422).

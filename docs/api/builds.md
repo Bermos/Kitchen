@@ -123,7 +123,11 @@ create the same acquisition the poll creates.
     "message": "feat(api): answer a commit as a subject and a body",
     "body": "A build list is a table of subjects, so a message with a body\nunder it was being rendered into a row fourteen lines tall.",
     "author": "bermos",
-    "pullRequest": 261
+    "pullRequest": 261,
+    "committedAt": "2026-07-11T09:30:00Z",
+    "commitUrl": "https://github.com/acme/shop/commit/abc123def456789",
+    "branchUrl": "https://github.com/acme/shop/tree/main",
+    "pullRequestUrl": "https://github.com/acme/shop/pull/261"
   }
 }
 ```
@@ -137,6 +141,37 @@ in; a body longer than 4 KiB is cut, the repository keeping the whole of it.
 A build recorded before the platform stored the two separately has the whole
 message in its spec, which is immutable, and is answered here split the same
 way — so no client has to know which it is reading.
+
+### The date, and the links back to the source
+
+`committedAt` is when the commit was made, as the provider reported it — **not
+when the build was created**, which is the only date anything used to carry.
+The two are the same for a push and can be months apart for everything else: a
+project's first build is of a branch that was last touched whenever it was last
+touched, and a rebuild or a redeploy is of a commit as old as it ever was. It
+is absent where the provider did not say — a pull request event carries the
+head SHA and no date on GitHub and Gitea — and absent is *unknown*, never now.
+
+`commitUrl`, `branchUrl` and `pullRequestUrl` are where that commit, its branch
+and its pull request are on the provider's own site. **The API composes them
+and no client does**, because the host is a fact about the project's
+[Connection](connections.md) rather than a constant: a GitLab or Gitea
+connection can name a forge anybody self-hosted, and `github.com` is right for
+one provider out of three. They are derived in `internal/gitprovider` beside
+the API URL, from the connection's `apiUrl`, so the three clients get one
+answer rather than three derivations of it.
+
+Each is absent where there is nothing to link:
+
+| Absent because | |
+|---|---|
+| The build has no commit | An acquisition, which links nothing |
+| The project's connection is gone, or names a provider with no web routing | The repository is still named; only the link is missing |
+| The commit is on no pull request | `pullRequestUrl` alone |
+
+A pull request from a fork addresses **the fork** for its commit and its
+branch, since that is the only repository the head commit is in, and the
+project's own repository for the request itself.
 
 ## What one commit produced
 
