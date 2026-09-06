@@ -2365,6 +2365,28 @@ spec:
               startedAt:
                 format: date-time
                 type: string
+              strategy:
+                description: |-
+                  Strategy is what actually built this image, after `auto` has been
+                  resolved: `dockerfile` or `buildpacks`, never `auto`. It is the web
+                  process's, and the one every workload that declared no build of its
+                  own was built with; each workload's is on its own row below.
+
+                  It is recorded at the moment the Job is created, for the reason
+                  DockerfileTarget is — the setting moves and the build does not — and
+                  because it cannot be recomputed afterwards without detecting against
+                  the repository a second time.
+
+                  It matters after the build as much as during it: a Cloud Native
+                  Buildpacks image is started by its own launcher, so a command has to
+                  be handed *to* the launcher rather than put in place of it (#440), and
+                  the Release freezes this so that every workload it deploys is started
+                  the way the image it runs expects.
+                enum:
+                - auto
+                - dockerfile
+                - buildpacks
+                type: string
               vex:
                 description: |-
                   VEX indexes the OpenVEX documents somebody has attached to this
@@ -2870,6 +2892,22 @@ spec:
                       description: |-
                         Repository is where the image was pushed, without a tag or digest —
                         or, for a workload nothing here built, where it was pulled from.
+                      type: string
+                    strategy:
+                      description: |-
+                        Strategy is what built this workload's image, after `auto` has been
+                        resolved. It is empty for a workload this platform did not build,
+                        which was acquired rather than produced.
+
+                        It is per workload rather than read off the Build for the reason
+                        DetectedFramework is: a unit is several directories, and a monorepo
+                        whose API is a Dockerfile and whose worker is buildpacks has two
+                        answers. The Release freezes each of them, because how a workload is
+                        started depends on which of the two built the image it runs (#440).
+                      enum:
+                      - auto
+                      - dockerfile
+                      - buildpacks
                       type: string
                   required:
                   - name

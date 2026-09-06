@@ -73,6 +73,27 @@ type ReleaseSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
 
+	// Strategy is what built that image — `dockerfile` or `buildpacks` —
+	// frozen here because it decides how every workload running it is
+	// *started*, not only how it was made.
+	//
+	// A Cloud Native Buildpacks image is started by its own launcher: the
+	// ENTRYPOINT is what applies the environment the buildpacks provided,
+	// PATH included, so a container command written in place of it runs in
+	// an environment no buildpack has touched and the process is not found
+	// (#440). The command is handed *to* the launcher instead, and this is
+	// how a deploy knows which of the two an image is.
+	//
+	// It is on the Release rather than read off the Build because the Build
+	// is retained for a while and a Release is deployed for as long as
+	// somebody may roll back to it: a rollback restores the images this
+	// release declared, and it has to start them the way they were started.
+	// Empty is a release made before this was recorded, and an image this
+	// platform acquired rather than built — both of which are started by
+	// their own entrypoint, which is what they always were.
+	// +optional
+	Strategy BuildStrategy `json:"strategy,omitempty"`
+
 	// Workloads are the images the other workloads of this unit were built
 	// to, one entry per workload that declared a build of its own (#271).
 	//
@@ -107,6 +128,13 @@ type WorkloadImage struct {
 	// own image follows, for the same reason.
 	// +kubebuilder:validation:MinLength=1
 	Image string `json:"image"`
+
+	// Strategy is what built this workload's image, frozen for the reason
+	// the Release's own is: it decides how the workload is started (#440).
+	// Empty is a workload whose image this platform acquired rather than
+	// built, and a release made before this was recorded.
+	// +optional
+	Strategy BuildStrategy `json:"strategy,omitempty"`
 }
 
 // ImageFor is the image one workload of this Release runs: its own where it
@@ -122,6 +150,22 @@ func (r *Release) ImageFor(workload string) string {
 		}
 	}
 	return r.Spec.Image
+}
+
+// StrategyFor is what built the image one workload of this Release runs: its
+// own where it was built with one, and the Release's otherwise.
+//
+// It is asked wherever a workload is materialized, beside [Release.ImageFor]
+// and for the same reason — the two answers belong to the same image, and a
+// workload started as though its image were built the other way does not run
+// at all (#440).
+func (r *Release) StrategyFor(workload string) BuildStrategy {
+	for i := range r.Spec.Workloads {
+		if r.Spec.Workloads[i].Name == workload {
+			return r.Spec.Workloads[i].Strategy
+		}
+	}
+	return r.Spec.Strategy
 }
 
 // ReleaseStatus defines the observed state of a Release.

@@ -107,7 +107,7 @@ lifecycle has no stages to inherit into.
 | `replicas` | Copies in production environments. Previews always run one. |
 | `singleton` | Two of this workload must never run at once, so a deploy stops the old copy before starting the new one. Refuses `replicas` above 1 rather than clamping it. |
 | `notRequestDriven` | This workload does work nobody asked for, so no environment of the project is ever idled to zero — previews included, which is where it matters. |
-| `command`, `args` | Replace the image's entrypoint and its arguments, in exec form: a list of words, never a shell line. |
+| `command`, `args` | What the web process runs, in exec form: a list of words, never a shell line. What it does to the image depends on which strategy built it — see [what `command` means under each strategy](#what-command-means-under-each-strategy). |
 | `previewArgs` | Replace `args` in preview environments — same commit, same artifact, different flags. |
 | `resources` | `{"cpu": "500m", "memory": "512Mi"}`, applied as request and limit alike. |
 | `health` | What the platform asks before it sends anyone to the application. `{}` is the default: a TCP connect to the port. |
@@ -190,6 +190,42 @@ without one.
 A workload that cannot start under what it asked for says so on its
 environment, naming the constraints in force, rather than sitting in
 `CrashLoopBackOff` with the reason three layers down.
+
+#### What `command` means under each strategy
+
+`command` is one field with two readings, because the two strategies produce
+two kinds of image. It is written the same way for both — exec form, a list of
+words — and the platform applies it the way the image expects.
+
+- **A Dockerfile image** is started by replacing its `ENTRYPOINT`. `command`
+  becomes the container's command and `args` its arguments, exactly as
+  written, which is what a `docker run` with a command does.
+- **A buildpacks image** is started *through* its own launcher.
+  `/cnb/lifecycle/launcher` is the image's entrypoint, and it is what applies
+  the environment the buildpacks provided — `PATH` included, since the runtime
+  lives in a layer rather than in the base image. So `command` and `args` are
+  handed to the launcher as one argument list instead of being written in
+  place of it. A command written over the launcher would run where no
+  buildpack has put anything, and say so: `exec: "node": executable file not
+  found in $PATH`.
+
+That applies to every workload of the project alike — the web process, a
+worker, a service, a scheduled run and a deploy task — and per image: a unit
+whose worker is built from a Dockerfile and whose web process is built with
+buildpacks gets both readings, one each.
+
+Since the launcher is what runs it, a buildpacks workload can also name a
+**process type** the buildpacks declared, rather than a program:
+`"command": ["worker"]` runs the image's own `worker` process.
+
+A buildpacks image whose buildpacks declared **no process type at all** cannot
+start on its own — the launcher exits with `when there is no default process a
+command is required` — and it is not always obvious which builds those are: a
+Node application whose buildpacks stopped at `node-run-script` is one. Where
+that happens and nothing supplies a `command`, the build fails saying so
+rather than shipping a release that crash-loops. Give the workload a `command`
+or add a buildpack that declares a process; a `Procfile` in the repository is
+the shortest way to the second.
 
 #### `runtime.init` — a volume the process cannot start on
 
@@ -289,7 +325,7 @@ The workloads the project ships besides its web process —
 |---|---|
 | `name` | A DNS label, and not `web` — the web process is the project's own runtime, and this list is what it ships besides it. |
 | `type` | `worker` (runs continuously, never addressed), `service` (runs continuously, addressed by the rest of the unit and never published), `cron` (runs on a schedule) or `task` (runs once per deploy, and the release takes no traffic until it succeeds — where a schema migration goes). |
-| `command`, `args` | Exec form, as above. |
+| `command`, `args` | Exec form, as above, and read the same way under each strategy — see [what `command` means under each strategy](#what-command-means-under-each-strategy). |
 | `port` | A service's listening port, and the port its siblings reach it on. Required on a service and refused on anything else. |
 | `build` | This workload's own build: `strategy` (`auto`, `dockerfile` or `buildpacks`, defaulting to `auto`), `dockerfilePath`, `dockerfileTarget`, and `rootDirectory` relative to the repository root. `auto` is the project's own default read over *this workload's* root directory: a Dockerfile there wins and this is a dockerfile build; otherwise the framework detected there is built with buildpacks; otherwise the build fails with a message naming this workload, the file it looked for and the `strategy` that would settle it. It resolves the builder alone — a workload names its own port and command, which are the other two things detection would answer — and it does not inherit the project's `strategy`. That directory is the workload's build root — `dockerfilePath` is relative to it and nothing above it is part of the build — so a path that leaves it is refused here, exactly as `build.dockerfilePath` is for the project. `dockerfileTarget` is which stage of that file to ship, and it falls back to the project's stage rather than to the file's last one; a stage on a `buildpacks` workload is refused naming that workload. Absent means it runs the project's image with another command. Refused on a `cron`. |
 | `init` | What this workload needs done inside the volumes it mounts before its own container starts — [`runtime.init`](#runtimeinit--a-volume-the-process-cannot-start-on) for a named workload, on the same terms. Every type takes it, a `task` included. |

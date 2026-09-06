@@ -1183,6 +1183,20 @@ image is left alone even where the unit names none, and one whose inherited
 evidence is already per artifact (#300); this reads it against the declaration
 that applies to it.
 
+**A buildpacks image that declares no process type is refused the same way
+(#440).** A Cloud Native Buildpacks image starts the process its buildpacks
+declared, and nothing guarantees they declared one: an application whose only
+launch-time buildpack was `node-run-script` has its dependencies installed and
+nothing to start, so the launcher exits with *"when there is no default
+process a command is required"* and the pod crash-loops on that sentence. The
+platform reads the process types off the image's own
+`io.buildpacks.build.metadata` label at the moment it is already talking to
+the registry about the digest, and fails the build with reason
+`NoDefaultProcessType` where a workload would start nothing — no process type
+in the image, no `command` in the project. It is asked per workload, and only
+of buildpacks images: a Dockerfile image's entrypoint is its own business, and
+a label that could not be read refuses nothing.
+
 `runtime.init` and `processes[].init` are what a workload needs done inside the
 volumes it mounts before its own process starts (#348). A `volume` claim hands
 a workload an empty filesystem, and a good deal of vendored software will not
@@ -1275,6 +1289,9 @@ status:
     pinned: false                       # whether the project named a digest rather than a tag
     resolvedAt: ...                     # when the registry was asked
   detectedFramework: nextjs
+  strategy: buildpacks                  # what actually built it, after `auto` was resolved. The
+                                        # Release freezes it, because how a workload is started
+                                        # depends on which of the two made its image
   dockerfileTarget: web                 # the stage this build was told to produce, as it was told
                                         # it: unset for the file's last stage, and never recomputed
                                         # from settings that have moved since
@@ -1511,9 +1528,12 @@ spec:                                   # fully immutable (CEL rule on the CRD)
   projectRef: { name: my-shop }
   buildRef: { name: my-shop-bld-8f3a2c1 }
   image: harbor.example.com/kitchen/my-shop@sha256:ab12...   # the web process's
+  strategy: buildpacks                  # what built it, which is also how
+                                        # every workload running it is started
   workloads:                            # what each *other* workload was built
     - name: api                         # to, for one with a build of its own
       image: harbor.example.com/kitchen/my-shop-api@sha256:9f2c...
+      strategy: dockerfile
   configSnapshot:                       # frozen copy of Project.spec.env,
     env: [...]                          # runtime, processes and files
     runtime: { port: 3000, resources: {...} }   # port resolved: a project that
@@ -1544,6 +1564,18 @@ would rewrite the file and nothing would restart. A *secret* file's content is
 deliberately not here: a Release is readable by everyone who may read the
 project, so the snapshot carries the declaration and the content stays in the
 Secret, mounted from it and covered by the secrets digest beside it.
+
+`strategy` is what built the image, frozen because it decides how the image is
+*started* and not only how it was made. A Cloud Native Buildpacks image is
+started by its own launcher — the entrypoint is what applies the environment
+the buildpacks provided, `PATH` included — so a `command` is handed *to* the
+launcher rather than written in place of it, and a Dockerfile image's replaces
+its entrypoint as it always did (see
+[CONFIG.md](CONFIG.md#what-command-means-under-each-strategy)). It is per image
+for the reason the digests are: a unit whose worker is a Dockerfile and whose
+web process is buildpacks has two answers. Empty is an image the platform
+acquired rather than built, and a release made before this was recorded — both
+started by their own entrypoint, which is what they always were.
 
 `workloads` is the other half of what makes a rollback exact for a project that
 ships more than one image. The snapshot freezes what each workload *is*; this

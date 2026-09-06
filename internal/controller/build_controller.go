@@ -522,6 +522,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 					Name:              plan.Workload,
 					Job:               plan.Job,
 					Repository:        plan.Repository,
+					Strategy:          plan.Strategy,
 					DockerfileTarget:  plan.DockerfileTarget,
 					DetectedFramework: plan.DetectedFramework,
 					Phase:             kitchenv1alpha1.BuildRunning,
@@ -574,6 +575,12 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// workload that named none was built to; each workload's is recorded
 		// on its own row below.
 		build.Status.DockerfileTarget = web.DockerfileTarget
+		// What actually built the image, after `auto` has had detection's
+		// answer written over it. It is recorded beside the stage and for the
+		// same reason, and it is read again at deploy time: a buildpacks
+		// image is started through its own launcher, and nothing downstream
+		// can work that out from the image alone (#440).
+		build.Status.Strategy = web.Strategy
 		build.Status.Cache = cache
 		build.Status.Workloads = workloads
 		build.Status.StartedAt = ptr.To(metav1.Now())
@@ -1367,6 +1374,16 @@ func (r *BuildReconciler) succeed(
 			unverifiableImagesMessage(unverifiable))
 	}
 
+	// And an image that would start nothing, refused at the same seam for the
+	// same reason (#440): a buildpacks image whose lifecycle declared no
+	// process type, deployed by a workload that supplies no command, is a
+	// container that exits saying "when there is no default process a command
+	// is required" and goes on doing it. The Build says so once instead.
+	if startless := r.startlessWorkloads(ctx, build, target, snapshot); len(startless) > 0 {
+		return r.fail(ctx, build, project, reasonNoDefaultProcessType,
+			startlessWorkloadsMessage(startless))
+	}
+
 	// The workload images resolved and attested above are frozen onto the
 	// Release beside the snapshot, because the two answer different halves of
 	// one question: the snapshot says what each workload *is*, and they say
@@ -1379,9 +1396,15 @@ func (r *BuildReconciler) succeed(
 			Labels:    map[string]string{labelProject: project.Name, labelManagedByKey: labelManagedByValue},
 		},
 		Spec: kitchenv1alpha1.ReleaseSpec{
-			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-			BuildRef:       kitchenv1alpha1.LocalObjectReference{Name: build.Name},
-			Image:          image,
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
+			BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: build.Name},
+			Image:      image,
+			// What built that image, read off the Build that recorded it when
+			// it created the Job. It is frozen here because it is how the
+			// workloads running this image are *started* — a buildpacks image
+			// through its own launcher, a Dockerfile image by replacing its
+			// entrypoint — and a rollback has to restore that too (#440).
+			Strategy:       build.Status.Strategy,
 			Workloads:      workloadImages,
 			ConfigSnapshot: snapshot,
 		},
@@ -1480,7 +1503,14 @@ func (r *BuildReconciler) workloadImages(
 			continue
 		}
 		image, _ := r.imageWithDigest(ctx, appNS, outcome.Plan.Job, outcome.Plan.Tag)
-		images = append(images, kitchenv1alpha1.WorkloadImage{Name: outcome.Plan.Workload, Image: image})
+		images = append(images, kitchenv1alpha1.WorkloadImage{
+			Name:  outcome.Plan.Workload,
+			Image: image,
+			// What built it, frozen beside it: the two are facts about one
+			// artifact, and a workload started as though its image were
+			// built the other way does not start at all (#440).
+			Strategy: outcome.Plan.Strategy,
+		})
 	}
 	return images
 }
