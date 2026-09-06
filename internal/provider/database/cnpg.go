@@ -94,6 +94,13 @@ const (
 	hibernationOn         = "on"
 	hibernationOff        = "off"
 
+	// caCertificateKey is where CloudNativePG puts the certificate in the
+	// Secret holding a Cluster's server CA — the same key a Kubernetes TLS
+	// secret spells it, and the one half of that Secret a binding carries:
+	// the private key beside it is the operator's and never leaves the
+	// database namespace.
+	caCertificateKey = "ca.crt"
+
 	// regionLabel and zoneLabel are the standard topology labels. Residency
 	// is *reported*, never declared, so what a node happens to say about
 	// itself is exactly the right source: an unlabelled node reports nothing
@@ -233,7 +240,7 @@ func (c *CNPG) ProvisionWith(ctx context.Context, res naming.Resource, req Requi
 	if err != nil {
 		return Instance{}, err
 	}
-	binding, err := c.binding(ctx, cluster.GetName())
+	binding, err := c.binding(ctx, cluster)
 	if err != nil {
 		return Instance{}, err
 	}
@@ -269,7 +276,7 @@ func (c *CNPG) CreateBranch(ctx context.Context, instanceID, name string) (Branc
 	if err != nil {
 		return Branch{}, err
 	}
-	binding, err := c.binding(ctx, child.GetName())
+	binding, err := c.binding(ctx, child)
 	if err != nil {
 		return Branch{}, err
 	}
@@ -605,12 +612,13 @@ func (c *CNPG) ready(cluster *unstructured.Unstructured) error {
 // and nowhere else — and every consumer of this binding is a pod in some
 // project's application namespace. The fully qualified name is the one that
 // works from both.
-func (c *CNPG) binding(ctx context.Context, cluster string) (Binding, error) {
+func (c *CNPG) binding(ctx context.Context, cluster *unstructured.Unstructured) (Binding, error) {
+	name := cluster.GetName()
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: c.Namespace, Name: cluster + "-app"}
+	key := types.NamespacedName{Namespace: c.Namespace, Name: name + "-app"}
 	if err := c.Client.Get(ctx, key, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return Binding{}, fmt.Errorf("%w: database %s has not published its credentials yet", ErrNotReady, cluster)
+			return Binding{}, fmt.Errorf("%w: database %s has not published its credentials yet", ErrNotReady, name)
 		}
 		return Binding{}, err
 	}
@@ -637,7 +645,12 @@ func (c *CNPG) binding(ctx context.Context, cluster string) (Binding, error) {
 	if port == "" {
 		port = "5432"
 	}
-	host := fmt.Sprintf("%s-rw.%s.svc", cluster, c.Namespace)
+	host := fmt.Sprintf("%s-rw.%s.svc", name, c.Namespace)
+
+	ca, err := c.serverCA(ctx, cluster)
+	if err != nil {
+		return Binding{}, err
+	}
 
 	// `sslmode=require` rather than libpq's default, which is `prefer`:
 	// prefer negotiates TLS and silently falls back to plaintext when the
@@ -645,11 +658,18 @@ func (c *CNPG) binding(ctx context.Context, cluster string) (Binding, error) {
 	// connection. CloudNativePG serves TLS on every cluster it creates, with
 	// a CA it generates itself, so requiring encryption costs nothing here.
 	//
-	// It is `require` and not `verify-full` because verification needs that
-	// per-cluster CA in the application's trust store, and nothing puts it
-	// there — the binding is one string handed to a container. Requiring
-	// encryption without verification is what the same client already asks of
-	// Neon (see neon.go), and it closes the plaintext-on-the-wire half.
+	// It is `require` in the URL and not `verify-full` because `sslrootcert`
+	// names a *file*, and the CA this binding carries is a value in a Secret:
+	// an application pod is handed it as a variable, and where it puts it is
+	// the application's to decide. So the URL asks for encryption, the `ca`
+	// key below is what verification is done against, and docs/api/claims.md
+	// says how each client is pointed at it.
+	//
+	// Note that the two clients disagree about what `require` means, which is
+	// why the CA travels at all: libpq (and pgx) encrypt and verify nothing,
+	// while node-postgres treats `require` as an alias for `verify-full` — so
+	// on a database signed by a CA it generated itself, `pg` fails with
+	// SELF_SIGNED_CERT_IN_CHAIN unless it is given the certificate.
 	dsn := url.URL{
 		Scheme:   "postgresql",
 		User:     url.UserPassword(user, password),
@@ -664,7 +684,42 @@ func (c *CNPG) binding(ctx context.Context, cluster string) (Binding, error) {
 		User:     user,
 		Password: password,
 		Database: database,
+		CA:       ca,
 	}, nil
+}
+
+// serverCA is the certificate authority that signed this cluster's server
+// certificate, as an application has to verify the connection against it.
+//
+// CloudNativePG generates a CA per Cluster and nothing public vouches for it,
+// so an application has nowhere to get it from: it cannot mount a Secret in
+// the platform's database namespace, and no image the platform did not build
+// carries that root. The certificate itself therefore travels in the binding,
+// which is the answer #433 settled on for the bundled object store.
+//
+// The name comes off the Cluster's own status, where CloudNativePG publishes
+// it — an installation may hand it a CA of its own — and falls back to
+// `<cluster>-ca`, which is what it calls the one it generates.
+//
+// A CA that is not there is not an error. The binding then carries no `ca`
+// key, which reads as "verify against the host's roots" — the right answer
+// for a cluster serving a certificate this platform did not issue, and the
+// only one that does not hand an application an authority vouching for
+// nothing.
+func (c *CNPG) serverCA(ctx context.Context, cluster *unstructured.Unstructured) (string, error) {
+	name := nestedString(cluster, "status", "certificates", "serverCASecret")
+	if name == "" {
+		name = cluster.GetName() + "-ca"
+	}
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: c.Namespace, Name: name}
+	if err := c.Client.Get(ctx, key, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(secret.Data[caCertificateKey]), nil
 }
 
 // region reports where the database actually runs, off the node its primary

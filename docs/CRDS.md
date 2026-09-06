@@ -1980,7 +1980,8 @@ spec:
         storageClass: fast-ssd
 status:
   phase: Bound                          # Pending | Bound | Failed
-  secretName: shop-db-binding           # binding keys: url, host, port, user, password, database
+  secretName: shop-db-binding           # binding keys: url, host, port, user, password, database,
+                                        # and ca where the platform runs the database itself
   instanceID: proj-abc123               # provider-side ID, opaque; what deprovisioning addresses
   instanceName: kitchen-my-shop-shop-db # what the provider calls it: kitchen-<project>-<claim>
   dataProvenance: production            # the provider's declaration: production | masked | synthetic;
@@ -2048,6 +2049,20 @@ name; `none` binds them to nothing, and the Environment says so rather than
 failing. `status.keepsPodsRunning` and `status.forcesRecreate` are the
 provider's declarations about the workload, which the Environment reconciler
 acts on. [docs/api/claims.md](api/claims.md) carries the matrix.
+
+**The binding is composed on every pass and written whenever it differs**, so a
+release that changes what a binding holds reaches the claims that already exist
+and not only the ones made after it; the workloads reading a changed binding
+roll, with the reason, the way a rotated credential's do (#398). A claim
+already bound keeps the binding it has when a recomposition fails — a provider
+that cannot be reached has not un-made the database — and the controller
+watches these Secrets, so one deleted under a claim is written again on that
+event rather than whenever the claim is next reconciled. The `ca` key carries
+the certificate of the authority that signed the server's, for a database this
+platform runs itself: CloudNativePG generates one per cluster, nothing public
+vouches for it, and an application pod can neither mount it nor be expected to
+carry it in an image the platform did not build. What each driver does with it
+is in [docs/api/claims.md](api/claims.md#creating-a-claim).
 
 **A preview that idles takes its own infrastructure down with it**, where the
 provider can (#294). The signal is the Environment's `status.idle` — allowed

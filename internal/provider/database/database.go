@@ -121,7 +121,7 @@ const (
 
 // Binding is everything an application needs to reach a provisioned database.
 // The fields become the keys of the claim's binding Secret verbatim: url,
-// host, port, user, password, database.
+// host, port, user, password, database, ca.
 type Binding struct {
 	// URL is the single-string form (postgresql://...); the other fields are
 	// the same connection taken apart for applications that want pieces.
@@ -131,6 +131,19 @@ type Binding struct {
 	User     string
 	Password string
 	Database string
+	// CA is the PEM certificate of the authority that signed the server's
+	// own, for a database whose certificate no public root vouches for —
+	// which is every database this platform runs itself, since
+	// CloudNativePG generates a CA per cluster.
+	//
+	// It is the certificate itself and not a path, the same answer the
+	// object store binding gives (#433): this travels into an application's
+	// namespace, and nothing puts a private root into the trust store of an
+	// image the platform did not build. Empty for a hosted provider whose
+	// certificate the host's roots already vouch for, and the binding then
+	// carries no `ca` key at all — a key present and empty would read as an
+	// authority that vouches for nothing.
+	CA string
 }
 
 // Instance is one provisioned database resource.

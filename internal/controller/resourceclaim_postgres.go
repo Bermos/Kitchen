@@ -215,9 +215,29 @@ func (postgresContract) finalize(
 	return nil
 }
 
-// provision creates the provider-side instance and the shared binding Secret
-// when either is missing. done=true means the caller returns result and err
-// as they are — provisioning failed and status already says why.
+// provision creates the provider-side instance, recomposes the shared
+// binding, and writes it whenever it differs from the one that is there.
+// done=true means the caller returns result and err as they are —
+// provisioning failed and status already says why.
+//
+// **A binding is reconciled, not written once** (#398). This used to return
+// the moment the instance and its Secret both existed, so a binding was
+// composed at first provision and never again: every change to what a binding
+// holds reached the claims made after it and no claim made before it, in
+// silence. #379's `sslmode=require` is the one that made it visible — the
+// installations carrying the most data were exactly the ones it passed over —
+// and the `ca` key beside it would have inherited the same hole. So the
+// provisioner is asked on every pass, which it is built for (Provision is
+// idempotent by name and finds what is there), and writeBindingSecret writes
+// only a difference. A binding that does change rolls the workloads reading
+// it, with the reason in the activity feed (#277).
+//
+// **A claim that is already bound never loses its binding to a recomposition
+// that fails.** A provider restarting, an image that stopped satisfying the
+// claim, an API that cannot be reached: none of them un-make the database the
+// application is reading, so the binding already written stands and the next
+// pass tries again. Only a claim with nothing yet takes the Pending and
+// Failed transitions below.
 func (r *ResourceClaimReconciler) provision(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
@@ -225,20 +245,21 @@ func (r *ResourceClaimReconciler) provision(
 	appNS string,
 ) (ctrl.Result, bool, error) {
 	secretName := claimSecretName(claim.Name)
-	if claim.Status.InstanceID != "" {
-		err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: secretName}, &corev1.Secret{})
-		if err == nil {
-			return ctrl.Result{}, false, nil
-		}
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, true, err
-		}
-		// The instance exists but its Secret went missing: fall through and
-		// provision again, which finds the instance by name and recovers the
-		// binding.
+	bound, err := r.hasBinding(ctx, claim, appNS, secretName)
+	if err != nil {
+		return ctrl.Result{}, true, err
 	}
 
 	instance, err := provisionInstance(ctx, claim, provisioner)
+	if err != nil && bound {
+		// The requeue is what makes the refresh happen without anybody
+		// nudging it: a database that was restarting when the operator came
+		// up must not keep a binding composed by an older release until the
+		// next unrelated event.
+		logf.FromContext(ctx).Info("keeping the binding this claim already has",
+			"claim", claim.Name, "reason", err.Error())
+		return ctrl.Result{RequeueAfter: claimRequeueDelay}, true, nil
+	}
 	switch {
 	case errors.Is(err, database.ErrNotReady):
 		// The database exists and is coming up. That is Pending and not
@@ -265,8 +286,15 @@ func (r *ResourceClaimReconciler) provision(
 		result, err := r.failed(ctx, claim, "ProvisionFailed", err)
 		return result, true, err
 	}
-	if err := r.writeBindingSecret(ctx, claim, appNS, secretName, databaseBindingData(instance.Binding)); err != nil {
-		return ctrl.Result{}, true, err
+	// A promoted recovery owns this claim's binding: promoteRecovery writes
+	// the recovery's binding over it on every pass, so writing the instance's
+	// own here would be two reconcilers taking turns and every environment
+	// rolling between two databases for as long as both ran.
+	if claim.Spec.PromotedRecovery == "" {
+		if err := r.writeBindingSecret(ctx, claim, appNS, secretName,
+			databaseBindingData(instance.Binding)); err != nil {
+			return ctrl.Result{}, true, err
+		}
 	}
 	claim.Status.InstanceID = instance.ID
 	claim.Status.InstanceName = instance.Name
@@ -412,8 +440,14 @@ func (b branchIdler) wakeBranch(ctx context.Context, branchID string) error {
 
 // databaseBindingData is a database binding as its Secret carries it. The
 // keys are the vocabulary Project.spec.env's fromResourceClaim selects on.
+//
+// `ca` is written only where there is one, on the same terms as the object
+// store's `caCert` (#433): a key present and empty reads to an application as
+// an authority that vouches for nothing, which is the one thing a binding
+// must never be able to say. A hosted database whose certificate the host's
+// roots already vouch for carries no such key.
 func databaseBindingData(binding database.Binding) map[string][]byte {
-	return map[string][]byte{
+	data := map[string][]byte{
 		"url":      []byte(binding.URL),
 		"host":     []byte(binding.Host),
 		"port":     []byte(binding.Port),
@@ -421,6 +455,10 @@ func databaseBindingData(binding database.Binding) map[string][]byte {
 		"password": []byte(binding.Password),
 		"database": []byte(binding.Database),
 	}
+	if binding.CA != "" {
+		data["ca"] = []byte(binding.CA)
+	}
+	return data
 }
 
 // reconcileBranches keeps the provider-side branches in step with the
@@ -530,6 +568,15 @@ func (r *ResourceClaimReconciler) reconcileBranches(
 
 // ensureBranch makes sure one preview Environment has its branch and binding
 // Secret, reusing what a previous reconcile recorded.
+//
+// A preview's binding is composed when its branch is made and not recomposed
+// after that, which the claim's own binding no longer is (#398). The two are
+// not the same object: a preview lives as long as its pull request, so a
+// binding written in its shape is never the years-old binding that fix is
+// about — and this machinery is shared with the object store, whose provider
+// mints a fresh secret key every time it is asked for a bucket, so asking
+// again per preview per reconcile would rotate every preview's credential in
+// a loop.
 func (r *ResourceClaimReconciler) ensureBranch(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
@@ -748,14 +795,41 @@ func (r *ResourceClaimReconciler) writeBindingSecret(
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		secret.Labels = map[string]string{
-			labelProject:      claim.Spec.ProjectRef.Name,
-			labelClaim:        claim.Name,
-			labelManagedByKey: labelManagedByValue,
+			labelProject: claim.Spec.ProjectRef.Name,
+			labelClaim:   claim.Name,
+			// The claim's own namespace, because the binding is in the
+			// application's: it is what mapBindingSecretToClaim addresses
+			// the claim by when one of these Secrets changes.
+			labelClaimNamespace: claim.Namespace,
+			labelManagedByKey:   labelManagedByValue,
 		}
 		secret.Data = data
 		return nil
 	})
 	return err
+}
+
+// hasBinding reports whether this claim already has the binding named — an
+// instance recorded on the status and the Secret still in the namespace.
+// Deleting that Secret is what makes a claim fall back through provisioning
+// and get its binding written again, which is why its absence is not an
+// error.
+func (r *ResourceClaimReconciler) hasBinding(
+	ctx context.Context,
+	claim *kitchenv1alpha1.ResourceClaim,
+	appNS, name string,
+) (bool, error) {
+	if claim.Status.InstanceID == "" {
+		return false, nil
+	}
+	err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: name}, &corev1.Secret{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
 }
 
 func claimBranchSecretName(claim, environment string) string {

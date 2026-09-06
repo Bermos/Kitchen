@@ -456,6 +456,28 @@ func (r *ResourceClaimReconciler) claimsOfProject(ctx context.Context, namespace
 	return requests
 }
 
+// mapBindingSecretToClaim enqueues the claim a binding Secret belongs to,
+// read off the labels writeBindingSecret wrote.
+//
+// A binding Secret that goes missing is what this exists for. Nothing on the
+// claim moves when one is deleted, so the reconcile that writes it again used
+// to be whatever happened to touch the claim next — minutes, in the report
+// that found this, while the workloads reading it had already been rolled
+// onto a Secret that was no longer there and the new pods sat in
+// CreateContainerConfigError. The claim watches its own bindings for the same
+// reason every controller watches what it creates.
+func (r *ResourceClaimReconciler) mapBindingSecretToClaim(_ context.Context, obj client.Object) []ctrl.Request {
+	labels := obj.GetLabels()
+	if labels[labelManagedByKey] != labelManagedByValue {
+		return nil
+	}
+	name, namespace := labels[labelClaim], labels[labelClaimNamespace]
+	if name == "" || namespace == "" {
+		return nil
+	}
+	return []ctrl.Request{{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *ResourceClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -467,6 +489,10 @@ func (r *ResourceClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// on its status — and, under Retain, what makes that volume outlive
 		// the namespace.
 		Watches(&corev1.PersistentVolumeClaim{}, handler.EnqueueRequestsFromMapFunc(r.mapVolumeToClaim)).
+		// The binding Secrets this controller writes, so that one deleted or
+		// edited under a claim is put back on the event rather than on
+		// whatever reconciles the claim next.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapBindingSecretToClaim)).
 		Named("resourceclaim").
 		Complete(r)
 }

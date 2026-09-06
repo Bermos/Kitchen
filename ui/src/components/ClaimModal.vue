@@ -1134,6 +1134,15 @@ async function save() {
             All four are applied when the database is created. Changing them afterwards asks for a different
             database rather than reshaping this one.
           </p>
+          <p v-if="isPostgres" class="text-xs text-muted">
+            The secret carries <span class="font-mono">url</span>, <span class="font-mono">host</span>,
+            <span class="font-mono">port</span>, <span class="font-mono">user</span>,
+            <span class="font-mono">password</span>, <span class="font-mono">database</span> and — for a database
+            this platform runs itself — <span class="font-mono">ca</span>. Every URL asks for
+            <span class="font-mono">sslmode=require</span>, and <span class="font-mono">ca</span> is the
+            certificate to verify it against — <span class="font-mono">pg</span>, the usual JavaScript driver,
+            refuses a connection it cannot check, so hand it the key beside the URL.
+          </p>
 
           <template v-if="isPostgres">
             <div class="grid gap-4 sm:grid-cols-3">

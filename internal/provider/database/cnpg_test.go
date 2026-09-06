@@ -117,6 +117,23 @@ func appSecret(cluster string) *corev1.Secret {
 	}
 }
 
+// testCAPEM stands in for the certificate CloudNativePG's own CA secret
+// carries. Nothing here parses it: what is under test is that the bytes reach
+// the binding, and from which Secret.
+const testCAPEM = "-----BEGIN CERTIFICATE-----\ncnpg\n-----END CERTIFICATE-----\n"
+
+func caSecret(name string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testDatabaseNamespace},
+		Data: map[string][]byte{
+			caCertificateKey: []byte(testCAPEM),
+			// The private key is in this Secret too, and no binding ever
+			// carries it.
+			"ca.key": []byte("the CA's private key"),
+		},
+	}
+}
+
 func getCluster(t *testing.T, c *CNPG, name string) *unstructured.Unstructured {
 	t.Helper()
 	cluster := &unstructured.Unstructured{}
@@ -205,6 +222,74 @@ func TestTheBindingRequiresTLS(t *testing.T) {
 	}
 	if mode := parsed.Query().Get("sslmode"); mode != "require" {
 		t.Fatalf("sslmode %q, want require (URL %q)", mode, instance.Binding.URL)
+	}
+}
+
+// The certificate the application verifies the connection against. Nothing
+// public vouches for the CA CloudNativePG generates per cluster, and an
+// application pod cannot read a Secret in the database namespace — so the
+// certificate itself has to be in the binding, or `require` means "encrypted
+// against something unverifiable" to pgx and "self-signed certificate in
+// certificate chain" to node-postgres, which promotes it to verify-full.
+func TestTheBindingCarriesTheClustersCA(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), appSecret("kitchen-shop-db"),
+		caSecret("kitchen-shop-db-ca"))
+
+	instance, err := cnpg.Provision(context.Background(), shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Binding.CA != testCAPEM {
+		t.Fatalf("binding CA %q, want the cluster's own", instance.Binding.CA)
+	}
+}
+
+// An installation may hand CloudNativePG a CA of its own, and it publishes
+// which Secret holds it. The name is read from there rather than assumed, so
+// that such a cluster's applications verify against the certificate actually
+// signing the connection.
+func TestTheCASecretIsTheOneTheClusterPublishes(t *testing.T) {
+	cluster := readyCluster()
+	if err := unstructured.SetNestedField(cluster.Object, "the-companys-ca",
+		"status", "certificates", "serverCASecret"); err != nil {
+		t.Fatal(err)
+	}
+	cnpg := cnpgAgainstFakeCluster(t, cluster, appSecret("kitchen-shop-db"),
+		caSecret("kitchen-shop-db-ca"), caSecret("the-companys-ca"))
+
+	instance, err := cnpg.Provision(context.Background(), shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Binding.CA != testCAPEM {
+		t.Fatalf("binding CA %q", instance.Binding.CA)
+	}
+	// The name it was read under, rather than the value, is what this is
+	// about: the fallback secret carries the same bytes on purpose.
+	cnpg = cnpgAgainstFakeCluster(t, cluster, appSecret("kitchen-shop-db"), caSecret("kitchen-shop-db-ca"))
+	instance, err = cnpg.Provision(context.Background(), shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Binding.CA != "" {
+		t.Fatal("the CA was read from `<cluster>-ca` although the cluster publishes another Secret, " +
+			"so an application would verify against an authority that does not sign the connection")
+	}
+}
+
+// A cluster with no CA of the platform's is a binding with no `ca` at all,
+// not one carrying an empty string: an application handed an empty authority
+// verifies against nothing, which is worse than being told to use the host's
+// roots.
+func TestABindingCarriesNoCAWhereTheClusterHasNone(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), appSecret("kitchen-shop-db"))
+
+	instance, err := cnpg.Provision(context.Background(), shopDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Binding.CA != "" {
+		t.Fatalf("binding CA %q, want none", instance.Binding.CA)
 	}
 }
 

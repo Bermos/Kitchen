@@ -69,6 +69,44 @@ version is not something to change under a live Postgres and a volume is not
 something to shrink, so editing it on a bound claim reshapes nothing: asking
 for a different database means asking for a different database.
 
+The binding secret carries `url`, `host`, `port`, `user`, `password`,
+`database` and — for a database this platform runs — `ca`. `url` is the
+single-string form every driver takes; the rest is the same connection taken
+apart for a client that wants the pieces.
+
+**Every URL asks for TLS, and `ca` is what verifies it.** libpq's default is
+`prefer`, which negotiates TLS and falls back to plaintext without saying so —
+a downgrade and a normal connection look identical — so every binding carries
+`sslmode=require`. CloudNativePG signs each database with a CA it generates for
+that cluster and nothing public vouches for it, so the certificate itself
+travels in the binding, exactly as `objectStore`'s `caCert` does: an
+application pod cannot mount a Secret in the platform's database namespace, and
+no image the platform did not build carries that root. The key is **absent, not
+empty**, for a hosted database whose certificate the host's own roots already
+vouch for.
+
+**The two Postgres drivers disagree about what `require` means, and that is
+what `ca` is for.** libpq — and pgx, which keeps its semantics — encrypts and
+verifies nothing. node-postgres promotes `require` to `verify-full` and says so
+on boot, so against a per-cluster CA it fails every connection with
+`SELF_SIGNED_CERT_IN_CHAIN` until it is handed the certificate. Ask for the key
+beside the URL:
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"env": [{"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}},
+                {"name": "DATABASE_CA",  "fromClaim": {"name": "shop-db", "key": "ca"}}]}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop
+```
+
+and give it to the driver: `new Pool({connectionString: process.env.DATABASE_URL, ssl: {ca:
+process.env.DATABASE_CA}})` for node-postgres. A libpq client wants a **file** —
+`sslrootcert=<path>` in the URL, or `NODE_EXTRA_CA_CERTS=<path>` for a Node
+process with other TLS to do — so an application that needs one writes
+`$DATABASE_CA` to a path when it starts. The platform does not choose that path
+for it: a binding is a Secret in the application's own namespace, and where a
+certificate belongs inside a container is the application's to say.
+
 **What `deletionPolicy` means for a database with a volume behind it.** For the
 self-hosted provider, `Delete` deletes the database and CloudNativePG collects
 its volume with it — the data is gone. `Retain` leaves the database running in
@@ -1136,6 +1174,48 @@ honestly be, so that nothing reads as a promise:
 
 The CLI reaches all four routes through `kitchen api`, as it does the rest of
 this surface; see [CLI.md](../CLI.md).
+
+## A binding is reconciled, not written once
+
+**What a binding holds is composed on every reconcile and written whenever it
+differs from the Secret that is there.** It used to be composed once, when the
+resource was provisioned, and never again — so everything a later release put
+into a binding reached the claims made after it and no claim made before it, in
+silence. `sslmode=require` is the one that made it visible: the installations
+carrying the most data were exactly the ones the fix passed over.
+
+A binding that does change **rolls the workloads reading it**, immediately and
+with the reason in the activity feed — the same machinery a rotated credential
+goes through, because a connection string that has changed and a password that
+has changed are the same event to an application. There is deliberately no way
+to defer it to the next deploy: a binding the platform is keeping in step and a
+pod running on the previous one is the state this exists to end.
+
+Three limits on that, all deliberate:
+
+- **A `postgres` or `redis` claim already bound never loses its binding to a
+  recomposition that failed.** A provider restarting, an API that cannot be
+  reached, a requirement that stopped being satisfiable: none of them un-make
+  the database the application is reading, so the binding stands, the claim
+  stays `Bound`, and the reconcile is requeued to try again.
+- **An `objectStore` binding is kept in step by its store's half alone** —
+  `endpoint`, `region`, `forcePathStyle` and `caCert` — and never recomposed
+  whole. A store that mints a credential per bucket mints a *new* one every
+  time it is asked, so recomposing would rotate every bucket's key on every
+  reconcile and roll every pod reading it, for ever.
+- **A claim that has [promoted a recovery](#promoting-and-what-it-displaces)
+  binds that copy**, and the promotion keeps writing it. Recomposing the
+  claim's own database over it would be two writers taking turns and every
+  environment rolling between two databases for as long as both ran.
+
+The claim also **watches its own binding Secrets**: deleting one moves nothing
+on the claim, so without the watch it was written again by whatever happened to
+reconcile the claim next — minutes, while the pods that had already been rolled
+onto it sat in `CreateContainerConfigError`.
+
+A **preview's** binding is composed when its branch is made and not recomposed
+after that. A preview lives as long as its pull request, so it is never the
+years-old binding this is about.
 
 ## Rebinding a retained resource
 

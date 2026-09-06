@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -357,4 +358,122 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 		Expect(errors.Is(fmt.Errorf("x: %w", database.ErrNotReady), database.ErrUnsatisfiable)).To(BeFalse())
 		Expect(errors.Is(fmt.Errorf("x: %w", database.ErrUnsatisfiable), database.ErrNotReady)).To(BeFalse())
 	})
+
+	// #398: a binding used to be composed at first provision and never again,
+	// so everything a later release put into one — `sslmode=require`, the CA
+	// beside it — reached every claim made after it and no claim made before
+	// it, silently.
+	Describe("the binding it wrote", func() {
+		bindingSecret := func() *corev1.Secret {
+			secret := &corev1.Secret{}
+			key := types.NamespacedName{Namespace: appNS, Name: claimSecretName(claimName)}
+			ExpectWithOffset(1, k8sClient.Get(ctx, key, secret)).To(Succeed())
+			return secret
+		}
+
+		It("recomposes it on every reconcile and rewrites it when it differs", func() {
+			provider := &plainProvisioner{instance: bound}
+			provisioner = provider
+			createClaim("")
+			reconcileOnce()
+			Expect(string(bindingSecret().Data["url"])).To(Equal(bound.Binding.URL))
+
+			By("the provider composing the binding differently, as a release that changes one does")
+			provider.instance.Binding.URL = bound.Binding.URL + "?sslmode=require"
+			provider.instance.Binding.CA = "-----BEGIN CERTIFICATE-----\ncnpg\n-----END CERTIFICATE-----\n"
+			reconcileOnce()
+
+			secret := bindingSecret()
+			Expect(string(secret.Data["url"])).To(Equal(bound.Binding.URL+"?sslmode=require"),
+				"an existing claim must get the binding the platform composes today")
+			Expect(string(secret.Data["ca"])).To(ContainSubstring("BEGIN CERTIFICATE"))
+			Expect(getClaim().Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+		})
+
+		It("writes nothing at all when it has not changed", func() {
+			provisioner = &plainProvisioner{instance: bound}
+			createClaim("")
+			reconcileOnce()
+			before := bindingSecret().ResourceVersion
+
+			reconcileOnce()
+			reconcileOnce()
+			Expect(bindingSecret().ResourceVersion).To(Equal(before),
+				"an unchanged binding must not be written, or every reconcile would roll "+
+					"the workloads reading it")
+		})
+
+		It("writes it again when somebody deletes it", func() {
+			provisioner = &plainProvisioner{instance: bound}
+			createClaim("")
+			reconcileOnce()
+			Expect(k8sClient.Delete(ctx, bindingSecret())).To(Succeed())
+
+			reconcileOnce()
+			Expect(string(bindingSecret().Data["url"])).To(Equal(bound.Binding.URL),
+				"a deleted binding leaves the pods that read it unable to start")
+		})
+
+		// A deleted binding Secret moves nothing on the claim, so without the
+		// watch the claim is reconciled by whatever happens to touch it next.
+		It("is watched, so its deletion is what asks for it back", func() {
+			provisioner = &plainProvisioner{instance: bound}
+			createClaim("")
+			reconcileOnce()
+
+			requests := reconciler.mapBindingSecretToClaim(ctx, bindingSecret())
+			Expect(requests).To(ConsistOf(reconcile.Request{NamespacedName: claimKey}))
+
+			// Somebody else's Secret in the same namespace is not this
+			// claim's business.
+			Expect(reconciler.mapBindingSecretToClaim(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "app-config", Namespace: appNS},
+			})).To(BeEmpty())
+		})
+
+		// The recomposition is a refresh, and a refresh that cannot be made
+		// must not take away the binding the application is reading.
+		It("keeps it when the provider stops answering", func() {
+			provider := &plainProvisioner{instance: bound}
+			provisioner = provider
+			createClaim("")
+			reconcileOnce()
+
+			provider.err = fmt.Errorf("dial tcp: connection refused")
+			reconcileOnce()
+
+			Expect(getClaim().Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound),
+				"a provider that cannot be reached has not un-made the database")
+			Expect(string(bindingSecret().Data["url"])).To(Equal(bound.Binding.URL))
+		})
+	})
 })
+
+// The CA is written only where there is one. A key that is present and empty
+// reads to an application as an authority that vouches for nothing, which is
+// the one thing a binding must never be able to say — the same rule the
+// object store's caCert follows (#433).
+func TestDatabaseBindingDataCarriesTheCAOnlyWhereThereIsOne(t *testing.T) {
+	with := databaseBindingData(database.Binding{
+		URL: "postgresql://app:pw@host:5432/app?sslmode=require", Host: "host", Port: "5432",
+		User: "app", Password: "pw", Database: "app", CA: "-- the cluster's CA --",
+	})
+	for key, want := range map[string]string{
+		"url":      "postgresql://app:pw@host:5432/app?sslmode=require",
+		"host":     "host",
+		"port":     "5432",
+		"user":     "app",
+		"password": "pw",
+		"database": "app",
+		"ca":       "-- the cluster's CA --",
+	} {
+		if got := string(with[key]); got != want {
+			t.Errorf("binding key %q is %q, want %q", key, got, want)
+		}
+	}
+
+	without := databaseBindingData(database.Binding{URL: "postgresql://neon", Database: "neondb"})
+	if _, ok := without["ca"]; ok {
+		t.Error("a binding with no CA still writes the key, which reads as verifying against nothing")
+	}
+}
