@@ -202,7 +202,6 @@ function levelClass(line: LogLine): string {
           </RouterLink>
         </div>
 
-
         <div>
           <h3 class="text-xs font-medium text-highlighted mb-1.5">
             What the edge was serving
@@ -217,7 +216,8 @@ function levelClass(line: LogLine): string {
 
         <p class="text-[11px] text-dimmed leading-relaxed">
           Assembled over {{ time(report.since) }} – {{ time(report.until) }}. The lines and the memory series stop at the
-          termination instant, because they are what led up to it; the requests are the seconds either side. The report is all-or-nothing — a section that came back empty is a section that was empty.
+          termination instant, because they are what led up to it; the requests are the seconds either side. The report
+          is all-or-nothing — a section that came back empty is a section that was empty.
         </p>
       </div>
     </div>

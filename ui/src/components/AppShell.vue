@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api } from "../lib/api";
+import { api, type Condition } from "../lib/api";
 import { user, signOut } from "../lib/auth";
 import { loadConfig, platformVersion } from "../lib/config";
 import { callerFor, forgetMe, meError } from "../lib/me";
@@ -76,6 +76,13 @@ function projectTone(name: string): Tone {
   const project = projects.value.find((p) => p.name === name);
   if (!project?.conditions?.length) return "neutral";
   return unhealthyConditions(project.conditions).length ? "warning" : "success";
+}
+
+/** The same reading as a project's dot, one level down: the API's own
+ * severity on the environment's conditions, never a comparison to "True". */
+function environmentTone(conditions: Condition[] | undefined): Tone {
+  if (!conditions?.length) return "neutral";
+  return unhealthyConditions(conditions).length ? "warning" : "success";
 }
 
 function previewCount(name: string): number {
@@ -381,7 +388,7 @@ const userMenu = computed(() => [
             class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
             :class="route.params.env === environment.name ? 'bg-elevated text-highlighted' : 'text-toned'"
           >
-            <StatusDot :tone="environment.url ? 'success' : 'neutral'" />
+            <StatusDot :tone="environmentTone(environment.conditions)" />
             <span class="truncate">{{ environment.name }}</span>
           </RouterLink>
           <p v-if="!projectEnvironments.length" class="px-2.5 py-1.5 text-xs text-dimmed">

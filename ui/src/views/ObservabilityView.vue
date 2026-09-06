@@ -303,20 +303,18 @@ onMounted(() => {
       icon: "i-lucide-triangle-alert",
     });
   }
-  void run();
+  // Only the two log tabs are a log query; opening on Traffic or Traces asks
+  // the store nothing until the reader goes there.
+  if (readingLogs.value) void run();
 });
 usePoll(() => void run(false), 5000, () => liveTail.value && !streaming.value && !loading.value);
 
-/** Choosing a tab. It is the address that changes, and everything else
- *  follows from that: a tab is a link like the query and the window are. */
-function chooseView(next: View) {
-  tab.value = next;
-  syncURL();
-}
-
 watch(tab, (next) => {
+  syncURL();
+  // Arriving on a log tab with nothing fetched — the screen opened on Traffic,
+  // or this is the first look at the patterns.
   if (next === "patterns" && !patterns.value.length) void run();
-  else syncURL();
+  else if (next === "lines" && lines.value === null) void run();
 });
 
 /** A preset range releases whatever the histogram pinned. */
@@ -610,7 +608,7 @@ const placeholder = `level:error service:shop`;
         :key="view"
         class="px-3 py-1.5 -mb-px border-b-2"
         :class="tab === view ? 'border-primary text-highlighted' : 'border-transparent text-muted hover:text-toned'"
-        @click="chooseView(view)"
+        @click="tab = view"
       >
         {{ TAB_LABELS[view] }}
       </button>
