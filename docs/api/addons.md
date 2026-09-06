@@ -90,7 +90,7 @@ has no Addon, and that is exactly the row somebody came to the page to click:
    "requested": true, "serving": true, "managed": true,
    "namespace": "cnpg-system",
    "installed": [{"name": "cloudnative-pg", "version": "0.29.0"}],
-   "conditions": [{"type": "Ready", "status": "True", "reason": "Installed", "…": "…"}]}
+   "conditions": [{"type": "Ready", "status": "True", "reason": "Installed", "severity": "none", "…": "…"}]}
 ]}
 ```
 
@@ -161,7 +161,7 @@ One condition, `Ready`, whose reason is the whole vocabulary:
 | `Installed` | The platform installed it, at the versions in `installed` |
 | `Installing` | Its job is running. Its helm output is in the platform's own logs, under the entry's component |
 | `InstallFailed` | The job failed, with what helm said. Retried once the finished job is reaped |
-| `NotInstalled` | It is not serving and this Addon does not ask for it |
+| `NotInstalled` | It is not serving and this Addon does not ask for it. `False`, and `"severity": "info"` ([Conditions](../API.md#conditions)) — a dependency this installation did not ask for is a state, not a failed install |
 | `Refused` | Not permitted by this installation, or not a catalogue entry. The message names the chart value, or the catalogue |
 | `NamespaceInvalid` | `spec.namespace` is not a namespace name, refused before a cluster-admin job was created |
 | `DependencyNotReady` | An entry it depends on is not serving yet; that one goes in first |

@@ -1,11 +1,22 @@
 <script setup lang="ts">
-import type { Condition } from "../lib/api";
+import type { Condition, ConditionSeverity } from "../lib/api";
 import { timeAgo } from "../lib/format";
+import { conditionSeverity } from "../lib/status";
 
 defineProps<{ conditions?: Condition[] }>();
 
+// The colour is the severity the API sent, not the status: a `False` that is
+// a setting somebody chose reads as a fact rather than as a failure, and is
+// dimmed rather than red or green. docs/UI.md, "The attention band".
+const tones: Record<ConditionSeverity, string> = {
+  error: "text-error",
+  warning: "text-warning",
+  info: "text-dimmed",
+  none: "text-success",
+};
+
 function tone(condition: Condition): string {
-  return condition.status === "True" ? "text-success" : condition.status === "False" ? "text-error" : "text-warning";
+  return tones[conditionSeverity(condition)];
 }
 </script>
 

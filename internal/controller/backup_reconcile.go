@@ -65,6 +65,12 @@ const (
 	// second opinion of its own.
 	ConditionBackupReady = "BackupReady"
 
+	// ReasonNotScheduled is that platform having no scheduled backup at all.
+	// It is exported for the same reason, and classified the other way: an
+	// unprotected installation is a fault whatever else is green, which is
+	// what keeps "not every False is a fault" from becoming "no False is".
+	ReasonNotScheduled = "NotScheduled"
+
 	// DefaultBackupTimeout bounds one run where the singleton names none —
 	// which is what an installation predating the field has, since the CRD's
 	// own default only reaches an object that is written again.
@@ -130,7 +136,7 @@ func (r *KitchenReconciler) reconcileBackup(
 		// False, deliberately, and it does not requeue: an installation with
 		// no scheduled backup is not broken, it is unprotected, and this is
 		// the one place that says so without being asked.
-		setCond(ConditionBackupReady, metav1.ConditionFalse, "NotScheduled", kitchen.Status.Backup.Message)
+		setCond(ConditionBackupReady, metav1.ConditionFalse, ReasonNotScheduled, kitchen.Status.Backup.Message)
 		return true
 	}
 

@@ -71,6 +71,12 @@ a `400` saying so, and the Project's own `Previews` condition says the same
 thing to anyone who never asked. A preview that silently never appears reads
 as a fault.
 
+That condition is `False` on such a project — and on one where previews are
+simply turned off — and neither is a failure of anything. Both carry
+`"severity": "info"` ([Conditions](../API.md#conditions)), which is what a
+client colours from; reading the status instead is what drew a project with
+previews off as a broken one.
+
 `image.signature` says whose signature on the image is acceptable:
 `publicKeySecret` names a Secret in the platform namespace holding the
 vendor's key under `public.pem`, `identity` the signer the signature must

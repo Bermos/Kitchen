@@ -338,6 +338,38 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/claims/{name}/recoveries/{recovery}/promote` | Make that copy the claim's binding: `202`, and the database it displaces is kept | `admin` ‡ |
 | DELETE | `/claims/{name}/recoveries/{recovery}` | Discard a copy nobody promoted, and its data with it: `202` | `developer` |
 
+## Conditions
+
+Every object that has them carries `conditions`, and they are Kubernetes'
+shape with one field added:
+
+```json
+{"type": "Previews", "status": "False", "reason": "Disabled", "severity": "info",
+ "message": "previews are turned off for this project: a pull request against it gets no environment of its own",
+ "lastTransitionTime": "2026-09-01T08:00:00Z"}
+```
+
+**`severity` is how much attention this condition deserves, and `status` is
+not.** A condition's status says whether the statement in its *type* holds:
+`Previews=False` means this project gets no preview environments, which is
+either a setting somebody chose or a repository it does not have — and neither
+is a fault. Reading `False` as broken is what drew two healthy projects as
+failures on the dashboard's attention band (#436).
+
+| `severity` | What it means |
+|---|---|
+| `error` | Something is wrong and stays wrong until somebody acts |
+| `warning` | Something may be wrong: unassessed, or on its way somewhere |
+| `info` | A statement worth reading that is not a fault — a setting, or a fact about what cannot be known |
+| `none` | Nothing to say: the statement in the type holds |
+
+It is always present. The API computes it from the condition's type and
+reason in one place — `internal/api/conditions.go` — against the operator's
+own exported reason constants, so a client never keeps a list of benign
+reasons of its own: such a list would drift from the operator the first time
+somebody added one. `BackupReady=False` with reason `NotScheduled` is `error`
+on purpose: "not every `False` is a fault" is not "no `False` is".
+
 ## Endpoint reference
 
 What to send each route, what comes back, and why it answers the way it
@@ -397,6 +429,7 @@ such changes two changes to two different files.
 | CI tokens | better-auth's api-key plugin, exchanged for a JWT at the issuer | The plugin already holds the operator's own credential; keeping key lookup at the issuer keeps the operator's request path stateless |
 | What a CI key may do | A project role on a machine account created for the key, in the same `spec.access` as everybody else's | A key that carried permissions of its own would be a second permission system; a grant on the project means a key cannot outrank the project it was made for, and revocation stays at the issuer |
 | Response shapes | The API's own vocabulary, not raw custom resources | A stable contract for the UI, and freedom to change how state is stored |
+| Condition severity | Computed here from the condition's type and reason, keyed on the operator's own constants | A condition's `status` says whether its statement holds, not whether anything is wrong; a list of benign reasons kept in a client would drift from the operator the first time somebody added one |
 | Write surface | The full project, connection and claim lifecycle, rebuild and cancel, promote/rollback, preview teardown, the settings' runtime defaults, and the platform's operator list | Nothing a user does in the platform's normal running should need `kubectl`; domain writes wait for their reconciler, because a write over objects nothing reconciles only looks like it works |
 | Environment variables | A route of their own, `PATCH /projects/{name}/env`, rather than a field the settings route lets a developer through for | A whole route is the unit of authorization; a handler that decided by which key the body carried would apply the response-body exception to a write, and a dropped `env` would be a lost write that read as a successful one |
 | The operator list | On `GET`/`PATCH /settings`, which are already operator-only, rather than a surface of its own | It is the platform's own access list, like the base domain and the issuer beside it; a list that is enforced against and seeded on upgrade but served by nothing is one somebody opens `kubectl` to read |

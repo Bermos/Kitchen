@@ -67,6 +67,12 @@ const (
 	// job is there, in the job itself.
 	addonInstallJobTTLSeconds = 3600
 
+	// ReasonAddonNotInstalled is an entry nothing is serving and this Addon
+	// does not ask for. It is exported because the API classifies it: a
+	// dependency this installation chose not to install is a state, not a
+	// failed install. See internal/api/conditions.go.
+	ReasonAddonNotInstalled = "NotInstalled"
+
 	// addonFinalizer is what makes deleting an Addon a decision the operator
 	// gets to answer rather than a row disappearing: an entry a Connection
 	// or a claim depends on is refused, and one that goes says what went.
@@ -372,7 +378,7 @@ func planAddon(
 	if !addon.Spec.Install {
 		return addonPlan{
 			namespace: observed.namespace,
-			status:    metav1.ConditionFalse, reason: "NotInstalled",
+			status:    metav1.ConditionFalse, reason: ReasonAddonNotInstalled,
 			message: fmt.Sprintf("%s is not serving in this cluster and this Addon does not ask for it. Set "+
 				"spec.install to have the platform install it, or install the Helm release yourself", entry.Title),
 			ready: true,

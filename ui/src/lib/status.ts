@@ -1,4 +1,4 @@
-import type { Condition, Environment, ReleaseHistoryEntry } from "./api";
+import type { Condition, ConditionSeverity, Environment, ReleaseHistoryEntry } from "./api";
 
 // Phases are the coarse summary the CRDs expose; the platform's vocabulary
 // comes verbatim from docs/CRDS.md. Conditions carry the detail and the UI
@@ -47,20 +47,44 @@ export function releaseHistoryLabel(release: string, environment: Environment | 
   return entry === environment?.history?.[0] ? "Previous" : "Superseded";
 }
 
-/** A condition that is not where it should be — the thing the UI surfaces
- * even when the phase still reads fine. */
-export function unhealthyConditions(conditions: Condition[] | undefined): Condition[] {
-  return (conditions ?? []).filter((c) => c.status !== "True");
+/**
+ * How much attention one condition deserves.
+ *
+ * The API says, and this is the whole of what the dashboard knows about it:
+ * a condition's `status` says whether the statement in its `type` holds, not
+ * whether anything is wrong — `Previews=False` with reason `Disabled` is
+ * previews turned off, which is what somebody asked for. Reading `status` here
+ * is what drew two healthy projects as failures and spent both slots of the
+ * attention band on them (#436). The decision belongs to whoever wrote the
+ * condition, and `internal/api/conditions.go` is where it is made.
+ *
+ * The fallback is the old reading, for a payload from an operator older than
+ * the field: not True is not well.
+ */
+export function conditionSeverity(condition: Condition): ConditionSeverity {
+  if (condition.severity) return condition.severity;
+  if (condition.status === "True") return "none";
+  return condition.status === "False" ? "error" : "warning";
 }
 
-/** The dot for an object summarized by its conditions alone. False is broken
- * and Unknown is unassessed — a credential the operator could not check is a
+/** A condition that is not where it should be — the thing the UI surfaces
+ * even when the phase still reads fine. A condition the API classified as a
+ * setting or a fact is not one of them, however its status reads. */
+export function unhealthyConditions(conditions: Condition[] | undefined): Condition[] {
+  return (conditions ?? []).filter((c) => {
+    const severity = conditionSeverity(c);
+    return severity === "error" || severity === "warning";
+  });
+}
+
+/** The dot for an object summarized by its conditions alone. A fault outranks
+ * something unassessed — a credential the operator could not check is a
  * different message from one a provider rejected — while no conditions at all
  * means the operator has not looked yet. */
 export function conditionsTone(conditions: Condition[] | undefined): Tone {
   if (!conditions?.length) return "neutral";
-  if (conditions.some((c) => c.status === "False")) return "error";
-  if (conditions.some((c) => c.status === "Unknown")) return "warning";
+  if (conditions.some((c) => conditionSeverity(c) === "error")) return "error";
+  if (conditions.some((c) => conditionSeverity(c) === "warning")) return "warning";
   return "success";
 }
 

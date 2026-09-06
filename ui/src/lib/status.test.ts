@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Environment, ReleaseHistoryEntry } from "./api";
-import { conditionsTone, phaseTone, releaseHistoryLabel, statusDetail, unhealthyConditions } from "./status";
+import {
+  conditionSeverity,
+  conditionsTone,
+  phaseTone,
+  releaseHistoryLabel,
+  statusDetail,
+  unhealthyConditions,
+} from "./status";
 
 describe("status", () => {
   it("maps every documented phase to a tone", () => {
@@ -24,6 +31,53 @@ describe("status", () => {
     expect(statusDetail(conditions)).toBe("previews need the gate");
     expect(statusDetail([])).toBe("");
     expect(statusDetail(undefined)).toBe("");
+  });
+
+  it("reads the severity the API sent, and falls back to the status without one", () => {
+    // The API's word is the whole of it: a False it classified as a setting is
+    // a setting, and a True it said nothing about says nothing.
+    const previews = { type: "Previews", status: "False", reason: "Disabled", lastTransitionTime: "" };
+    expect(conditionSeverity({ ...previews, severity: "info" })).toBe("info");
+    expect(conditionSeverity({ type: "Ready", status: "True", severity: "none", lastTransitionTime: "" })).toBe("none");
+    // No severity — an operator older than the field — and the old reading
+    // stands: not True is not well.
+    expect(conditionSeverity({ type: "Ready", status: "False", lastTransitionTime: "" })).toBe("error");
+    expect(conditionSeverity({ type: "Ready", status: "Unknown", lastTransitionTime: "" })).toBe("warning");
+    expect(conditionSeverity({ type: "Ready", status: "True", lastTransitionTime: "" })).toBe("none");
+  });
+
+  it("leaves a turned-off setting out of what is wrong", () => {
+    // #436: previews off is a choice somebody made, and it was drawn as a
+    // failure — red dot, red condition line, a slot in the attention band.
+    const previewsOff = [
+      { type: "Ready", status: "True", severity: "none" as const, lastTransitionTime: "" },
+      {
+        type: "Previews",
+        status: "False",
+        reason: "Disabled",
+        severity: "info" as const,
+        message: "previews are turned off for this project",
+        lastTransitionTime: "",
+      },
+    ];
+    expect(unhealthyConditions(previewsOff)).toHaveLength(0);
+    expect(statusDetail(previewsOff)).toBe("");
+    expect(conditionsTone(previewsOff)).toBe("success");
+
+    // And the counter-case the same table pins: an unprotected installation
+    // is a fault whatever its status would have suggested on its own.
+    const unprotected = [
+      {
+        type: "BackupReady",
+        status: "False",
+        reason: "NotScheduled",
+        severity: "error" as const,
+        message: "no scheduled backup is configured",
+        lastTransitionTime: "",
+      },
+    ];
+    expect(unhealthyConditions(unprotected)).toHaveLength(1);
+    expect(conditionsTone(unprotected)).toBe("error");
   });
 
   it("tones a conditions-only object by its worst condition", () => {

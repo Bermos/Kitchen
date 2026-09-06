@@ -389,7 +389,7 @@ names the field and the image, and is the whole diagnosis — and the phase is
    "container": "app", "reason": "CreateContainerConfigError",
    "message": "the container of worker could not be started: CreateContainerConfigError: container has runAsNonRoot and image has non-numeric user (node), cannot verify user is non-root"},
  "conditions": [{"type": "Ready", "status": "False", "reason": "ContainerRefused",
-   "message": "the container of worker could not be started: …"}]}
+   "severity": "error", "message": "the container of worker could not be started: …"}]}
 ```
 
 `message` is what a developer reads and is on the condition too; `pod` and

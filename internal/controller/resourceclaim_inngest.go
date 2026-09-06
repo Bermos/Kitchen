@@ -97,6 +97,15 @@ const (
 	// binding, against the account's connection cap the platform cannot
 	// read.
 	condConnectWorkers = "ConnectWorkers"
+
+	// ConditionAppConnected and ReasonNotReported are exported because the
+	// API classifies them: an Unknown the provider reports deliberately is a
+	// statement about what can be known, not a caution the dashboard should
+	// colour. See internal/api/conditions.go.
+	ConditionAppConnected = condAppConnected
+	// ReasonNotReported is a self-hosted Inngest that publishes no app
+	// inventory: whether a worker has connected is not knowable from here.
+	ReasonNotReported = "NotReported"
 )
 
 // inngestContract is the claimContract for type inngest.
@@ -370,7 +379,7 @@ func (r *ResourceClaimReconciler) reportInngestApp(
 ) {
 	reporter, ok := provisioner.(inngest.AppReporter)
 	if !ok {
-		setClaimCondition(claim, condAppConnected, metav1.ConditionUnknown, "NotReported",
+		setClaimCondition(claim, condAppConnected, metav1.ConditionUnknown, ReasonNotReported,
 			fmt.Sprintf("this Inngest publishes no app inventory the platform can read, so whether a worker "+
 				"has connected as app %q is not something this claim can say. The server's own dashboard, at "+
 				"the INNGEST_BASE_URL in this claim's binding, lists the apps that have synced and the "+

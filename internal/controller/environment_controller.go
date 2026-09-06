@@ -139,6 +139,14 @@ const (
 	condRouteProgrammed   = "RouteProgrammed"
 	condPreviewProtected  = "PreviewProtected"
 	condScaleToZero       = "ScaleToZero"
+
+	// ConditionPreviewProtected and ReasonPreviewPublic are exported because
+	// the API classifies them: an ungated preview is what
+	// `spec.previews.protected` being off means, not something that went
+	// wrong. See internal/api/conditions.go.
+	ConditionPreviewProtected = condPreviewProtected
+	// ReasonPreviewPublic is a preview nobody asked to gate.
+	ReasonPreviewPublic = "Public"
 )
 
 // EnvironmentReconciler reconciles an Environment: it materializes the
@@ -1314,7 +1322,7 @@ func (r *EnvironmentReconciler) updateStatus(
 		setCond(condPreviewProtected, metav1.ConditionTrue, "GatedByPlatformLogin",
 			fmt.Sprintf("requests are gated behind platform login at %s", previewGateHost(kitchen)))
 	case env.Spec.Type == kitchenv1alpha1.EnvironmentPreview:
-		setCond(condPreviewProtected, metav1.ConditionFalse, "Public",
+		setCond(condPreviewProtected, metav1.ConditionFalse, ReasonPreviewPublic,
 			"spec.previews.protected is off for this Project: anyone with the URL can reach this preview")
 	default:
 		// Production environments are public by definition; the condition

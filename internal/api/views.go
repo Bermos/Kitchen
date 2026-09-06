@@ -35,8 +35,13 @@ import (
 // referenced by name, never by "spec.releaseRef.name".
 
 type conditionView struct {
-	Type               string    `json:"type"`
-	Status             string    `json:"status"`
+	Type   string `json:"type"`
+	Status string `json:"status"`
+	// Severity is how much attention this condition's current state
+	// deserves — `error`, `warning`, `info` or `none` — which is not
+	// something `status` says. It is always present, and
+	// internal/api/conditions.go is where it is decided.
+	Severity           string    `json:"severity"`
 	Reason             string    `json:"reason,omitempty"`
 	Message            string    `json:"message,omitempty"`
 	LastTransitionTime time.Time `json:"lastTransitionTime"`
@@ -86,6 +91,7 @@ func conditionViews(conditions []metav1.Condition) []conditionView {
 		out = append(out, conditionView{
 			Type:               condition.Type,
 			Status:             string(condition.Status),
+			Severity:           string(conditionSeverityOf(condition)),
 			Reason:             condition.Reason,
 			Message:            condition.Message,
 			LastTransitionTime: condition.LastTransitionTime.Time,

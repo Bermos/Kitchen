@@ -150,7 +150,7 @@ func (r *KitchenReconciler) rollUpAddon(
 	// that is not True is still moving.
 	return ready.Status == metav1.ConditionTrue ||
 		ready.Reason == kitchenv1alpha1.AddonRefused ||
-		ready.Reason == "NotInstalled"
+		ready.Reason == ReasonAddonNotInstalled
 }
 
 // addonAskedNothing reports an Addon that neither asks for its entry nor
