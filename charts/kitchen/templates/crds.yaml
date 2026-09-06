@@ -3799,9 +3799,9 @@ spec:
                     description: Message says in words what the two above mean for
                       a scan.
                     type: string
-                  pullCredentialSecret:
+                  readCredentialSecret:
                     description: |-
-                      PullCredentialSecret names the Secret holding a credential for this
+                      ReadCredentialSecret names the Secret holding a credential for this
                       registry that can pull and cannot push, empty when there is none. It
                       is never the credential itself — the API reads no credential back.
                     type: string
