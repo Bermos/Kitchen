@@ -197,8 +197,8 @@ commit it points at.
 
 `internal/clickhouse`'s integration suite is skipped unless
 `KITCHEN_CLICKHOUSE_URL` points at a store, and the Tests workflow's **Unit and
-envtest** job sets it: a ClickHouse service container stands next to the job
-and `make test` runs the suite against it.
+envtest** job sets it: the job starts a ClickHouse, waits for it to answer a
+query, and `make test` runs the suite against it.
 
 It is there because the rest of that package cannot answer the question that
 matters. Every other test asks "did we build the statement we meant to" of a
@@ -208,10 +208,14 @@ unit test, and fails deterministically in front of whoever opens the page. The
 environment page's usage series shipped in exactly that state.
 
 The store's version is pinned in one place, `clickhouse.image` in the chart's
-values, so bumping the platform's ClickHouse moves CI with it. A service
-container cannot read a file — its `image:` resolves before any step of its own
-job runs — so a one-step `store` job reads the pin out of `values.yaml` and the
-test job spells it as `needs`.
+values, so bumping the platform's ClickHouse moves CI with it. It is started by
+a step rather than declared as a `services:` block for two reasons that are the
+same reason. A service container's `image:` is an expression resolved before
+any step of its own job runs, so there is no checkout for it to read the pin
+from. And when one does not come up, the job dies in "Initialize containers"
+with every step skipped and nothing but a health-check verdict to go on — where
+a step can print what the store itself said, which is the only thing that ever
+helps.
 
 Nothing about this makes a store a prerequisite for working here: `make test`
 on a laptop with `KITCHEN_CLICKHOUSE_URL` unset skips the suite exactly as it

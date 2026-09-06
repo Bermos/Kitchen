@@ -54,10 +54,10 @@ import (
 //	KITCHEN_CLICKHOUSE_URL=http://kitchen:hunter2@127.0.0.1:8123/kitchen \
 //	  go test ./internal/clickhouse/ -run Integration -v
 //
-// **CI runs it.** The Tests workflow's "Unit and envtest" job stands a store
-// up as a service container at the version the chart pins, and exports
-// KITCHEN_CLICKHOUSE_URL for `make test` — so a statement this package builds
-// and a real server refuses fails a pull request rather than an installation.
+// **CI runs it.** The Tests workflow's "Unit and envtest" job stands a store up
+// at the version the chart pins and exports KITCHEN_CLICKHOUSE_URL for `make
+// test` — so a statement this package builds and a real server refuses fails a
+// pull request rather than an installation.
 // The skip above is what keeps `make test` on a laptop working without one; it
 // is a convenience, not the contract. A read that only a real server can judge
 // belongs here, and it will be run.
