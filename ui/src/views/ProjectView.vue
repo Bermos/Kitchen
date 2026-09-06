@@ -4,7 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { api, CRITICALITIES, DATA_CLASSES, type Claim, type ForkPolicy, type Project, type Release } from "../lib/api";
 import { buildFailureLine } from "../lib/builds";
 import { deletionGatedByName, destroysData, destroysDataRefusal, mayDestroyData } from "../lib/claims";
-import { duration, shortImage, shortSHA, timeAgo } from "../lib/format";
+import { duration, exactTime, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
@@ -29,6 +29,7 @@ import NotificationsPanel from "../components/NotificationsPanel.vue";
 import OperatorOnly from "../components/OperatorOnly.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import SourceLink from "../components/SourceLink.vue";
 import PipelinePanel from "../components/PipelinePanel.vue";
 import StatusDot from "../components/StatusDot.vue";
 
@@ -934,7 +935,7 @@ function host(url?: string): string {
         :breadcrumb="[{ label: 'Overview', to: '/' }, { label: project.name }]"
       >
         <template #meta>
-          <span v-if="project.repo">{{ project.repo }}</span>
+          <SourceLink v-if="project.repo" :href="project.repositoryUrl">{{ project.repo }}</SourceLink>
           <span v-else-if="vendoredImage" class="font-mono">{{ vendoredImage.reference }}</span>
           <a
             v-if="production?.url"
@@ -1065,8 +1066,20 @@ function host(url?: string): string {
                   {{ buildOf(release)?.git.message || release.build }}
                 </p>
                 <p class="text-xs text-muted font-mono mt-0.5">
-                  {{ shortSHA(buildOf(release)?.git.sha) }} · {{ buildOf(release)?.git.branch || "—" }} ·
-                  {{ buildOf(release)?.git.author || "—" }}
+                  <SourceLink :href="buildOf(release)?.git.commitUrl">{{
+                    shortSHA(buildOf(release)?.git.sha)
+                  }}</SourceLink>
+                  ·
+                  <SourceLink :href="buildOf(release)?.git.branchUrl">{{
+                    buildOf(release)?.git.branch || "—"
+                  }}</SourceLink>
+                  · {{ buildOf(release)?.git.author || "—" }}
+                  <span
+                    v-if="buildOf(release)?.git.committedAt"
+                    :title="exactTime(buildOf(release)?.git.committedAt)"
+                  >
+                    · committed {{ timeAgo(buildOf(release)?.git.committedAt) }}</span
+                  >
                 </p>
                 <!-- Where it is actually serving, from the release's own
                      status. The badge beside it only ever speaks for
@@ -1145,13 +1158,20 @@ function host(url?: string): string {
         </p>
         <div v-for="preview in previews" :key="preview.name" class="rounded-md border border-default bg-muted">
           <div class="px-4 py-3 flex items-center gap-4 flex-wrap">
-            <span class="font-mono text-xs text-primary">#{{ preview.preview?.pullRequest ?? "—" }}</span>
+            <!-- The preview's own pull request, which is the link this screen
+                 exists to have: the platform is the only thing that knows the
+                 number, and reaching the discussion meant copying it out. -->
+            <SourceLink class="font-mono text-xs" :href="preview.preview?.pullRequestUrl"
+              >#{{ preview.preview?.pullRequest ?? "—" }}</SourceLink
+            >
             <RouterLink
               :to="{ name: 'environment', params: { name: preview.name } }"
               class="text-sm text-highlighted font-medium hover:underline"
               >{{ preview.name }}</RouterLink
             >
-            <span class="font-mono text-xs text-muted">{{ preview.preview?.branch }}</span>
+            <SourceLink class="font-mono text-xs text-muted" :href="preview.preview?.branchUrl">{{
+              preview.preview?.branch
+            }}</SourceLink>
             <span class="flex-1" />
             <PhaseBadge :phase="preview.phase" />
             <a
@@ -1174,7 +1194,9 @@ function host(url?: string): string {
                   :key="build.name"
                   class="border-b border-muted last:border-0 hover:bg-elevated/40"
                 >
-                  <td class="pl-10 pr-3 py-2 w-32 font-mono text-xs text-toned">{{ shortSHA(build.git.sha) }}</td>
+                  <td class="pl-10 pr-3 py-2 w-32 font-mono text-xs text-toned">
+                    <SourceLink :href="build.git.commitUrl">{{ shortSHA(build.git.sha) }}</SourceLink>
+                  </td>
                   <td class="px-3 py-2">
                     <RouterLink
                       :to="{ name: 'build', params: { name: build.name } }"
@@ -1222,7 +1244,9 @@ function host(url?: string): string {
                 class="border-b border-muted last:border-0 hover:bg-elevated/40 cursor-pointer"
                 @click="openBuild(build.name, $event)"
               >
-                <td class="px-3 py-2 w-24 font-mono text-xs text-toned align-top">{{ shortSHA(build.git.sha) }}</td>
+                <td class="px-3 py-2 w-24 font-mono text-xs text-toned align-top">
+                  <SourceLink :href="build.git.commitUrl">{{ shortSHA(build.git.sha) }}</SourceLink>
+                </td>
                 <td class="px-3 py-2">
                   <span class="flex items-center gap-1 max-w-2xl">
                     <RouterLink
@@ -1241,7 +1265,13 @@ function host(url?: string): string {
                     />
                   </span>
                   <p class="text-xs text-muted font-mono mt-0.5">
-                    {{ build.git.branch }}<span v-if="build.git.pullRequest"> · #{{ build.git.pullRequest }}</span>
+                    <SourceLink :href="build.git.branchUrl">{{ build.git.branch }}</SourceLink
+                    ><span v-if="build.git.pullRequest">
+                      ·
+                      <SourceLink :href="build.git.pullRequestUrl">#{{ build.git.pullRequest }}</SourceLink></span
+                    ><span v-if="build.git.committedAt" :title="exactTime(build.git.committedAt)">
+                      · committed {{ timeAgo(build.git.committedAt) }}</span
+                    >
                   </p>
                   <!-- Why it failed, so that two failed builds read as two
                        failures rather than as the same one twice. -->

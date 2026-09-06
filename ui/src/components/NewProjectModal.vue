@@ -8,6 +8,7 @@ import {
   noteFor,
   repositoryChoices,
   repositoryNote,
+  repositoryURLFor,
   selectableChoices,
 } from "../lib/connections";
 import { callerFor } from "../lib/me";
@@ -135,6 +136,10 @@ const repoOptions = computed(() => {
 // The select is only worth drawing when it has something to list; everything
 // else is the input with a line under it saying why.
 const canPickRepo = computed(() => listedRepos.value.length > 0);
+// Where the chosen repository is on the provider's own site, so it can be
+// looked at before it is connected. It comes from the listing, which is the
+// API's answer — nothing here composes a URL (#435).
+const repoURL = computed(() => repositoryURLFor(repositories.data.value ?? undefined, repo.value));
 const repoNote = computed(() =>
   repositoryNote(repositories.data.value ?? undefined, repositories.error.value ?? undefined),
 );
@@ -412,6 +417,9 @@ async function create() {
             :loading="repositories.loading.value"
             autofocus
           />
+          <template v-if="repoURL" #hint>
+            <a :href="repoURL" target="_blank" rel="noopener" class="text-xs text-primary hover:underline">open</a>
+          </template>
         </UFormField>
         <UFormField
           label="Name"

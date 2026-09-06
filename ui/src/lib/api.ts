@@ -214,6 +214,9 @@ export interface Project {
    * software this platform did not build — its source is `image` instead, and
    * a project's source is one or the other. */
   repo: string;
+  /** Where that repository is on the provider's own site, composed by the API
+   *  from the connection. Absent for a project with no repository. */
+  repositoryUrl?: string;
   connection: string;
   registry: string;
   /** The web process's image, where this project runs one somebody else
@@ -481,6 +484,18 @@ export interface Revision {
   body?: string;
   author?: string;
   pullRequest?: number;
+  /** When the commit was made, which is not when the build was: a first
+   *  build, a rebuild and a redeploy are all of a commit older than
+   *  themselves. Absent where the provider did not say. */
+  committedAt?: string;
+  /** Where this commit, its branch and its pull request are on the provider's
+   *  own site. The API composes them from the project's connection — the host
+   *  is the connection's, not a constant — so nothing here builds one. Each is
+   *  absent where there is nothing to link, and a link that is absent is
+   *  rendered as the plain text it always was. */
+  commitUrl?: string;
+  branchUrl?: string;
+  pullRequestUrl?: string;
 }
 
 export interface Build {
@@ -1282,6 +1297,9 @@ export interface Release {
    * which do not when some do. Present on the single release read only, since
    * answering it means reading the build that produced the release. */
   attestation?: ReleaseAttestation;
+  /** The commit this release froze. Present on the single release read only,
+   * for the same reason the attestation is. */
+  git?: Revision;
 }
 
 /** The unit's own compliance answer: a release is attested when every image
@@ -1370,6 +1388,11 @@ export interface ConfigDiff {
 export interface Preview {
   pullRequest: number;
   branch: string;
+  /** Where that pull request and its branch are on the provider's own site. A
+   *  preview exists *because* of a pull request and nothing else knows its
+   *  number. */
+  pullRequestUrl?: string;
+  branchUrl?: string;
 }
 
 /** One completed stint of a release being current on an environment: when it
@@ -1400,6 +1423,11 @@ export interface Environment {
   phase?: string;
   url?: string;
   preview?: Preview;
+  /** The commit this environment is currently running — the answer to "what
+   *  is actually deployed here", which was a release name and no commit at
+   *  all. Present on the single environment read only, since answering it
+   *  means reading the release and then the build behind it. */
+  git?: Revision;
   /** Who may change this environment's requirements — subjects or verified
    * email addresses, the access-entry vocabulary. Platform operators always
    * may; an empty or absent list leaves the bar to the operators alone. */
@@ -1963,6 +1991,9 @@ export interface Repository {
   defaultBranch?: string;
   private?: boolean;
   description?: string;
+  /** Where the repository is on the provider's own site, so that a picker is
+   *  somewhere you can look before you choose. */
+  url?: string;
 }
 
 /**

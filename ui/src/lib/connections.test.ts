@@ -8,6 +8,7 @@ import {
   noteFor,
   repositoryChoices,
   repositoryNote,
+  repositoryURLFor,
   selectableChoices,
 } from "./connections";
 
@@ -133,7 +134,13 @@ const listing = (over: Partial<ConnectionRepositories> = {}): ConnectionReposito
   provider: "github",
   supported: true,
   items: [
-    { fullName: "acme/shop", defaultBranch: "main", private: true, description: "the shop" },
+    {
+      fullName: "acme/shop",
+      defaultBranch: "main",
+      private: true,
+      description: "the shop",
+      url: "https://github.com/acme/shop",
+    },
     { fullName: "acme/blog", defaultBranch: "trunk" },
   ],
   ...over,
@@ -192,5 +199,23 @@ describe("the branch a chosen repository deploys from", () => {
     expect(defaultBranchFor(listing(), undefined)).toBeUndefined();
     expect(defaultBranchFor(undefined, "acme/shop")).toBeUndefined();
     expect(defaultBranchFor(listing({ items: [{ fullName: "acme/shop" }] }), "acme/shop")).toBeUndefined();
+  });
+});
+
+// Where a chosen repository is, so it can be looked at before it is connected.
+// The URL is the API's — the host is a fact about the connection, and a
+// self-hosted GitLab or Gitea is not github.com — so a listing that carries
+// none produces no link rather than a guess (#435).
+describe("the link to a chosen repository", () => {
+  it("is the URL the listing carried", () => {
+    expect(repositoryURLFor(listing(), "acme/shop")).toBe("https://github.com/acme/shop");
+  });
+
+  it("is nothing for a repository the listing has no link for", () => {
+    expect(repositoryURLFor(listing(), "acme/blog")).toBeUndefined();
+    expect(repositoryURLFor(listing(), "acme/other")).toBeUndefined();
+    expect(repositoryURLFor(listing(), undefined)).toBeUndefined();
+    expect(repositoryURLFor(undefined, "acme/shop")).toBeUndefined();
+    expect(repositoryURLFor(listing({ supported: false }), "acme/shop")).toBeUndefined();
   });
 });

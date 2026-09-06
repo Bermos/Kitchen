@@ -145,5 +145,5 @@ func (s *Server) createAcquisition(w http.ResponseWriter, req *http.Request) {
 	// 202: the platform has taken the request, and what answers it is the
 	// operator resolving the digest and producing a Release. The Build is
 	// where that answer lands, which is why it is the body.
-	writeJSON(w, http.StatusAccepted, newBuildView(build))
+	writeJSON(w, http.StatusAccepted, newBuildView(build, s.sourceLinker().forProject(ctx, project)))
 }

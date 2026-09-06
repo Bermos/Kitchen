@@ -27,6 +27,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -726,5 +727,56 @@ func TestSignatureIsCheckedInEachProvidersOwnScheme(t *testing.T) {
 		if len(builds.Items) != 0 {
 			t.Errorf("%s built from an unverified delivery", tc.provider)
 		}
+	}
+}
+
+// A push says when its commit was made, and the Build keeps it: the date is
+// the one thing a truncated SHA cannot say about itself, and a build running
+// an eight-week-old commit looked exactly like a fresh one (#435).
+func TestPushRecordsWhenTheCommitWasMade(t *testing.T) {
+	r, handler := newReceiver(t)
+	body := []byte(`{
+		"ref": "refs/heads/main",
+		"after": "8f3a2c1d0abc456789ab",
+		"repository": {"full_name": "acme/shop"},
+		"head_commit": {"message": "Add checkout", "timestamp": "2026-07-11T09:30:00+02:00", "author": {"username": "bermos"}}
+	}`)
+
+	if rec := deliver(handler, "push", body, sign(body)); rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	build := &kitchenv1alpha1.Build{}
+	key := types.NamespacedName{Name: "shop-bld-8f3a2c1d0abc", Namespace: "default"}
+	if err := r.Client.Get(context.Background(), key, build); err != nil {
+		t.Fatalf("expected build to be created: %v", err)
+	}
+	if build.Spec.Git.CommittedAt == nil {
+		t.Fatal("the push carried a commit date and the build did not keep it")
+	}
+	if want := time.Date(2026, 7, 11, 7, 30, 0, 0, time.UTC); !build.Spec.Git.CommittedAt.Time.Equal(want) {
+		t.Errorf("committedAt = %v, want %v", build.Spec.Git.CommittedAt.Time, want)
+	}
+}
+
+// A provider that sends no timestamp, or one that cannot be read, leaves the
+// date unknown. It never becomes the time the build was created, which would
+// be a different and untrue statement — and it never fails the delivery,
+// because the build is the point and the date is a nicety on it.
+func TestAnUnreadableCommitDateIsNoDate(t *testing.T) {
+	for name, timestamp := range map[string]string{
+		"absent":     "",
+		"unreadable": "last thursday",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := commitTime(timestamp); got != nil {
+				t.Fatalf("commitTime(%q) = %v, want no date", timestamp, got)
+			}
+		})
+	}
+	// GitLab is the reason there is a list of layouts at all: its own
+	// webhooks have sent this shape for years.
+	if got := commitTime("2026-07-11 09:30:00 +0200"); got == nil {
+		t.Fatal("gitlab's own spelling of a timestamp was not read")
 	}
 }

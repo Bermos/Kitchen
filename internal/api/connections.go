@@ -729,6 +729,11 @@ type repositoryView struct {
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	Private       bool   `json:"private,omitempty"`
 	Description   string `json:"description,omitempty"`
+	// URL is the repository on the provider's own site, so that a picker is
+	// somewhere you can look before you choose (#435). Absent for a provider
+	// the platform has no web routing for, which is the same providers whose
+	// listing is unsupported.
+	URL string `json:"url,omitempty"`
 }
 
 // connectionRepositoriesView is what one connection's credential can see.
@@ -801,14 +806,22 @@ func (s *Server) listConnectionRepositories(w http.ResponseWriter, req *http.Req
 		return
 	}
 
+	// The listing is one connection's, so its web routing is resolved once
+	// for the whole of it. A provider with none leaves every row's URL empty
+	// rather than failing a listing over a link.
+	web, _ := gitprovider.Web(connection)
 	items := make([]repositoryView, 0, len(listing.Repositories))
 	for _, repo := range listing.Repositories {
-		items = append(items, repositoryView{
+		item := repositoryView{
 			FullName:      repo.FullName,
 			DefaultBranch: repo.DefaultBranch,
 			Private:       repo.Private,
 			Description:   repo.Description,
-		})
+		}
+		if web != nil {
+			item.URL = web.Repository(repo.FullName)
+		}
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, connectionRepositoriesView{
 		Provider:  providerName,

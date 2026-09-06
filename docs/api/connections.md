@@ -348,13 +348,20 @@ curl -sS -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/connections/gh/repositories
 {"provider": "github", "supported": true,
  "items": [{"fullName": "acme/shop", "defaultBranch": "main", "private": true,
-            "description": "the shop"}]}
+            "description": "the shop", "url": "https://github.com/acme/shop"}]}
 ```
 
 The repository field of the create-a-project form, answered from what the
 connection's stored credential can already see — so a repository is chosen
 from a list rather than spelled correctly from memory, and the project's
 production branch starts as the one the provider calls default.
+
+`url` is where the repository is on the provider's own site, so that the thing
+being connected can be looked at before it is. It is derived from this
+connection's own `apiUrl` — a self-hosted GitLab or Gitea is not `gitlab.com`
+— which is the same derivation every other source link uses; see
+[Builds](builds.md#the-date-and-the-links-back-to-the-source). It is absent
+for a provider the platform has no web routing for.
 
 It is the **second route under `/connections` that is not the operator's**,
 and for the same reason the list is not: creating a project is self-service,

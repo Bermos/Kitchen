@@ -47,6 +47,9 @@ const (
 	// testBuild is the build the fixtures start with: the one a rebuild
 	// repeats and the one whose logs are read.
 	testBuild = "shop-bld-abc123def456"
+	// testCommit is the commit it built, which several tests read back off
+	// the build, the release and the environment.
+	testCommit = "abc123def456789"
 	// testRelease is the release production runs in the fixtures;
 	// testPreviousRelease is the older one a rollback retreats to.
 	testRelease = "shop-rel-1"
@@ -224,7 +227,7 @@ func fixtures() []runtime.Object {
 		Spec: kitchenv1alpha1.BuildSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Git: kitchenv1alpha1.GitRevision{
-				SHA:     "abc123def456789",
+				SHA:     testCommit,
 				Branch:  defaultProductionBranch,
 				Message: "ship it",
 				Author:  "grace",
@@ -1301,7 +1304,7 @@ func TestRebuildingWithoutABodyRepeatsTheLastCommit(t *testing.T) {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	build := decode[buildView](t, recorder)
-	if build.Git.SHA != "abc123def456789" || build.Git.Branch != defaultProductionBranch {
+	if build.Git.SHA != testCommit || build.Git.Branch != defaultProductionBranch {
 		t.Fatalf("want the last commit rebuilt, got %+v", build.Git)
 	}
 	if build.Name == testBuild {

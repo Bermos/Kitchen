@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bucketLabel,
   duration,
+  exactTime,
   formatCores,
   formatDurationSeconds,
   formatMemory,
@@ -24,6 +25,12 @@ describe("format", () => {
     expect(timeAgo(new Date(Date.now() - 3 * 3600_000).toISOString())).toBe("3 hours ago");
     expect(timeAgo("not a date")).toBe("—");
     expect(timeAgo(undefined)).toBe("—");
+  });
+
+  it("an exact time is the tooltip behind a relative one, and nothing for nonsense", () => {
+    expect(exactTime("2026-07-11T09:30:00Z")).toContain("2026");
+    expect(exactTime("not a date")).toBe("");
+    expect(exactTime(undefined)).toBe("");
   });
 
   it("uptime coarsens with age", () => {

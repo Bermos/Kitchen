@@ -16,7 +16,10 @@ limitations under the License.
 
 package gitprovider
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Revision is one commit, in the terms a Build's spec.git carries: enough to
 // build it and enough to read on the build page.
@@ -35,6 +38,11 @@ type Revision struct {
 	// Author is the provider's identity for whoever wrote it, empty when the
 	// provider cannot attribute it to an account.
 	Author string
+	// CommittedAt is when the commit was made, zero when the provider did not
+	// say. It is the whole reason a caller can tell a repository's first build
+	// from a fresh push: the commit at the tip of a branch nobody has touched
+	// in two months is two months old, and only its date says so.
+	CommittedAt time.Time
 }
 
 // RevisionResolver is the half of a git provider that answers "what is at the

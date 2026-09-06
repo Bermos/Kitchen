@@ -163,3 +163,16 @@ export function defaultBranchFor(
   if (!listing?.supported || !fullName) return undefined;
   return listing.items.find((repo) => repo.fullName === fullName)?.defaultBranch || undefined;
 }
+
+/** Where a chosen repository is on the provider's own site, so that the
+ * repository being connected can be looked at before it is (#435). Undefined
+ * for a repository that was typed rather than chosen, and for a provider the
+ * platform has no web routing for — in both cases the form shows no link
+ * rather than a guessed one, because the API is what composes these. */
+export function repositoryURLFor(
+  listing: ConnectionRepositories | undefined,
+  fullName: string | undefined,
+): string | undefined {
+  if (!listing?.supported || !fullName) return undefined;
+  return listing.items.find((repo) => repo.fullName === fullName)?.url || undefined;
+}

@@ -407,6 +407,68 @@ A *run's* pod is not here. A deploy task's refusal fails the task itself, with
 [Workloads](processes.md)); a scheduled run's is on its own row and in the
 activity feed.
 
+## Which commit is running here
+
+`GET /environments/{name}` carries `git`: the commit this environment is
+actually running, with its links back to the provider.
+
+```json
+{
+  "name": "shop-production",
+  "release": "shop-rel-42",
+  "observedRelease": "shop-rel-42",
+  "git": {
+    "sha": "abc123def456789",
+    "branch": "main",
+    "message": "feat(api): answer a commit as a subject and a body",
+    "committedAt": "2026-07-11T09:30:00Z",
+    "commitUrl": "https://github.com/acme/shop/commit/abc123def456789",
+    "branchUrl": "https://github.com/acme/shop/tree/main"
+  }
+}
+```
+
+It is the environment's observed release — the one it is serving, not the one
+it has been asked to serve, where those differ — and then the build that
+release froze. Answering it is therefore two reads, which is why it is on the
+**single environment read alone** and not on a listing, exactly as
+`attestation` is on the single release read. It is absent for an environment
+with no release yet, one whose release or build has been pruned, and one
+running an image the platform acquired rather than built, which froze no
+commit.
+
+A **preview** environment carries the same links for its pull request:
+
+```json
+{
+  "name": "shop-pr-42",
+  "type": "preview",
+  "preview": {
+    "pullRequest": 42,
+    "branch": "feature/checkout",
+    "pullRequestUrl": "https://github.com/acme/shop/pull/42",
+    "branchUrl": "https://github.com/acme/shop/tree/feature/checkout"
+  }
+}
+```
+
+A preview exists *because* of a pull request and the platform is the only
+thing that knows which one, so this is the link that had no substitute at all.
+Both are on the listing as well as the single read: they need nothing but the
+project's repository and the number the environment already carries.
+
+Every URL here is composed by the API from the project's
+[Connection](connections.md), never by a client — see
+[Builds](builds.md#the-date-and-the-links-back-to-the-source) for why, and for
+when each is absent.
+
+## Which commit a release froze
+
+`GET /releases/{name}` carries the same `git` object for the commit the release
+froze, on the single release read for the same reason the attestation is: the
+commit is the build's, and the build has to be read to answer it. It is absent
+for a release of an acquired image.
+
 ## What an environment is running
 
 An `Environment`'s phase says whether it is live. `GET

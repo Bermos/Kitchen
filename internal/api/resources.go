@@ -78,14 +78,22 @@ func (s *Server) listProjects(w http.ResponseWriter, req *http.Request) {
 	sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
 
 	scope := scopeFrom(ctx)
+	linker := s.sourceLinker()
 	views := make([]projectView, 0, len(list.Items))
 	for i := range list.Items {
 		if !scope.allows(list.Items[i].Name) {
 			continue
 		}
-		views = append(views, newProjectView(&list.Items[i], s.roleOn(ctx, &list.Items[i])))
+		views = append(views, newProjectView(
+			&list.Items[i], s.roleOn(ctx, &list.Items[i]), linker.forProject(ctx, &list.Items[i])))
 	}
 	writeList(w, views)
+}
+
+// projectView is one project as this package answers it: the caller's role on
+// it, and where its repository is on the provider's own site.
+func (s *Server) projectView(ctx context.Context, project *kitchenv1alpha1.Project) projectView {
+	return newProjectView(project, s.roleOn(ctx, project), s.sourceLinker().forProject(ctx, project))
 }
 
 func (s *Server) getProject(w http.ResponseWriter, req *http.Request) {
@@ -95,7 +103,7 @@ func (s *Server) getProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	ctx := req.Context()
-	writeJSON(w, http.StatusOK, s.withFileContent(ctx, project, newProjectView(project, s.roleOn(ctx, project))))
+	writeJSON(w, http.StatusOK, s.withFileContent(ctx, project, s.projectView(ctx, project)))
 }
 
 // createProjectRequest is everything the create flow asks for: a name, a
@@ -428,7 +436,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		Message: fmt.Sprintf("project %s created from %s", project.Name, projectOrigin(source)),
 		Actor:   callerName(caller),
 	})
-	writeJSON(w, http.StatusCreated, newProjectView(project, s.roleOn(ctx, project)))
+	writeJSON(w, http.StatusCreated, s.projectView(ctx, project))
 }
 
 // projectNameIsFree reports whether a project of that name can still be
@@ -1301,7 +1309,7 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	caller, _ := CallerFrom(ctx)
 	s.log().Info("project settings changed through the api",
 		"project", project.Name, "caller", callerName(caller))
-	writeJSON(w, http.StatusOK, s.withFileContent(ctx, project, newProjectView(project, s.roleOn(ctx, project))))
+	writeJSON(w, http.StatusOK, s.withFileContent(ctx, project, s.projectView(ctx, project)))
 }
 
 // patchProjectEnv is the developer's half of a project: its environment
@@ -1364,7 +1372,7 @@ func (s *Server) patchProjectEnv(w http.ResponseWriter, req *http.Request) {
 	caller, _ := CallerFrom(ctx)
 	s.log().Info("project environment variables changed through the api",
 		"project", project.Name, "caller", callerName(caller))
-	writeJSON(w, http.StatusOK, newProjectView(project, s.roleOn(ctx, project)))
+	writeJSON(w, http.StatusOK, s.projectView(ctx, project))
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
@@ -1403,7 +1411,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
 	})
 	// 202, not 200: the operator's finalizer still has environments to tear
 	// down and a namespace to remove when this response goes out.
-	writeJSON(w, http.StatusAccepted, newProjectView(project, s.roleOn(ctx, project)))
+	writeJSON(w, http.StatusAccepted, s.projectView(ctx, project))
 }
 
 // builds returns a project's builds, or every build when project is empty,
@@ -1428,10 +1436,12 @@ func (s *Server) builds(ctx context.Context, project string) ([]kitchenv1alpha1.
 	return out, nil
 }
 
-func (s *Server) writeBuilds(w http.ResponseWriter, builds []kitchenv1alpha1.Build) {
+func (s *Server) writeBuilds(ctx context.Context, w http.ResponseWriter, builds []kitchenv1alpha1.Build) {
+	linker := s.sourceLinker()
 	views := make([]buildView, 0, len(builds))
 	for i := range builds {
-		views = append(views, newBuildView(&builds[i]))
+		views = append(views, newBuildView(
+			&builds[i], linker.forProjectNamed(ctx, builds[i].Spec.ProjectRef.Name)))
 	}
 	writeList(w, views)
 }
@@ -1469,7 +1479,7 @@ func (s *Server) listBuilds(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	s.writeBuilds(w, visibleTo(scopeFrom(req.Context()), builds, buildProject))
+	s.writeBuilds(req.Context(), w, visibleTo(scopeFrom(req.Context()), builds, buildProject))
 }
 
 func (s *Server) listProjectBuilds(w http.ResponseWriter, req *http.Request) {
@@ -1483,16 +1493,23 @@ func (s *Server) listProjectBuilds(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	s.writeBuilds(w, builds)
+	s.writeBuilds(req.Context(), w, builds)
 }
 
 func (s *Server) getBuild(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	build := &kitchenv1alpha1.Build{}
-	if err := s.get(req.Context(), req.PathValue("name"), build); err != nil {
+	if err := s.get(ctx, req.PathValue("name"), build); err != nil {
 		s.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newBuildView(build))
+	writeJSON(w, http.StatusOK, s.buildView(ctx, build))
+}
+
+// buildView is one build with its source links resolved, which is every place
+// a single build is answered with.
+func (s *Server) buildView(ctx context.Context, build *kitchenv1alpha1.Build) buildView {
+	return newBuildView(build, s.sourceLinker().forProjectNamed(ctx, build.Spec.ProjectRef.Name))
 }
 
 // createBuildRequest asks for a build of one commit. An empty body rebuilds
@@ -1565,7 +1582,7 @@ func (s *Server) createBuild(w http.ResponseWriter, req *http.Request) {
 	}
 	s.log().Info("build requested through the api",
 		"project", project.Name, "build", build.Name, "sha", revision.SHA, "caller", callerName(caller))
-	writeJSON(w, http.StatusCreated, newBuildView(build))
+	writeJSON(w, http.StatusCreated, newBuildView(build, s.sourceLinker().forProject(ctx, project)))
 }
 
 // revisionToBuild works out which commit a build request means: the one it
@@ -1618,6 +1635,9 @@ func (s *Server) revisionToBuild(
 				revision.Message, revision.Body = previous[i].Spec.Git.Message, previous[i].Spec.Git.Body
 			}
 			revision.Author = previous[i].Spec.Git.Author
+			// The commit was made when it was made, whatever this rebuild
+			// costs — a rebuild of an old commit reads as old (#435).
+			revision.CommittedAt = previous[i].Spec.Git.CommittedAt
 			// From the spec, not Build.PullRequestNumber(): this writes a
 			// new immutable spec, and what a rebuild inherits is what the
 			// event that created the original established — see the note on
@@ -1736,6 +1756,13 @@ func (s *Server) getRelease(w http.ResponseWriter, req *http.Request) {
 		view.Attestation = newUnitAttestationView(nil)
 	} else {
 		view.Attestation = newUnitAttestationView(build)
+		// The commit this release froze, with its links back to the provider
+		// (#435). It rides the read the attestation already needed, and is
+		// absent for a release of an acquired image, which froze no commit.
+		if build.FromRepository() {
+			revision := newRevisionView(build, s.sourceLinker().forProjectNamed(ctx, release.Spec.ProjectRef.Name))
+			view.Git = &revision
+		}
 	}
 	writeJSON(w, http.StatusOK, view)
 }
@@ -1755,12 +1782,24 @@ func (s *Server) environments(ctx context.Context, project string) ([]kitchenv1a
 	return out, nil
 }
 
-func (s *Server) writeEnvironments(w http.ResponseWriter, environments []kitchenv1alpha1.Environment) {
+func (s *Server) writeEnvironments(
+	ctx context.Context,
+	w http.ResponseWriter,
+	environments []kitchenv1alpha1.Environment,
+) {
+	linker := s.sourceLinker()
 	views := make([]environmentView, 0, len(environments))
 	for i := range environments {
-		views = append(views, newEnvironmentView(&environments[i]))
+		views = append(views, newEnvironmentView(
+			&environments[i], linker.forProjectNamed(ctx, environments[i].Spec.ProjectRef.Name)))
 	}
 	writeList(w, views)
+}
+
+// environmentView is one environment with its source links resolved, which is
+// every place a single environment is answered with.
+func (s *Server) environmentView(ctx context.Context, env *kitchenv1alpha1.Environment) environmentView {
+	return newEnvironmentView(env, s.sourceLinker().forProjectNamed(ctx, env.Spec.ProjectRef.Name))
 }
 
 func (s *Server) listEnvironments(w http.ResponseWriter, req *http.Request) {
@@ -1769,7 +1808,7 @@ func (s *Server) listEnvironments(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	s.writeEnvironments(w, visibleTo(scopeFrom(req.Context()), environments, environmentProject))
+	s.writeEnvironments(req.Context(), w, visibleTo(scopeFrom(req.Context()), environments, environmentProject))
 }
 
 func (s *Server) listProjectEnvironments(w http.ResponseWriter, req *http.Request) {
@@ -1783,16 +1822,57 @@ func (s *Server) listProjectEnvironments(w http.ResponseWriter, req *http.Reques
 		s.writeError(w, err)
 		return
 	}
-	s.writeEnvironments(w, environments)
+	s.writeEnvironments(req.Context(), w, environments)
 }
 
 func (s *Server) getEnvironment(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
 	env := &kitchenv1alpha1.Environment{}
-	if err := s.get(req.Context(), req.PathValue("name"), env); err != nil {
+	if err := s.get(ctx, req.PathValue("name"), env); err != nil {
 		s.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newEnvironmentView(env))
+	linker := s.sourceLinker()
+	links := linker.forProjectNamed(ctx, env.Spec.ProjectRef.Name)
+	view := newEnvironmentView(env, links)
+	// What is actually running here, as a commit rather than as the name of a
+	// release. It is the environment's release, and then the build that
+	// release froze — two reads, which is why the single environment answers
+	// it and the listing does not (#435). Either being gone is a nil, not an
+	// error: a pruned build is a well-known state and this is a nicety on an
+	// answer that was already complete.
+	if build := s.liveBuild(ctx, env); build != nil {
+		revision := newRevisionView(build, links)
+		view.Git = &revision
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// liveBuild is the Build behind what an environment is running: its observed
+// release where the reconciler has caught up, and the release it was asked to
+// run otherwise. Nil for an environment with no release, a release that has
+// been pruned, a build that has been pruned, and a build that acquired an
+// image rather than building a commit — all of which are ordinary.
+func (s *Server) liveBuild(ctx context.Context, env *kitchenv1alpha1.Environment) *kitchenv1alpha1.Build {
+	name := env.Status.ObservedRelease
+	if name == "" {
+		name = env.Spec.ReleaseRef.Name
+	}
+	if name == "" {
+		return nil
+	}
+	release := &kitchenv1alpha1.Release{}
+	if err := s.get(ctx, name, release); err != nil {
+		return nil
+	}
+	build := &kitchenv1alpha1.Build{}
+	if err := s.get(ctx, release.Spec.BuildRef.Name, build); err != nil {
+		return nil
+	}
+	if !build.FromRepository() {
+		return nil
+	}
+	return build
 }
 
 // patchEnvironmentRequest changes which Release an Environment runs. That one
@@ -1847,7 +1927,7 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if env.Spec.ReleaseRef.Name == release.Name {
-		writeJSON(w, http.StatusOK, newEnvironmentView(env))
+		writeJSON(w, http.StatusOK, s.environmentView(ctx, env))
 		return
 	}
 
@@ -1909,7 +1989,7 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 	if !s.pointEnvironmentAt(w, req, env, release, move) {
 		return
 	}
-	writeJSON(w, http.StatusOK, newEnvironmentView(env))
+	writeJSON(w, http.StatusOK, s.environmentView(ctx, env))
 }
 
 // releaseMove is one move of an environment onto a release, in the two
@@ -2052,7 +2132,7 @@ func (s *Server) cancelBuild(w http.ResponseWriter, req *http.Request) {
 
 	s.log().Info("build cancelled through the api",
 		"project", build.Spec.ProjectRef.Name, "build", build.Name, "caller", callerName(caller))
-	writeJSON(w, http.StatusOK, newBuildView(build))
+	writeJSON(w, http.StatusOK, s.buildView(ctx, build))
 }
 
 // deleteEnvironment removes a stuck preview. Only previews: the production
@@ -2090,7 +2170,7 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 	s.log().Info("environment deleted through the api",
 		"project", env.Spec.ProjectRef.Name, "environment", env.Name, "caller", callerName(caller))
 	// 202: the environment's finalizer still has its workload to remove.
-	writeJSON(w, http.StatusAccepted, newEnvironmentView(env))
+	writeJSON(w, http.StatusAccepted, s.environmentView(ctx, env))
 }
 
 // listConnections is the one connection route that is not the operator's

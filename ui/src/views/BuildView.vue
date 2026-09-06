@@ -11,7 +11,7 @@ import {
   type UpstreamArtifact,
 } from "../lib/api";
 import { buildStallLine } from "../lib/builds";
-import { duration, shortSHA, timeAgo } from "../lib/format";
+import { duration, exactTime, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
@@ -21,6 +21,7 @@ import ConditionsTable from "../components/ConditionsTable.vue";
 import LogViewer from "../components/LogViewer.vue";
 import OperatorOnly from "../components/OperatorOnly.vue";
 import CommitBody from "../components/CommitBody.vue";
+import SourceLink from "../components/SourceLink.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import VEXPanel from "../components/VEXPanel.vue";
@@ -360,11 +361,24 @@ const logRunLabels = computed<Record<string, string>>(() => {
                and says what it followed instead. Nothing fakes a commit, so
                the fields a vendored build has no answer for are absent rather
                than empty. -->
-          <span v-if="build.git.sha" class="font-mono">{{ shortSHA(build.git.sha) }}</span>
-          <span v-if="build.git.branch" class="font-mono">{{ build.git.branch }}</span>
+          <SourceLink v-if="build.git.sha" class="font-mono" :href="build.git.commitUrl">{{
+            shortSHA(build.git.sha)
+          }}</SourceLink>
+          <SourceLink v-if="build.git.branch" class="font-mono" :href="build.git.branchUrl">{{
+            build.git.branch
+          }}</SourceLink>
           <span v-else-if="build.acquisition?.reference" class="font-mono">{{ build.acquisition.reference }}</span>
-          <span v-if="build.git.pullRequest" class="font-mono">#{{ build.git.pullRequest }}</span>
+          <SourceLink v-if="build.git.pullRequest" class="font-mono" :href="build.git.pullRequestUrl"
+            >#{{ build.git.pullRequest }}</SourceLink
+          >
           <span v-if="build.git.author" class="font-mono">{{ build.git.author }}</span>
+          <!-- When the commit was made, which is not when the build was: a
+               rebuild and a first build are both of a commit older than
+               themselves, and an eight-week-old SHA reads exactly like a
+               fresh one without this. -->
+          <span v-if="build.git.committedAt" :title="exactTime(build.git.committedAt)"
+            >committed {{ timeAgo(build.git.committedAt) }}</span
+          >
           <span v-if="build.detectedFramework" class="font-mono">{{ build.detectedFramework }}, detected</span>
           <!-- Which stage of a multi-stage Dockerfile this build shipped. It
                is the build's own record rather than the project's setting,
