@@ -205,11 +205,13 @@ func (inngestContract) reconcile(
 	return ctrl.Result{}, nil
 }
 
-// finalize archives the preview environments and releases the Environments
-// they held. Nothing else is the platform's to take back: the keys are the
-// account's, and the app record is the application's — Inngest keeps it
-// until somebody archives it in the dashboard, which is said where the
-// claim is deleted.
+// finalize archives the preview environments, releases the Environments they
+// held, and takes back the claim's own server under its deletionPolicy.
+//
+// The previews go under either policy, as they do for every other type: a
+// preview's Inngest is a server of its own on an empty event stream, made
+// for an environment that is itself being torn down. The policy is about the
+// claim's own server, which is the one holding work somebody sent.
 func (inngestContract) finalize(
 	ctx context.Context,
 	r *ResourceClaimReconciler,
@@ -242,17 +244,23 @@ func (inngestContract) finalize(
 		return err
 	}
 
-	// A server this platform runs is this platform's to take back, and it
-	// goes with the claim — unconditionally, because the type carries no
-	// deletionPolicy: there is nothing here a third party is holding for a
-	// policy to choose about. Inngest Cloud is not a Deprovisioner and
-	// nothing is asked of it: the keys are the account's, the app record is
-	// the application's, and archiving a branch environment deleted nothing.
+	// A server this platform runs is this platform's to take back, and what
+	// it takes back is the claim's deletionPolicy to say (#407): Delete
+	// destroys the server, the Postgres and the queue behind it — the same
+	// resources, provisioned through the same providers, that a postgres and
+	// a redis claim's Delete destroys — and Retain, the default, stops the
+	// server and keeps both stores. The API asks for admin before the first
+	// of those, on the same terms as every other claim that holds data.
+	//
+	// Inngest Cloud is not a Deprovisioner and nothing is asked of it under
+	// either policy: the keys are the account's, the app record is the
+	// application's, and archiving a branch environment deleted nothing.
 	deprovisioner, ok := provisioner.(inngest.Deprovisioner)
 	if ok && claim.Status.InstanceID != "" {
-		if err := deprovisioner.Deprovision(ctx, claim.Status.InstanceID); err != nil {
-			return err
+		if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete {
+			return deprovisioner.Deprovision(ctx, claim.Status.InstanceID)
 		}
+		return deprovisioner.Retain(ctx, claim.Status.InstanceID)
 	}
 	return nil
 }

@@ -72,6 +72,13 @@ import (
 // for an environment that is parked most of the time and holds nothing
 // anybody has to keep — and it is the one respect in which a preview's
 // Inngest is not production's shape.
+//
+// **Because those stores are the platform's, deleting the claim is a choice
+// rather than a fact** (#407). The claim carries a deletionPolicy the way a
+// postgres or a redis claim does, and it defaults to Retain for the same
+// reason plus one: some of what a server holds is work that was accepted and
+// has not run yet. Retain stops the server and keeps everything it was
+// keeping; Delete destroys the lot, and the API asks for admin first.
 
 const (
 	// DefaultServerNamespace is where the servers run. It is deliberately
@@ -353,15 +360,43 @@ func (s *SelfHosted) DeleteBranch(ctx context.Context, _, branchID string) error
 	return s.deleteServer(ctx, branchID)
 }
 
-// Deprovision destroys the claim's server, its Postgres and its queue.
-//
-// It is unconditional because the claim type carries no deletionPolicy:
-// there is no third party holding anything here for a policy to choose
-// about — every one of these objects is one this platform created for this
-// claim. What that means for the run history is said where the claim is
-// deleted, and in docs/api/claims.md.
+// Deprovision destroys the claim's server, its Postgres and its queue. It is
+// what deletionPolicy Delete asks for, and the claim's own spec is what
+// chooses it — the API asks for admin before it does (#407).
 func (s *SelfHosted) Deprovision(ctx context.Context, instanceID string) error {
 	return s.deleteServer(ctx, instanceID)
+}
+
+// Retain is the default policy, and here it means: stop the server, keep
+// everything it was keeping.
+//
+// The Deployment and the Service go, because there is no claim any more and
+// so nothing left to serve — a server nobody is bound to is a pod and an
+// address for an application that has stopped asking. What stays is
+// everything that holds state: the CloudNativePG Cluster and the Valkey
+// production's server keeps its history and its queue in, a preview's
+// PersistentVolumeClaim, and the Secret holding the keys and the two storage
+// URIs — without which the retained stores would still be there and nothing
+// would be able to read them as the same server again.
+//
+// That is what makes the retention reversible in the way Retain is
+// everywhere else on this API: a claim of the same name, in the same
+// project, adopts the stores and the keys and the server comes back on the
+// work it left (docs/api/claims.md, "Rebinding a retained resource").
+func (s *SelfHosted) Retain(ctx context.Context, instanceID string) error {
+	name, err := s.name(instanceID)
+	if err != nil {
+		return err
+	}
+	for _, object := range []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace}},
+	} {
+		if err := s.Client.Delete(ctx, object); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // IdleBranch parks a preview's server at no pods while the preview it
@@ -896,19 +931,34 @@ func (s *SelfHosted) labels(name, project string) map[string]string {
 }
 
 // owner answers naming.Lookup: whether a server of that name is there and
-// which project it was created for. The Deployment is the server — the
-// Secret, the Service and the volume are made beside it and go with it — so
-// it is the one object asked.
+// which project it was created for. The Deployment is the server, so it is
+// asked first.
+//
+// The Secret is asked when there is no Deployment, because that is exactly
+// what a *retained* server is: Retain stops the workload and keeps the
+// stores and the keys. A name whose Secret is still there is not a free
+// name — the project that retained it adopts it back, and another project
+// is refused it by name rather than by whichever of the retained objects
+// happened to notice first.
 func (s *SelfHosted) owner(ctx context.Context, name string) (naming.Owner, error) {
 	existing := &appsv1.Deployment{}
 	err := s.Client.Get(ctx, s.key(name), existing)
+	switch {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return naming.Owner{}, err
+	default:
+		return naming.Owner{Found: true, Project: existing.Labels[naming.LabelProject]}, nil
+	}
+	retained := &corev1.Secret{}
+	err = s.Client.Get(ctx, s.key(name), retained)
 	switch {
 	case apierrors.IsNotFound(err):
 		return naming.Owner{}, nil
 	case err != nil:
 		return naming.Owner{}, err
 	}
-	return naming.Owner{Found: true, Project: existing.Labels[naming.LabelProject]}, nil
+	return naming.Owner{Found: true, Project: retained.Labels[naming.LabelProject]}, nil
 }
 
 // project reads whose server one is, so that a preview's is labelled like

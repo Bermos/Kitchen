@@ -12827,6 +12827,13 @@ spec:
                   deregistered: the policy exists to protect data from a deletion nobody
                   meant, and an OAuth client holds none — what it holds is permission to
                   sign people in, which is the thing that must not outlive the claim.
+                  Nor about an inngest claim through Inngest Cloud, where the app record
+                  and the keys are the account's and the platform destroys nothing. It
+                  does say something about the same claim through inngestSelfHosted,
+                  where the server this platform runs keeps its state on a
+                  CloudNativePG Cluster and a Valkey of its own: Retain stops the server
+                  and keeps both, Delete destroys them and every run and queued event on
+                  them. See ClaimType.HoldsDataVia.
                 enum:
                 - Retain
                 - Delete

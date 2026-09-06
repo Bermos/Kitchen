@@ -184,16 +184,6 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		badRequest(w, "deletionPolicy must be Retain or Delete (got %q)", body.DeletionPolicy)
 		return
 	}
-	if policy != "" && !claimType.HoldsData {
-		badRequest(w, "%s claim takes no deletionPolicy: the policy decides what happens to provisioned "+
-			"data, and %s holds none — it is always removed with the claim",
-			withArticle(claimType.Name), withArticle(claimType.Resource))
-		return
-	}
-	if policy == kitchenv1alpha1.ClaimDelete &&
-		!s.mayDestroyData(ctx, w, project, project.Name, "asking for a claim that destroys its "+claimType.Resource) {
-		return
-	}
 	dataClass, err := dataClassFromRequest(body.DataClass)
 	if err != nil {
 		badRequest(w, "%s", err.Error())
@@ -214,8 +204,22 @@ func (s *Server) createClaim(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	config, ref, ok := s.claimShape(ctx, w, claimType, shaper, project, &body)
+	config, ref, provider, ok := s.claimShape(ctx, w, claimType, shaper, project, &body)
 	if !ok {
+		return
+	}
+	// Whether the policy means anything is the type *and the provider*: an
+	// inngest claim through Inngest Cloud provisions an app record at
+	// somebody else's account, and the same claim through inngestSelfHosted
+	// provisions a server on a Postgres and a queue this platform runs. So
+	// the two checks below come after the Connection has been resolved
+	// rather than before it (#407).
+	if policy != "" && !claimType.HoldsDataVia(provider) {
+		badRequest(w, "%s", deletionPolicyRefusal(claimType, provider))
+		return
+	}
+	if policy == kitchenv1alpha1.ClaimDelete &&
+		!s.mayDestroyData(ctx, w, project, project.Name, "asking for a claim that destroys its "+claimType.Resource) {
 		return
 	}
 	config, ok = s.withPreviewMode(ctx, w, claimType, ref, &body, config)
@@ -354,10 +358,37 @@ func claimShaperFor(typeName string) (kitchenv1alpha1.ClaimType, claimShaper, bo
 	return claimType, shaper, true
 }
 
+// deletionPolicyRefusal is why this claim takes no deletionPolicy, and — for
+// a type whose answer depends on which provider is behind it — which
+// connection would take one, because "this type takes no policy" is only
+// half true there and the half that is missing is the useful one.
+//
+// The sentence is built from the claim table rather than from any type's
+// name: a second type that holds data through one provider and not another
+// gets the same refusal without this function being touched.
+func deletionPolicyRefusal(claimType kitchenv1alpha1.ClaimType, provider string) string {
+	through := ""
+	if provider != "" && len(claimType.HoldsDataProviders) > 0 {
+		through = fmt.Sprintf(" through %s connection", withArticle(provider))
+	}
+	refusal := fmt.Sprintf("%s claim%s takes no deletionPolicy: the policy decides what happens to "+
+		"provisioned data, and %s holds none — it is always removed with the claim",
+		withArticle(claimType.Name), through, withArticle(claimType.Resource))
+	if through == "" {
+		return refusal
+	}
+	return refusal + fmt.Sprintf(". Through %s connection it does take one: what %s claim provisions there "+
+		"is this platform's own, and the policy is what says whether deleting the claim keeps it or "+
+		"destroys it", withArticle(strings.Join(claimType.HoldsDataProviders, " or ")),
+		withArticle(claimType.Name))
+}
+
 // claimShape validates the half of the request that belongs to the claim's
-// type, and answers with the two things that differ between types: the
-// Connection the claim provisions through, and the config the reconciler
-// reads. ok=false means a refusal has already been written.
+// type, and answers with the three things that differ between types: the
+// Connection the claim provisions through, that Connection's provider — the
+// one thing outside the type that decides what a claim of it is — and the
+// config the reconciler reads. ok=false means a refusal has already been
+// written.
 //
 // A type is refused the fields of every other type rather than quietly
 // ignoring them, and the CRD refuses the same shapes at admission — this is
@@ -369,7 +400,7 @@ func (s *Server) claimShape(
 	shaper claimShaper,
 	project *kitchenv1alpha1.Project,
 	body *createClaimRequest,
-) (*runtime.RawExtension, *kitchenv1alpha1.LocalObjectReference, bool) {
+) (*runtime.RawExtension, *kitchenv1alpha1.LocalObjectReference, string, bool) {
 	mine := map[string]bool{}
 	for _, field := range shaper.fields() {
 		mine[field.name] = true
@@ -384,7 +415,7 @@ func (s *Server) claimShape(
 			}
 			badRequest(w, "%s belongs to a claim of type %s: %s claim provisions %s, which has %s",
 				field.name, other.Name, withArticle(claimType.Name), withArticle(claimType.Resource), field.lacks)
-			return nil, nil, false
+			return nil, nil, "", false
 		}
 	}
 
@@ -393,21 +424,21 @@ func (s *Server) claimShape(
 	if claimType.TakesConnection() {
 		conn, ok := s.requireConnection(ctx, w, "connection", body.Connection, claimType.Capability)
 		if !ok {
-			return nil, nil, false
+			return nil, nil, "", false
 		}
 		provider = conn.Spec.Provider
 		ref = &kitchenv1alpha1.LocalObjectReference{Name: body.Connection}
 	} else if body.Connection != "" {
 		badRequest(w, "%s claim takes no connection: the platform provisions %s itself, and there is no "+
 			"Connection in front of it", withArticle(claimType.Name), withArticle(claimType.Resource))
-		return nil, nil, false
+		return nil, nil, "", false
 	}
 
 	config, ok := shaper.config(w, body, project, provider)
 	if !ok {
-		return nil, nil, false
+		return nil, nil, "", false
 	}
-	return config, ref, true
+	return config, ref, provider, true
 }
 
 // withPreviewMode validates the claim's choice of what its previews bind to

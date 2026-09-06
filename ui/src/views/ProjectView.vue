@@ -811,6 +811,16 @@ function claimDeletionOutcome(claim: Claim): string {
       ? "The instance and everything in it are being destroyed."
       : "The instance is kept, with whatever is in it.";
   }
+  // An inngest claim is two different things, and only one of them has a
+  // policy: through Inngest Cloud the platform destroys nothing at all.
+  if (claim.type === "inngest") {
+    if (!claim.inngest?.selfHosted) {
+      return "The preview branch environments are archived; the app and the account's keys stay at Inngest.";
+    }
+    return claim.deletionPolicy === "Delete"
+      ? "The Inngest server, its Postgres and its queue are being destroyed, with every run on them."
+      : "The Inngest server stops; its Postgres, its queue and every run and queued event on them are kept.";
+  }
   if (claim.type === "volume") {
     if (claim.volume?.source === "bind") {
       return "The storage is unmounted and nothing on it is touched: it was never the platform's to delete.";
@@ -834,6 +844,14 @@ function claimDeletionWarning(claim: Claim): string {
     return claim.deletionPolicy === "Delete"
       ? "This claim's policy is Delete: the volume and ALL THE DATA ON IT are deleted. Preview volumes go too. There is no undo."
       : "This claim's policy is Retain: the volume and its data are kept, even if the project is later deleted, and a claim of the same name binds to it again. Preview volumes are removed, and the process that mounted it deploys without it until then.";
+  }
+  if (claim.type === "inngest") {
+    if (!claim.inngest?.selfHosted) {
+      return `This claim binds an Inngest Cloud account through ${claim.connection}: deleting it removes the binding and archives the preview branch environments, and nothing at Inngest is destroyed — the app record and the account's keys stay where they are.`;
+    }
+    return claim.deletionPolicy === "Delete"
+      ? "This claim's policy is Delete: the Inngest server, the Postgres and the queue behind it and EVERY EVENT AND FUNCTION RUN THEY HOLD are destroyed — including work that was accepted and has not run yet. There is no undo."
+      : "This claim's policy is Retain: the Inngest server stops, because there is no claim left to serve, and its Postgres, its queue and every run and queued event on them are kept — a claim of the same name binds to them again. Preview servers and the binding secrets are removed, and environments referencing this claim will fail to deploy until the variable is removed.";
   }
   return claim.deletionPolicy === "Delete"
     ? `This claim's policy is Delete: the ${claim.type} database and ALL ITS DATA are destroyed at ${claim.connection}. Preview branches and the binding secrets go too. There is no undo.`
@@ -1465,6 +1483,13 @@ function host(url?: string): string {
                 </td>
                 <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">
                   <template v-if="claim.type === 'oidcClient'">on delete: deregister the client</template>
+                  <!-- An Inngest Cloud claim carries a policy the API refuses
+                       to set: the app and the keys are the account's, so the
+                       row says what actually happens rather than a default
+                       nothing acts on. -->
+                  <template v-else-if="claim.type === 'inngest' && !claim.inngest?.selfHosted">
+                    on delete: the app stays at Inngest
+                  </template>
                   <template v-else>
                     on delete: {{ claim.deletionPolicy === "Delete" ? "delete data" : "retain data" }}
                   </template>

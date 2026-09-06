@@ -382,12 +382,23 @@ const destroyRefusal = computed(() =>
   destroysDataRefusal(callerFor(props.role, props.project), `asking for a claim that destroys its ${resourceNoun.value}`),
 );
 
+// What each policy is called, in the noun of the thing this claim actually
+// provisions. An Inngest claim is the one whose noun is not what the policy
+// acts on: the app is the application's, and what Retain keeps is the
+// server's Postgres and its queue.
 const policyOptions = computed(() => [
-  { label: `Retain — keep the ${resourceNoun.value} when the claim is deleted`, value: "Retain" },
+  {
+    label: isInngest.value
+      ? "Retain — stop the server, keep its Postgres, its queue and every run on them"
+      : `Retain — keep the ${resourceNoun.value} when the claim is deleted`,
+    value: "Retain",
+  },
   {
     label: isBoundVolume.value
       ? `Delete — refused here: this ${resourceNoun.value} is not the platform's to destroy`
-      : `Delete — destroy the ${resourceNoun.value} and its data with the claim`,
+      : isInngest.value
+        ? "Delete — destroy the server, its Postgres and its queue with the claim"
+        : `Delete — destroy the ${resourceNoun.value} and its data with the claim`,
     value: DESTRUCTIVE_POLICY,
     // The volume existed before the claim and the platform neither made it
     // nor owns it, so there is no policy that may destroy it — deleting the
@@ -463,9 +474,22 @@ const declaration = computed<ClaimProvider | undefined>(() => {
   return claimType.providers.find((entry) => entry.provider === provider);
 });
 
-/** Whether the type holds data — the case in which a shared preview writes
- * to production and has to be chosen by name. */
-const holdsData = computed(() => claimTypes.value.find((entry) => entry.type === type.value)?.holdsData ?? true);
+/** Whether what this claim provisions holds data — the case in which a
+ * shared preview writes to production and has to be chosen by name, and the
+ * case in which the claim takes a deletionPolicy at all.
+ *
+ * It is the *provider's* answer where there is one, because for one type the
+ * type's own answer is only half of it: an inngest claim through Inngest
+ * Cloud is an app record at somebody else's account, and the same claim
+ * through a connection the platform runs itself is a server with a Postgres
+ * and a queue behind it. The type's answer stands until a connection is
+ * chosen, which is the same moment the preview picker starts saying
+ * anything. */
+const holdsData = computed(() => {
+  const declared = declaration.value;
+  if (declared) return declared.holdsData;
+  return claimTypes.value.find((entry) => entry.type === type.value)?.holdsData ?? true;
+});
 
 const PREVIEW_LABELS: Record<string, string> = {
   branch: "a branch of production's data — cheap, and production-derived",
@@ -648,6 +672,9 @@ async function save() {
         type: type.value,
         ...(previewMode.value ? { previewMode: previewMode.value } : {}),
         ...(inngestRequest() ? { inngest: inngestRequest() } : {}),
+        // Only where the provider holds data: through Inngest Cloud the API
+        // refuses the field, and sending it would be asking for a refusal.
+        ...(holdsData.value ? { deletionPolicy: deletionPolicy.value } : {}),
         ...(dataClass.value ? { dataClass: dataClass.value } : {}),
       };
     } else {
@@ -972,9 +999,11 @@ async function save() {
               Through an Inngest Cloud connection, deleting this claim removes the binding and archives the
               preview branch environments; the app and the keys stay at Inngest, and the environment's event key
               has to exist already — a claim against an environment without one fails saying where to create it.
-              Through a connection the platform runs itself, deleting the claim <strong>destroys</strong> the
-              server, the Postgres and the queue behind it, and every event and function run they hold: this type
-              takes no deletion policy, because there is no third party holding any of it.
+              There is no deletion policy there: nothing the platform could destroy is involved.
+              Through a connection the platform runs itself there is one, below — the server keeps its history
+              and its queue on a Postgres and a Valkey of this platform's own, so what happens to them has
+              to be asked for rather than implied. Preview servers are torn down with their previews under
+              either policy.
             </p>
           </template>
 
@@ -1137,9 +1166,13 @@ async function save() {
           </template>
 
           <UFormField
-            v-if="isPostgres"
+            v-if="isPostgres || (isInngest && holdsData)"
             label="On claim deletion"
-            :help="`Retain is the default: deleting a claim must not be able to destroy a production ${resourceNoun}. Preview resources are always cleaned up.`"
+            :help="
+              isInngest
+                ? 'Retain is the default: the server stops — there is no claim left to serve — and its Postgres, its queue and every run and queued event on them are kept, so a claim of the same name binds to them again. Delete destroys all of it. Preview servers go under either policy.'
+                : `Retain is the default: deleting a claim must not be able to destroy a production ${resourceNoun}. Preview resources are always cleaned up.`
+            "
           >
             <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
             <p v-if="destroyRefusal" class="mt-1 text-xs text-muted">{{ destroyRefusal }}.</p>

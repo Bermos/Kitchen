@@ -147,6 +147,42 @@ func TestLookupClaimType(t *testing.T) {
 	}
 }
 
+// HoldsData is the type's own answer and HoldsDataVia is the pair's, because
+// one type is two different things: an inngest claim through Inngest Cloud is
+// an app record at somebody else's account, and the same claim through
+// inngestSelfHosted is a server on a Postgres and a queue this platform runs
+// (#407). Everything else answers the same through every provider.
+func TestHoldsDataVia(t *testing.T) {
+	inngestType, ok := LookupClaimType(ClaimTypeInngest)
+	if !ok {
+		t.Fatal("the inngest claim type is not in the table")
+	}
+	if inngestType.HoldsData {
+		t.Error("through Inngest Cloud the claim holds nothing this platform could destroy")
+	}
+	if !inngestType.HoldsDataVia(ProviderInngestSelfHosted) {
+		t.Error("a self-hosted server keeps its history and its queue on this platform's own stores")
+	}
+	if inngestType.HoldsDataVia("inngest") || inngestType.HoldsDataVia("") {
+		t.Error("no other provider behind this type holds data")
+	}
+	for _, claimType := range ClaimTypes {
+		if claimType.Name == ClaimTypeInngest {
+			continue
+		}
+		if len(claimType.HoldsDataProviders) > 0 {
+			t.Errorf("%s answers per provider; the API's refusal and the dashboard's picker both have to "+
+				"say which provider, so a second such type is a deliberate change", claimType.Name)
+		}
+		// A type that holds data holds it through every provider of it, and
+		// one that does not holds none through any.
+		if claimType.HoldsDataVia("anything") != claimType.HoldsData {
+			t.Errorf("%s: HoldsDataVia must agree with HoldsData for a type with no per-provider row",
+				claimType.Name)
+		}
+	}
+}
+
 func TestDecodeConfigIsTheOneDoorToSpecConfig(t *testing.T) {
 	claim := &ResourceClaim{}
 	claim.Spec.Type = ClaimTypePostgres

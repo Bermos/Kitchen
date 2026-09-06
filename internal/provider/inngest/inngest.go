@@ -288,19 +288,27 @@ type AppReporter interface {
 	App(ctx context.Context, environment, appID string) (App, error)
 }
 
-// Deprovisioner is a Provisioner with something of its own to destroy when
-// the claim goes.
+// Deprovisioner is a Provisioner with something of its own to take back when
+// the claim goes — and therefore the one a claim's deletionPolicy has
+// something to choose about.
 //
-// Inngest Cloud has nothing: the keys are the account's, the app record is
-// the application's, and archiving a branch environment deletes nothing
-// there. A self-hosted server is a workload this platform created, and it —
-// with the Postgres and the queue behind it — is destroyed with the claim.
-// The claim type holds no deletionPolicy for exactly that reason: there is
-// no third party holding anything for the policy to choose about.
+// Inngest Cloud has nothing, which is why it is not one: the keys are the
+// account's, the app record is the application's, and archiving a branch
+// environment deletes nothing there. A self-hosted server is a workload this
+// platform created, and behind it are a Postgres and a queue holding every
+// function run and every event that has not run yet — so both answers are
+// real and the claim's policy picks between them.
 type Deprovisioner interface {
 	Provisioner
-	// Deprovision destroys the claim's own instance and everything under it.
+	// Deprovision destroys the claim's own instance and everything under it,
+	// which is what deletionPolicy Delete asks for.
 	Deprovision(ctx context.Context, instanceID string) error
+
+	// Retain is deletionPolicy Retain, the default: it takes back what the
+	// claim was using — the running server, which has nothing left to serve
+	// once its claim is gone — and keeps everything that holds state, so
+	// that deleting a claim can never be what destroys a queue.
+	Retain(ctx context.Context, instanceID string) error
 }
 
 // IdlingProvisioner is a Provisioner that can park a preview's own resource
@@ -364,6 +372,11 @@ const ProviderCloud = "inngest"
 // is per provider too, and these two declare opposite things about previews
 // and about idling. A mode inside one provider's config could express
 // neither.
+//
+// The claim table names it too — an inngest claim holds data through this
+// provider and through no other, which is what gives it a deletionPolicy
+// (#407) — and api/v1alpha1 cannot import this package, so the two
+// spellings are held together by a test rather than by a shared constant.
 const ProviderSelfHosted = "inngestSelfHosted"
 
 // Declarations is what each Inngest provider says about itself before it

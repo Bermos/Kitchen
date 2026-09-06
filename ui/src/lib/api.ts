@@ -2212,6 +2212,13 @@ export interface ClaimInngest {
   environment: string;
   mode: string;
   servePath: string;
+  /** Whether the claim is bound to an Inngest this platform runs rather than
+   * to an account at Inngest Cloud. It is what makes the claim's
+   * deletionPolicy mean something — a self-hosted server keeps its history
+   * and its queue on a Postgres and a Valkey of this platform's own — and so
+   * it is what the delete confirmation reads to say which of the two
+   * deletions this is. Absent until the claim has bound. */
+  selfHosted?: boolean;
 }
 
 /** What a redis claim asked its instance to be. `usage` is the one that
@@ -2424,6 +2431,13 @@ export interface ClaimRecoveries {
  * what the binding does to the workload. */
 export interface ClaimProvider {
   provider: string;
+  /** Whether a claim of this type *through this provider* provisions
+   * something that holds data, and so whether it takes a deletionPolicy at
+   * all. It is the type's own answer for every provider but one: the same
+   * inngest claim is an app record at somebody else's account through
+   * `inngest` and a server with a Postgres and a queue behind it through
+   * `inngestSelfHosted`. */
+  holdsData: boolean;
   previewMode: string;
   previewNote: string;
   previewChoices: string[];
@@ -2450,6 +2464,10 @@ export interface ClaimType {
   /** Empty for a type the platform provisions itself, which takes no
    * connection. */
   capability?: string;
+  /** The type's own answer, which for one type is not the whole of it: an
+   * inngest claim holds no data through Inngest Cloud and holds a server's
+   * whole history through a self-hosted connection. Each provider's row says
+   * which it is, and that is the one to offer the deletionPolicy on. */
   holdsData: boolean;
   providers: ClaimProvider[];
 }

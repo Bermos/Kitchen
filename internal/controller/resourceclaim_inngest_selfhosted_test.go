@@ -53,7 +53,11 @@ type fakeSelfHosted struct {
 	// each was last told to call.
 	servers map[string]string
 	idled   map[string]bool
-	deleted []string
+	// deleted is what deletionPolicy Delete destroyed and retained is what
+	// Retain stopped and kept: the two answers the claim's policy picks
+	// between.
+	deleted  []string
+	retained []string
 }
 
 func newFakeSelfHosted() *fakeSelfHosted {
@@ -120,6 +124,13 @@ func (f *fakeSelfHosted) Deprovision(_ context.Context, instanceID string) error
 	return nil
 }
 
+func (f *fakeSelfHosted) Retain(_ context.Context, instanceID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retained = append(f.retained, instanceID)
+	return nil
+}
+
 func (f *fakeSelfHosted) IdleBranch(_ context.Context, branchID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -171,13 +182,17 @@ var _ = Describe("A self-hosted inngest claim", func() {
 		return claim
 	}
 
-	createClaim := func(config string) {
+	// The policy is what deleting the claim does to the server's stores.
+	// Empty is what almost every claim says, and the CRD's default makes it
+	// Retain — which is the whole of #407.
+	createClaimWith := func(config string, policy kitchenv1alpha1.ClaimDeletionPolicy) {
 		claim := &kitchenv1alpha1.ResourceClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: claimName, Namespace: namespace},
 			Spec: kitchenv1alpha1.ResourceClaimSpec{
-				ProjectRef:    kitchenv1alpha1.LocalObjectReference{Name: projectName},
-				ConnectionRef: &kitchenv1alpha1.LocalObjectReference{Name: connectionName},
-				Type:          kitchenv1alpha1.ClaimTypeInngest,
+				ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: projectName},
+				ConnectionRef:  &kitchenv1alpha1.LocalObjectReference{Name: connectionName},
+				Type:           kitchenv1alpha1.ClaimTypeInngest,
+				DeletionPolicy: policy,
 			},
 		}
 		if config != "" {
@@ -185,6 +200,8 @@ var _ = Describe("A self-hosted inngest claim", func() {
 		}
 		ExpectWithOffset(1, k8sClient.Create(ctx, claim)).To(Succeed())
 	}
+
+	createClaim := func(config string) { createClaimWith(config, "") }
 
 	// The production environment, whose URL is what a serve-mode server is
 	// told to call, and one preview.
@@ -373,10 +390,11 @@ var _ = Describe("A self-hosted inngest claim", func() {
 		Expect(server.deleted).To(ContainElement(branch.ID))
 	})
 
-	// Deleting the claim destroys the server: the type carries no
-	// deletionPolicy, because there is nothing here a third party holds.
-	It("destroys the server with the claim", func() {
-		createClaim("")
+	// Deleting the claim under Delete destroys the server, its Postgres and
+	// its queue — the policy an admin has to ask for, on the same terms as
+	// the postgres and redis claims those two stores come from.
+	It("destroys the server with the claim under Delete", func() {
+		createClaimWith("", kitchenv1alpha1.ClaimDelete)
 		reconcileOnce()
 		instanceID := getClaim().Status.InstanceID
 
@@ -384,6 +402,26 @@ var _ = Describe("A self-hosted inngest claim", func() {
 		Expect(k8sClient.Delete(ctx, claim)).To(Succeed())
 		reconcileOnce()
 		Expect(server.deleted).To(ContainElement(instanceID))
+		Expect(server.retained).To(BeEmpty())
+		Expect(k8sClient.Get(ctx, claimKey, &kitchenv1alpha1.ResourceClaim{})).NotTo(Succeed())
+	})
+
+	// And under Retain — the default a claim that names no policy gets — the
+	// server stops and its Postgres, its queue and every run and queued event
+	// on them stay (#407). Deleting a claim is not something that may destroy
+	// work nobody has run yet.
+	It("keeps the server's stores under Retain, which is the default", func() {
+		createClaim("")
+		reconcileOnce()
+		claim := getClaim()
+		Expect(claim.Spec.DeletionPolicy).To(Equal(kitchenv1alpha1.ClaimRetain),
+			"a claim that names no policy is retained, like every other type that holds data")
+		instanceID := claim.Status.InstanceID
+
+		Expect(k8sClient.Delete(ctx, claim)).To(Succeed())
+		reconcileOnce()
+		Expect(server.retained).To(ContainElement(instanceID))
+		Expect(server.deleted).To(BeEmpty(), "Retain destroys nothing, and the queue is the reason")
 		Expect(k8sClient.Get(ctx, claimKey, &kitchenv1alpha1.ResourceClaim{})).NotTo(Succeed())
 	})
 })
