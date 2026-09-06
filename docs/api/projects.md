@@ -780,9 +780,9 @@ operator holds `admin` on every project, so they can do it too — they need no
 rule of their own here, and neither does anybody else.
 
 **Reading the list is a `viewer`'s**, because knowing who else is on a project
-is part of knowing what the project is: a viewer who opened the People tab and
-was refused on load would be reading a screen about a project they can
-otherwise see in full. Only the three writes want `admin`. The same split
+is part of knowing what the project is: a viewer who opened the Members pane of
+a project's Settings and was refused on load would be reading a screen about a
+project they can otherwise see in full. Only the three writes want `admin`. The same split
 applies to [the CI keys](#keys-for-ci), which are the same list with its
 non-human half shown.
 

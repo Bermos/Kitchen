@@ -119,7 +119,8 @@ in a working directory has neither, and says `dev`.
 **The CLI authenticates with an API key**, exchanged at the platform's identity
 provider for the short-lived token the API actually sees — the flow
 [API.md](API.md#getting-a-token) documents for CI, used here for a laptop as
-well. Issue one from a project's People tab in the dashboard, or with `POST
+well. Issue one from the Keys pane of a project's Settings screen in the
+dashboard (`/projects/<name>/settings?section=keys`), or with `POST
 /projects/{name}/keys`.
 
 ```sh
@@ -310,7 +311,7 @@ out of the working copy it is building:
 
 ```sh
 export KITCHEN_API=https://kitchen.example.com
-export KITCHEN_API_KEY=…   # from the project's People tab
+export KITCHEN_API_KEY=…   # from the project's Settings, Keys
 kitchen deploy
 ```
 

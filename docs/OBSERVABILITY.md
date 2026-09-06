@@ -620,6 +620,18 @@ rows into it (the correlated-logs click above). It is a project's screen at
 `/projects/:name/observability` since #469, with traffic and traces as two
 more tabs of it.
 
+Since #470 all four tabs are narrowed by a **process filter** — the project's
+own processes, with `web` for the published one — which the store answers
+directly: `process` is a column of the log table, and it is *empty* for the web
+process's lines, so narrowing to `web` is `-process:*` rather than a name. The
+Logs tab carries a Process column for the same reason: a unit of five workloads
+was otherwise one interleaved stream.
+
+A process nothing addresses gets §3.4's answer rather than four empty charts:
+the Traffic and Traces tabs say `no route: addressed only from web` — or the
+equivalent sentence for a worker, a scheduled job or a deploy task — and point
+at the logs, which are what that workload actually has.
+
 ### 6.2 For the operator (the Platform scope)
 
 The **Platform** scope, `/platform/…`, which the switcher offers to an account
