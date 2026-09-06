@@ -351,6 +351,46 @@ one; without a message it is an installation that asked for no caching.
 `mode` is empty on a buildpacks build: the lifecycle has one cache image and no
 `max`/`min` to choose between.
 
+## What a build pod holds, and what the repository can read
+
+A build runs the repository's own code — its Dockerfile, or the buildpacks that
+read it — so which credentials are in the pod is part of what the API is
+answering when it says a build ran. Nothing here is readable through the API:
+the platform never reads a credential back. It is written down because the
+answer decides what a commit can reach.
+
+**The commit is fetched by a container of its own, in both strategies.** A
+build pod starts with a `clone` init container: it holds the git Connection's
+token, mounted from a Secret as a file, and reads it through an askpass helper
+so the token reaches no argument, no URL and no pod spec. It has exited before
+anything out of the repository runs, and it is the only container in the pod
+that ever holds that token.
+
+**So a Dockerfile can read no git credential at all.** BuildKit can fetch a git
+context itself, and did until #425 — but the only way to give it a credential
+for a private repository is `--secret id=GIT_AUTH_TOKEN`, and a build secret is
+addressed by id *from inside the build*: any `RUN --mount=type=secret,id=GIT_AUTH_TOKEN`
+in the repository's own Dockerfile would have read it back out. That token is
+the **Connection's**, shared by every project pointed at it, so it reads every
+repository the Connection reads. The builder is handed the checkout as a local
+directory instead and is given no build secret of any kind. A Dockerfile that
+needs a private dependency needs a credential of its own, in the environment's
+variables or a project secret — not the platform's.
+
+What a Dockerfile can still read is the checkout it is being built from: the
+build root of the commit under build, and nothing above it. The registry
+credential the builder pushes with is in the builder's filesystem rather than
+the build's, which is a boundary BuildKit draws for itself — a `RUN` step is a
+container of its own and cannot see the daemon's mounts.
+
+**A buildpacks build splits the registry credential the same way** (#424): the
+`detector` and `builder` phases run the buildpacks, which run the repository's
+own build, and mount no registry credential at all; `analyzer` and `restorer`
+mount one that cannot push where the registry issues one; only `exporter`, the
+phase that pushes, holds the credential that can. See
+[connections](connections.md) for how a registry says whether it can issue the
+read-only one.
+
 ## Why a build failed
 
 A build in phase `Failed` carries `failure`:

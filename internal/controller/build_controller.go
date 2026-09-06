@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"time"
 
@@ -113,15 +114,28 @@ const (
 	// it pushes with, and the value of DOCKER_CONFIG in every builder.
 	dockerConfigDir = "/kitchen/.docker"
 
-	// gitCredentialDir is where a build pod finds the token it clones the
-	// repository with, and gitCredentialFile the one file in it. Neither is
-	// ever the token itself: the value stays in a mounted Secret, so it
-	// reaches no pod spec, no argv and no clone URL.
+	// gitCredentialDir is where a build pod's clone container finds the token
+	// it clones the repository with, and gitCredentialFile the one file in
+	// it. Neither is ever the token itself: the value stays in a mounted
+	// Secret, so it reaches no pod spec, no argv and no clone URL — and no
+	// container of the build but the clone (#425).
 	gitCredentialDir  = "/kitchen/.git-credentials"
 	gitCredentialFile = gitCredentialDir + "/token"
 
 	// volumeGitCredential is that mount's volume, named in both pod shapes.
 	volumeGitCredential = "git-credential"
+
+	// buildContextDir is the volume a Dockerfile build's clone lands on and
+	// buildContextSourceDir the checkout itself; what is beside it is the
+	// clone's own scratch — git's home, and the askpass helper it writes.
+	// BuildKit is handed that directory as its context, so the whole of what
+	// a Dockerfile can read is a checkout of the commit under build.
+	buildContextDir       = "/kitchen/context"
+	buildContextSourceDir = buildContextDir + "/source"
+
+	// volumeBuildContext is that volume, an emptyDir the pod owns: the clone
+	// writes it and the builder reads it, and nothing survives the build.
+	volumeBuildContext = "build-context"
 
 	// volumeDockerConfig is the credential that may push, and
 	// volumeDockerConfigRead the one that may not. A pod carries both and
@@ -1033,8 +1047,20 @@ func (r *BuildReconciler) createJob(
 }
 
 // dockerfilePod is a build that runs the repository's own Dockerfile through
-// BuildKit, which fetches the commit itself: the git context is the build's
-// only input, and the image comes out the far end pushed.
+// BuildKit: a checkout of the commit is the build's only input, and the image
+// comes out the far end pushed.
+//
+// The commit is fetched by a clone init container and handed to BuildKit as a
+// local directory, rather than by BuildKit itself from the git URL (#425).
+// BuildKit needs a credential to fetch a private repository, and the only way
+// to give it one is `--secret id=GIT_AUTH_TOKEN`, which is a *session* secret:
+// addressed by id from inside the build, so any Dockerfile could read it back
+// out with `RUN --mount=type=secret,id=GIT_AUTH_TOKEN`. That token is the
+// Connection's, shared by every project pointed at it, and a Dockerfile is
+// repository content nobody vouched for. Cloning first is the same shape the
+// buildpacks strategy has always had: the token lives in a container that has
+// exited before anything out of the repository runs, and the build sees a
+// directory.
 func dockerfilePod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
@@ -1043,12 +1069,12 @@ func dockerfilePod(
 	credsSecret, gitSecret string,
 	attest kitchenv1alpha1.BuildAttestationSpec,
 ) corev1.PodTemplateSpec {
-	// The build root goes into the git reference, which is what makes it the
-	// build's root directory rather than a directory the build happens to
-	// pass through: BuildKit's git source hands the frontend that
-	// subdirectory as the entire context, so `filename` below is resolved
-	// relative to it — the same relation the lifecycle gets from `-app`, and
-	// the one detection checks against the provider's listing.
+	// The build root is the directory of the checkout BuildKit is given as
+	// its context, which is what makes it the build's root directory rather
+	// than a directory the build happens to pass through: the frontend sees
+	// that subdirectory and nothing above it, so `filename` below is
+	// resolved relative to it — the same relation the lifecycle gets from
+	// `-app`, and the one detection checks against the provider's listing.
 	//
 	// A Dockerfile above the build root is therefore not addressable from
 	// here, deliberately. Nothing above it is part of the build, which is
@@ -1061,11 +1087,8 @@ func dockerfilePod(
 	// project's own root directory is one of them. Both are spelled by
 	// internal/detect before they get here, so a workload's paths mean what a
 	// project's paths mean.
-	buildContext := repoCloneURL(project) + "#" + build.Spec.Git.SHA
-	if root := plan.RootDirectory; root != "" {
-		buildContext += ":" + root
-	}
-	dockerfile := plan.DockerfilePath
+	appDir := path.Join(buildContextSourceDir, plan.RootDirectory)
+	dockerfile := path.Join(appDir, plan.DockerfilePath)
 
 	output := "type=image,name=" + plan.Tag + ",push=true"
 	attestations := []string{}
@@ -1086,8 +1109,21 @@ func dockerfilePod(
 	args := []string{
 		"build",
 		"--frontend", "dockerfile.v0",
-		"--opt", "context=" + buildContext,
-		"--opt", "filename=" + dockerfile,
+		// The two directories the client sends the daemon over its own
+		// session: the context, and the one `filename` is resolved inside.
+		// They are separate so that a Dockerfile in a subdirectory of the
+		// build root is a directory of its own rather than a path with
+		// slashes in it — the split `docker build -f` makes, and the reason
+		// a `.dockerignore` beside the file is still found.
+		"--local", "context=" + appDir,
+		"--local", "dockerfile=" + path.Dir(dockerfile),
+		"--opt", "filename=" + path.Base(dockerfile),
+		// What the context is a checkout of. BuildKit reads this out of the
+		// git source when it fetches one itself; a local context has no way
+		// to know, and provenance that cannot name the commit answers the
+		// first question a verifier asks with nothing.
+		"--opt", "vcs:source=" + repoCloneURL(project),
+		"--opt", "vcs:revision=" + build.Spec.Git.SHA,
 	}
 	// The stage of that file to ship, and the whole of what stops a
 	// multi-stage build shipping whichever stage happens to be written last.
@@ -1123,18 +1159,37 @@ func dockerfilePod(
 		"--progress", "plain",
 	)
 	args = append(args, buildkitCacheArgs(cache)...)
-	if gitSecret != "" {
-		// BuildKit resolves the git context itself, and GIT_AUTH_TOKEN is
-		// the secret it looks for when the remote asks for authentication.
-		// Only the path is an argument: the token is read from the mounted
-		// file inside the pod, so it appears in no pod spec and no argv.
-		args = append(args, "--secret", "id=GIT_AUTH_TOKEN,src="+gitCredentialFile)
-	}
 
-	mounts := []corev1.VolumeMount{dockerConfigMount()}
-	volumes := []corev1.Volume{dockerConfigVolume(credsSecret)}
+	// The build is given no `--secret` of any kind, deliberately: a session
+	// secret is exactly what a Dockerfile can mount by id, so a build pod
+	// that holds one holds it on the repository's behalf.
+	checkout := corev1.VolumeMount{Name: volumeBuildContext, MountPath: buildContextDir}
+	clone := gitClone{
+		SourceDir:  buildContextSourceDir,
+		ScratchDir: buildContextDir,
+		Mount:      checkout,
+		Secret:     gitSecret,
+		// BuildKit's own git context hands the frontend a checkout with no
+		// `.git` in it unless BUILDKIT_CONTEXT_KEEP_GIT_DIR asks for one, so
+		// neither does this: a `COPY . .` puts into the image what it put
+		// into the image before.
+		KeepGitDir: false,
+		// The uid buildkitd runs as below. The client reads the context off
+		// this volume as that user, and a checkout it cannot read is a build
+		// with no context.
+		User: ptr.To(int64(1000)),
+	}.container(project, build)
+
+	// The builder mounts the checkout read-only: it reads the context and
+	// writes nothing back to it.
+	checkoutRead := checkout
+	checkoutRead.ReadOnly = true
+	mounts := []corev1.VolumeMount{dockerConfigMount(), checkoutRead}
+	volumes := []corev1.Volume{
+		dockerConfigVolume(credsSecret),
+		{Name: volumeBuildContext, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
 	if gitSecret != "" {
-		mounts = append(mounts, gitCredentialMount())
 		volumes = append(volumes, gitCredentialVolume(gitSecret))
 	}
 
@@ -1157,7 +1212,8 @@ func dockerfilePod(
 			},
 		},
 		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
+			RestartPolicy:  corev1.RestartPolicyNever,
+			InitContainers: []corev1.Container{clone},
 			Containers: []corev1.Container{{
 				Name:  "buildkit",
 				Image: BuildkitImage,
@@ -1283,9 +1339,8 @@ func namedDockerConfigVolume(name, credsSecret string) corev1.Volume {
 }
 
 // gitCredentialVolume mounts the token a build clones a private repository
-// with. One key, projected to one file, because that is all either strategy
-// reads: BuildKit takes the path as a build secret, and the clone container's
-// askpass reads it.
+// with. One key, projected to one file, because that is all the one container
+// that reads it needs: the clone's askpass helper, in either strategy's pod.
 func gitCredentialVolume(gitSecret string) corev1.Volume {
 	return corev1.Volume{
 		Name: volumeGitCredential,

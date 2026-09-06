@@ -1392,12 +1392,16 @@ is the record that it has already been said — and what is already running goes
 running.
 
 Which job that is comes from the strategy. `dockerfile` runs **BuildKit** on the
-repository's own Dockerfile, with the commit as a git context BuildKit fetches itself.
-`buildpacks` runs the **Cloud Native Buildpacks** lifecycle (Paketo's jammy builder)
-over the repository, which needs the source on disk first — so the job clones the commit
-in an init container and hands the lifecycle a directory. The lifecycle runs as its five
-phases, one container each: `analyzer`, `detector`, `restorer`, `builder` and finally
-`exporter`, which is the container that pushes. The two that run the repository's own
+repository's own Dockerfile. `buildpacks` runs the **Cloud Native Buildpacks** lifecycle
+(Paketo's jammy builder) over the repository. Either way the job clones the commit in an
+init container and hands the builder a directory: BuildKit can fetch a git context
+itself, but the credential for a private repository can only be given to it as a build
+secret, which the repository's own Dockerfile could mount straight back out — and it is
+the Connection's token, which reads every repository that Connection reads (#425). The
+clone holds it, has exited before anything out of the repository runs, and is the only
+container in the pod that ever sees it. The lifecycle runs as its five phases, one
+container each: `analyzer`, `detector`, `restorer`, `builder` and finally `exporter`,
+which is the container that pushes. The two that run the repository's own
 build — `detector` and `builder` — mount no registry credential at all, so a build
 script cannot read the one the push uses (#424). A buildpacks build needs none of the
 privileges a BuildKit one does: it runs as the builder image's own unprivileged user
