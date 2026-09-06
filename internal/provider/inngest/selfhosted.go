@@ -87,17 +87,25 @@ const (
 	// when a server goes.
 	DefaultServerNamespace = "kitchen-inngest"
 
-	// DefaultServerImage is the Inngest the platform runs, pinned by tag the
-	// way internal/controller/addon_keda.go pins its chart pair and
+	// DefaultServerImage is the Inngest the platform runs, pinned the way
+	// internal/controller/addon_keda.go pins its chart pair and
 	// internal/provider/database pins its Postgres images: what the platform
 	// runs is what the platform knows how to operate.
+	//
+	// The digest is what the kubelet resolves and the tag is what a person
+	// reads, for the reason internal/controller/images.go gives at length: a
+	// tag on somebody else's repository is a mutable pointer, and a server
+	// holding a project's event history should not change because it moved.
+	// Read a new digest off the registry — `crane digest inngest/inngest:vX`
+	// — and write both halves in one edit; hack/check-image-pins.sh says
+	// whether the pair still agrees.
 	//
 	// Bumping it means reading Inngest's release notes for the flags this
 	// file passes — the persistence flags above all, since they are what
 	// decides whether production's history is in Postgres or in a SQLite
 	// file nobody backs up. docs/CONFIG.md says so beside the value an
 	// installation overrides it with.
-	DefaultServerImage = "inngest/inngest:v1.44.0"
+	DefaultServerImage = "inngest/inngest:v1.44.0@sha256:d5365a31f8bf504dc2d54ddd114fcdc1a0413f8b57a450365c095ab6234ad8c2"
 
 	// ServerPort is where the server serves the event API, the REST and
 	// GraphQL API and its own dashboard, and ConnectGatewayPort is where a

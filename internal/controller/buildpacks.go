@@ -27,16 +27,6 @@ import (
 )
 
 const (
-	// BuildpacksBuilderImage is the Cloud Native Buildpacks builder the
-	// buildpacks strategy runs. Paketo's jammy "base" builder carries the
-	// buildpacks for the languages a project is likely to be written in —
-	// Node, Go, Python, Java, .NET — without the extra utilities of "full".
-	//
-	// It is pinned rather than floating on :latest, because the builder is
-	// what decides the contents of the image: a moving tag would mean the
-	// same commit rebuilt tomorrow produces something else.
-	BuildpacksBuilderImage = "paketobuildpacks/builder-jammy-base:0.4.625"
-
 	// BuildpacksPlatformAPI is the version of the CNB platform contract the
 	// job speaks. The lifecycle refuses to start without being told one —
 	// it has no default — and 0.13 is supported by every lifecycle from 0.17
@@ -44,11 +34,12 @@ const (
 	BuildpacksPlatformAPI = "0.13"
 
 	// cnbUID and cnbGID are the builder image's own unprivileged user: the
-	// CNB_USER_ID and CNB_GROUP_ID of the builder pinned above, so moving one
-	// means moving the other. The lifecycle chowns its directories and drops
-	// to that user before it runs anything from the repository, and entering
-	// as it already is what makes both steps no-ops — which is why a
-	// buildpacks build needs none of the privileges a BuildKit one does.
+	// CNB_USER_ID and CNB_GROUP_ID of BuildpacksBuilderImage, which is
+	// pinned in images.go, so moving one means moving the other. The
+	// lifecycle chowns its directories and drops to that user before it runs
+	// anything from the repository, and entering as it already is what makes
+	// both steps no-ops — which is why a buildpacks build needs none of the
+	// privileges a BuildKit one does.
 	//
 	// The clone runs as the same user, because buildpacks write into the
 	// application directory (npm's modules, the start script the Node

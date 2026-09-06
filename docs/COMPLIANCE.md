@@ -418,7 +418,7 @@ and countersigned.
 
 ```
 --opt attest:provenance=mode=max,version=v1,builder-id=https://kitchen.bermos.dev/builder/buildkit
---opt attest:sbom=generator=docker/buildkit-syft-scanner:1.12.0
+--opt attest:sbom=generator=docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
 --output type=image,…,oci-mediatypes=true
 ```
 
@@ -499,12 +499,16 @@ Provenance is nearly free — BuildKit already holds everything it records. An
 SBOM is not: BuildKit runs a scanner image over the finished filesystem, and
 because the build pod is ephemeral **that image is pulled on every build**.
 
-It is pinned to `docker/buildkit-syft-scanner:1.12.0` rather than left on
-BuildKit's default `stable-1`, which is a floating tag on an image this project
-does not own. Evidence about an artifact should not change because somebody
-else's tag moved overnight, and a scanner that changed under an installation
-would produce a differently-shaped bill of materials for the same image — which
-reads as the image having changed.
+It is pinned to `docker/buildkit-syft-scanner:1.12.0` — by digest as well as
+by tag, with every other image the operator runs, in
+`internal/controller/images.go` — rather than left on BuildKit's default
+`stable-1`, which is a floating tag on an image this project does not own.
+Evidence about an artifact should not change because somebody else's tag moved
+overnight, and a scanner that changed under an installation would produce a
+differently-shaped bill of materials for the same image — which reads as the
+image having changed. The tag can be repointed too, which is why the digest is
+what the reference resolves by; `hack/check-image-pins.sh` says whether the two
+still agree.
 
 **The format follows the generator**, and the platform records what came out
 rather than converting it. The default emits SPDX 2.3, which Grype, Trivy and

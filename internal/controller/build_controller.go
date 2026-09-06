@@ -56,26 +56,6 @@ const (
 	labelBuild   = "kitchen.bermos.dev/build"
 	labelBuildNS = "kitchen.bermos.dev/build-namespace"
 
-	// BuildkitImage runs the in-cluster builds.
-	BuildkitImage = "moby/buildkit:v0.23.2-rootless"
-
-	// SBOMGeneratorImage is the scanner BuildKit runs over a finished image
-	// to produce its bill of materials.
-	//
-	// It is pinned to a version tag for the same reason the builder above
-	// is, and the reason bites harder here: the tag BuildKit reaches for by
-	// default is `stable-1`, a floating tag on an image nobody in this
-	// repository owns. Evidence about an artifact should not change because
-	// somebody else's tag moved overnight — and a scanner that changed under
-	// an installation would produce a differently-shaped bill of materials
-	// for the same image, which reads as the image having changed.
-	//
-	// It is also pulled on **every** build that asks for an SBOM: the build
-	// pod is ephemeral, so nothing caches it between builds. That is the
-	// cost the Kitchen object's `compliance.attestation.build.sbom` switch
-	// exists to let an installation decline.
-	SBOMGeneratorImage = "docker/buildkit-syft-scanner:1.12.0"
-
 	// BuilderID identifies the build platform in the provenance it produces.
 	//
 	// SLSA's point in asking for it is that a verifier decides how much a

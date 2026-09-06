@@ -106,7 +106,9 @@ spec:
             - --self-update-chart={{ .Values.selfUpdate.chart }}
             - --self-update-release={{ default .Release.Name .Values.selfUpdate.releaseName }}
             - --self-update-service-account={{ include "kitchen.selfUpdateServiceAccountName" . }}
-            - --self-update-image={{ .Values.selfUpdate.image.repository }}:{{ .Values.selfUpdate.image.tag }}
+            {{- with (include "kitchen.namedImage" .Values.selfUpdate.image) }}
+            - --self-update-image={{ . }}
+            {{- end }}
             - --self-update-timeout={{ .Values.selfUpdate.timeout }}
             - --self-update-allow-minor={{ .Values.selfUpdate.allowMinor }}
             {{- end }}
@@ -125,7 +127,9 @@ spec:
             {{- with .Values.scaleToZero.install.addOnVersion }}
             - --addon-chart-version=keda/keda-add-ons-http={{ . }}
             {{- end }}
-            - --addon-install-image=keda={{ .Values.scaleToZero.install.image.repository }}:{{ .Values.scaleToZero.install.image.tag }}
+            {{- with (include "kitchen.namedImage" .Values.scaleToZero.install.image) }}
+            - --addon-install-image=keda={{ . }}
+            {{- end }}
             - --addon-install-timeout=keda={{ .Values.scaleToZero.install.timeout }}
             {{- end }}
             {{- if .Values.databases.install.enabled }}
@@ -134,7 +138,9 @@ spec:
             {{- with .Values.databases.install.version }}
             - --addon-chart-version=cloudnative-pg/cloudnative-pg={{ . }}
             {{- end }}
-            - --addon-install-image=cloudnative-pg={{ .Values.databases.install.image.repository }}:{{ .Values.databases.install.image.tag }}
+            {{- with (include "kitchen.namedImage" .Values.databases.install.image) }}
+            - --addon-install-image=cloudnative-pg={{ . }}
+            {{- end }}
             - --addon-install-timeout=cloudnative-pg={{ .Values.databases.install.timeout }}
             {{- end }}
             {{- with .Values.extraArgs }}

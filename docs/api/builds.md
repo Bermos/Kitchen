@@ -736,7 +736,8 @@ signature.
     "signatureIdentity": "releases@home-assistant.io",
     "vendorAttestations": 2
   },
-  "observedSBOM": {"phase": "Completed", "generator": "anchore/syft:v1.18.1",
+  "observedSBOM": {"phase": "Completed",
+                   "generator": "anchore/syft:v1.18.1@sha256:b8c170b8e51bfc4779ec3ef4399942c57290f5ce76a9c3af564c9d00d4946a6b",
                    "predicateType": "https://spdx.dev/Document"},
   "evidence": [
     {"predicateType": "https://slsa.dev/provenance/v1",

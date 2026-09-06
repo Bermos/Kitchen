@@ -379,6 +379,31 @@ git fetch origin main && git rebase origin/main
 check, the `post-merge` regeneration, and the merge driver that keeps the two
 apart — see [Merging](#merging) below.
 
+### Bumping an image the operator runs
+
+Every image the operator makes the cluster run is pinned as
+`repository:tag@sha256:…` — the tag for a person to read, the digest for the
+kubelet to resolve. They are together in `internal/controller/images.go`, with
+the two the providers own beside the code that runs them
+(`internal/provider/cache/valkey.go`, `internal/provider/inngest/selfhosted.go`).
+
+Bumping one is one edit that moves both halves. Read the new digest off the
+registry — take the multi-arch index's, not one platform's:
+
+```sh
+crane digest alpine/helm:3.20.0
+skopeo inspect --format '{{.Digest}}' docker://alpine/helm:3.20.0
+hack/check-image-pins.sh         # every pin here, against its registry
+```
+
+`hack/check-image-pins.sh` is the answer to "has anything moved under us": it
+re-resolves every pin and prints the digest to paste in for any tag that has
+been republished. It reaches the registry, so it is run by hand rather than by
+CI — whether somebody else republished a tag is not a fact about the change
+under test. What CI holds is the half that is:
+`TestEveryImageConstantNamesADigest` fails a constant that names no digest at
+all.
+
 ## Merging
 
 **`main` requires a linear history**, so both methods that produce it are
