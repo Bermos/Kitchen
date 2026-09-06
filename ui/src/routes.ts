@@ -153,6 +153,75 @@ export function moved(path: string): RouteRecordRedirectOption {
 }
 
 /**
+ * Where a section of the project page went.
+ *
+ * `/projects/:name` was nine tabs and eleven cards of settings, and the tab was
+ * never in the address — so the way anybody linked at a part of it was
+ * `?section=`, which the environment screen already uses and which
+ * `internal/signals/evidence.go` emits for that one. Six screens later those
+ * names still have to land somewhere sensible rather than opening the Overview
+ * and quietly showing the wrong thing.
+ *
+ * So every name the old page's tabs and cards went by is mapped here, once, and
+ * `router.ts` applies it. The rest of the query is kept: a link is a question,
+ * and a redirect that drops it lands the reader on the right screen with the
+ * wrong answer.
+ */
+const PROJECT_SECTIONS: Record<string, { name: string; section?: string }> = {
+  // The two dashboards that became the Deploys timeline.
+  deployments: { name: "project-deploys" },
+  releases: { name: "project-deploys" },
+  builds: { name: "project-deploys" },
+  // Previews and environments were two tabs over one list.
+  previews: { name: "project-environments" },
+  environments: { name: "project-environments" },
+  // Everything else is a pane of Settings, under its own name there.
+  domains: { name: "project-settings", section: "domains" },
+  resources: { name: "project-settings", section: "resources" },
+  claims: { name: "project-settings", section: "resources" },
+  variables: { name: "project-settings", section: "variables" },
+  env: { name: "project-settings", section: "variables" },
+  files: { name: "project-settings", section: "files" },
+  secrets: { name: "project-settings", section: "secrets" },
+  people: { name: "project-settings", section: "members" },
+  members: { name: "project-settings", section: "members" },
+  keys: { name: "project-settings", section: "keys" },
+  notifications: { name: "project-settings", section: "notifications" },
+  processes: { name: "project-settings", section: "processes" },
+  workloads: { name: "project-settings", section: "processes" },
+  git: { name: "project-settings", section: "source" },
+  image: { name: "project-settings", section: "source" },
+  build: { name: "project-settings", section: "source" },
+  runtime: { name: "project-settings", section: "runtime" },
+  health: { name: "project-settings", section: "runtime" },
+  security: { name: "project-settings", section: "security" },
+  data: { name: "project-settings", section: "continuity" },
+  continuity: { name: "project-settings", section: "continuity" },
+  criticality: { name: "project-settings", section: "continuity" },
+  settings: { name: "project-settings" },
+  danger: { name: "project-settings", section: "danger" },
+};
+
+/**
+ * The screen a `?section=` on the project page now names, or null when it names
+ * nothing this page ever had — in which case the Overview is the honest answer
+ * and the query is left alone.
+ */
+export function movedProjectSection(to: RouteLocationGeneric): RouteLocationRaw | null {
+  if (to.name !== "project") return null;
+  const asked = to.query.section;
+  const target = typeof asked === "string" ? PROJECT_SECTIONS[asked] : undefined;
+  if (!target) return null;
+  const { section: _dropped, ...rest } = to.query;
+  return {
+    name: target.name,
+    params: { name: to.params.name },
+    query: target.section ? { ...rest, section: target.section } : rest,
+    hash: to.hash,
+  };
+}
+
+/**
  * The address a picker's choice completes to.
  *
  * The query already asked for is kept and the picker's own is laid over it, so
@@ -203,12 +272,28 @@ export const routes: RouteRecordRaw[] = [
     scope: "project",
     picker: { name: "project" },
   }),
+  // The six screens the project scope is made of. They were one file and nine
+  // tabs — health, releases, builds, previews, domains, claims, variables,
+  // people and eleven cards of settings, mounted together so that opening the
+  // members panel started the metrics pollers (#470). Each is now an address,
+  // which is what makes "the fork policy is here" a link somebody can send.
   screen({ path: "/projects/:name", name: "project", view: "ProjectView.vue", scope: "project" }),
-  screen({ path: "/projects/:name/deploys", name: "project-deploys", view: "BuildsView.vue", scope: "project" }),
+  screen({
+    path: "/projects/:name/deploys",
+    name: "project-deploys",
+    view: "ProjectDeploysView.vue",
+    scope: "project",
+  }),
   screen({
     path: "/projects/:name/deploys/:build",
     name: "project-build",
     view: "BuildView.vue",
+    scope: "project",
+  }),
+  screen({
+    path: "/projects/:name/environments",
+    name: "project-environments",
+    view: "ProjectEnvironmentsView.vue",
     scope: "project",
   }),
   screen({
@@ -224,6 +309,25 @@ export const routes: RouteRecordRaw[] = [
     path: "/projects/:name/observability",
     name: "project-observability",
     view: "ObservabilityView.vue",
+    scope: "project",
+  }),
+  screen({
+    // What is firing about this project, with the evidence beside it. The
+    // fleet's `/alerts` is the same question across every project and has no
+    // route behind it yet (#471); this one is answered by the environments'
+    // own signals, which already ship.
+    path: "/projects/:name/alerts",
+    name: "project-alerts",
+    view: "ProjectAlertsView.vue",
+    scope: "project",
+  }),
+  screen({
+    // Forms, at one width, behind a left rail — and the one project screen
+    // that polls nothing, which is the whole complaint behind "a change to the
+    // members panel loads the metrics pollers".
+    path: "/projects/:name/settings",
+    name: "project-settings",
+    view: "ProjectSettingsView.vue",
     scope: "project",
   }),
 

@@ -3,7 +3,7 @@ import { isAuthenticated } from "./lib/auth";
 import { callerFor, forgetMe, loadMe } from "./lib/me";
 import { may } from "./lib/policy";
 import { resetScreenFreshness } from "./lib/freshness";
-import { routes } from "./routes";
+import { movedProjectSection, routes } from "./routes";
 
 // The addresses themselves are `routes.ts`, as data. This file is what a
 // browser adds to them: the history, and the two questions asked before a
@@ -22,6 +22,11 @@ export const router = createRouter({
 // only ever real on the first one.
 router.beforeEach(async (to) => {
   if (to.meta.public) return true;
+  // A `?section=` that named part of the old project mega-page. It cannot be a
+  // row of the route table — the path is the same one the Overview answers at
+  // — so it is a redirect here, and `routes.ts` holds the map.
+  const moved = movedProjectSection(to);
+  if (moved) return moved;
   if (!isAuthenticated.value) {
     // Signing out is what ends an account, and this is where the dashboard
     // finds out. Holding the old role would decide the first screen the next
