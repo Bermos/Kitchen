@@ -5,19 +5,17 @@ import { api, type Span } from "../lib/api";
 import { compactCount } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 
-// One tab of a project's observability screen (#469): the project is the
-// address now rather than a dropdown on a cross-project screen.
-const props = defineProps<{ project: string }>();
-
 // Traces: what one request did, across everything it touched.
 //
-// The traffic view draws what Hubble saw — that one workload called another,
+// The traffic tab draws what Hubble saw — that one workload called another,
 // and how long the call took. This draws what the application says it was
 // doing, which is the only place the answer to "why was checkout slow" lives.
 // The two are complementary and neither is derived from the other.
 //
 // A trace is opened by id, and the id is in the URL, so a slow request found
-// here is a link — and so is the jump from a log line that carried one.
+// here is a link — and so is the jump from a log line that carried one. Which
+// project it is a trace of is the address rather than a dropdown (#469).
+const props = defineProps<{ project: string }>();
 
 const route = useRoute();
 const router = useRouter();

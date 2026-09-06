@@ -4,15 +4,15 @@ import { api, type TrafficEdge } from "../lib/api";
 import { compactCount } from "../lib/format";
 import { useAsync, usePoll } from "../lib/useAsync";
 
-// One tab of a project's observability screen (#469). It was a cross-project
-// screen with a project dropdown, which is the shape this dashboard is moving
-// away from: the project is the address now, and this panel is handed it.
+// The traffic tab draws what the flow collector shipped: aggregated Hubble
+// flow edges out of ClickHouse, via GET /api/v1/traffic. The map is a reading
+// of the last window, not a live packet view — rates are averages over the
+// window the store answered for.
+//
+// It was a cross-project screen with a project dropdown, which is the shape
+// this dashboard is moving away from: the project is the address now (#469)
+// and this panel is handed it.
 const props = defineProps<{ project: string }>();
-
-// The traffic screen draws what the flow collector shipped: aggregated
-// Hubble flow edges out of ClickHouse, via GET /api/v1/traffic. The map is a
-// reading of the last window, not a live packet view — rates are averages
-// over the window the store answered for.
 
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
@@ -34,9 +34,6 @@ const { data, error, loading, refresh } = useAsync(() =>
 // through `useAsync`, and the one control lives in the one header.
 usePoll(() => void refresh(), 15000, () => true);
 watch([() => props.project, rangeMinutes], () => void refresh());
-function rerun() {
-  void refresh();
-}
 
 const edges = computed<TrafficEdge[]>(() => {
   let edges = data.value ?? [];
@@ -152,7 +149,7 @@ function edgeLabel(edge: TrafficEdge): string {
       <p class="text-xs text-muted max-w-2xl">
         The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
       </p>
-      <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" @change="rerun" />
+      <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" />
     </div>
 
     <div class="flex items-center gap-2 flex-wrap">
