@@ -174,8 +174,11 @@ that* — which is what makes it worth naming a role in.
 
 All paths are relative to `/api/v1`. Collections answer `{"items": [...]}`;
 errors answer `{"error": "..."}` with a message meant to be read by whoever
-sent the request. The `Requires` column is explained under
-[Authorization](#authorization) above.
+sent the request — a few routes add a machine-readable `reason` beside it
+where one status covers findings a client should tell apart, such as a
+[replay](api/decisions.md#what-replay-checks-before-it-re-runs-anything)
+refused because the decision store contradicted itself. The `Requires` column
+is explained under [Authorization](#authorization) above.
 
 **Every route here is also reachable from a terminal.** The `kitchen` CLI
 ([CLI.md](CLI.md)) wraps the common ones as commands and reaches the rest with

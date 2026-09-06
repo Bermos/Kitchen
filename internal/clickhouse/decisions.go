@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Bermos/Kitchen/internal/policy"
 )
 
 // The policy engine's storage half: every decision the engine made, with the
@@ -258,7 +260,15 @@ FORMAT JSONEachRow`, decisionColumns,
 // InsertPolicyBundle records a bundle's content under its digest, once: a
 // digest already present is left exactly as first seen, which is the point of
 // content addressing — there is nothing new to say about the same bytes.
+//
+// The pairing is checked on the way in as well as on the way out. Replay
+// re-derives the digest of what it reads back, and a row the platform's own
+// code path could have created mismatched would turn that check into an
+// alarm about a store nobody had touched.
 func (c *Client) InsertPolicyBundle(ctx context.Context, digest, content string) error {
+	if err := policy.VerifyBundleContent(digest, content); err != nil {
+		return fmt.Errorf("refusing to store a policy bundle under a digest that is not its own: %w", err)
+	}
 	existing, err := c.QueryWithParams(ctx, fmt.Sprintf(
 		"SELECT 1 FROM %s.%s WHERE digest = {digest:String} LIMIT 1",
 		quoteIdentifier(c.cfg.Database), quoteIdentifier(PolicyBundlesTable)),

@@ -76,9 +76,46 @@ clock, so a decision made under a since-expired exception still reproduces.
 
 Replaying needs `developer` on the decision's project — it writes a decision
 in the project's name — enforced by the handler because the project lives on
-the stored row, out of the enforcement table's reach. `409` answers a
-decision that cannot be re-run: its input is unreadable, or its bundle is
-neither in the store nor still available.
+the stored row, out of the enforcement table's reach.
+
+### What replay checks before it re-runs anything
+
+Both halves of an evaluation are content-addressed, and a replay re-derives
+each digest from what it read back before the engine sees any of it: the
+bundle is hashed and held against the `bundleDigest` the decision cites, and
+the parsed input against its `inputDigest`. Content addressing is a claim
+about bytes, and it is only worth something while somebody re-derives the
+address on read — `policy_bundles` and `promotion_decisions` are ordinary
+tables in the same store the audit log lives in, and a row whose content had
+been replaced would otherwise be evaluated *as* the bundle the decision
+names. The substituted rules need only reproduce the recorded verdict for the
+replay to answer `match: true` and store a fresh decision saying so, which is
+the one place an unchecked digest turns evidence into its opposite. The same
+pairing is checked on the way in, so the platform's own code path cannot
+create a row that fails it.
+
+A replay that will not run answers `409` with a machine-readable `reason`
+beside the sentence, because "the store contradicted itself" and "the
+ConfigMap is gone" are different findings and telling them apart should not
+mean matching on prose:
+
+```json
+{"error": "decision 0d9a1f7e-… cannot be replayed: digest mismatch: the policy bundle held as sha256:1f0c… content-addresses to sha256:9ab3… — the bundle read back is not the bundle that digest names",
+ "reason": "bundle-digest-mismatch"}
+```
+
+| `reason` | What happened |
+|---|---|
+| `bundle-digest-mismatch` | the bundle read back does not hash to the digest it is filed under — **a store that has been written to**, not a decision that failed to reproduce |
+| `input-digest-mismatch` | the stored input does not hash to the decision's `inputDigest`, same finding on the other half |
+| `input-unreadable` | the stored input is not readable as an input at all |
+| `bundle-unreadable` | the stored bundle row is not readable as a bundle |
+| `bundle-unavailable` | the digest is neither in the store nor still available from a ConfigMap or the built-in bundle |
+| `evaluation-failed` | the bundle and the input are both what they say they are, and the engine could not evaluate them |
+
+The two mismatches are logged at error by the operator as well. Neither
+stores a decision: a replay that could not check its own evidence has nothing
+to record about the decision it was asked about.
 
 ## Compliance drift
 

@@ -19,10 +19,12 @@ package clickhouse
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Bermos/Kitchen/internal/policy"
 	"github.com/Bermos/Kitchen/internal/retention"
 )
 
@@ -166,13 +168,25 @@ func TestDecisionByIDDistinguishesAbsentFromBroken(t *testing.T) {
 	}
 }
 
+// storedBundlePair is a bundle's stored encoding and the digest that names
+// it — the pairing every write and every read of the table has to hold.
+func storedBundlePair(t *testing.T) (string, string) {
+	t.Helper()
+	bundle := policy.Bundle{"promotion.rego": "package kitchen.promotion"}
+	content, err := json.Marshal(map[string]string(bundle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy.Digest(bundle), string(content)
+}
+
 func TestInsertPolicyBundleIsInsertIfAbsent(t *testing.T) {
 	store := newFakeLogStore(t)
+	digest, content := storedBundlePair(t)
 
 	// Absent: the existence probe answers nothing, so the insert follows.
 	store.rows = ""
-	if err := store.client(t).InsertPolicyBundle(context.Background(),
-		"sha256:"+strings.Repeat("b", 64), `{"promotion.rego":"package kitchen.promotion"}`); err != nil {
+	if err := store.client(t).InsertPolicyBundle(context.Background(), digest, content); err != nil {
 		t.Fatalf("InsertPolicyBundle: %v", err)
 	}
 	if !store.sawQuery("INSERT INTO") || !store.sawQuery(PolicyBundlesTable) {
@@ -183,12 +197,46 @@ func TestInsertPolicyBundleIsInsertIfAbsent(t *testing.T) {
 	// same bytes have nothing new to say.
 	present := newFakeLogStore(t)
 	present.rows = "1"
-	if err := present.client(t).InsertPolicyBundle(context.Background(),
-		"sha256:"+strings.Repeat("b", 64), `{}`); err != nil {
+	if err := present.client(t).InsertPolicyBundle(context.Background(), digest, content); err != nil {
 		t.Fatalf("InsertPolicyBundle: %v", err)
 	}
 	if present.sawQuery("INSERT INTO") {
 		t.Fatalf("a present bundle must not be re-inserted:\n%s", present.transcript())
+	}
+}
+
+// A row whose content does not hash to its digest is what turns replay into
+// its opposite, so the platform's own write path cannot create one: the
+// pairing is checked before anything reaches the store.
+func TestInsertPolicyBundleRefusesContentThatIsNotItsDigest(t *testing.T) {
+	store := newFakeLogStore(t)
+	store.rows = ""
+	_, content := storedBundlePair(t)
+	elsewhere := "sha256:" + strings.Repeat("b", 64)
+
+	err := store.client(t).InsertPolicyBundle(context.Background(), elsewhere, content)
+	if err == nil {
+		t.Fatal("a bundle stored under a digest that is not its own must be refused")
+	}
+	if !errors.Is(err, policy.ErrDigestMismatch) {
+		t.Fatalf("the refusal must be a digest mismatch, got %v", err)
+	}
+	if !strings.Contains(err.Error(), elsewhere) {
+		t.Fatalf("the refusal names the digest it was asked for, got %v", err)
+	}
+	if store.sawQuery("INSERT INTO") {
+		t.Fatalf("nothing may be written:\n%s", store.transcript())
+	}
+
+	// Content that is not a bundle at all is refused the same way, before it
+	// can be filed under any digest.
+	broken := newFakeLogStore(t)
+	broken.rows = ""
+	if err := broken.client(t).InsertPolicyBundle(context.Background(), elsewhere, "not json"); err == nil {
+		t.Fatal("content that is not a bundle must be refused")
+	}
+	if broken.sawQuery("INSERT INTO") {
+		t.Fatalf("nothing may be written:\n%s", broken.transcript())
 	}
 }
 

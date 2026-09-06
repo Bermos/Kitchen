@@ -18,6 +18,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -206,6 +207,38 @@ type replayBody struct {
 	Decision string `json:"decision"`
 }
 
+// replayRefusalBody is what a replay answers when it will not run: the
+// sentence, and a machine-readable reason beside it. The reason exists
+// because two of these are findings about the decision *store* rather than
+// about the decision — content that does not hash to the digest it is filed
+// under is a store that has been written to — and telling that apart from
+// "the ConfigMap is gone" should not mean matching on prose.
+type replayRefusalBody struct {
+	Error  string `json:"error"`
+	Reason string `json:"reason"`
+}
+
+// Why a replay was refused. The two mismatch reasons are the loud ones.
+const (
+	replayReasonInputUnreadable      = "input-unreadable"
+	replayReasonInputDigestMismatch  = "input-digest-mismatch"
+	replayReasonBundleUnreadable     = "bundle-unreadable"
+	replayReasonBundleUnavailable    = "bundle-unavailable"
+	replayReasonBundleDigestMismatch = "bundle-digest-mismatch"
+	replayReasonEvaluationFailed     = "evaluation-failed"
+)
+
+// refuseReplay answers a replay that will not run, and says loudly in the
+// operator's log when the reason is that the store contradicted itself.
+func (s *Server) refuseReplay(w http.ResponseWriter, decisionID, reason, because string) {
+	message := "decision " + decisionID + " cannot be replayed: " + because
+	if reason == replayReasonBundleDigestMismatch || reason == replayReasonInputDigestMismatch {
+		s.log().Error(errors.New(because), "the decision store answered a digest with content that is not it",
+			"decision", decisionID, "reason", reason)
+	}
+	writeJSON(w, http.StatusConflict, replayRefusalBody{Error: message, Reason: reason})
+}
+
 // replayDecision re-evaluates a stored decision from its stored inputs — the
 // exact bundle bytes and the exact input the original cited — and stores the
 // outcome as a decision of kind replay, so the check itself has a record.
@@ -240,12 +273,21 @@ func (s *Server) replayDecision(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// The stored input is the whole of what the engine may see, exactly as it
-	// was seen the first time.
+	// was seen the first time — and "exactly" is checked rather than assumed:
+	// the input is content-addressed, so the digest the decision cites is
+	// re-derived from what was read back before any of it reaches the engine.
+	// A replay is the mechanism that exists to prove a stored decision was
+	// really made; replaying against substituted evidence would make it
+	// assert the opposite of what it checks.
 	input := policy.Input{}
 	if err := json.Unmarshal([]byte(decision.Input), &input); err != nil {
-		writeJSON(w, http.StatusConflict, errorBody{
-			Error: "decision " + decision.ID + " cannot be replayed: its stored input is unreadable: " + err.Error(),
-		})
+		s.refuseReplay(w, decision.ID, replayReasonInputUnreadable,
+			"its stored input is unreadable: "+err.Error())
+		return
+	}
+	if err := policy.VerifyInput(decision.InputDigest, input); err != nil {
+		s.refuseReplay(w, decision.ID, replayReasonInputDigestMismatch, err.Error()+
+			" — the stored input is not the input this decision cites")
 		return
 	}
 
@@ -257,21 +299,18 @@ func (s *Server) replayDecision(w http.ResponseWriter, req *http.Request) {
 	// matching on what was (not) evaluated.
 	result := policy.Result{Verdict: policy.VerdictAllowed, Fired: []policy.FiredRule{}}
 	if decision.BundleDigest != policy.Digest(nil) {
-		bundle, err := s.storedBundle(w, req, decision.BundleDigest)
+		bundle, reason, err := s.storedBundle(w, req, decision.BundleDigest)
 		if bundle == nil {
 			if err != nil {
-				writeJSON(w, http.StatusConflict, errorBody{
-					Error: "decision " + decision.ID + " cannot be replayed: " + err.Error(),
-				})
+				s.refuseReplay(w, decision.ID, reason, err.Error())
 			}
 			return
 		}
 
 		result, err = policy.Evaluate(ctx, bundle, input)
 		if err != nil {
-			writeJSON(w, http.StatusConflict, errorBody{
-				Error: "decision " + decision.ID + " could not be re-evaluated: " + err.Error(),
-			})
+			s.refuseReplay(w, decision.ID, replayReasonEvaluationFailed,
+				"it could not be re-evaluated: "+err.Error())
 			return
 		}
 	}
@@ -346,34 +385,51 @@ func (s *Server) replayDecision(w http.ResponseWriter, req *http.Request) {
 // storedBundle loads the bundle a decision cited, by digest: from the store
 // first — that is what outlives ConfigMaps — and falling back to the live
 // sources, which is safe because a digest names content wherever it is found.
-// A nil return with a nil error means the response is already written; a nil
-// return with an error leaves the wording to the caller.
+//
+// It names content only while somebody re-derives it, which is what the
+// closing check is for and why it covers both sources rather than only the
+// fallback. `policy_bundles` is an ordinary table in the same ClickHouse the
+// audit log lives in, and only the audit table's writes are revoked: a row
+// whose `content` had been replaced would otherwise be evaluated *as* the
+// bundle the decision's digest names, and the replay would report that the
+// original decision reproduces.
+//
+// A nil bundle with a nil error means the response is already written; a nil
+// bundle with an error leaves the wording to the caller and hands it the
+// reason to answer with.
 func (s *Server) storedBundle(
 	w http.ResponseWriter, req *http.Request, digest string,
-) (policy.Bundle, error) {
+) (policy.Bundle, string, error) {
 	store := s.openLogStore(w, req)
 	if store == nil {
-		return nil, nil
+		return nil, "", nil
 	}
 	content, found, err := store.PolicyBundle(req.Context(), digest)
 	if err != nil {
 		s.writeStoreError(w, err, "the policy bundle read")
-		return nil, nil
+		return nil, "", nil
 	}
+	bundle := policy.Bundle{}
 	if found {
-		bundle := policy.Bundle{}
 		if err := json.Unmarshal([]byte(content), &bundle); err != nil {
-			return nil, fmt.Errorf("the stored policy bundle %s is unreadable: %s", digest, err.Error())
+			return nil, replayReasonBundleUnreadable,
+				fmt.Errorf("the stored policy bundle %s is unreadable: %s", digest, err.Error())
 		}
-		return bundle, nil
+	} else {
+		resolver := &policy.Resolver{Client: s.Client, Namespace: s.Namespace}
+		info, err := resolver.Resolve(req.Context(), digest)
+		if err != nil {
+			return nil, replayReasonBundleUnavailable,
+				fmt.Errorf("the policy bundle %s is neither in the decision store nor still available: %s",
+					digest, err.Error())
+		}
+		bundle = info.Bundle
 	}
-	resolver := &policy.Resolver{Client: s.Client, Namespace: s.Namespace}
-	info, err := resolver.Resolve(req.Context(), digest)
-	if err != nil {
-		return nil, fmt.Errorf("the policy bundle %s is neither in the decision store nor still available: %s",
-			digest, err.Error())
+	if err := policy.VerifyBundle(digest, bundle); err != nil {
+		return nil, replayReasonBundleDigestMismatch,
+			fmt.Errorf("%s — the bundle read back is not the bundle that digest names", err.Error())
 	}
-	return info.Bundle, nil
+	return bundle, "", nil
 }
 
 // bundleBody is one available policy bundle: what an environment owner pins.

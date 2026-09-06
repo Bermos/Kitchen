@@ -232,6 +232,98 @@ func TestReplayNoticesAVerdictThatDoesNotReproduce(t *testing.T) {
 	}
 }
 
+// Replay is the mechanism that exists to prove a stored decision was really
+// made, and the two things it re-runs are content-addressed. A store that
+// answers one of those digests with other bytes is a store that has been
+// written to — `policy_bundles` and `promotion_decisions` are ordinary tables
+// in the same ClickHouse the audit log lives in, and only the audit table's
+// writes are revoked — so the digest is re-derived before anything reaches
+// the engine, and the refusal says which half did not hold.
+
+func TestReplayRefusesABundleThatIsNotTheDigestItIsFiledUnder(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	stored := replayFixture(t, h)
+
+	// The row keeps the decision's digest and carries other rules. The
+	// substituted bundle need only reproduce the recorded verdict for the
+	// replay to report that the decision reproduces; the digest is the only
+	// thing standing between that and a fresh decision of kind replay
+	// asserting it.
+	substituted, err := json.Marshal(map[string]string{
+		"promotion.rego": "package kitchen.promotion\n\ndeny := []\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.logs.bundles[stored.BundleDigest] = string(substituted)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/decisions/"+stored.ID+"/replay", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[replayRefusalBody](t, recorder)
+	if body.Reason != replayReasonBundleDigestMismatch {
+		t.Fatalf("the refusal must name the mismatch as its reason, got %+v", body)
+	}
+	if !strings.Contains(body.Error, stored.BundleDigest) ||
+		!strings.Contains(body.Error, "content-addresses to") {
+		t.Fatalf("the refusal names both digests, got %q", body.Error)
+	}
+	if len(h.logs.insertedDecisions) != 0 {
+		t.Fatalf("a refused replay must store nothing, got %+v", h.logs.insertedDecisions)
+	}
+}
+
+func TestReplayRefusesAnInputThatIsNotTheDigestItIsFiledUnder(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	stored := replayFixture(t, h)
+
+	// The stored input keeps the decision's input digest and says something
+	// else: the parameter that made the original block is turned off.
+	tampered := strings.Replace(stored.Input, `"require-sbom":"true"`, `"require-sbom":"false"`, 1)
+	if tampered == stored.Input {
+		t.Fatalf("the fixture's input no longer carries the parameter this test edits: %s", stored.Input)
+	}
+	h.logs.decisions[len(h.logs.decisions)-1].Input = tampered
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/decisions/"+stored.ID+"/replay", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[replayRefusalBody](t, recorder)
+	if body.Reason != replayReasonInputDigestMismatch {
+		t.Fatalf("the refusal must name the mismatch as its reason, got %+v", body)
+	}
+	if !strings.Contains(body.Error, stored.InputDigest) ||
+		!strings.Contains(body.Error, "content-addresses to") {
+		t.Fatalf("the refusal names both digests, got %q", body.Error)
+	}
+	if len(h.logs.insertedDecisions) != 0 {
+		t.Fatalf("a refused replay must store nothing, got %+v", h.logs.insertedDecisions)
+	}
+}
+
+// A bundle the store does not hold is a different finding from one it holds
+// under the wrong digest, and the reason is what tells them apart without
+// reading the prose.
+func TestReplayOfAnUnavailableBundleSaysSoInItsOwnReason(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	stored := replayFixture(t, h)
+	// A digest no source answers to: the store does not hold it and the
+	// built-in bundle is not it either.
+	h.logs.decisions[len(h.logs.decisions)-1].BundleDigest = "sha256:" + strings.Repeat("c", 64)
+	h.logs.bundles = map[string]string{}
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/decisions/"+stored.ID+"/replay", "")
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[replayRefusalBody](t, recorder)
+	if body.Reason != replayReasonBundleUnavailable {
+		t.Fatalf("an absent bundle is not a mismatch, got %+v", body)
+	}
+}
+
 func TestReplayOfAnUngatedPromotionsDecisionReproducesTheTrivialAllow(t *testing.T) {
 	// An environment that declares no requirements still gets its promotion
 	// decision recorded — with an empty bundle, because nothing was
