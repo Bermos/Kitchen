@@ -61,6 +61,12 @@ curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/projects/shop/env
 ```
 
+A `fromSecret` may name this object, a claim's binding, or any other Secret in
+the project's application namespace — but not the platform's own credentials
+that live there too, which are named `kitchen-registry-…` and `kitchen-git-…`
+and are refused. [The variables page](projects.md#what-a-fromsecret-may-name)
+states the boundary in full.
+
 ## Reading them
 
 `GET /projects/{name}/secrets` answers `{"items": [...]}` of exactly the shape

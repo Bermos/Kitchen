@@ -804,6 +804,11 @@ type envVarRequest struct {
 // values back: the client has nothing to send for the variables it is not
 // changing. A variable being repointed at a secret or a claim keeps nothing —
 // the reference is what replaces the value.
+//
+// A `fromSecret` is bounded as well as well-formed: it may name a Secret of
+// the project's, and not one of the platform's own in the same namespace. See
+// internal/controller/appsecretrefs.go for which those are and why the rule is
+// a name rather than a lookup.
 func envVarsFromRequest(vars []envVarRequest, existing []kitchenv1alpha1.EnvVar) ([]kitchenv1alpha1.EnvVar, error) {
 	stored := make(map[string]kitchenv1alpha1.EnvVar, len(existing))
 	for _, v := range existing {
@@ -854,6 +859,14 @@ func envVarsFromRequest(vars []envVarRequest, existing []kitchenv1alpha1.EnvVar)
 		if v.FromSecret != nil {
 			if v.FromSecret.Name == "" || v.FromSecret.Key == "" {
 				return nil, fmt.Errorf("env var %q: fromSecret needs both a name and a key", name)
+			}
+			// A reference reaches the application namespace, and the platform
+			// keeps its own synced credentials there too — the registry's
+			// docker config and the git token, both shared by every project
+			// on their Connection. Naming one would be this API handing back
+			// a credential it is careful never to read (#426).
+			if err := controller.CheckEnvSecretRef(name, v.FromSecret.Name); err != nil {
+				return nil, err
 			}
 			spec.SecretRef = &kitchenv1alpha1.SecretKeySelector{Name: v.FromSecret.Name, Key: v.FromSecret.Key}
 		}

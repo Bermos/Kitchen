@@ -561,6 +561,68 @@ func TestPatchingAnEnvVarToASecretDropsItsValue(t *testing.T) {
 	}
 }
 
+// A `fromSecret` becomes a SecretKeyRef in the application namespace, and
+// that namespace is not only the project's: every build syncs the platform's
+// shared credentials into it, so a variable that could name one would be a
+// developer printing the registry password or the git token with `echo`
+// (#426). The rule is the name, and the refusal says so.
+func TestAFromSecretMayNotNameThePlatformsOwnCredentials(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	for name, secret := range map[string]string{
+		"the git token, shared by every project on that connection": "kitchen-git-github",
+		"the registry docker config, likewise":                      "kitchen-registry-registry",
+		"whatever the platform puts there next":                     "kitchen-something-later",
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := h.do(t, http.MethodPatch, envPath,
+				`{"env": [{"name": "STOLEN", "fromSecret": {"name": "`+secret+`", "key": "token"}}]}`)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			message := errorOf(t, recorder.Body.String())
+			if !strings.Contains(message, secret) || !strings.Contains(message, controller.ProjectSecretsName) {
+				t.Fatalf("want the refusal to name the secret and what may be referenced, got %q", message)
+			}
+			stored := &kitchenv1alpha1.Project{}
+			if err := h.server.get(context.Background(), "shop", stored); err != nil {
+				t.Fatal(err)
+			}
+			if len(stored.Spec.Env) != 0 {
+				t.Fatalf("the refused reference was written anyway: %+v", stored.Spec.Env)
+			}
+		})
+	}
+}
+
+// The other half of the rule, and the half that matters more: everything a
+// project may legitimately read still writes — its own secrets, the secret
+// files it declares, a claim's binding, and a Secret it made for itself.
+func TestAFromSecretStillNamesTheProjectsOwnSecrets(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, envPath, `{"env": [
+		{"name": "SMTP_PASSWORD", "fromSecret": {"name": "`+controller.ProjectSecretsName+`", "key": "SMTP_PASSWORD"}},
+		{"name": "LICENCE", "fromSecret": {"name": "`+controller.ProjectFilesName+`", "key": "licence"}},
+		{"name": "DATABASE_URL", "fromSecret": {"name": "shop-db-binding", "key": "url"}},
+		{"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), "shop", stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Spec.Env) != 4 {
+		t.Fatalf("want every legitimate reference stored: %+v", stored.Spec.Env)
+	}
+	for _, variable := range stored.Spec.Env {
+		if variable.SecretRef == nil {
+			t.Fatalf("variable %q lost its reference: %+v", variable.Name, variable)
+		}
+	}
+}
+
 func TestPatchingAProjectLeavesTheRestAlone(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

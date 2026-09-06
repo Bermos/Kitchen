@@ -1304,8 +1304,13 @@ spec:
                             instead of Value.
                           type: string
                         secretRef:
-                          description: Value taken from a Secret (typically synced
-                            from Infisical).
+                          description: |-
+                            Value taken from a Secret in the project's application namespace: the
+                            project's own secrets, a claim's binding, or one an external operator
+                            syncs in. It may not name one of the platform's own credentials there
+                            — names beginning "kitchen-" are reserved, apart from
+                            kitchen-project-secrets and kitchen-project-files — and an Environment
+                            refuses to materialize a Release whose variable names one.
                           properties:
                             key:
                               minLength: 1
@@ -8291,8 +8296,13 @@ spec:
                         of Value.
                       type: string
                     secretRef:
-                      description: Value taken from a Secret (typically synced from
-                        Infisical).
+                      description: |-
+                        Value taken from a Secret in the project's application namespace: the
+                        project's own secrets, a claim's binding, or one an external operator
+                        syncs in. It may not name one of the platform's own credentials there
+                        — names beginning "kitchen-" are reserved, apart from
+                        kitchen-project-secrets and kitchen-project-files — and an Environment
+                        refuses to materialize a Release whose variable names one.
                       properties:
                         key:
                           minLength: 1
@@ -10828,8 +10838,13 @@ spec:
                             instead of Value.
                           type: string
                         secretRef:
-                          description: Value taken from a Secret (typically synced
-                            from Infisical).
+                          description: |-
+                            Value taken from a Secret in the project's application namespace: the
+                            project's own secrets, a claim's binding, or one an external operator
+                            syncs in. It may not name one of the platform's own credentials there
+                            — names beginning "kitchen-" are reserved, apart from
+                            kitchen-project-secrets and kitchen-project-files — and an Environment
+                            refuses to materialize a Release whose variable names one.
                           properties:
                             key:
                               minLength: 1

@@ -61,7 +61,12 @@ type EnvVar struct {
 	// +optional
 	PreviewValue string `json:"previewValue,omitempty"`
 
-	// Value taken from a Secret (typically synced from Infisical).
+	// Value taken from a Secret in the project's application namespace: the
+	// project's own secrets, a claim's binding, or one an external operator
+	// syncs in. It may not name one of the platform's own credentials there
+	// — names beginning "kitchen-" are reserved, apart from
+	// kitchen-project-secrets and kitchen-project-files — and an Environment
+	// refuses to materialize a Release whose variable names one.
 	// +optional
 	SecretRef *SecretKeySelector `json:"secretRef,omitempty"`
 

@@ -640,12 +640,48 @@ The answer is the project, so a client that changed a variable renders the new
 list without a second read. Variables land in the next release's snapshot, like
 every other project setting.
 
-A `fromSecret` usually names one of [the project's own
-secrets](secrets.md) — the credentials Kitchen did not mint, written through a
-route of their own and never read back. That is what a credential should be
-rather than a literal `value`: the project's configuration then holds a
-reference, and rotating the credential is one write that touches no
-configuration at all.
+A `fromSecret` names one of [the project's own secrets](secrets.md) — the
+credentials Kitchen did not mint, written through a route of their own and
+never read back. That is what a credential should be rather than a literal
+`value`: the project's configuration then holds a reference, and rotating the
+credential is one write that touches no configuration at all.
+
+### What a `fromSecret` may name
+
+A reference is resolved in the project's application namespace, and that
+namespace is not only the project's. Every build syncs the platform's own
+credentials into it, because the build pod and the kubelet both need them
+there: the registry's docker config as `kitchen-registry-<connection>` and the
+git token as `kitchen-git-<connection>`, each shared by every project on that
+Connection. A variable naming one would be this API handing back a credential
+it is careful never to read back.
+
+**So the `kitchen-` prefix is the platform's**, and a `fromSecret` naming one
+is a `400` that says which rule it broke:
+
+```json
+{"error": "env var \"GIT_TOKEN\": fromSecret may not name \"kitchen-git-github\" — a Secret called \"kitchen-\"… in an application namespace is the platform's own…"}
+```
+
+Two names are outside the reservation, because they hold the project's own
+content rather than the platform's: `kitchen-project-secrets`, the secrets
+above, and `kitchen-project-files`, the content of [the project's secret
+files](files.md). Everything else in the namespace stays referenceable — a
+[claim's binding](claims.md), a Secret an external operator syncs in, a Secret
+somebody created for this project.
+
+The rule is the *name* rather than a lookup of what the namespace holds. A
+variable is written before the Secret it reads at least as often as after —
+the project's secrets object does not exist until its first secret is set, a
+claim's binding arrives when its provider binds it — and a rule that consulted
+the cluster would refuse those references for being early.
+
+The same check runs in the operator, over the release an environment is about
+to materialize. A Project written with `kubectl` never came through this API,
+and a reference stored before this rule existed came through a door that had
+none; either way the environment refuses to deploy it, and says so with
+`Ready=False` and reason `EnvSecretRefRefused` rather than starting a pod that
+reads the credential.
 
 ## Acquiring a new digest
 
