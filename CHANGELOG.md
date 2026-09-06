@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.35.0](https://github.com/Bermos/Kitchen/compare/v0.34.1...v0.35.0) (2026-09-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **security:** archives are encrypted by default, so an installation that already has a backup destination and no encryption key stops uploading until it supplies one — `PUT /platform/backup/destination` with `encryption.key`, or the Backup screen — or says `encryption.mode: none` to keep writing them in the clear on purpose. The Kitchen's BackupReady condition names which of the two it is waiting for. A destination whose endpoint is not https is refused on its next write and reported on the condition until it is fixed or admitted with `allowInsecureEndpoint`.
+
+### Features
+
+* **ui:** give the dashboard four scopes and decide screens by what they are ([#482](https://github.com/Bermos/Kitchen/issues/482)) ([e3d47fb](https://github.com/Bermos/Kitchen/commit/e3d47fb0801e6715ca7706b5580e3becaf81f9a9))
+
+
+### Bug fixes
+
+* **security:** encrypt a scheduled backup archive and refuse a plaintext destination ([#479](https://github.com/Bermos/Kitchen/issues/479)) ([eb1d78a](https://github.com/Bermos/Kitchen/commit/eb1d78a39c508852822f3025f90f98e6952556ec)), closes [#430](https://github.com/Bermos/Kitchen/issues/430)
+* **security:** make the audit chain's anchor survive its own removal ([#478](https://github.com/Bermos/Kitchen/issues/478)) ([a9bc697](https://github.com/Bermos/Kitchen/commit/a9bc6975cdf386725b6e7907d894f5b2a9f286eb)), closes [#428](https://github.com/Bermos/Kitchen/issues/428)
+
 ## [0.34.1](https://github.com/Bermos/Kitchen/compare/v0.34.0...v0.34.1) (2026-09-06)
 
 
