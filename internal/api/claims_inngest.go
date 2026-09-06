@@ -132,20 +132,39 @@ func (inngestClaimShaper) view(claim *kitchenv1alpha1.ResourceClaim, view *claim
 		Environment: cfg.Environment,
 		Mode:        cfg.Mode,
 		ServePath:   cfg.ServePath,
+		SelfHosted:  selfHostedInngest(claim),
 	}
 }
 
+// selfHostedInngest is which of the two Inngests this claim is bound to, off
+// the claim alone: a self-hosted instance id is a namespaced object name in
+// this cluster, Cloud's is the app ID at the account. It is the only handle
+// a claim's own view has — the provider is the Connection's, and a claim
+// view is built without reading one — and it is what the deletion sentence
+// and the dashboard's delete confirmation both turn on, so it is written
+// once here rather than inferred twice.
+//
+// False on a claim that has never bound, which is the safe way round: it
+// promises nothing about a server that does not exist yet.
+func selfHostedInngest(claim *kitchenv1alpha1.ResourceClaim) bool {
+	return claim != nil && strings.Contains(claim.Status.InstanceID, "/")
+}
+
 // deletionOutcome says what goes, and the two providers differ in the whole
-// of it: at Inngest Cloud nothing the platform could destroy is involved,
-// and a self-hosted server is a workload this platform runs, so it goes with
-// the claim. The claim's own instance id is what tells them apart — a
-// self-hosted one is a namespaced object name, Cloud's is the app ID — which
-// is the only handle a deleted claim's view has.
+// of it: at Inngest Cloud nothing the platform could destroy is involved, and
+// a self-hosted server is a workload this platform runs — so there the
+// claim's deletionPolicy is what decides, exactly as it does for the postgres
+// and redis claims the same stores come from (#407).
 func (inngestClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceClaim) string {
-	if claim != nil && strings.Contains(claim.Status.InstanceID, "/") {
-		return "the binding is removed and the Inngest server this claim's environments use — with the " +
-			"Postgres and the queue behind it, and every event and function run they hold — is destroyed " +
-			"with the claim"
+	if selfHostedInngest(claim) {
+		if claim.Spec.DeletionPolicy == kitchenv1alpha1.ClaimDelete {
+			return "the binding is removed and the Inngest server this claim's environments use — with the " +
+				"Postgres and the queue behind it, and every event and function run they hold — is destroyed " +
+				"with the claim"
+		}
+		return "the binding is removed and the Inngest server stops, and the Postgres, the queue and the " +
+			"volume behind it are kept with every event and function run they hold; a claim of the same " +
+			"name binds to them again"
 	}
 	return "the binding is removed and the preview branch environments are archived; the app record and the " +
 		"environment's keys stay at Inngest"
@@ -163,4 +182,11 @@ type claimInngestView struct {
 	// ServePath is where the application's Inngest handler is mounted, for
 	// a claim in serve mode.
 	ServePath string `json:"servePath"`
+	// SelfHosted says the claim is bound to an Inngest this platform runs
+	// rather than to an account at Inngest Cloud. It is what makes the
+	// claim's deletionPolicy mean something — a self-hosted server keeps its
+	// history and its queue on stores of this platform's own — and it is
+	// what the dashboard's delete confirmation reads to say which of the two
+	// deletions this is. False until the claim has bound.
+	SelfHosted bool `json:"selfHosted,omitempty"`
 }

@@ -43,6 +43,12 @@ type claimTypeView struct {
 	Capability string `json:"capability,omitempty"`
 	// HoldsData says whether deletionPolicy protects anything: a type that
 	// holds none is always deprovisioned with its claim.
+	//
+	// It is the type's own answer, which for one type is not the whole of
+	// it: an inngest claim holds no data through Inngest Cloud and holds a
+	// server's whole history through a self-hosted connection. Each
+	// provider's row below says which it is, and that is the one the
+	// deletionPolicy is offered on.
 	HoldsData bool `json:"holdsData"`
 	// Providers is each provider that can fulfil the type, with what it
 	// declares.
@@ -53,6 +59,14 @@ type claimTypeView struct {
 // says it, plus which preview modes a claim may ask this provider for.
 type claimProviderView struct {
 	Provider string `json:"provider"`
+	// HoldsData says whether a claim of this type *through this provider*
+	// provisions something that holds data, and so whether it takes a
+	// deletionPolicy at all. It is the type's answer for every provider but
+	// one: the same inngest claim is an app record at somebody else's
+	// account through `inngest` and a server with a Postgres and a queue
+	// behind it through `inngestSelfHosted`, and only the second has
+	// anything for a policy to keep.
+	HoldsData bool `json:"holdsData"`
 	// PreviewMode is what a preview gets when the claim asks for a resource
 	// of its own: branch, fresh, shared or none. PreviewNote is why.
 	PreviewMode string `json:"previewMode"`
@@ -99,6 +113,7 @@ func claimTypeViews() []claimTypeView {
 			}
 			view.Providers = append(view.Providers, claimProviderView{
 				Provider:         d.Provider,
+				HoldsData:        claimType.HoldsDataVia(d.Provider),
 				PreviewMode:      string(d.Preview),
 				PreviewNote:      d.PreviewNote,
 				PreviewChoices:   previewChoices(d.Declaration),

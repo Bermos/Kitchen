@@ -430,10 +430,14 @@ in them depends on the provider:
 
 Bind them through `Project.spec.env`, and today that reaches every process of
 the project — there is no per-process environment yet (#271), so the web
-process carries the keys as well as the worker that uses them. The type takes
-no `deletionPolicy`: there is nothing here a third party is holding for a
-policy to choose about, and what deleting the claim does under each provider
-is [below](#what-deleting-an-inngest-claim-does).
+process carries the keys as well as the worker that uses them.
+
+`deletionPolicy` is the one field whose availability is the *connection's*
+rather than the type's. Through Inngest Cloud it is refused — there is
+nothing here a third party is holding for a policy to choose about — and
+through `inngestSelfHosted` it is taken, and defaults to `Retain`, because
+the server's history and its queue are on stores this platform runs. What
+each policy does is [below](#what-deleting-an-inngest-claim-does).
 
 *What the provider does, and what it cannot.* This type is shaped by five
 facts about Inngest Cloud, established against its documentation and its
@@ -611,15 +615,28 @@ says what the connection's config takes.
 the binding secrets go and the preview branch environments are archived. The
 app record stays at Inngest until somebody archives it in the dashboard, the
 keys are the account's, and event and run history live at Inngest under the
-account's own retention — nothing the platform could destroy, which is why the
-type refuses a `deletionPolicy`.
+account's own retention — nothing the platform could destroy, which is why a
+claim through that connection refuses a `deletionPolicy`.
 
-Through a self-hosted connection the same refusal means the opposite thing:
-**every one of those objects is one this platform created for this claim**, so
-deleting the claim destroys the server, the Postgres and the queue behind it,
-and every event and function run they hold. There is no `Retain` here, and
-that is worth knowing before deleting a claim in front of a queue that still
-has work in it.
+Through a self-hosted connection **every one of those objects is one this
+platform created for this claim**, so the claim takes a `deletionPolicy` and
+it means what it means everywhere else on this page:
+
+| Policy | What happens |
+|---|---|
+| `Retain` (the default) | The binding secrets go and the server **stops** — its Deployment and its Service are removed, because with no claim there is nothing left to serve. Everything holding state is **kept**: the CloudNativePG `Cluster`, the Valkey instance, a preview server's PersistentVolumeClaim, and the Secret holding the keys and the two storage URIs the stores are read with. A claim of the same name in the same project binds to them again and the server comes back on the work it left ([Rebinding a retained resource](#rebinding-a-retained-resource)) |
+| `Delete` | The server, the Postgres and the queue are destroyed, with every event and function run they hold. It needs `admin` ([Destroying the data is the admin's](#destroying-the-data-is-the-admins)) |
+
+`Retain` is the default here for the reason it is the default for a database,
+and one more: some of what a self-hosted Inngest holds is **work that was
+accepted and has not run yet**. A deletion that silently drops a queue is
+invisible until whatever was supposed to happen does not, so it has to be
+asked for.
+
+The preview servers go under **either** policy, as every type's preview
+resources do: a preview's Inngest is a server of its own on an empty event
+stream, made for an environment that is itself being torn down. The policy is
+about the claim's own server.
 
 **`redis`** asks a Connection with the `cache` capability for somewhere to
 put what an application can afford to recompute, or work it cannot afford to
@@ -763,7 +780,8 @@ on this API that depends on a request's body rather than on its route:
 
 `Delete` is the policy that destroys what was provisioned: the database and
 its volumes, every version of every object in the bucket, the cache instance
-and the disk under it. There is no undo, and no snapshot the platform took on
+and the disk under it, a self-hosted Inngest's server with the Postgres and
+the queue behind it. There is no undo, and no snapshot the platform took on
 the way past — so it sits with the role that may delete the whole project the
 data belongs to, and the day job stays the developer's. An operator holds
 `admin` on every project and is unaffected.
@@ -785,6 +803,19 @@ prints the `403` as it stands; no command creates or deletes a claim.
 A type that provisions no data — `oidcClient` — takes no `deletionPolicy` at
 all, and deleting one stays the developer's: what it holds is permission to
 sign people in, and that must not outlive the claim.
+
+**Whether a type provisions data can be the *connection's* answer rather than
+the type's**, and `inngest` is the one that is. Through an Inngest Cloud
+connection the claim is an app record and a pair of keys at somebody else's
+account: no `deletionPolicy`, and the field is refused naming the connection
+that would take one. Through `inngestSelfHosted` the same claim provisions a
+server, a CloudNativePG `Cluster` and a Valkey — the same resources a
+`postgres` and a `redis` claim provision, through the same providers — so it
+takes the field, defaults to `Retain` like they do, and its `Delete` needs
+`admin` exactly as theirs does. The claim catalogue
+([`GET /claim-types`](#what-the-platform-can-provision)) answers `holdsData`
+per provider for that reason, and the dashboard offers the picker on the
+answer.
 
 ## Backing up what a claim provisioned
 
@@ -1109,8 +1140,8 @@ this surface; see [CLI.md](../CLI.md).
 ## Rebinding a retained resource
 
 `deletionPolicy: Retain` is the default for every type that provisions data,
-which means deleting a claim usually leaves a database, a bucket or a cache
-instance behind at the provider. What a *later* claim may be bound to is
+which means deleting a claim usually leaves a database, a bucket, a cache
+instance or a stopped Inngest server's stores behind at the provider. What a *later* claim may be bound to is
 therefore a question about data, and it is answered by the provider-side
 name.
 

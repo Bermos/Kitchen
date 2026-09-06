@@ -112,10 +112,39 @@ type ClaimType struct {
 	// client holds permission to sign people in, not data — is always
 	// deprovisioned with its claim, and refuses a deletionPolicy.
 	HoldsData bool
+
+	// HoldsDataProviders is the set of providers through which the type
+	// holds data even though the type itself does not. It exists because
+	// one type can be two different things: an `inngest` claim through
+	// Inngest Cloud is an app record and a pair of keys at somebody else's
+	// account, and the same claim through inngestSelfHosted is a server, a
+	// CloudNativePG Cluster, a Valkey and the queued work on them. The
+	// policy is a field of the claim rather than of the connection, so the
+	// question is asked of the pair — see HoldsDataVia.
+	//
+	// Empty for every type whose answer is the same through every provider,
+	// which is every other row.
+	HoldsDataProviders []string
 }
 
 // TakesConnection reports whether a claim of this type names a Connection.
 func (t ClaimType) TakesConnection() bool { return t.Capability != "" }
+
+// HoldsDataVia is whether a claim of this type, through this provider, holds
+// data that spec.deletionPolicy exists to protect — and so whether it takes
+// the field at all. The provider is the Connection's; it is empty for a type
+// the platform provisions itself, whose answer is the type's own.
+func (t ClaimType) HoldsDataVia(provider string) bool {
+	if t.HoldsData {
+		return true
+	}
+	for _, name := range t.HoldsDataProviders {
+		if name == provider {
+			return true
+		}
+	}
+	return false
+}
 
 // ClaimTypes is every kind of claim the platform admits. A new type is a row
 // here, a contract package beside internal/provider/database, and a
@@ -130,14 +159,22 @@ var ClaimTypes = []ClaimType{
 	// borrowing: at Inngest Cloud the event history and the function runs
 	// live under the account's own retention, the keys are the account's,
 	// and a preview's branch environment is archived rather than deleted.
-	// Self-hosted, everything the claim reads is a workload this platform
-	// created for it. Either way deleting the claim takes back exactly what
-	// the platform put into the world — nothing at Cloud, and the whole
-	// server self-hosted, with the Postgres and the queue behind it — so
-	// deletionPolicy has nothing to choose between. What that means for a
-	// self-hosted claim is said where the claim is deleted, and in
-	// docs/api/claims.md.
-	{Name: ClaimTypeInngest, Capability: CapabilityBackgroundJobs, Resource: "Inngest app"},
+	// Deleting the claim there takes back exactly what the platform put into
+	// the world, which is nothing, so deletionPolicy has nothing to choose
+	// between and is refused.
+	//
+	// Self-hosted it is the opposite claim under one name: the server is a
+	// workload this platform created, and behind it are a CloudNativePG
+	// Cluster, a Valkey and every function run and queued event on them —
+	// the same resources a postgres and a redis claim provision, through the
+	// same providers. So the policy applies there for the same reason it
+	// applies to those, and defaults to Retain like them: destroying data
+	// has to be asked for, never implied. What each policy does is said
+	// where the claim is deleted, and in docs/api/claims.md.
+	{
+		Name: ClaimTypeInngest, Capability: CapabilityBackgroundJobs, Resource: "Inngest app",
+		HoldsDataProviders: []string{ProviderInngestSelfHosted},
+	},
 	{Name: ClaimTypeRedis, Capability: CapabilityCache, Resource: "cache", HoldsData: true},
 }
 
@@ -219,6 +256,13 @@ type ResourceClaimSpec struct {
 	// deregistered: the policy exists to protect data from a deletion nobody
 	// meant, and an OAuth client holds none — what it holds is permission to
 	// sign people in, which is the thing that must not outlive the claim.
+	// Nor about an inngest claim through Inngest Cloud, where the app record
+	// and the keys are the account's and the platform destroys nothing. It
+	// does say something about the same claim through inngestSelfHosted,
+	// where the server this platform runs keeps its state on a
+	// CloudNativePG Cluster and a Valkey of its own: Retain stops the server
+	// and keeps both, Delete destroys them and every run and queued event on
+	// them. See ClaimType.HoldsDataVia.
 	// +kubebuilder:default=Retain
 	// +optional
 	DeletionPolicy ClaimDeletionPolicy `json:"deletionPolicy,omitempty"`

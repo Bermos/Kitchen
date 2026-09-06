@@ -155,7 +155,8 @@ func resolvePreviewMode(
 	}
 	switch contract.PreviewMode(choice) {
 	case "":
-		if declaration.Preview == contract.PreviewShared && claimType.HoldsData && !declaration.SharedIsReadOnly {
+		if declaration.Preview == contract.PreviewShared && claimType.HoldsDataVia(provider) &&
+			!declaration.SharedIsReadOnly {
 			return contract.PreviewNone, fmt.Sprintf("%s gives a preview environment production's %s itself (%s). "+
 				"A preview reading production data is never a default: set previewMode: shared on the claim to "+
 				"accept it, or previewMode: none to say previews get nothing", provider, claimType.Resource,

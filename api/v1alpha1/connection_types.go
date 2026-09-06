@@ -35,12 +35,20 @@ type CredentialsReference struct {
 	Name string `json:"name,omitempty"`
 }
 
+// ProviderInngestSelfHosted is the Inngest this platform runs itself, as
+// opposed to the `inngest` provider, which is an account at Inngest Cloud.
+// It is spelled here as well as in internal/provider/inngest because the
+// claim table below it has to name the provider a claim holds data through,
+// and this package is the one nothing else may import from — a test in the
+// provider package holds the two spellings together.
+const ProviderInngestSelfHosted = "inngestSelfHosted"
+
 // ConnectionProvidersWithoutCredential is the set of providers that hold no
 // credential, because they provision into the cluster the platform is
 // installed in with the operator's own account. It is what the two rules on
 // ConnectionSpec are written against; the set in the markers is held to this
 // one by a test, since a marker cannot read a Go value.
-var ConnectionProvidersWithoutCredential = []string{"cnpg", "valkey", "inngestSelfHosted"}
+var ConnectionProvidersWithoutCredential = []string{"cnpg", "valkey", ProviderInngestSelfHosted}
 
 // ProviderNeedsCredential reports whether a provider has a credential to
 // store at all. It is what lets the reconciler and the API stop looking for

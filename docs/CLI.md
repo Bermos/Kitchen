@@ -1653,7 +1653,13 @@ cannot write it carries on and exchanges every time.
   optional field (`inngest.servePath`) and one more accepted value for another
   (`inngest.mode: serve`), `POST /connections` gained a provider whose
   `credential` is omitted, and no route was added or renamed. `kitchen api`
-  reaches both. Requiring `admin` for `deletionPolicy: Delete` is the same decision
+  reaches both. Giving that provider's claim a `deletionPolicy` at all — the
+  field is refused through Inngest Cloud and taken through
+  `inngestSelfHosted`, defaulting to `Retain` — is the same decision yet
+  again: one existing optional field on `POST /claims` accepted where it was
+  refused, and no route added or renamed. `kitchen api POST /claims --data
+  '{"deletionPolicy":"Delete", ...}'` asks for it, and the `403` naming the
+  role is printed as it stands. Requiring `admin` for `deletionPolicy: Delete` is the same decision
   once more, and the cheapest kind of it: it added no route, renamed none, and
   left both rows' own requirements where they were — so `kitchen api POST
   /claims` and `kitchen api DELETE /claims/{name}` reach both ends of it, and

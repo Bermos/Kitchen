@@ -393,8 +393,8 @@ func TestASecondReconcileWritesNothing(t *testing.T) {
 	}
 }
 
-// Deleting takes everything back, including the storage: the claim type
-// carries no deletionPolicy, so this is the whole of what deletion means.
+// deletionPolicy Delete takes everything back, including the storage. It is
+// the policy an admin has to ask for, and this is the whole of what it does.
 func TestDeprovisionDestroysTheServerAndItsStorage(t *testing.T) {
 	provisioner, c, store := newSelfHosted(t)
 	ctx := context.Background()
@@ -417,6 +417,103 @@ func TestDeprovisionDestroysTheServerAndItsStorage(t *testing.T) {
 	// Deleting again is not an error: a finalizer runs more than once.
 	if err := provisioner.Deprovision(ctx, instance.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// deletionPolicy Retain — the default, and the answer to #407 — stops the
+// server and keeps everything it was keeping. A preview's volume is the
+// PersistentVolumeClaim half of that; production's is the Postgres and the
+// queue, which are asked for nothing at all.
+func TestRetainStopsTheServerAndKeepsItsStores(t *testing.T) {
+	provisioner, c, store := newSelfHosted(t)
+	ctx := context.Background()
+	_, _ = provisioner.Provision(ctx, shopJobs, Requirements{})
+	markReady(t, c, serverName)
+	instance, _ := provisioner.Provision(ctx, shopJobs, Requirements{})
+
+	if err := provisioner.Retain(ctx, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+	key := types.NamespacedName{Namespace: DefaultServerNamespace, Name: serverName}
+	for _, object := range []client.Object{&appsv1.Deployment{}, &corev1.Service{}} {
+		if err := c.Get(ctx, key, object); !apierrors.IsNotFound(err) {
+			t.Errorf("%T is what stops when there is no claim left to serve: %v", object, err)
+		}
+	}
+	// The keys and the two storage URIs: without them the retained stores
+	// would still be there and nothing could read them as the same server.
+	if err := c.Get(ctx, key, &corev1.Secret{}); err != nil {
+		t.Errorf("the retained server keeps its keys: %v", err)
+	}
+	if len(store.deprovisioned) != 0 {
+		t.Fatalf("Retain destroys no data: the Postgres and the queue stay, got %v", store.deprovisioned)
+	}
+	// A finalizer runs more than once, and a server already stopped is not
+	// an error the second time.
+	if err := provisioner.Retain(ctx, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// What makes retention worth the name: a claim of the same name, in the same
+// project, finds the stores and the keys it left, and the server comes back
+// on the work it was in the middle of.
+func TestAClaimOfTheSameNameBindsToARetainedServer(t *testing.T) {
+	provisioner, c, store := newSelfHosted(t)
+	ctx := context.Background()
+	_, _ = provisioner.Provision(ctx, shopJobs, Requirements{})
+	markReady(t, c, serverName)
+	before, _ := provisioner.Provision(ctx, shopJobs, Requirements{})
+	if err := provisioner.Retain(ctx, before.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provisioner.Provision(ctx, shopJobs, Requirements{}); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("the server is made again and starting: %v", err)
+	}
+	markReady(t, c, serverName)
+	after, err := provisioner.Provision(ctx, shopJobs, Requirements{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Binding.EventKey != before.Binding.EventKey ||
+		after.Binding.SigningKey != before.Binding.SigningKey {
+		t.Error("the retained keys come back with the server, or the retained history is unreadable")
+	}
+	if len(store.deprovisioned) != 0 {
+		t.Fatalf("nothing was destroyed on the way through: %v", store.deprovisioned)
+	}
+}
+
+// A retained server is still owned. The Deployment is gone, so the Secret is
+// what says whose the stores under the name are — which is what stops the
+// name reading as free to a claim of another project that spells it (two
+// projects can arrive at one name, which is why naming.Resolve asks at all).
+func TestARetainedServerIsStillOwnedByItsProject(t *testing.T) {
+	provisioner, c, _ := newSelfHosted(t)
+	ctx := context.Background()
+	_, _ = provisioner.Provision(ctx, shopJobs, Requirements{})
+	markReady(t, c, serverName)
+	instance, _ := provisioner.Provision(ctx, shopJobs, Requirements{})
+	if err := provisioner.Retain(ctx, instance.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	owner, err := provisioner.owner(ctx, serverName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owner.Found || owner.Project != "shop" {
+		t.Fatalf("a retained server belongs to the project that retained it: %+v", owner)
+	}
+	// A name nothing was ever provisioned under is free, which is what makes
+	// the answer above a fact rather than a refusal to answer.
+	free, err := provisioner.owner(ctx, "kitchen-warehouse-jobs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if free.Found {
+		t.Fatalf("a name with nothing under it is free: %+v", free)
 	}
 }
 
@@ -543,5 +640,31 @@ func TestDefaultResolvesBothProviders(t *testing.T) {
 	}
 	if _, ok := cloud.(IdlingProvisioner); ok {
 		t.Error("a branch environment is Inngest's to run, and this platform has no lever on it")
+	}
+}
+
+// The claim table has to be able to say that an inngest claim holds data
+// through this provider and no other, and api/v1alpha1 cannot import this
+// package to spell the name. So the two spellings are held together here,
+// where both are in scope — a provider renamed on one side alone would
+// otherwise leave a self-hosted claim quietly refusing the deletionPolicy
+// #407 gave it.
+func TestTheClaimTableNamesThisProvider(t *testing.T) {
+	if kitchenv1alpha1.ProviderInngestSelfHosted != ProviderSelfHosted {
+		t.Fatalf("the claim table spells this provider %q, this package %q",
+			kitchenv1alpha1.ProviderInngestSelfHosted, ProviderSelfHosted)
+	}
+	claimType, ok := kitchenv1alpha1.LookupClaimType(kitchenv1alpha1.ClaimTypeInngest)
+	if !ok {
+		t.Fatal("the inngest claim type is not in the table")
+	}
+	if claimType.HoldsData {
+		t.Error("an inngest claim through Inngest Cloud holds nothing this platform could destroy")
+	}
+	if !claimType.HoldsDataVia(ProviderSelfHosted) {
+		t.Error("a self-hosted server's Postgres and queue are this platform's own, and take a deletionPolicy")
+	}
+	if claimType.HoldsDataVia(ProviderCloud) {
+		t.Error("through Inngest Cloud the field stays refused")
 	}
 }

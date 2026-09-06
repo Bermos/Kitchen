@@ -599,9 +599,14 @@ spec:
 
 Production's server keeps its state in a CloudNativePG `Cluster` and a Valkey
 of its own, provisioned through the same providers a `postgres` and a `redis`
-claim go through; a preview's keeps its own on that volume. See
+claim go through; a preview's keeps its own on that volume. Because those
+stores are this platform's, a claim through this provider takes a
+`spec.deletionPolicy` where one through `inngest` refuses it: `Retain` (the
+default) stops the server and keeps the `Cluster`, the Valkey and a preview
+server's PersistentVolumeClaim; `Delete` destroys them with every function
+run and queued event on them, and needs `admin`. See
 [docs/api/claims.md](api/claims.md) for what a claim through each of the two
-providers binds, and for what deleting one destroys.
+providers binds, and for what deleting one does.
 
 **`cnpg`, `valkey` and `inngestSelfHosted` are the providers with no
 credential**, and so the ones whose `credentialsSecretRef` may be left out:
@@ -2125,8 +2130,10 @@ by default), and `mode` is `connect`, the only one provisioned: serve mode
 would have Inngest call the application and meet the preview gate. Previews
 each get an Inngest branch environment, found or created by name, bound
 through the account's shared branch keys plus `INNGEST_ENV`, and archived
-(never deleted) with the preview. The type refuses a `deletionPolicy` — an
-app holds no data the platform could destroy — and declares
+(never deleted) with the preview. A claim through *this* provider refuses a
+`deletionPolicy` — an app record at somebody else's account holds no data the
+platform could destroy, and the same claim through `inngestSelfHosted` takes
+one, because there the stores are the platform's — and declares
 `keepsPodsRunning`: the worker's outbound WebSocket never crosses the
 interceptor, so every environment of the project keeps its pods, and the
 `ConnectWorkers` condition counts them against Inngest's per-account cap (3
@@ -2160,6 +2167,13 @@ with its data. Retain is the default because a claim can front a production
 database — destroying data is opted into, never implied. Branches and binding
 Secrets are cleaned up under either policy: they belong to the platform, not to the
 data.
+
+Which types take the field at all is `ClaimType.HoldsData` in
+`api/v1alpha1/resourceclaim_types.go`, and for one type it is the
+*connection's* answer rather than the type's: an `inngest` claim refuses the
+field through Inngest Cloud and takes it through `inngestSelfHosted`, whose
+server keeps its history and its queue on a CloudNativePG `Cluster` and a
+Valkey this platform runs. `Retain` there stops the server and keeps both.
 
 For a database with a volume behind it, that reads concretely. `Delete` deletes
 the CloudNativePG `Cluster`, and cnpg garbage-collects its PVCs with it —

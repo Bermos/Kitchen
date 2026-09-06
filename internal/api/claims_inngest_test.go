@@ -41,6 +41,18 @@ func inngestConnection() *kitchenv1alpha1.Connection {
 	}
 }
 
+// The other provider: an Inngest this platform runs, which holds no
+// credential at all because it provisions with the operator's own account.
+func inngestSelfHostedConnection() *kitchenv1alpha1.Connection {
+	return &kitchenv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: "inngest-own", Namespace: testNamespace},
+		Spec:       kitchenv1alpha1.ConnectionSpec{Provider: inngest.ProviderSelfHosted},
+		Status: kitchenv1alpha1.ConnectionStatus{
+			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityBackgroundJobs},
+		},
+	}
+}
+
 // An inngest claim names its app, the Inngest environment production reads,
 // and the mode; the answer fills the defaults in so nothing reads "unset".
 func TestAnInngestClaimNamesItsAppAndEnvironment(t *testing.T) {
@@ -159,13 +171,92 @@ func TestDeletingAnInngestClaimSaysWhatStays(t *testing.T) {
 		!strings.Contains(outcome, "stay at Inngest") {
 		t.Fatalf("the outcome must say the branches are archived and the app stays: %q", outcome)
 	}
-	// A self-hosted claim's server is this platform's own workload, and the
-	// sentence has to say that deleting the claim destroys it: the type
-	// carries no deletionPolicy, so this is the only warning there is.
+	// A self-hosted claim's server is this platform's own workload, and its
+	// deletionPolicy is what decides — so the sentence is two sentences, one
+	// per policy, and each says what happens to the queue.
 	selfHosted := &kitchenv1alpha1.ResourceClaim{}
 	selfHosted.Status.InstanceID = "kitchen-inngest/kitchen-shop-jobs"
+	selfHosted.Spec.DeletionPolicy = kitchenv1alpha1.ClaimDelete
 	if outcome := (inngestClaimShaper{}).deletionOutcome(selfHosted); !strings.Contains(outcome, "destroyed") ||
 		!strings.Contains(outcome, "Postgres") {
 		t.Fatalf("the outcome must say a self-hosted server and its storage are destroyed: %q", outcome)
 	}
+	selfHosted.Spec.DeletionPolicy = kitchenv1alpha1.ClaimRetain
+	if outcome := (inngestClaimShaper{}).deletionOutcome(selfHosted); !strings.Contains(outcome, "kept") ||
+		!strings.Contains(outcome, "stops") || strings.Contains(outcome, "destroyed") {
+		t.Fatalf("under Retain the server stops and its stores are kept: %q", outcome)
+	}
+}
+
+// The same claim type is two different things, and the deletionPolicy is
+// where the difference bites (#407): through a self-hosted connection the
+// claim provisions a server on a Postgres and a queue of this platform's
+// own, so it takes the field and defaults to Retain like every other type
+// that holds data. Through Inngest Cloud it stays refused, and the refusal
+// now says which connection would take one.
+func TestASelfHostedInngestClaimTakesADeletionPolicy(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), inngestConnection(), inngestSelfHostedConnection())...)
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "jobs", "project": "shop", "connection": "inngest-own", "type": "inngest",
+		  "deletionPolicy": "Delete"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if created := decode[claimView](t, recorder); created.DeletionPolicy != string(kitchenv1alpha1.ClaimDelete) {
+		t.Errorf("the policy asked for is the policy stored: %q", created.DeletionPolicy)
+	}
+
+	// Retain is the default, and it is what a claim that says nothing gets:
+	// the API leaves the field empty and the CRD's default writes it.
+	recorder = h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "jobs-2", "project": "shop", "connection": "inngest-own", "type": "inngest",
+		  "deletionPolicy": "Retain"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	// And through Cloud the sentence is still true, with the other
+	// connection named so that "this type takes no policy" is not half an
+	// answer.
+	recorder = h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "jobs-3", "project": "shop", "connection": "inngest", "type": "inngest",
+		  "deletionPolicy": "Retain"}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	refusal := errorOf(t, recorder.Body.String())
+	for _, want := range []string{"takes no deletionPolicy", inngest.ProviderCloud, inngest.ProviderSelfHosted} {
+		if !strings.Contains(refusal, want) {
+			t.Errorf("the refusal must name %q: %q", want, refusal)
+		}
+	}
+}
+
+// The catalogue is where the dashboard learns which of the two it is
+// offering the policy for, because the answer is the provider's rather than
+// the type's.
+func TestTheCatalogueSaysWhichInngestHoldsData(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/claim-types", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	for _, view := range decode[[]claimTypeView](t, recorder) {
+		if view.Type != kitchenv1alpha1.ClaimTypeInngest {
+			continue
+		}
+		if view.HoldsData {
+			t.Error("the type's own answer is still no: an app record at somebody else's account holds nothing")
+		}
+		for _, provider := range view.Providers {
+			want := provider.Provider == inngest.ProviderSelfHosted
+			if provider.HoldsData != want {
+				t.Errorf("%s holdsData is %v, want %v", provider.Provider, provider.HoldsData, want)
+			}
+		}
+		return
+	}
+	t.Fatal("the catalogue does not list inngest")
 }

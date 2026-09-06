@@ -137,3 +137,67 @@ func TestAnAdminDeletesADeletePolicyClaim(t *testing.T) {
 		t.Fatalf("want 202, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+// selfHostedInngestClaim is the claim #407 is about: an Inngest this
+// platform runs, with a CloudNativePG Cluster and a Valkey behind it. Its
+// instance id is a namespaced object name in this cluster, which is what
+// tells it apart from an Inngest Cloud claim's app ID.
+func selfHostedInngestClaim(name string, policy kitchenv1alpha1.ClaimDeletionPolicy) runtime.Object {
+	return &kitchenv1alpha1.ResourceClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		Spec: kitchenv1alpha1.ResourceClaimSpec{
+			ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: feedProject},
+			ConnectionRef:  &kitchenv1alpha1.LocalObjectReference{Name: "inngest-own"},
+			Type:           kitchenv1alpha1.ClaimTypeInngest,
+			DeletionPolicy: policy,
+		},
+		Status: kitchenv1alpha1.ResourceClaimStatus{
+			InstanceID:   "kitchen-inngest/kitchen-shop-" + name,
+			InstanceName: "kitchen-shop-" + name,
+		},
+	}
+}
+
+// The asymmetry #407 named: the same CloudNativePG Cluster and the same
+// Valkey, guarded two different ways depending on which noun asked for them.
+// Now they are guarded the same way — the policy decides, and the policy
+// that destroys is the admin's.
+func TestDeletingASelfHostedInngestClaimFollowsItsPolicy(t *testing.T) {
+	t.Run("Delete is the admin's", func(t *testing.T) {
+		h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper, inngestSelfHostedConnection(),
+			selfHostedInngestClaim("shop-jobs", kitchenv1alpha1.ClaimDelete))
+
+		recorder := h.do(t, http.MethodDelete, "/api/v1/claims/shop-jobs", "")
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+		refusal := errorOf(t, recorder.Body.String())
+		for _, want := range []string{"deletionPolicy Delete", "needs admin", "Inngest app"} {
+			if !strings.Contains(refusal, want) {
+				t.Errorf("the refusal names the field, the role and what would be destroyed; got %q", refusal)
+			}
+		}
+		if err := h.server.get(t.Context(), "shop-jobs", &kitchenv1alpha1.ResourceClaim{}); err != nil {
+			t.Fatalf("the claim must still be there: %v", err)
+		}
+	})
+
+	t.Run("Retain stays the developer's", func(t *testing.T) {
+		h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper, inngestSelfHostedConnection(),
+			selfHostedInngestClaim("shop-jobs", kitchenv1alpha1.ClaimRetain))
+
+		if recorder := h.do(t, http.MethodDelete, "/api/v1/claims/shop-jobs", ""); recorder.Code != http.StatusAccepted {
+			t.Fatalf("taking away a claim that destroys nothing is the day job: %d %s",
+				recorder.Code, recorder.Body.String())
+		}
+	})
+
+	t.Run("an admin destroys it", func(t *testing.T) {
+		h := asMember(t, kitchenv1alpha1.AccessRoleAdmin, inngestSelfHostedConnection(),
+			selfHostedInngestClaim("shop-jobs", kitchenv1alpha1.ClaimDelete))
+
+		if recorder := h.do(t, http.MethodDelete, "/api/v1/claims/shop-jobs", ""); recorder.Code != http.StatusAccepted {
+			t.Fatalf("want 202, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+	})
+}
