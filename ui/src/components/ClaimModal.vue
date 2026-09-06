@@ -1102,6 +1102,12 @@ async function save() {
               credential scoped to this one bucket, never the store's own. A requirement the store cannot honour
               fails the claim with the reason rather than provisioning something else.
             </p>
+            <p class="text-xs text-muted">
+              A store this platform runs itself adds <span class="font-mono">caCert</span>, the certificate to
+              verify it against, and <span class="font-mono">caCertFile</span> — where every workload reading
+              this claim mounts it. Point <span class="font-mono">AWS_CA_BUNDLE</span> at that key and the client
+              verifies; nothing has to write the certificate to disk.
+            </p>
           </template>
 
           <div v-if="isPostgres" class="grid gap-4 sm:grid-cols-2">
@@ -1138,10 +1144,11 @@ async function save() {
             The secret carries <span class="font-mono">url</span>, <span class="font-mono">host</span>,
             <span class="font-mono">port</span>, <span class="font-mono">user</span>,
             <span class="font-mono">password</span>, <span class="font-mono">database</span> and — for a database
-            this platform runs itself — <span class="font-mono">ca</span>. Every URL asks for
-            <span class="font-mono">sslmode=require</span>, and <span class="font-mono">ca</span> is the
-            certificate to verify it against — <span class="font-mono">pg</span>, the usual JavaScript driver,
-            refuses a connection it cannot check, so hand it the key beside the URL.
+            this platform runs itself — <span class="font-mono">ca</span>, the certificate the connection is
+            verified against. There is nothing to do with it: every workload reading this claim mounts it at
+            <span class="font-mono">/var/run/kitchen/claims/&lt;claim&gt;/ca.crt</span> and the URL names it, so
+            <span class="font-mono">url</span> alone connects
+            <span class="font-mono">sslmode=verify-full</span>.
           </p>
 
           <template v-if="isPostgres">

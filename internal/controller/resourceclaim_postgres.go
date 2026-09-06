@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +34,7 @@ import (
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/cache"
+	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/inngest"
 	"github.com/Bermos/Kitchen/internal/provider/naming"
@@ -121,7 +123,8 @@ func (postgresContract) reconcile(
 
 	claimType, _ := claim.Type()
 	mode := declare(claim, claimType, conn.Spec.Provider)
-	branchErr := r.reconcileBranches(ctx, claim, project.Name, databaseBrancher{provisioner}, appNS,
+	brancher := databaseBrancher{provisioner: provisioner, claim: claim.Name}
+	branchErr := r.reconcileBranches(ctx, claim, project.Name, brancher, appNS,
 		conn.Spec.Provider, mode.Isolated())
 
 	// What this database can be recovered to, and what has been. It runs
@@ -183,7 +186,7 @@ func (postgresContract) finalize(
 	}
 	var brancher claimBrancher
 	if provisioner != nil {
-		brancher = databaseBrancher{provisioner}
+		brancher = databaseBrancher{provisioner: provisioner, claim: claim.Name}
 	}
 
 	for _, branch := range claim.Status.Branches {
@@ -292,7 +295,7 @@ func (r *ResourceClaimReconciler) provision(
 	// rolling between two databases for as long as both ran.
 	if claim.Spec.PromotedRecovery == "" {
 		if err := r.writeBindingSecret(ctx, claim, appNS, secretName,
-			databaseBindingData(instance.Binding)); err != nil {
+			databaseBindingData(claim.Name, instance.Binding)); err != nil {
 			return ctrl.Result{}, true, err
 		}
 	}
@@ -393,7 +396,15 @@ type claimBranchResult struct {
 }
 
 // databaseBrancher is a database provisioner as reconcileBranches sees it.
-type databaseBrancher struct{ provisioner database.Provisioner }
+//
+// It carries the claim's name as well as the provisioner, because a branch's
+// binding is composed the way the shared one is — and what a binding says
+// about its certificate authority is a fact about the claim, not about the
+// database behind it (#456).
+type databaseBrancher struct {
+	provisioner database.Provisioner
+	claim       string
+}
 
 func (b databaseBrancher) createBranch(ctx context.Context, instanceID, name string) (claimBranchResult, error) {
 	branch, err := b.provisioner.CreateBranch(ctx, instanceID, name)
@@ -403,7 +414,7 @@ func (b databaseBrancher) createBranch(ctx context.Context, instanceID, name str
 	return claimBranchResult{
 		ID:         branch.ID,
 		Provenance: string(branch.Provenance),
-		Data:       databaseBindingData(branch.Binding),
+		Data:       databaseBindingData(b.claim, branch.Binding),
 	}, nil
 }
 
@@ -446,7 +457,21 @@ func (b branchIdler) wakeBranch(ctx context.Context, branchID string) error {
 // an authority that vouches for nothing, which is the one thing a binding
 // must never be able to say. A hosted database whose certificate the host's
 // roots already vouch for carries no such key.
-func databaseBindingData(binding database.Binding) map[string][]byte {
+//
+// **A binding that carries an authority names the file it is mounted as**
+// (#456). The provisioner composes the URL knowing only that it has a
+// certificate to hand over, so it asks for `sslmode=require`; the claim
+// contract is what knows the claim's name, and so what the Environment
+// reconciler will mount that certificate as in every workload reading this
+// binding. The two facts are set here in one place, from one condition, which
+// is what makes the invariant hold: the URL names a path exactly when the
+// `ca` key that path is mounted from is there.
+//
+// That is the whole of what turns `require` into `verify-full` for an
+// application nobody has touched — and it is the same value for a preview's
+// own branch as for production's, because the path carries the claim rather
+// than the resource behind it.
+func databaseBindingData(claimName string, binding database.Binding) map[string][]byte {
 	data := map[string][]byte{
 		"url":      []byte(binding.URL),
 		"host":     []byte(binding.Host),
@@ -456,9 +481,38 @@ func databaseBindingData(binding database.Binding) map[string][]byte {
 		"database": []byte(binding.Database),
 	}
 	if binding.CA != "" {
-		data["ca"] = []byte(binding.CA)
+		data[contract.BindingKeyCA] = []byte(binding.CA)
+		data["url"] = []byte(verifiedAgainst(binding.URL, contract.CAFile(claimName)))
 	}
 	return data
+}
+
+// verifiedAgainst points a Postgres URL at the certificate file the platform
+// mounts for this claim: `sslmode=verify-full`, the one mode libpq, pgx and
+// node-postgres all read the same way, and `sslrootcert` naming the mount.
+//
+// A URL that cannot be parsed is handed back untouched. It keeps whatever the
+// provisioner asked for — `require`, for the one provisioner that hands over
+// a certificate — which is the safe half of the invariant to fail on: a
+// binding that verifies less than it could, never one naming a file that is
+// not there.
+func verifiedAgainst(raw, caFile string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	query := parsed.Query()
+	query.Del("sslmode")
+	query.Del("sslrootcert")
+	// Assembled rather than re-encoded, so the path stays legible: Encode
+	// percent-escapes every "/" in it. Every client decodes that again, and
+	// nobody reading their own connection string should have to.
+	verify := "sslmode=verify-full&sslrootcert=" + caFile
+	if rest := query.Encode(); rest != "" {
+		verify = rest + "&" + verify
+	}
+	parsed.RawQuery = verify
+	return parsed.String()
 }
 
 // reconcileBranches keeps the provider-side branches in step with the

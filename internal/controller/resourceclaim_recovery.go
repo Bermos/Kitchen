@@ -238,7 +238,7 @@ func (r *ResourceClaimReconciler) recoverSiblings(
 			continue
 		}
 		if err := r.writeBindingSecret(ctx, claim, appNS,
-			recoverySecretName(claim.Name, request.Name), databaseBindingData(branch.Binding)); err != nil {
+			recoverySecretName(claim.Name, request.Name), databaseBindingData(claim.Name, branch.Binding)); err != nil {
 			return err
 		}
 		recorded.ID = branch.ID

@@ -1578,7 +1578,10 @@ objectStore:
   # in a `caCert` key — an application pod cannot mount the platform's
   # ConfigMap, and no image the platform did not build has the CA in its
   # trust store, so the certificate travels with the binding or the
-  # application cannot verify at all. Nothing here depends on
+  # application cannot verify at all. The platform then mounts it in every
+  # workload reading the claim and publishes the path as `caCertFile`, so a
+  # client is pointed at a file rather than handed a value. Nothing here
+  # depends on
   # `kitchen.tls.mode`: that decides how the platform is published to the
   # internet, and this decides what two pods in one cluster say to each other.
   tls:

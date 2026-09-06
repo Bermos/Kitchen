@@ -1156,7 +1156,10 @@ What it does:
   carries a `caCert` key holding the CA certificate itself, and an S3 client
   configured with it gets the same `verify-full` the platform's own components
   do. It is absent, not empty, for a store whose certificate a public root
-  already vouches for.
+  already vouches for. The platform also *places* it: every workload reading
+  the claim mounts that key at `/var/run/kitchen/claims/<claim>/ca.crt`, and
+  the binding's `caCertFile` key holds that path — so pointing a client at it
+  is one variable (`AWS_CA_BUNDLE`) and no start-up script (#456).
 
 None of it depends on `kitchen.tls.mode`: that decides how the platform is
 published to the internet, and this decides what two pods in one cluster say to
@@ -1871,12 +1874,14 @@ ordering is the telemetry store's, and so is the reason nothing is lost:
    endpoint changed is a changed digest, and the Deployment rolls. It is the
    same mechanism a rotated credential goes through, and it needs no redeploy.
 
-What an application does have to do is *use* `caCert`: a client configured with
-the endpoint alone verifies against the host's roots, which have never heard of
-this CA, and refuses the connection. Its requests fail from the store's restart
-until it is configured to trust the certificate — there is no window in which
-they succeed in the clear. See [the claims
-guide](../../docs/api/claims.md#objectstore) for what the key holds.
+What an application does have to do is *use* the certificate: a client
+configured with the endpoint alone verifies against the host's roots, which
+have never heard of this CA, and refuses the connection. Its requests fail from
+the store's restart until it is configured to trust it — there is no window in
+which they succeed in the clear. The platform mounts the certificate for it and
+publishes the path as the binding's `caCertFile` key, so what is left to do is
+point the client at that path — `AWS_CA_BUNDLE` for the AWS SDKs. See [the
+claims guide](../../docs/api/claims.md#objectstore) for both keys.
 
 `--set objectStore.tls.enabled=false` on the upgrade puts it back the way it
 was, in the clear, and the bindings follow it back on the next reconcile.

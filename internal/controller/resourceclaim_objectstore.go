@@ -30,6 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/naming"
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
@@ -86,7 +87,8 @@ func (objectStoreContract) reconcile(
 
 	claimType, _ := claim.Type()
 	mode := declare(claim, claimType, conn.Spec.Provider)
-	branchErr := r.reconcileBranches(ctx, claim, project.Name, bucketBrancher{provisioner}, appNS,
+	brancher := bucketBrancher{provisioner: provisioner, claim: claim.Name}
+	branchErr := r.reconcileBranches(ctx, claim, project.Name, brancher, appNS,
 		conn.Spec.Provider, mode.Isolated())
 
 	// A binding is written once, when the bucket is provisioned, and what it
@@ -142,7 +144,7 @@ func (objectStoreContract) finalize(
 	}
 	var brancher claimBrancher
 	if provisioner != nil {
-		brancher = bucketBrancher{provisioner}
+		brancher = bucketBrancher{provisioner: provisioner, claim: claim.Name}
 	}
 
 	for _, branch := range claim.Status.Branches {
@@ -209,7 +211,8 @@ func (r *ResourceClaimReconciler) provisionBucket(
 		result, err := r.failed(ctx, claim, "ProvisionFailed", err)
 		return result, true, err
 	}
-	if err := r.writeBindingSecret(ctx, claim, appNS, secretName, instance.Binding.Data()); err != nil {
+	if err := r.writeBindingSecret(ctx, claim, appNS, secretName,
+		bucketBindingData(claim.Name, instance.Binding.Data())); err != nil {
 		return ctrl.Result{}, true, err
 	}
 	claim.Status.InstanceID = instance.ID
@@ -274,7 +277,7 @@ func (r *ResourceClaimReconciler) refreshBindingAddresses(
 	if !ok {
 		return nil
 	}
-	address := addressable.Address().Data()
+	address := bucketBindingData(claim.Name, addressable.Address().Data())
 
 	names := []string{claim.Status.SecretName}
 	for _, branch := range claim.Status.Branches {
@@ -323,14 +326,24 @@ func (r *ResourceClaimReconciler) refreshBindingAddresses(
 
 // bucketBrancher is an object store provisioner as reconcileBranches sees
 // it: a preview's own bucket, created and torn down by name.
-type bucketBrancher struct{ provisioner objectstore.Provisioner }
+type bucketBrancher struct {
+	provisioner objectstore.Provisioner
+	// claim is whose bucket this is, which is what the certificate authority
+	// half of a binding is addressed by — a preview's bucket is verified
+	// against the same file at the same path as production's (#456).
+	claim string
+}
 
 func (b bucketBrancher) createBranch(ctx context.Context, instanceID, name string) (claimBranchResult, error) {
 	branch, err := b.provisioner.CreateBranch(ctx, instanceID, name)
 	if err != nil {
 		return claimBranchResult{}, err
 	}
-	return claimBranchResult{ID: branch.ID, Provenance: string(branch.Provenance), Data: branch.Binding.Data()}, nil
+	return claimBranchResult{
+		ID:         branch.ID,
+		Provenance: string(branch.Provenance),
+		Data:       bucketBindingData(b.claim, branch.Binding.Data()),
+	}, nil
 }
 
 func (b bucketBrancher) deleteBranch(ctx context.Context, instanceID, branchID string) error {
@@ -384,4 +397,31 @@ func (r *ResourceClaimReconciler) bucketProvisionerForClaim(
 		return nil, err
 	}
 	return r.bucketProvisionerFor(ctx, conn)
+}
+
+// bucketBindingData adds the `caCertFile` key to a bucket binding: where the
+// platform mounts the authority the `caCert` key beside it carries (#456).
+//
+// An S3 client is pointed at a certificate by a **file** — `AWS_CA_BUNDLE`,
+// and every SDK's own spelling of it — so a binding that hands one over as a
+// value leaves the application to write it to disk before anything can be
+// verified. The Environment reconciler mounts it instead; this is the half
+// that says where, and it is composed here rather than in the provider
+// package because only the contract knows the claim's name.
+//
+// The key mirrors `caCert` exactly, absence included: a store with no private
+// authority carries no path, and the address refresh — which writes `caCert`
+// present-and-empty so that a store that *lost* one can say so — clears the
+// path the same way.
+func bucketBindingData(claimName string, data map[string][]byte) map[string][]byte {
+	value, ok := data[objectstore.BindingKeyCACert]
+	if !ok {
+		return data
+	}
+	path := ""
+	if len(value) > 0 {
+		path = contract.CAFile(claimName)
+	}
+	data[objectstore.BindingKeyCACertFile] = []byte(path)
+	return data
 }

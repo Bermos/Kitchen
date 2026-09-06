@@ -277,7 +277,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	protected, gate, unprotectable := gatingFor(env, project, kitchen)
 
-	podEnv, effects, requeue, err := r.resolveEnv(ctx, env, release)
+	podEnv, effects, requeue, err := r.resolveEnv(ctx, env, release, appNS)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -356,7 +356,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// and the volumes are resolved, since the run is the environment's own
 	// pod and needs all of it, and deliberately before the first thing that
 	// would move a pod.
-	tasks, err := r.reconcileDeployTasks(ctx, env, project, release, appNS, labels, podEnv, mounts, inits)
+	tasks, err := r.reconcileDeployTasks(ctx, env, project, release, appNS, labels, podEnv, effects.cas, mounts, inits)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -388,8 +388,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, replicas, idle != nil,
-		len(effects.forcesRecreate) > 0 || attachesOnce(webMounts), webMounts,
+	if err := r.applyDeployment(ctx, env, release, project, appNS, labels, podEnv, effects.cas, replicas,
+		idle != nil, len(effects.forcesRecreate) > 0 || attachesOnce(webMounts), webMounts,
 		inits[kitchenv1alpha1.WebProcessName]); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -402,7 +402,8 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// route: a worker is not addressed and a scheduled job is not either. A
 	// preview the platform will not publish still runs whatever its project
 	// asked it to run.
-	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv, mounts, inits, tasks)
+	processes, err := r.reconcileProcesses(ctx, env, project, release, appNS, labels, podEnv, effects.cas,
+		mounts, inits, tasks)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -629,6 +630,12 @@ type claimEffects struct {
 	// this preview and the claim's own reason — the volume's counterpart
 	// to unboundInPreview.
 	unmountedInPreview []string
+	// cas is the certificate authority each claim this environment reads
+	// hands it, if any, and the binding Secret it is projected from. Every
+	// workload the claim's variables reach mounts all of them; see
+	// claimca.go for why the platform places the file rather than the
+	// application (#456).
+	cas []claimCA
 }
 
 // resolveEnv turns the Release's frozen env into container env vars, resolving
@@ -647,11 +654,20 @@ func (r *EnvironmentReconciler) resolveEnv(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
+	// appNS is where the binding Secrets are, which this needs because it
+	// reads them: a binding that carries a certificate authority is mounted
+	// as well as read, and which of them do is a fact about the Secret
+	// rather than about the variable pointing at it (#456).
+	appNS string,
 ) ([]corev1.EnvVar, claimEffects, bool, error) {
 	isPreview := env.Spec.Type == kitchenv1alpha1.EnvironmentPreview
 	var out []corev1.EnvVar
 	effects := claimEffects{}
 	seen := map[string]bool{}
+	// Separate from seen, which is settled before the preview switch below
+	// has decided which binding this environment actually reads — and the
+	// certificate is the binding's, not the claim's.
+	mounted := map[string]bool{}
 	for _, v := range release.Spec.ConfigSnapshot.Env {
 		switch {
 		case v.FromResourceClaim != nil:
@@ -704,6 +720,21 @@ func (r *EnvironmentReconciler) resolveEnv(
 					// resolved what previews get. Its reconciler writes the
 					// mode on its next pass; nothing is guessed until then.
 					return nil, effects, true, nil
+				}
+			}
+			// The authority this binding hands over, mounted whether or not
+			// anything reads the key: the binding names the path it is
+			// mounted at, so a mount that depended on which keys a project
+			// happened to select would let a URL name a file that is not
+			// there.
+			if !mounted[claim.Name] {
+				mounted[claim.Name] = true
+				ca, err := r.claimCAFor(ctx, appNS, claim.Name, secretName)
+				if err != nil {
+					return nil, effects, false, err
+				}
+				if ca != nil {
+					effects.cas = append(effects.cas, *ca)
 				}
 			}
 			out = append(out, corev1.EnvVar{
@@ -867,6 +898,9 @@ func (r *EnvironmentReconciler) applyDeployment(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	// cas are the certificate authorities of the claims this environment
+	// reads, mounted into every workload of it (#456).
+	cas []claimCA,
 	// replicas is how many pods the environment runs when it is not idling
 	// — the Release's count, or one where a volume it mounts attaches to
 	// one pod at a time.
@@ -1001,6 +1035,11 @@ func (r *EnvironmentReconciler) applyDeployment(
 		files := configFilesOf(release, kitchenv1alpha1.WebProcessName)
 		configFilesOnPod(&deploy.Spec.Template.Spec, env.Name, files)
 		applyConfigFilesRevision(&deploy.Spec.Template.ObjectMeta, configFilesRevision(files))
+		// The certificate authority of every claim this environment reads,
+		// at the path its binding names. The web process gets them the way
+		// every other workload of the unit does — a claim is the unit's, not
+		// one workload's.
+		claimCAsOnPod(&deploy.Spec.Template.Spec, cas)
 		// The init container that prepares this process's volumes, last of
 		// the pod's own shape and before the digest below — the plan is part
 		// of the template, so a project that changes what it prepares rolls

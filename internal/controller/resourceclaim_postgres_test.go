@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/provider/contract"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/naming"
 )
@@ -384,8 +386,10 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 			reconcileOnce()
 
 			secret := bindingSecret()
-			Expect(string(secret.Data["url"])).To(Equal(bound.Binding.URL+"?sslmode=require"),
-				"an existing claim must get the binding the platform composes today")
+			Expect(string(secret.Data["url"])).To(Equal(bound.Binding.URL+
+				"?sslmode=verify-full&sslrootcert="+contract.CAFile(claimName)),
+				"an existing claim must get the binding the platform composes today — a certificate "+
+					"it now hands over included, and the URL naming where that is mounted (#456)")
 			Expect(string(secret.Data["ca"])).To(ContainSubstring("BEGIN CERTIFICATE"))
 			Expect(getClaim().Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
 		})
@@ -454,12 +458,11 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 // the one thing a binding must never be able to say — the same rule the
 // object store's caCert follows (#433).
 func TestDatabaseBindingDataCarriesTheCAOnlyWhereThereIsOne(t *testing.T) {
-	with := databaseBindingData(database.Binding{
+	with := databaseBindingData("shop-db", database.Binding{
 		URL: "postgresql://app:pw@host:5432/app?sslmode=require", Host: "host", Port: "5432",
 		User: "app", Password: "pw", Database: "app", CA: "-- the cluster's CA --",
 	})
 	for key, want := range map[string]string{
-		"url":      "postgresql://app:pw@host:5432/app?sslmode=require",
 		"host":     "host",
 		"port":     "5432",
 		"user":     "app",
@@ -472,8 +475,54 @@ func TestDatabaseBindingDataCarriesTheCAOnlyWhereThereIsOne(t *testing.T) {
 		}
 	}
 
-	without := databaseBindingData(database.Binding{URL: "postgresql://neon", Database: "neondb"})
+	without := databaseBindingData("shop-db", database.Binding{URL: "postgresql://neon", Database: "neondb"})
 	if _, ok := without["ca"]; ok {
 		t.Error("a binding with no CA still writes the key, which reads as verifying against nothing")
+	}
+}
+
+// A binding that carries an authority names the file the platform mounts it
+// as, and one that does not keeps the URL exactly as its provider composed it
+// (#456). The two are one condition in one function, which is what stops a
+// URL naming a path nothing mounts.
+func TestDatabaseBindingURLVerifiesAgainstTheMountedCA(t *testing.T) {
+	want := "postgresql://app:pw@host:5432/app?sslmode=verify-full&" +
+		"sslrootcert=/var/run/kitchen/claims/shop-db/ca.crt"
+	with := databaseBindingData("shop-db", database.Binding{
+		URL: "postgresql://app:pw@host:5432/app?sslmode=require", CA: "-- the cluster's CA --",
+	})
+	if got := string(with["url"]); got != want {
+		t.Errorf("url is %q, want %q", got, want)
+	}
+
+	// The path is the claim's, not the resource's, so a preview reading its
+	// own branch finds its certificate where production's binding says it is.
+	branch := databaseBindingData("shop-db", database.Binding{
+		URL: "postgresql://app:pw@shop-db-pr-7:5432/app?sslmode=require", CA: "-- the branch's CA --",
+	})
+	if got := string(branch["url"]); !strings.Contains(got, "sslrootcert=/var/run/kitchen/claims/shop-db/ca.crt") {
+		t.Errorf("a branch's url is %q, want it to name the claim's own mount", got)
+	}
+
+	// An external provider whose certificate the public roots already vouch
+	// for hands over nothing to mount, so nothing about its URL moves.
+	hosted := "postgresql://app:pw@ep-cool.neon.tech/app?sslmode=require"
+	without := databaseBindingData("shop-db", database.Binding{URL: hosted})
+	if got := string(without["url"]); got != hosted {
+		t.Errorf("a binding with no CA had its url rewritten to %q, want %q", got, hosted)
+	}
+}
+
+// Whatever else the provider put in the query survives, and a URL that cannot
+// be parsed keeps what it had — the safe half to fail on, since a binding
+// that verifies less than it could is recoverable and one naming a file that
+// is not there is a connection nobody can make.
+func TestVerifiedAgainstKeepsTheRestOfTheQuery(t *testing.T) {
+	got := verifiedAgainst("postgresql://app@host/app?application_name=shop&sslmode=require", "/ca.crt")
+	if want := "postgresql://app@host/app?application_name=shop&sslmode=verify-full&sslrootcert=/ca.crt"; got != want {
+		t.Errorf("verifiedAgainst is %q, want %q", got, want)
+	}
+	if got := verifiedAgainst("://not a url", "/ca.crt"); got != "://not a url" {
+		t.Errorf("an unparseable url was rewritten to %q", got)
 	}
 }

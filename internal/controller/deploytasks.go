@@ -154,6 +154,10 @@ func (r *EnvironmentReconciler) reconcileDeployTasks(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	// cas are the certificate authorities of the claims this environment
+	// reads. A migration reaches the same database the application does, and
+	// through the same binding — so it verifies the same way (#456).
+	cas []claimCA,
 	mounts []mountedVolume,
 	inits volumeInits,
 ) (deployTaskOutcome, error) {
@@ -199,7 +203,7 @@ func (r *EnvironmentReconciler) reconcileDeployTasks(
 		default:
 			if err := r.advanceDeployTask(ctx, deployTaskContext{
 				env: env, project: project, release: release,
-				appNS: appNS, labels: labels, podEnv: podEnv, mounts: mounts,
+				appNS: appNS, labels: labels, podEnv: podEnv, cas: cas, mounts: mounts,
 				process: process, init: inits[process.Name],
 			}, &status, &out); err != nil {
 				return out, err
@@ -221,6 +225,9 @@ type deployTaskContext struct {
 	appNS   string
 	labels  map[string]string
 	podEnv  []corev1.EnvVar
+	// cas are the claims' certificate authorities, mounted into the run the
+	// way they are mounted into every other workload of the environment.
+	cas     []claimCA
 	mounts  []mountedVolume
 	process kitchenv1alpha1.ProcessSpec
 	// init is what this task prepares inside its volumes before its own
@@ -382,8 +389,8 @@ func (r *EnvironmentReconciler) startDeployTask(
 			},
 		},
 	}
-	podSpec := processPodSpec(
-		task.env.Name, task.release, task.project, task.podEnv, task.process, task.mounts, task.init)
+	podSpec := processPodSpec(task.env.Name, task.release, task.project, task.podEnv, task.cas,
+		task.process, task.mounts, task.init)
 	// Never, not OnFailure: with a backoff limit of zero a restarting
 	// container would retry inside a Job that can never fail, which is a
 	// migration running twice while the deploy waits for a verdict that never
