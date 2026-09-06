@@ -101,9 +101,14 @@ func RedeployRelease(
 		return nil, err
 	}
 	spec := kitchenv1alpha1.ReleaseSpec{
-		ProjectRef:     kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-		BuildRef:       current.Spec.BuildRef,
-		Image:          current.Spec.Image,
+		ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
+		BuildRef:   current.Spec.BuildRef,
+		Image:      current.Spec.Image,
+		// Taken from the release being redeployed for the reason the images
+		// are: what built them is a fact about the past, and starting them
+		// any other way than the release did would make this a different
+		// deployment rather than the same one with a corrected setting.
+		Strategy:       current.Spec.Strategy,
 		Workloads:      current.Spec.Workloads,
 		ConfigSnapshot: snapshot,
 	}

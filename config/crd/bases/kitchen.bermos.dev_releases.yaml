@@ -1659,6 +1659,31 @@ spec:
                 required:
                 - name
                 type: object
+              strategy:
+                description: |-
+                  Strategy is what built that image — `dockerfile` or `buildpacks` —
+                  frozen here because it decides how every workload running it is
+                  *started*, not only how it was made.
+
+                  A Cloud Native Buildpacks image is started by its own launcher: the
+                  ENTRYPOINT is what applies the environment the buildpacks provided,
+                  PATH included, so a container command written in place of it runs in
+                  an environment no buildpack has touched and the process is not found
+                  (#440). The command is handed *to* the launcher instead, and this is
+                  how a deploy knows which of the two an image is.
+
+                  It is on the Release rather than read off the Build because the Build
+                  is retained for a while and a Release is deployed for as long as
+                  somebody may roll back to it: a rollback restores the images this
+                  release declared, and it has to start them the way they were started.
+                  Empty is a release made before this was recorded, and an image this
+                  platform acquired rather than built — both of which are started by
+                  their own entrypoint, which is what they always were.
+                enum:
+                - auto
+                - dockerfile
+                - buildpacks
+                type: string
               workloads:
                 description: |-
                   Workloads are the images the other workloads of this unit were built
@@ -1690,6 +1715,17 @@ spec:
                       description: Name is the process's, as the config snapshot spells
                         it.
                       minLength: 1
+                      type: string
+                    strategy:
+                      description: |-
+                        Strategy is what built this workload's image, frozen for the reason
+                        the Release's own is: it decides how the workload is started (#440).
+                        Empty is a workload whose image this platform acquired rather than
+                        built, and a release made before this was recorded.
+                      enum:
+                      - auto
+                      - dockerfile
+                      - buildpacks
                       type: string
                   required:
                   - image

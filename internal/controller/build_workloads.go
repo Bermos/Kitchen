@@ -297,20 +297,31 @@ func plansUnderway(
 	// was told rather than against a setting that has moved since it
 	// started.
 	web.DockerfileTarget = build.Status.DockerfileTarget
+	// And what actually built it, which for `auto` is only settled by a
+	// detection this reconcile has not run: recomputing the plan would
+	// otherwise observe the image as `auto`, and how a workload is started
+	// depends on the answer (#440).
+	if build.Status.Strategy != "" {
+		web.Strategy = build.Status.Strategy
+	}
 	if len(build.Status.Workloads) == 0 {
 		return buildPlansFor(project, build, registry, web, nil)
 	}
 	plans := make([]buildPlan, 0, len(build.Status.Workloads)+1)
 	plans = append(plans, web)
 	for _, workload := range build.Status.Workloads {
-		// Only what an observation needs. The strategy and the directories
-		// were inputs to a pod spec that has already been written and cannot
-		// be edited, so recording them would be recording something nothing
-		// can act on; the stage is here because a failed build is diagnosed
-		// against it.
+		// Only what an observation needs. The directories were inputs to a
+		// pod spec that has already been written and cannot be edited, so
+		// recording them would be recording something nothing can act on;
+		// the stage is here because a failed build is diagnosed against it,
+		// and the strategy because what this image *was* built with outlives
+		// the build — it is attested with the artifact and frozen onto the
+		// Release, which is what starts the workload the way its image
+		// expects (#440).
 		plans = append(plans, buildPlan{
 			Workload:          workload.Name,
 			Job:               workload.Job,
+			Strategy:          workload.Strategy,
 			DockerfileTarget:  workload.DockerfileTarget,
 			DetectedFramework: workload.DetectedFramework,
 			Repository:        workload.Repository,
@@ -361,6 +372,7 @@ func workloadStatusFor(outcome planOutcome, image string) kitchenv1alpha1.Worklo
 		Name:              outcome.Plan.Workload,
 		Job:               outcome.Plan.Job,
 		Repository:        outcome.Plan.Repository,
+		Strategy:          outcome.Plan.Strategy,
 		DockerfileTarget:  outcome.Plan.DockerfileTarget,
 		DetectedFramework: outcome.Plan.DetectedFramework,
 		Phase:             kitchenv1alpha1.BuildRunning,

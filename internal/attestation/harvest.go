@@ -372,3 +372,72 @@ func (s *Store) ImageUser(ctx context.Context, ref string) (string, error) {
 	}
 	return strings.TrimSpace(config.Config.User), nil
 }
+
+// CNBBuildMetadataLabel is where the Cloud Native Buildpacks lifecycle records
+// what it made of an application, on the image it exported. The half of it
+// that decides whether the image can start itself is `processes`.
+const CNBBuildMetadataLabel = "io.buildpacks.build.metadata"
+
+// cnbBuildMetadata is the part of that label this reads. The document carries
+// the buildpacks that ran, the launcher's version and more besides; none of it
+// is a fact this platform acts on.
+type cnbBuildMetadata struct {
+	Processes []struct {
+		Type string `json:"type"`
+	} `json:"processes"`
+}
+
+// ImageProcessTypes is the process types a Cloud Native Buildpacks image
+// declares — `web`, `worker`, and so on — read off the label its own lifecycle
+// wrote.
+//
+// It exists because an image that declares none cannot start without being
+// told what to run, and says so in a sentence about a launcher nobody typed:
+//
+//	ERROR: failed to launch: determine start command:
+//	when there is no default process a command is required
+//
+// A buildpack that never ran is how that happens — an application built by
+// `node-run-script` alone has its dependencies installed and nothing declared
+// to start — and the pod crash-loops with that on repeat (#440). Reading it
+// here, at the one moment the platform is already talking to the registry
+// about this digest, is what lets a Release be refused with the reason instead.
+//
+// The second return says whether the label was there at all, which is a
+// different answer from "it declared none": an image no lifecycle exported
+// carries no such label, and an image whose buildpacks set no process carries
+// one with an empty list.
+func (s *Store) ImageProcessTypes(ctx context.Context, ref string) ([]string, bool, error) {
+	options := []name.Option{}
+	if s.PlainHTTP {
+		options = append(options, name.Insecure)
+	}
+	reference, err := name.ParseReference(ref, options...)
+	if err != nil {
+		return nil, false, fmt.Errorf("%q is not an image reference: %w", ref, err)
+	}
+	image, err := remote.Image(reference, s.options(ctx)...)
+	if err != nil {
+		return nil, false, fmt.Errorf("the image %s could not be read from its registry: %w", ref, err)
+	}
+	config, err := image.ConfigFile()
+	if err != nil {
+		return nil, false, fmt.Errorf("the config of %s could not be read: %w", ref, err)
+	}
+	raw, found := config.Config.Labels[CNBBuildMetadataLabel]
+	if !found {
+		return nil, false, nil
+	}
+	metadata := cnbBuildMetadata{}
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		return nil, false, fmt.Errorf("the %s label of %s could not be read: %w",
+			CNBBuildMetadataLabel, ref, err)
+	}
+	types := make([]string, 0, len(metadata.Processes))
+	for _, process := range metadata.Processes {
+		if process.Type != "" {
+			types = append(types, process.Type)
+		}
+	}
+	return types, true, nil
+}

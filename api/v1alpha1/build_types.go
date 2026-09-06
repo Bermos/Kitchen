@@ -983,6 +983,24 @@ type BuildStatus struct {
 	// +optional
 	DetectedFramework string `json:"detectedFramework,omitempty"`
 
+	// Strategy is what actually built this image, after `auto` has been
+	// resolved: `dockerfile` or `buildpacks`, never `auto`. It is the web
+	// process's, and the one every workload that declared no build of its
+	// own was built with; each workload's is on its own row below.
+	//
+	// It is recorded at the moment the Job is created, for the reason
+	// DockerfileTarget is — the setting moves and the build does not — and
+	// because it cannot be recomputed afterwards without detecting against
+	// the repository a second time.
+	//
+	// It matters after the build as much as during it: a Cloud Native
+	// Buildpacks image is started by its own launcher, so a command has to
+	// be handed *to* the launcher rather than put in place of it (#440), and
+	// the Release freezes this so that every workload it deploys is started
+	// the way the image it runs expects.
+	// +optional
+	Strategy BuildStrategy `json:"strategy,omitempty"`
+
 	// DockerfileTarget is the stage of the Dockerfile this build was told to
 	// produce, empty for the file's last stage. It is written when the build
 	// job is created, from the commit's own kitchen.json where it declared
@@ -1129,6 +1147,18 @@ type WorkloadBuildStatus struct {
 	// or, for a workload nothing here built, where it was pulled from.
 	// +optional
 	Repository string `json:"repository,omitempty"`
+
+	// Strategy is what built this workload's image, after `auto` has been
+	// resolved. It is empty for a workload this platform did not build,
+	// which was acquired rather than produced.
+	//
+	// It is per workload rather than read off the Build for the reason
+	// DetectedFramework is: a unit is several directories, and a monorepo
+	// whose API is a Dockerfile and whose worker is buildpacks has two
+	// answers. The Release freezes each of them, because how a workload is
+	// started depends on which of the two built the image it runs (#440).
+	// +optional
+	Strategy BuildStrategy `json:"strategy,omitempty"`
 
 	// Reference is what this workload's image was acquired from, as the
 	// project declared it: `docker.io/library/redis:7.4`. Empty for a

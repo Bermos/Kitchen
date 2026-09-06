@@ -270,6 +270,50 @@ var _ = Describe("Environment Controller", func() {
 			Expect(env.Status.History).To(HaveLen(1))
 		})
 
+		// A Cloud Native Buildpacks image is started by its own launcher, which
+		// is what applies the environment the buildpacks provided — so a
+		// command reaches the launcher rather than replacing it (#440). The
+		// case above pins the Dockerfile half: same declaration, written
+		// straight onto the container.
+		It("sends the web process's command through the launcher on a buildpacks image", func() {
+			By("pointing the environment at a release built with buildpacks")
+			buildpacks := &kitchenv1alpha1.Release{
+				ObjectMeta: metav1.ObjectMeta{Name: releaseName + "-cnb", Namespace: namespace},
+				Spec: kitchenv1alpha1.ReleaseSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: "shop-bld-3"},
+					Image:      image,
+					Strategy:   kitchenv1alpha1.BuildStrategyBuildpacks,
+					ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+						Runtime: kitchenv1alpha1.RuntimeSpec{
+							Port:    8080,
+							Command: []string{"node", ".output/server/index.mjs"},
+							Args:    []string{"--port=8080"},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, buildpacks)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, buildpacks))).To(Succeed())
+			})
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: buildpacks.Name}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			reconcileOnce()
+			reconcileOnce()
+
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, deploy)).To(Succeed())
+			container := deploy.Spec.Template.Spec.Containers[0]
+			Expect(container.Command).To(Equal([]string{CNBLauncherPath}),
+				"the launcher is named explicitly, so an image with a default process cannot swallow the command")
+			Expect(container.Args).To(Equal([]string{"node", ".output/server/index.mjs", "--port=8080"}),
+				"the command and its arguments are one argument list handed to the launcher")
+		})
+
 		It("uses preview overlays and a preview hostname for preview environments", func() {
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())

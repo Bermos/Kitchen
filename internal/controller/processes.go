@@ -300,6 +300,13 @@ func processPodSpec(
 	init podInit,
 ) corev1.PodSpec {
 	volumes, volumeMounts := podVolumes(mounts)
+	// How this workload starts, which depends on what built the image it
+	// runs: a command replaces a Dockerfile image's entrypoint, and is handed
+	// to the launcher on a buildpacks one — whose entrypoint is what applies
+	// the environment the command needs to exist at all (#440). The Release
+	// is asked for the strategy the way it is asked for the image, because
+	// the two are facts about the same artifact.
+	command, args := launchCommand(release.StrategyFor(process.Name), process.Command, process.Args)
 	container := corev1.Container{
 		Name: AppContainerName,
 		// The workload's own image where the Release froze one for it, and
@@ -307,8 +314,8 @@ func processPodSpec(
 		// `spec.image` is what makes a rollback restore the exact set of
 		// images that release declared.
 		Image:        release.ImageFor(process.Name),
-		Command:      process.Command,
-		Args:         process.Args,
+		Command:      command,
+		Args:         args,
 		Env:          processEnv(podEnv, process),
 		Resources:    process.Resources,
 		VolumeMounts: volumeMounts,

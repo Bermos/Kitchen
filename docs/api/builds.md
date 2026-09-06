@@ -596,6 +596,22 @@ and one whose inherited `runAsNonRoot` has no uid behind it is failed naming
 that workload alone — the evidence is already per artifact, and this reads it
 against the declaration that applies to it.
 
+A second refusal is made at the same moment and for the same reason. A Cloud
+Native Buildpacks image starts the process type its buildpacks declared, and
+an application whose buildpacks declared none cannot start at all: the
+launcher exits with *"when there is no default process a command is
+required"*, and the pod repeats that for as long as the environment exists. A
+build whose image was made with buildpacks, whose
+`io.buildpacks.build.metadata` label carries no process type, and whose
+workload supplies no `command` is **failed** with `reason:
+NoDefaultProcessType`, naming the workload, the image and the field that
+settles it (#440). It is asked per workload; a Dockerfile image is never
+asked, and a label the platform could not read refuses nothing.
+
+Supplying that `command` works on a buildpacks image because it is handed *to*
+the launcher rather than written in place of it — see
+[CONFIG.md](../CONFIG.md#what-command-means-under-each-strategy).
+
 ### An artifact the platform did not build
 
 A vendored artifact — a project whose source is an image, or one workload of a

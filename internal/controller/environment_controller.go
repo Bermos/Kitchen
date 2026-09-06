@@ -935,6 +935,18 @@ func (r *EnvironmentReconciler) applyDeployment(
 		// that a claim taken away takes its mount with it.
 		volumes, volumeMounts := podVolumes(mounts)
 		deploy.Spec.Template.Spec.Volumes = volumes
+		// How the web process starts. The arguments are the release's, and a
+		// preview's are the preview override where the release declared one:
+		// same commit, same artifact, different flags — which is the whole
+		// point, since the artifact is built once and never rebuilt.
+		//
+		// Whether they replace the image's entrypoint or are handed to it
+		// depends on what built the image: a buildpacks image is started by
+		// its own launcher, and a command written in place of it runs where
+		// no buildpack has put anything on PATH (#440).
+		command, args := launchCommand(
+			release.StrategyFor(kitchenv1alpha1.WebProcessName),
+			runtimeSpec.Command, runtimeSpec.ArgsFor(env.Spec.Type))
 		app := corev1.Container{
 			Name: AppContainerName,
 			// The Release is asked rather than read, so that every workload
@@ -942,13 +954,9 @@ func (r *EnvironmentReconciler) applyDeployment(
 			// never has one of its own, so this is `spec.image` — but a
 			// second spelling of "which image does this workload run" is how
 			// the two answers come to differ.
-			Image: release.ImageFor(kitchenv1alpha1.WebProcessName),
-			// The arguments are the release's, and a preview's are the
-			// preview override where the release declared one: same commit,
-			// same artifact, different flags — which is the whole point,
-			// since the artifact is built once and never rebuilt.
-			Command:      runtimeSpec.Command,
-			Args:         runtimeSpec.ArgsFor(env.Spec.Type),
+			Image:        release.ImageFor(kitchenv1alpha1.WebProcessName),
+			Command:      command,
+			Args:         args,
 			Ports:        []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
 			Env:          podEnv,
 			Resources:    runtimeSpec.Resources,
