@@ -64,6 +64,14 @@ func TestConditionSeverity(t *testing.T) {
 		},
 		want: severityInfo,
 	}, {
+		name: "a serve binding covering the web process alone is a caution, not a fault",
+		cond: metav1.Condition{
+			Type:   controller.ConditionServeCoverage,
+			Status: metav1.ConditionFalse,
+			Reason: controller.ReasonServeCoversWebOnly,
+		},
+		want: severityWarning,
+	}, {
 		name: "an unprotected installation stays a fault",
 		cond: metav1.Condition{
 			Type:   controller.ConditionBackupReady,

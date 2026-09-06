@@ -672,10 +672,26 @@ The platform composes that URL out of each environment's published address
 and `inngest.servePath`, tells the server to poll it, and rolls the server
 when the address moves — an application cannot write a preview's hostname
 down, since it carries a pull request number nothing in the repository has
-heard of. The two things serve mode does not do: a **protected** preview
+heard of. The three things serve mode does not do: a **protected** preview
 answers the server's call with a login page, so a protected preview wants
-connect; and an environment that has not been published yet tells the server
-nothing until the reconcile after it is.
+connect; an environment that has not been published yet tells the server
+nothing until the reconcile after it is; and the URL that is synced is the
+environment's own, which reaches the **web process alone** — a project whose
+`processes` contain a `service` runs workloads that are addressed in their
+own right, and an Inngest handler mounted in one of those is never synced.
+The SDK registers a distinct app per serve endpoint, so those functions are
+registered nowhere and no run reaches them. Connect mode registers every
+workload that starts with the binding, at the cost of a worker connection per
+pod and the project's scale to zero; there is no way yet for a claim to name
+the workloads that serve.
+
+That third one is the only one of the three the claim can see for itself, and
+it does: a serve claim on a project with `service` processes carries
+`ServeCoverage=False` with reason `ServeCoversWebOnly`, naming the workloads
+that are not registered and the trade against connect mode. The API classifies
+it as a caution rather than a fault — the binding is correct and the limit is
+the mode's — and the dashboard draws it beside the claim. It says nothing in
+connect mode, and nothing on a project that is only its web process.
 
 **What the claim can and cannot report.** A self-hosted server publishes no
 app inventory this operator could read, so the `AppConnected` condition is
@@ -683,7 +699,8 @@ app inventory this operator could read, so the `AppConnected` condition is
 server's own dashboard, at the binding's `INNGEST_BASE_URL`. The
 `ConnectWorkers` condition counts environments against Inngest's connection
 cap through Cloud, and through a self-hosted server in serve mode says there
-is no cap to count against.
+is no cap to count against. `ServeCoverage` is the third, above: what a serve
+binding registers, counted against what the unit runs.
 
 **The image is pinned in code**, next to the port numbers the binding is
 built from, the way `internal/controller/addon_keda.go` pins its chart pair —

@@ -24,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -98,6 +99,12 @@ const (
 	// read.
 	condConnectWorkers = "ConnectWorkers"
 
+	// condServeCoverage says how much of the unit a serve binding actually
+	// registers. It exists because serve mode syncs one URL — the
+	// environment's — and a project that runs service workloads of its own
+	// serves Inngest handlers the platform never hands over.
+	condServeCoverage = "ServeCoverage"
+
 	// ConditionAppConnected and ReasonNotReported are exported because the
 	// API classifies them: an Unknown the provider reports deliberately is a
 	// statement about what can be known, not a caution the dashboard should
@@ -106,6 +113,15 @@ const (
 	// ReasonNotReported is a self-hosted Inngest that publishes no app
 	// inventory: whether a worker has connected is not knowable from here.
 	ReasonNotReported = "NotReported"
+
+	// ConditionServeCoverage and ReasonServeCoversWebOnly are exported for
+	// the same table: a serve binding that registers the web process alone
+	// is a documented limit of the mode somebody chose, not a fault of this
+	// installation, so it is a caution rather than an error.
+	ConditionServeCoverage = condServeCoverage
+	// ReasonServeCoversWebOnly is serve mode on a unit that runs service
+	// workloads: one URL was synced, and the services are not on it.
+	ReasonServeCoversWebOnly = "ServeCoversWebOnly"
 )
 
 // inngestContract is the claimContract for type inngest.
@@ -194,6 +210,7 @@ func (inngestContract) reconcile(
 
 	r.reportInngestApp(ctx, claim, provisioner, instance.Environment, cfg.App)
 	reportConnectWorkers(claim, cfg.Mode)
+	reportServeCoverage(claim, project, cfg.Mode, cfg.ServePath)
 
 	reason := fmt.Sprintf("claim %s bound: %s via %s", claim.Name, claim.Spec.Type, conn.Name)
 	if err := r.bind(ctx, claim, conn.Spec.Provider, reason, map[string]any{
@@ -446,6 +463,66 @@ func reportConnectWorkers(claim *kitchenv1alpha1.ResourceClaim, mode string) {
 			"holding the connect worker is one of the account's concurrent worker connections — 3 on Inngest's "+
 			"free plan, 20 on paid plans, at most 10 apps per connection. The Inngest API does not expose the "+
 			"plan's cap, so it is counted here and checked on the account's billing page", environments))
+}
+
+// reportServeCoverage counts what a serve binding synced against what the
+// unit runs, which is the one thing about serve mode the platform knows
+// without reading any inventory.
+//
+// Serve mode hands the server **one** URL per environment — the
+// environment's own address and the claim's serve path — and that address
+// reaches the web process (`spec.runtime`) and nothing else. A project whose
+// `processes` contain a `service` runs further workloads that are addressed
+// in their own right, and an Inngest handler mounted in one of them is never
+// synced: the SDK registers a distinct app per serve endpoint, so its
+// functions do not appear anywhere and no run reaches them.
+//
+// Nothing else would say so. `AppConnected` is `Unknown`/`NotReported`
+// against a self-hosted server by design, the environment is Live and the
+// workloads log that they are serving — which is exactly how six functions
+// come to be missing with every surface reading green (#405). The condition
+// is the claim's own arithmetic and costs a comparison, so it is made where
+// the person choosing the mode is looking.
+//
+// It is a caution, not a fault: serve mode covering the web process alone is
+// what the mode does, and the way out — connect, at the cost of the
+// project's scale to zero — is a trade rather than a repair. The API
+// classifies the reason `warning` for that reason
+// (internal/api/conditions.go).
+func reportServeCoverage(
+	claim *kitchenv1alpha1.ResourceClaim,
+	project *kitchenv1alpha1.Project,
+	mode, servePath string,
+) {
+	var unsynced []string
+	if mode == kitchenv1alpha1.InngestModeServe {
+		for _, process := range project.Spec.Processes {
+			// Addressed() is the whole test: a worker and a scheduled run
+			// have no address for the server to call, so neither could be
+			// synced under any shape of this feature.
+			if process.Addressed() {
+				unsynced = append(unsynced, process.Name)
+			}
+		}
+	}
+	// A connect claim, and a serve claim on a unit that is only its web
+	// process, have nothing to report — and a claim that had something to
+	// report until the mode or the unit changed has to stop saying it.
+	if len(unsynced) == 0 {
+		meta.RemoveStatusCondition(&claim.Status.Conditions, condServeCoverage)
+		return
+	}
+	if servePath == "" {
+		servePath = kitchenv1alpha1.InngestDefaultServePath
+	}
+	setClaimCondition(claim, condServeCoverage, metav1.ConditionFalse, ReasonServeCoversWebOnly,
+		fmt.Sprintf("serve mode syncs one URL per environment — the environment's own address and %s — so the "+
+			"web process is the only workload registered with Inngest. This project also runs %d service "+
+			"workload(s) of its own (%s), and an Inngest handler mounted in one of those is never synced: its "+
+			"functions are registered nowhere and no run reaches them. Connect mode registers every workload "+
+			"that starts with this binding, at the cost of a worker connection per pod and this project's "+
+			"scale to zero; serve mode covers the web process alone until a claim can name the workloads that "+
+			"serve", servePath, len(unsynced), strings.Join(unsynced, ", ")))
 }
 
 // inngestBrancher is an Inngest provisioner as the branch machinery
