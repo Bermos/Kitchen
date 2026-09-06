@@ -681,6 +681,12 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/addons", s.listAddons, operatorOnly("reading the platform's addons")},
 		{"POST /api/v1/addons", s.createAddon, operatorOnly("asking the platform for an addon")},
 		{"GET /api/v1/addons/{name}", s.getAddon, operatorOnly("reading an addon")},
+		// What the platform did to one of its own dependencies, and when. It
+		// is the operator's for the same reason the rest of the surface is,
+		// and it is a read of the platform's own change history rather than
+		// of a project's.
+		{"GET /api/v1/addons/{name}/upgrades", s.listAddonUpgrades,
+			operatorOnly("reading an addon's upgrade history")},
 		{"PATCH /api/v1/addons/{name}", s.patchAddon, operatorOnly("changing an addon")},
 		{"DELETE /api/v1/addons/{name}", s.deleteAddon, operatorOnly("removing an addon")},
 

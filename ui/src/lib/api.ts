@@ -3932,6 +3932,32 @@ export interface AddonWrite {
   namespace?: string;
 }
 
+// One recorded upgrade of one addon: what it moved from, what to, when, and
+// how it went. The operator keeps these after they finish, so the list is the
+// entry's history — an addon's installed versions are singular and current,
+// and an upgrade that broke something would otherwise leave no trace.
+export interface AddonUpgrade {
+  name: string;
+  addon: string;
+  from?: { name: string; version: string }[];
+  to?: { name: string; version: string }[];
+  namespace?: string;
+  jobName?: string;
+  phase?: string;
+  startedAt?: string;
+  completedAt?: string;
+  message?: string;
+}
+
+// An entry's history and how far back it goes. `recordedSince` null means
+// nobody was keeping it — an installation older than the records — which the
+// screen says in those words rather than calling it "never upgraded".
+export interface AddonUpgrades {
+  addon: string;
+  recordedSince: string | null;
+  items: AddonUpgrade[];
+}
+
 export interface AddonDeletion {
   name: string;
   managed: boolean;
@@ -5047,6 +5073,8 @@ export const api = {
     request<Addon>("PATCH", `/addons/${encodeURIComponent(id)}`, body),
   deleteAddon: (id: string) =>
     request<AddonDeletion>("DELETE", `/addons/${encodeURIComponent(id)}`),
+  addonUpgrades: (id: string) =>
+    request<AddonUpgrades>("GET", `/addons/${encodeURIComponent(id)}/upgrades`),
 
   compliance: () => request<Compliance>("GET", "/compliance"),
   complianceInventory: () =>

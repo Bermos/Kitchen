@@ -107,6 +107,68 @@ has no Addon, and that is exactly the row somebody came to the page to click:
 `GET /addons/{name}` is the same shape for one entry, and answers for a
 catalogue entry with no Addon as well as one with.
 
+## The upgrade history
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/addons/keda/upgrades
+```
+
+`installed` is singular and current: when the operator carries a dependency
+forward — which it does whenever its pins move, so that an operator upgrade
+carries its dependencies with it — the previous versions are overwritten, and
+the install job that did it is reaped an hour later. This is what remembers
+instead.
+
+```json
+{"addon": "keda",
+ "recordedSince": "2026-04-01T09:12:04Z",
+ "items": [
+   {"name": "kitchen-keda-install-2-20-2-0-15-0-3f9a1",
+    "addon": "keda",
+    "from": [{"name": "keda", "version": "2.17.2"}, {"name": "keda-add-ons-http", "version": "0.10.0"}],
+    "to": [{"name": "keda", "version": "2.20.2"}, {"name": "keda-add-ons-http", "version": "0.15.0"}],
+    "namespace": "keda",
+    "jobName": "kitchen-keda-install-2-20-2-0-15-0",
+    "phase": "Succeeded",
+    "startedAt": "2026-08-14T04:03:11Z",
+    "completedAt": "2026-08-14T04:05:48Z"}
+]}
+```
+
+Each item is one **attempt**, and it is an `AddonUpgrade` object the operator
+created and never deletes — `PlatformUpdate`'s shape one layer down, for the
+same reason: the list *is* the history. It is opened before the outcome is
+known, so an upgrade that failed is in it too, with `"phase": "Failed"` and
+what the job said; a retry at the same versions is a second item rather than
+an edit of the first.
+
+An entry installs one chart or several, and both sides list all of them in the
+order the entry installs them — KEDA's pair is pinned as a pair and moves as
+one, so it reads as one row and not two.
+
+| Field | What it answers |
+|---|---|
+| `recordedSince` | When this operator started keeping this entry's history. It is written on the first reconcile after the records existed, so an installation upgraded into them has a `recordedSince` *later* than the day the entry was installed — which is how an empty list reads as "nothing since then" rather than "never upgraded". `null` is an entry the operator has not said it yet for: one with no Addon at all, or one it has not reconciled since |
+| `from` | What was installed before. A version left empty is one the platform never recorded, and is empty rather than guessed |
+| `to` | What the upgrade installs |
+| `phase` | `Running`, `Succeeded` or `Failed` |
+| `startedAt` | When the install job was created, not when the record was: the timestamp somebody correlates against is the platform change's, not the observer's |
+| `jobName` | The job that carried it. While it is still there its helm output is in the platform's own logs, under the entry's component |
+
+**An empty list under a `recordedSince` means this entry has not moved since
+then** — which for an installation older than the records is a shorter history
+than the entry's own life, and deliberately so. An empty list under `null` means
+the history is not available at all. Neither is "never upgraded", and the
+dashboard says each in its own words rather than collapsing them into that.
+
+A *first* install is not an upgrade and is not recorded here: there is nothing
+to move from, and the Addon's own `Installed` condition already states it. What
+is recorded is every transition after that, including the reinstall the
+operator performs when an install job from before the version labels leaves the
+installed version unknown — its `from` carries the chart names with empty
+versions, which is the honest shape of "we do not know what was there".
+
 ## Asking for one, and changing your mind
 
 ```sh
@@ -184,5 +246,6 @@ route above, authenticated:
 
 ```sh
 kitchen api GET /addons
+kitchen api GET /addons/keda/upgrades
 kitchen api PATCH /addons/cloudnative-pg -d '{"install": true}'
 ```

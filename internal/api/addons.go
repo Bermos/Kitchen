@@ -19,7 +19,9 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,6 +84,48 @@ type addonView struct {
 	Conditions []conditionView                    `json:"conditions,omitempty"`
 }
 
+// addonUpgradeView is one recorded upgrade of one entry: the transition, when
+// it happened and how it went.
+type addonUpgradeView struct {
+	Name  string `json:"name"`
+	Addon string `json:"addon"`
+
+	// From and To are the versions on either side of it, chart by chart. A
+	// version left empty in From is one the platform never recorded — an
+	// install from before the operator labelled its jobs.
+	From []kitchenv1alpha1.AddonChartStatus `json:"from,omitempty"`
+	To   []kitchenv1alpha1.AddonChartStatus `json:"to,omitempty"`
+
+	Namespace string `json:"namespace,omitempty"`
+
+	// JobName is the install job that carried it. It is reaped an hour after
+	// it finishes, which is why this record exists at all; while it is there,
+	// its helm output is in the platform's own logs.
+	JobName string `json:"jobName,omitempty"`
+
+	Phase       string       `json:"phase,omitempty"`
+	StartedAt   *metav1.Time `json:"startedAt,omitempty"`
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+	Message     string       `json:"message,omitempty"`
+}
+
+// addonUpgradesView is one entry's whole history, and how far back it goes.
+//
+// RecordedSince is the distinction the list alone cannot draw. An empty list
+// under a timestamp means nothing has moved since that instant — and for an
+// installation upgraded into these records, that instant is later than the day
+// the entry was installed, so the honest reading is "nothing since then" and
+// never "never upgraded". An empty list under no timestamp at all is an entry
+// the operator has said nothing about yet: one with no Addon, or one it has
+// not reconciled since. "We could not ask" and "there is nothing there" are
+// different sentences, and answering both as "never upgraded" would assert the
+// one thing nobody knows.
+type addonUpgradesView struct {
+	Addon         string             `json:"addon"`
+	RecordedSince *metav1.Time       `json:"recordedSince"`
+	Items         []addonUpgradeView `json:"items"`
+}
+
 // addonWriteRequest is a create or a change. It carries an entry and a
 // namespace and nothing else, because there is nothing else it may say.
 type addonWriteRequest struct {
@@ -136,6 +180,83 @@ func (s *Server) getAddon(w http.ResponseWriter, req *http.Request) {
 		addon = nil
 	}
 	writeJSON(w, http.StatusOK, s.addonViewOf(entry, addon))
+}
+
+// listAddonUpgrades answers what the platform has done to one entry.
+//
+// It is a separate route rather than a field of the addon, because it is a
+// list that grows with the installation's age while the addon itself is a
+// dozen fields about right now — and because the question it answers is asked
+// at a different moment: not "is this serving" but "what changed under us
+// before everything started failing".
+func (s *Server) listAddonUpgrades(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+	name := req.PathValue("name")
+
+	if _, known := controller.LookupAddonCatalogue(name); !known {
+		writeJSON(w, http.StatusNotFound, errorBody{Error: fmt.Sprintf(
+			"there is no addon named %q: this platform installs %s", name, addonNames())})
+		return
+	}
+
+	view := addonUpgradesView{Addon: name, Items: []addonUpgradeView{}}
+
+	// The addon says how far back its history goes. One that is not there at
+	// all — deleted, or never seeded — has no history and no claim about
+	// having none, which is exactly the null this field carries.
+	addon := &kitchenv1alpha1.Addon{}
+	if err := s.get(ctx, name, addon); err != nil && !apierrors.IsNotFound(err) {
+		s.writeError(w, err)
+		return
+	} else if err == nil {
+		view.RecordedSince = addon.Status.UpgradeHistorySince
+	}
+
+	upgrades := &kitchenv1alpha1.AddonUpgradeList{}
+	if err := s.Client.List(ctx, upgrades, client.InNamespace(s.Namespace)); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	records := make([]kitchenv1alpha1.AddonUpgrade, 0, len(upgrades.Items))
+	for _, upgrade := range upgrades.Items {
+		if upgrade.Spec.Addon == name {
+			records = append(records, upgrade)
+		}
+	}
+	// Newest first: the last thing that changed is the one somebody is
+	// looking for, and the rest is history underneath it.
+	sort.Slice(records, func(i, j int) bool {
+		return addonUpgradeAt(&records[j]).Before(addonUpgradeAt(&records[i]))
+	})
+	for i := range records {
+		view.Items = append(view.Items, newAddonUpgradeView(&records[i]))
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// newAddonUpgradeView is one record as the API answers with it.
+func newAddonUpgradeView(upgrade *kitchenv1alpha1.AddonUpgrade) addonUpgradeView {
+	return addonUpgradeView{
+		Name:        upgrade.Name,
+		Addon:       upgrade.Spec.Addon,
+		From:        upgrade.Spec.From,
+		To:          upgrade.Spec.To,
+		Namespace:   upgrade.Spec.Namespace,
+		JobName:     upgrade.Spec.JobName,
+		Phase:       string(upgrade.Status.Phase),
+		StartedAt:   upgrade.Status.StartedAt,
+		CompletedAt: upgrade.Status.CompletedAt,
+		Message:     upgrade.Status.Message,
+	}
+}
+
+// addonUpgradeAt is when an upgrade started, or failing that when its record
+// was written — a record whose job had not started yet still sorts.
+func addonUpgradeAt(upgrade *kitchenv1alpha1.AddonUpgrade) time.Time {
+	if upgrade.Status.StartedAt != nil {
+		return upgrade.Status.StartedAt.Time
+	}
+	return upgrade.CreationTimestamp.Time
 }
 
 // createAddon asks the platform for a catalogue entry it has no Addon for —

@@ -189,6 +189,19 @@ spec:
                   question that decides whether the dependency is usable, whoever
                   installed it.
                 type: boolean
+              upgradeHistorySince:
+                description: |-
+                  UpgradeHistorySince is when this operator started keeping a record of
+                  this entry's upgrades, as AddonUpgrade objects.
+
+                  It exists so that "no upgrades recorded" and "never upgraded" are
+                  different sentences. An installation whose addon was installed by an
+                  operator from before the records existed has a history that begins
+                  where the operator did, and reporting its empty list as "never
+                  upgraded" would be asserting something nobody can know. Empty is that
+                  older installation, until its first reconcile writes this.
+                format: date-time
+                type: string
             type: object
         type: object
     served: true

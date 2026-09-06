@@ -178,6 +178,7 @@ export type Route =
   | "GET /api/v1/addons"
   | "POST /api/v1/addons"
   | "GET /api/v1/addons/{name}"
+  | "GET /api/v1/addons/{name}/upgrades"
   | "PATCH /api/v1/addons/{name}"
   | "DELETE /api/v1/addons/{name}"
   | "GET /api/v1/connections"
@@ -336,6 +337,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/addons": { kind: "operator", doing: "reading the platform's addons" },
   "POST /api/v1/addons": { kind: "operator", doing: "asking the platform for an addon" },
   "GET /api/v1/addons/{name}": { kind: "operator", doing: "reading an addon" },
+  "GET /api/v1/addons/{name}/upgrades": { kind: "operator", doing: "reading an addon's upgrade history" },
   "PATCH /api/v1/addons/{name}": { kind: "operator", doing: "changing an addon" },
   "DELETE /api/v1/addons/{name}": { kind: "operator", doing: "removing an addon" },
   "GET /api/v1/connections": { kind: "roleShapedBody", doing: "choosing a connection" },
