@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"fmt"
 	"path"
 
 	corev1 "k8s.io/api/core/v1"
@@ -98,6 +99,11 @@ func buildpacksPod(
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	credentials registryCredentialsForPod,
 	gitSecret string,
+	// heapMiB is the platform's build ceiling as a Node heap; zero where
+	// there is no ceiling to take a share of. It is passed in rather than
+	// read here because the ceiling belongs to the Kitchen object and the
+	// same number is what applyBuildResources writes onto this pod.
+	heapMiB int64,
 ) corev1.PodTemplateSpec {
 	// The clone lands the whole repository and the lifecycle is pointed
 	// inside it: the build root is what is built, exactly as it is for the
@@ -145,7 +151,7 @@ func buildpacksPod(
 		if credential != "" {
 			env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: dockerConfigDir})
 		}
-		return append(env, frameworkEnv(detected)...)
+		return append(env, frameworkEnv(detected, heapMiB)...)
 	}
 	// The credential-holding phases mount one docker config each; the two
 	// that run the repository's code mount neither.
@@ -233,8 +239,28 @@ func cnbCacheArgs(cache *kitchenv1alpha1.BuildCacheStatus) []string {
 // framework package sorted it: a Job's pod template cannot be edited after it
 // is created, so the same repository has to produce the same spec every time
 // rather than one that depends on map iteration order.
-func frameworkEnv(detected framework.Framework) []corev1.EnvVar {
-	env := make([]corev1.EnvVar, 0, len(detected.BuildEnv))
+//
+// The heap cap is added here rather than in the framework package because it
+// is not a fact about the repository at all: it is the platform's own build
+// ceiling, which the framework table has no way to know and which an operator
+// can move. It goes on for every framework whose build runs under Node, the
+// static ones included — a Vite bundle is assembled by the same tool a Nuxt
+// server is, and dies the same way.
+//
+// It is a floor rather than the last word: a repository whose own `build`
+// script sets NODE_OPTIONS again overrides it inside the process this
+// configured, which is correct — an application that knows what its build
+// needs should be able to say so. What it replaces is the *absence* of a
+// cap, which nothing in a repository can supply for a build it cannot
+// configure at all.
+func frameworkEnv(detected framework.Framework, heapMiB int64) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, len(detected.BuildEnv)+1)
+	if detected.RunsNode && heapMiB > 0 {
+		env = append(env, corev1.EnvVar{
+			Name:  "NODE_OPTIONS",
+			Value: fmt.Sprintf("--max-old-space-size=%d", heapMiB),
+		})
+	}
 	for _, v := range detected.BuildEnv {
 		env = append(env, corev1.EnvVar{Name: v.Name, Value: v.Value})
 	}

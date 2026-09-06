@@ -2132,7 +2132,7 @@ func mountsBuildContext(mounts []corev1.VolumeMount, readOnly bool) bool {
 func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 	project, build := buildFixtures()
 	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("creds", ""), "kitchen-git-gh")
+		credentialsWithRead("creds", ""), "kitchen-git-gh", 0)
 	clone := pod.Spec.InitContainers[0]
 
 	// The clone reads the token out of the mounted file through an askpass
@@ -2164,7 +2164,7 @@ func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 func TestBuildpacksPodClonesAnonymouslyWithoutAToken(t *testing.T) {
 	project, build := buildFixtures()
 	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("creds", ""), "")
+		credentialsWithRead("creds", ""), "", 0)
 	clone := pod.Spec.InitContainers[0]
 
 	if envValue(clone.Env, "KITCHEN_GIT_TOKEN_FILE") != "" {

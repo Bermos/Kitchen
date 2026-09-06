@@ -100,7 +100,7 @@ func assertCredential(t *testing.T, spec corev1.PodSpec, container, wantVolume s
 func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T) {
 	project, build := buildFixtures()
 	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("kitchen-registry-registry", "kitchen-registry-registry-read"), "").Spec
+		credentialsWithRead("kitchen-registry-registry", "kitchen-registry-registry-read"), "", 0).Spec
 
 	// detect and build run the buildpacks, which run the repository's own
 	// build: `npm install` and whatever its lifecycle scripts do. Neither
@@ -139,7 +139,7 @@ func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T
 func TestBuildpacksPodFallsBackToTheConnectionsOwnCredential(t *testing.T) {
 	project, build := buildFixtures()
 	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("kitchen-registry-ghcr", ""), "").Spec
+		credentialsWithRead("kitchen-registry-ghcr", ""), "", 0).Spec
 
 	for _, volume := range []string{volumeDockerConfig, volumeDockerConfigRead} {
 		if got := volumeSecret(t, pod, volume); got != "kitchen-registry-ghcr" {
