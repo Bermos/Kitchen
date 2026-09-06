@@ -17,6 +17,12 @@ on:
     branches: [main]
   pull_request:
 
+# Stated rather than inherited: nothing in this workflow writes to the
+# repository, and whether the repository's default token is read-only cannot be
+# read from the tree.
+permissions:
+  contents: read
+
 # One run per branch or pull request. A pull request's older runs are
 # superseded by the push that follows them and are cancelled; `main`'s are
 # never cancelled, because they are the last gate before a release and the only
