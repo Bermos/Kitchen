@@ -356,3 +356,55 @@ func TestNuxtFixtureIsStock(t *testing.T) {
 		}
 	}
 }
+
+// TestNuxtFixtureIsLocked holds the one property that decides whether this
+// case is a test of the platform or a test of what npm resolved this morning.
+//
+// It is not a hypothetical. Without a lockfile, `nuxt@3.14.0`'s
+// `nitropack: ^2.10.2` resolved to 2.13.4 — a combination nothing has ever
+// tested — and Nitro's own bundler refused to build it:
+//
+//	[plugin impound] This module cannot be imported in server runtime.
+//	[importing nitropack/node_modules/std-env from nitropack/…/task.mjs]
+//
+// That is a red kind job on a branch that changed nothing, with a message
+// about somebody else's release. So the tree is pinned: `npm ci` installs
+// exactly what was verified, and `nitropack` is named in the manifest too so
+// that a reader can see which pin is load-bearing without reading twelve
+// thousand lines of JSON.
+func TestNuxtFixtureIsLocked(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(nuxtStock, "package-lock.json"))
+	if err != nil {
+		t.Fatalf("the fixture has no lockfile, so the build takes whatever npm resolves "+
+			"on the day: %v", err)
+	}
+	lock := struct {
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
+	}{}
+	if err := json.Unmarshal(raw, &lock); err != nil {
+		t.Fatalf("the fixture's lockfile does not parse: %v", err)
+	}
+	for _, name := range []string{"node_modules/nuxt", "node_modules/nitropack", "node_modules/pg"} {
+		if lock.Packages[name].Version == "" {
+			t.Errorf("the lockfile pins no version of %s", name)
+		}
+	}
+
+	manifest := struct {
+		DevDependencies map[string]string `json:"devDependencies"`
+	}{}
+	pkg, err := os.ReadFile(filepath.Join(nuxtStock, "package.json"))
+	if err != nil {
+		t.Fatalf("reading the fixture's package.json: %v", err)
+	}
+	if err := json.Unmarshal(pkg, &manifest); err != nil {
+		t.Fatalf("the fixture's package.json does not parse: %v", err)
+	}
+	if got, want := manifest.DevDependencies["nitropack"],
+		lock.Packages["node_modules/nitropack"].Version; got != want {
+		t.Errorf("the manifest asks for nitropack %q and the lockfile holds %q: the two "+
+			"have to agree, or `npm ci` refuses the tree", got, want)
+	}
+}
