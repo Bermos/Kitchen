@@ -1,0 +1,10 @@
+{
+  "name": "kitchen-e2e-buildpacks-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The application behind the buildpacks end-to-end case: a Node process with a start script, no dependencies to install and no Dockerfile to build.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

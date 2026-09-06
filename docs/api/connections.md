@@ -75,8 +75,26 @@ rather than refused. An operator gets the connections:
 
 ```json
 {"items": [{"name": "harbor", "provider": "dockerRegistry", "capabilities": ["imageStore"],
-            "createdAt": "2026-03-01T09:00:00Z", "conditions": [{"…": "…"}]}]}
+            "createdAt": "2026-03-01T09:00:00Z", "conditions": [{"…": "…"}],
+            "registry": {"scopedCredentials": false, "message": "this registry issues no credential narrower than the connection's own, so a quality gate and a vulnerability scanner read an artifact with the credential builds push with. Store a read-only credential for this registry as the Secret kitchen-connection-harbor-read to narrow it."}}]}
 ```
+
+`registry` is on a registry connection alone, and it answers one question:
+**what does a pod that only reads an artifact from this registry hold?** A
+build's own third-party code — the buildpacks lifecycle running the
+repository's build — a quality gate and a vulnerability scanner all read
+images, and none of them should be able to push one. Where the platform has a
+read-only credential for the registry they are given it and
+`scopedCredentials` is `true`; where it has none they read with the credential
+builds push with, `scopedCredentials` is `false`, and `message` names the
+Secret that would narrow it. It is a fact about the registry rather than a
+fault — a connection with `false` here is a working connection — so it is a
+field and not a condition, and it never turns the connection red. Supplying
+that Secret is [REGISTRIES.md §The credential a build
+holds](../REGISTRIES.md#the-credential-a-build-holds-and-the-one-third-party-code-holds);
+the bundled registry has one already, from the read-only account the chart
+creates. `kitchen api GET /connections` carries it — there is no
+`kitchen connections` command.
 
 and everybody else gets the picker — the three things a dropdown needs, in a
 shape of its own rather than the one above with fields blanked out:

@@ -215,9 +215,11 @@ func (r *BuildReconciler) runGate(
 		// The credential this artifact is pulled with — the project's
 		// registry for an image the platform built, and the workload's own
 		// Connection for one it did not (empty for a public image, which is
-		// pulled anonymously).
-		credsSecret := pullSecretName(project, project.Spec.Processes, artifact.Workload)
-		if err := r.Create(ctx, gateJob(name, appNS, build, project, gate, credsSecret, artifactRef, r.QualityGateImage)); err != nil {
+		// pulled anonymously) — and the narrower one the gate itself is
+		// given where the registry issues one (#424).
+		credentials := resolveRegistryCredentials(ctx, r.Client, appNS,
+			pullSecretName(project, project.Spec.Processes, artifact.Workload))
+		if err := r.Create(ctx, gateJob(name, appNS, build, project, gate, credentials, artifactRef, r.QualityGateImage)); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				return false, true, nil
 			}
@@ -460,12 +462,21 @@ func (r *BuildReconciler) gateReport(ctx context.Context, appNS, jobName string)
 // as an unprivileged user — it is an image somebody else wrote, running in an
 // application's namespace, and the only thing the platform wants from it is a
 // file.
+//
+// The credential is the part of that sentence #424 found untrue. The gate
+// reads an image; the publisher writes the gate's findings back to the
+// artifact's repository as a blob. They are two containers, so they hold two
+// credentials: the publisher the Connection's own, the gate one that cannot
+// push where the registry issues one. Where it issues none they are the same
+// credential and the pod spec says so — see the Connection's status, which is
+// where the platform reports that it could not narrow this.
 func gateJob(
 	name, appNS string,
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	gate kitchenv1alpha1.QualityGateSpec,
-	credsSecret, artifactRef, publisherImage string,
+	credentials registryCredentialsForPod,
+	artifactRef, publisherImage string,
 ) *batchv1.Job {
 	labels := map[string]string{
 		labelProject:      project.Name,
@@ -484,10 +495,11 @@ func gateJob(
 		{Name: "KITCHEN_COMMIT", Value: build.Spec.Git.SHA},
 		{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
 	}
-	mounts := []corev1.VolumeMount{
-		dockerConfigMount(),
-		{Name: "findings", MountPath: gateFindingsDir},
-	}
+	findings := corev1.VolumeMount{Name: "findings", MountPath: gateFindingsDir}
+	// The gate reads with the credential that cannot push; the publisher
+	// writes with the one that can.
+	gateMounts := []corev1.VolumeMount{readDockerConfigMount(), findings}
+	publishMounts := []corev1.VolumeMount{dockerConfigMount(), findings}
 	unprivileged := &corev1.SecurityContext{
 		RunAsUser:                ptr.To(int64(1000)),
 		RunAsNonRoot:             ptr.To(true),
@@ -522,7 +534,7 @@ func gateJob(
 						Image:           gate.Image,
 						Args:            gate.Args,
 						Env:             environment,
-						VolumeMounts:    mounts,
+						VolumeMounts:    gateMounts,
 						SecurityContext: unprivileged,
 					}},
 					Containers: []corev1.Container{{
@@ -530,11 +542,12 @@ func gateJob(
 						Image:           publisherImage,
 						Command:         []string{"/qualitygate"},
 						Env:             environment,
-						VolumeMounts:    mounts,
+						VolumeMounts:    publishMounts,
 						SecurityContext: unprivileged,
 					}},
 					Volumes: []corev1.Volume{
-						dockerConfigVolume(credsSecret),
+						dockerConfigVolume(credentials.Push),
+						readDockerConfigVolume(credentials.Read),
 						{
 							Name:         "findings",
 							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},

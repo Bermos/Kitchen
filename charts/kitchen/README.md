@@ -1046,6 +1046,25 @@ It is not a value, because there is no installation that wants it off: the
 setting admits Docker's media types **in addition to** OCI's, and the registry
 exists to be pushed to by these two builders.
 
+### Its two accounts
+
+zot authenticates against an htpasswd file with two lines in it, because a
+build pod runs code the platform did not write.
+
+- `registry.auth.username` (`kitchen`) may push. It is the account the seeded
+  Connection carries, and the one the build's export phase and the kubelet use.
+- `registry.auth.readUsername` (`kitchen-read`) may read every repository and
+  write none. It is what a buildpack running the repository's own build, a
+  quality gate and a vulnerability scanner are given, so that a credential
+  such a container can read off its own filesystem cannot push over another
+  project's tags (#424).
+
+The access control is what makes the second one real: `read` is the default
+policy for an authenticated account, and writing is granted to the first
+account by name. Both passwords are generated on install and read back from
+the existing Secret on upgrade — rotating either would lock builds or scans
+out of a registry that has not changed.
+
 ### The seeded connection
 
 The operator creates the Connection **once** and remembers in
@@ -2150,8 +2169,10 @@ kubectl delete namespace kitchen-system
 | `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
 | `registry.enabled` | `true` | Run the bundled image registry. See [The bundled registry](#the-bundled-registry). |
 | `registry.image.repository` / `.tag` | `ghcr.io/project-zot/zot` / `v2.1.20` | |
-| `registry.auth.username` | `kitchen` | The registry's one account. |
+| `registry.auth.username` | `kitchen` | The account that may push. The platform's own, and nothing a build's third-party code is given. |
 | `registry.auth.password` | `""` | Generated on install, preserved on upgrade. |
+| `registry.auth.readUsername` | `kitchen-read` | The account that may only read: what a buildpack script, a quality gate or a scanner is given. |
+| `registry.auth.readPassword` | `""` | Generated on install, preserved on upgrade. |
 | `registry.host` | `""` | Defaults to `registry.<baseDomain>`. Also the prefix images are pushed under. |
 | `registry.service.type` / `.port` | `ClusterIP` / `5000` | |
 | `registry.persistence.enabled` | `true` | PVC for the image store. Every image dies with the pod without it. |

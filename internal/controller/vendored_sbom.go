@@ -221,9 +221,10 @@ func (r *BuildReconciler) observeSBOM(
 	job := &batchv1.Job{}
 	switch err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: name}, job); {
 	case apierrors.IsNotFound(err):
-		credsSecret := pullSecretName(project, project.Spec.Processes, artifact.Workload)
+		credentials := resolveRegistryCredentials(ctx, r.Client, appNS,
+			pullSecretName(project, project.Spec.Processes, artifact.Workload))
 		created := observedSBOMJob(
-			name, appNS, build, project, kitchen, credsSecret, artifactRef, generator, r.QualityGateImage)
+			name, appNS, build, project, kitchen, credentials, artifactRef, generator, r.QualityGateImage)
 		if err := r.Create(ctx, created); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				return false, true, nil
@@ -436,13 +437,17 @@ func vendorSBOMGenerator(kitchen *kitchenv1alpha1.Kitchen) string {
 // is the artifact, a credential to pull it with, and nothing else — no service
 // account token, no cluster access, an unprivileged user. It is an image
 // somebody else wrote, running in an application's namespace, and the only
-// thing the platform wants from it is a file.
+// thing the platform wants from it is a file. The credential it pulls with is
+// one that cannot push wherever the registry issues one (#424); the publisher
+// beside it holds the one that can, because writing the document back is what
+// it is for.
 func observedSBOMJob(
 	name, appNS string,
 	build *kitchenv1alpha1.Build,
 	project *kitchenv1alpha1.Project,
 	kitchen *kitchenv1alpha1.Kitchen,
-	credsSecret, artifactRef, generator, publisherImage string,
+	credentials registryCredentialsForPod,
+	artifactRef, generator, publisherImage string,
 ) *batchv1.Job {
 	labels := map[string]string{
 		labelProject:      project.Name,
@@ -467,11 +472,15 @@ func observedSBOMJob(
 		{Name: "HOME", Value: observedSBOMCacheDir},
 		{Name: "XDG_CACHE_HOME", Value: observedSBOMCacheDir},
 	}
-	mounts := []corev1.VolumeMount{
-		dockerConfigMount(),
+	scratch := []corev1.VolumeMount{
 		{Name: "findings", MountPath: gateFindingsDir},
 		{Name: "cache", MountPath: observedSBOMCacheDir},
 	}
+	// The generator unpacks the image and the publisher writes the document
+	// it produced back to the artifact's repository, so only the second of
+	// them needs a credential that can write (#424).
+	generatorMounts := append([]corev1.VolumeMount{readDockerConfigMount()}, scratch...)
+	publishMounts := append([]corev1.VolumeMount{dockerConfigMount()}, scratch...)
 	unprivileged := &corev1.SecurityContext{
 		RunAsUser:                ptr.To(int64(1000)),
 		RunAsNonRoot:             ptr.To(true),
@@ -508,7 +517,7 @@ func observedSBOMJob(
 						// and the path is a constant.
 						Args:            []string{artifactRef, "-o", "spdx-json=" + observedSBOMFile},
 						Env:             environment,
-						VolumeMounts:    mounts,
+						VolumeMounts:    generatorMounts,
 						SecurityContext: unprivileged,
 					}},
 					Containers: []corev1.Container{{
@@ -516,11 +525,12 @@ func observedSBOMJob(
 						Image:           publisherImage,
 						Command:         []string{"/qualitygate"},
 						Env:             environment,
-						VolumeMounts:    mounts,
+						VolumeMounts:    publishMounts,
 						SecurityContext: unprivileged,
 					}},
 					Volumes: []corev1.Volume{
-						dockerConfigVolume(credsSecret),
+						dockerConfigVolume(credentials.Push),
+						readDockerConfigVolume(credentials.Read),
 						{
 							Name:         "findings",
 							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},

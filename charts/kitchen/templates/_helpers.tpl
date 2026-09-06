@@ -768,31 +768,69 @@ around: with no explicit value and nothing to look up it ends in
 {{- end }}
 
 {{/*
-The htpasswd line zot authenticates against — bcrypt, which is the only hash
-it reads. Hashing is salted, so a fresh hash every render would roll the
-Secret and restart the registry on every upgrade; the stored line is reused
-whenever it still describes the same username and password.
+The htpasswd file zot authenticates against — bcrypt, which is the only hash
+it reads, one line per account. Hashing is salted, so a fresh hash every
+render would roll the Secret and restart the registry on every upgrade; each
+account's stored line is reused whenever it still describes the same username
+and password.
 
-Takes the password in a dict (`ctx`, `password`) rather than deriving it. A
-second call to `kitchen.registryPassword` would hash a *different* password
-than the one the Secret publishes, leaving the registry to reject the only
-credential the platform has. That fails on a first install alone — on upgrade
-the lookup makes both calls agree, which is what hid it in 0.8.0.
+Takes each password in the dict (`ctx`, `password`, `readPassword`) rather
+than deriving them. A second call to `kitchen.registryPassword` would hash a
+*different* password than the one the Secret publishes, leaving the registry
+to reject the only credential the platform has. That fails on a first install
+alone — on upgrade the lookup makes both calls agree, which is what hid it in
+0.8.0.
 */}}
 {{- define "kitchen.registryHtpasswd" -}}
 {{- $ctx := .ctx }}
+{{- $lines := list }}
+{{- $lines = append $lines (include "kitchen.registryHtpasswdLine" (dict "ctx" $ctx "username" $ctx.Values.registry.auth.username "password" .password "storedKey" "password")) }}
+{{- $lines = append $lines (include "kitchen.registryHtpasswdLine" (dict "ctx" $ctx "username" $ctx.Values.registry.auth.readUsername "password" .readPassword "storedKey" "readPassword")) }}
+{{- join "\n" $lines }}
+{{- end }}
+
+{{/*
+One account's line, reused from the stored file when the account is unchanged.
+The stored file is searched by username rather than by position, so an
+installation upgrading from a file with only the pushing account's line in it
+keeps that line and gains the read-only one.
+*/}}
+{{- define "kitchen.registryHtpasswdLine" -}}
+{{- $ctx := .ctx }}
+{{- $username := .username }}
 {{- $password := .password }}
-{{- $username := $ctx.Values.registry.auth.username }}
 {{- $existing := lookup "v1" "Secret" $ctx.Release.Namespace (include "kitchen.registrySecretName" $ctx) }}
 {{- $data := default dict (default dict $existing).data }}
 {{- $stored := "" }}
-{{- if index $data "htpasswd" }}{{- $stored = index $data "htpasswd" | b64dec }}{{- end }}
-{{- $sameUser := and (index $data "username") (eq (index $data "username" | b64dec) $username) }}
-{{- $samePassword := and (index $data "password") (eq (index $data "password" | b64dec) $password) }}
-{{- if and $stored $sameUser $samePassword }}
+{{- if index $data "htpasswd" }}
+{{- range splitList "\n" (index $data "htpasswd" | b64dec) }}
+{{- if hasPrefix (printf "%s:" $username) . }}{{- $stored = . }}{{- end }}
+{{- end }}
+{{- end }}
+{{- $samePassword := and (index $data .storedKey) (eq (index $data .storedKey | b64dec) $password) }}
+{{- if and $stored $samePassword }}
 {{- $stored }}
 {{- else }}
 {{- htpasswd $username $password }}
+{{- end }}
+{{- end }}
+
+{{/*
+The read-only account's password, kept stable across upgrades the way the
+pushing account's is: rotating it would leave a gate or a scanner
+authenticating with something the registry no longer knows. Evaluate this
+ONCE per render, for the reason above it.
+*/}}
+{{- define "kitchen.registryReadPassword" -}}
+{{- if .Values.registry.auth.readPassword }}
+{{- .Values.registry.auth.readPassword }}
+{{- else }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "kitchen.registrySecretName" .) }}
+{{- if and $existing $existing.data (index (default dict $existing.data) "readPassword") }}
+{{- index $existing.data "readPassword" | b64dec }}
+{{- else }}
+{{- randAlphaNum 32 }}
+{{- end }}
 {{- end }}
 {{- end }}
 

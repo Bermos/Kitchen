@@ -497,7 +497,9 @@ var _ = Describe("Build Controller", func() {
 			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
 			pod := job.Spec.Template.Spec
 
-			Expect(pod.InitContainers).To(HaveLen(1))
+			// The clone, then the lifecycle's four leading phases; the fifth
+			// is the pod's own container, because it is the one that pushes.
+			Expect(pod.InitContainers).To(HaveLen(5))
 			clone := pod.InitContainers[0]
 			Expect(clone.Image).To(Equal(GitCloneImage))
 			// The repository and the commit are values, not script text: a
@@ -508,19 +510,25 @@ var _ = Describe("Build Controller", func() {
 			Expect(clone.Env).To(ContainElement(corev1.EnvVar{Name: "KITCHEN_GIT_SHA", Value: sha}))
 			Expect(strings.Join(clone.Command, " ")).NotTo(ContainSubstring("acme/shop"))
 
+			Expect(phaseNames(pod.InitContainers[1:])).To(Equal(
+				[]string{"analyzer", "detector", "restorer", "builder"}))
+
 			Expect(pod.Containers).To(HaveLen(1))
-			creator := pod.Containers[0]
-			Expect(creator.Image).To(Equal(BuildpacksBuilderImage))
-			Expect(creator.Command).To(Equal([]string{"/cnb/lifecycle/creator"}))
-			Expect(creator.Args).To(ContainElement("-app=/workspace/source/apps/shop"))
-			Expect(creator.Args).To(ContainElement("-report=/dev/termination-log"))
-			Expect(creator.Args[len(creator.Args)-1]).To(Equal(wantTag))
-			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "DOCKER_CONFIG", Value: dockerConfigDir}))
+			exporter := pod.Containers[0]
+			Expect(exporter.Name).To(Equal("exporter"))
+			Expect(exporter.Image).To(Equal(BuildpacksBuilderImage))
+			Expect(exporter.Command).To(Equal([]string{"/cnb/lifecycle/exporter"}))
+			Expect(exporter.Args).To(ContainElement("-app=/workspace/source/apps/shop"))
+			Expect(exporter.Args).To(ContainElement("-report=/dev/termination-log"))
+			Expect(exporter.Args[len(exporter.Args)-1]).To(Equal(wantTag))
+			Expect(exporter.Env).To(ContainElement(corev1.EnvVar{Name: "DOCKER_CONFIG", Value: dockerConfigDir}))
 			// The lifecycle has no default platform API, and will not start
-			// without being told one.
-			Expect(creator.Env).To(ContainElement(corev1.EnvVar{
-				Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI,
-			}))
+			// without being told one — in any of its phases.
+			for _, phase := range append(pod.InitContainers[1:], exporter) {
+				Expect(phase.Env).To(ContainElement(corev1.EnvVar{
+					Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI,
+				}), phase.Name)
+			}
 
 			// The lifecycle needs none of the privileges BuildKit does: it
 			// enters as the builder image's own unprivileged user and stays
@@ -1937,7 +1945,7 @@ func TestDockerfilePodAsksForNoGitSecretWithoutOne(t *testing.T) {
 func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 	project, build := buildFixtures()
 	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		"creds", "kitchen-git-gh")
+		credentialsWithRead("creds", ""), "kitchen-git-gh")
 	clone := pod.Spec.InitContainers[0]
 
 	// The clone reads the token out of the mounted file through an askpass
@@ -1958,16 +1966,18 @@ func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 		t.Error("the pod does not carry the git credential volume")
 	}
 	// The lifecycle builds the checkout; it has no business holding the
-	// credential that fetched it.
-	if mountsGitCredential(pod.Spec.Containers[0].VolumeMounts) {
-		t.Error("the creator container mounts the git credential")
+	// credential that fetched it — in any of its phases.
+	for _, phase := range append(pod.Spec.InitContainers[1:], pod.Spec.Containers[0]) {
+		if mountsGitCredential(phase.VolumeMounts) {
+			t.Errorf("the %s container mounts the git credential", phase.Name)
+		}
 	}
 }
 
 func TestBuildpacksPodClonesAnonymouslyWithoutAToken(t *testing.T) {
 	project, build := buildFixtures()
 	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		"creds", "")
+		credentialsWithRead("creds", ""), "")
 	clone := pod.Spec.InitContainers[0]
 
 	if envValue(clone.Env, "KITCHEN_GIT_TOKEN_FILE") != "" {

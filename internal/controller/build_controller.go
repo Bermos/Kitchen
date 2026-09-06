@@ -123,6 +123,14 @@ const (
 	// volumeGitCredential is that mount's volume, named in both pod shapes.
 	volumeGitCredential = "git-credential"
 
+	// volumeDockerConfig is the credential that may push, and
+	// volumeDockerConfigRead the one that may not. A pod carries both and
+	// each container mounts one of them: which credential a container holds
+	// is the whole of #424, and a volume it does not mount is a file it
+	// cannot read.
+	volumeDockerConfig     = "docker-config"
+	volumeDockerConfigRead = "docker-config-read"
+
 	// terminationLogPath is where a builder leaves what the reconciler needs
 	// back from it — the digest of the image it pushed. Kubernetes surfaces
 	// the file as the container's termination message, so nothing has to be
@@ -430,6 +438,17 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		return r.pending(ctx, build, "RegistryCredentialsMissing", err)
 	}
+	// And the credential that cannot push, where the registry issues one. It
+	// is what the phases of a build that run the repository's own code are
+	// given, and what a gate or a scan over the artifact reads with later
+	// (#424). A registry that issues none is not a failed build: the
+	// Connection's status is where that is reported, and the build carries
+	// the credential it always did.
+	readSecret, err := r.syncRegistryReadSecret(ctx, registryConn, build.Namespace, appNS)
+	if err != nil {
+		return r.pending(ctx, build, "RegistryCredentialsMissing", err)
+	}
+	credentials := credentialsWithRead(credsSecret, readSecret)
 	// A repository nobody can read anonymously needs the source Connection's
 	// token to clone, and one anybody can read needs nothing. Which of the
 	// two this is cannot be known from here — GitHub answers a private
@@ -537,7 +556,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				planDetected = workloadFrameworks[plan.Workload]
 			}
 			if err := r.createJob(ctx, build, project, plan, planDetected, planCacheStatus,
-				builds, appNS, credsSecret, gitCreds.Secret); err != nil {
+				builds, appNS, credentials, gitCreds.Secret); err != nil {
 				return ctrl.Result{}, err
 			}
 			log.Info("build job created",
@@ -957,11 +976,13 @@ func (r *BuildReconciler) createJob(
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	builds kitchenv1alpha1.BuildsSpec,
-	appNS, credsSecret, gitSecret string,
+	appNS string,
+	credentials registryCredentialsForPod,
+	gitSecret string,
 ) error {
-	template := dockerfilePod(project, build, plan, cache, credsSecret, gitSecret, r.platformAttestation(ctx))
+	template := dockerfilePod(project, build, plan, cache, credentials.Push, gitSecret, r.platformAttestation(ctx))
 	if plan.Strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		template = buildpacksPod(project, build, plan, detected, cache, credsSecret, gitSecret)
+		template = buildpacksPod(project, build, plan, detected, cache, credentials, gitSecret)
 	}
 	// What a build may take, from the platform object rather than from
 	// anything the commit or the project can say. It is applied here rather
@@ -1221,14 +1242,36 @@ func buildRootDir(project *kitchenv1alpha1.Project) string {
 // are the same thing to whatever reads the config and only one of them lets
 // the pod start.
 func dockerConfigVolume(credsSecret string) corev1.Volume {
+	return namedDockerConfigVolume(volumeDockerConfig, credsSecret)
+}
+
+func dockerConfigMount() corev1.VolumeMount {
+	return corev1.VolumeMount{Name: volumeDockerConfig, MountPath: dockerConfigDir, ReadOnly: true}
+}
+
+// readDockerConfigVolume and readDockerConfigMount are the same thing for the
+// containers that only read: a second volume, so that a container running
+// code the platform did not write mounts the credential that cannot push and
+// never sees the one that can (#424). It lands on the same path, so
+// DOCKER_CONFIG is the one value everywhere and no builder is configured
+// differently for it.
+func readDockerConfigVolume(credsSecret string) corev1.Volume {
+	return namedDockerConfigVolume(volumeDockerConfigRead, credsSecret)
+}
+
+func readDockerConfigMount() corev1.VolumeMount {
+	return corev1.VolumeMount{Name: volumeDockerConfigRead, MountPath: dockerConfigDir, ReadOnly: true}
+}
+
+func namedDockerConfigVolume(name, credsSecret string) corev1.Volume {
 	if credsSecret == "" {
 		return corev1.Volume{
-			Name:         "docker-config",
+			Name:         name,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		}
 	}
 	return corev1.Volume{
-		Name: "docker-config",
+		Name: name,
 		VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 			SecretName: credsSecret,
 			Items: []corev1.KeyToPath{{
@@ -1237,10 +1280,6 @@ func dockerConfigVolume(credsSecret string) corev1.Volume {
 			}},
 		}},
 	}
-}
-
-func dockerConfigMount() corev1.VolumeMount {
-	return corev1.VolumeMount{Name: "docker-config", MountPath: dockerConfigDir, ReadOnly: true}
 }
 
 // gitCredentialVolume mounts the token a build clones a private repository
@@ -2047,6 +2086,45 @@ func (r *BuildReconciler) syncRegistrySecret(
 		return "", err
 	}
 	name := registrySecretName(conn.Name)
+	dst := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
+		if dst.CreationTimestamp.IsZero() {
+			dst.Type = src.Type
+		}
+		dst.Labels = map[string]string{labelManagedByKey: labelManagedByValue}
+		dst.Data = src.Data
+		return nil
+	})
+	return name, err
+}
+
+// syncRegistryReadSecret copies the read-only credential beside the registry
+// Connection's own into the application namespace, so a container running
+// third-party code can mount a credential that cannot push (#424).
+//
+// It returns "" when the registry issues no such credential, which is the
+// common case for a registry the platform does not run. That is not an error
+// — the Connection's status is where it is reported — but a stale copy is:
+// a credential the platform stopped writing must stop being handed out, so
+// the copy is removed when the source is gone.
+func (r *BuildReconciler) syncRegistryReadSecret(
+	ctx context.Context,
+	conn *kitchenv1alpha1.Connection,
+	srcNS, appNS string,
+) (string, error) {
+	name := readCredentialSecretName(registrySecretName(conn.Name))
+	src := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: srcNS, Name: readCredentialSecretName(conn.Spec.CredentialsSecretRef.Name)}
+	if err := r.Get(ctx, key, src); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return "", err
+		}
+		stale := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
+		if err := r.Delete(ctx, stale); err != nil && !apierrors.IsNotFound(err) {
+			return "", err
+		}
+		return "", nil
+	}
 	dst := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
 		if dst.CreationTimestamp.IsZero() {

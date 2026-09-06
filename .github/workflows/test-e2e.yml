@@ -103,23 +103,31 @@ jobs:
   # does not arrive before a deploy task has finished, and that the stage
   # `dockerfileTarget` names is the stage that was pushed.
   #
-  # So this is the one job in the tree that runs a real build: BuildKit fetches
+  # So this is the one job in the tree that runs real builds: BuildKit fetches
   # this repository at the commit under test, builds the fixture under
   # test/fixtures/multi-workload twice — once with no target and once at the
   # stage the unit's `api` workload names — pushes both to a registry beside
   # the cluster, and the operator releases and deploys the set.
+  #
+  # And it is where the *other* build strategy is run at all (#424). A second
+  # project points at test/fixtures/buildpacks-node, which has no Dockerfile:
+  # the Cloud Native Buildpacks lifecycle decides what that directory is,
+  # builds it as five containers, and pushes what it built. Nothing else in
+  # this repository executes that lifecycle — every other test of it reads a
+  # pod spec — so a phase that cannot resolve its inputs is green everywhere
+  # until here.
   #
   # Two pieces of scaffolding make that possible on kind, and both are the test
   # cluster's rather than the platform's:
   #
   #   - **The registry speaks plain HTTP.** A registry with a private
   #     certificate would need its CA in the builder, in the node's container
-  #     runtime and in the operator. A plain-HTTP one needs the builder told
-  #     so once — BuildKit reads that from buildkitd.toml, so the pinned
-  #     builder image is rebuilt with one and loaded into the node under its
-  #     own name — and containerd told so once, which is a hosts.toml. The
-  #     operator needs nothing: `http://` on a registry Connection is a shape
-  #     internal/provider already honours.
+  #     runtime and in the operator. A plain-HTTP one needs each builder told
+  #     so once — BuildKit reads that from buildkitd.toml and the CNB lifecycle
+  #     from `CNB_INSECURE_REGISTRIES`, so both pinned images are rebuilt with
+  #     it and loaded into the node under their own names — and containerd told
+  #     so once, which is a hosts.toml. The operator needs nothing: `http://`
+  #     on a registry Connection is a shape internal/provider already honours.
   #   - **The source is this repository.** The builder fetches the commit
   #     itself from github.com, and the fixture is a directory of this
   #     repository, so the project points at this repository at the pull
@@ -147,6 +155,15 @@ jobs:
       PROJECT: multiwl
       APP_NS: kitchen-multiwl
       FIXTURE: test/fixtures/multi-workload
+      # The second project this job builds, and the only build anywhere in the
+      # tree that runs the Cloud Native Buildpacks lifecycle rather than
+      # BuildKit. It is a project of its own because the two strategies are two
+      # different jobs with two different failure modes, and because a
+      # repository with no Dockerfile is the whole of what makes a build
+      # `buildpacks` (#424).
+      BP_PROJECT: bpnode
+      BP_APP_NS: kitchen-bpnode
+      BP_FIXTURE: test/fixtures/buildpacks-node
       REPO: ${{ github.repository }}
       COMMIT: ${{ github.event.pull_request.head.sha }}
       BRANCH: ${{ github.head_ref }}
@@ -303,11 +320,94 @@ jobs:
           docker build --tag "${builder}" /tmp/kitchen-builder
           echo "BUILDER_IMAGE=${builder}" >> "$GITHUB_ENV"
 
+      # The other builder, and what the lifecycle has to be told about a
+      # cluster nobody configured for it.
+      #
+      # Three things a buildpacks build cannot work out for itself here, and
+      # all three are the test cluster's rather than the platform's:
+      #
+      #   - **The registry speaks plain HTTP.** The lifecycle takes that as
+      #     `CNB_INSECURE_REGISTRIES`, which is a platform API 0.13 input read
+      #     from its environment — so it is baked into the image the node runs,
+      #     exactly as buildkitd.toml is above, and the pod spec the operator
+      #     writes is untouched.
+      #   - **Its run image is pulled from inside the build pod.** The image the
+      #     application is built onto is fetched by the lifecycle itself, on
+      #     every build, anonymously. `CNB_RUN_IMAGE` points that at Google's
+      #     Docker Hub mirror for the reason the test registry is pulled through
+      #     it: an anonymous rate limit failing this job would say nothing about
+      #     the change under test. Which image it is comes out of the builder
+      #     rather than being pinned a second time here, so bumping the builder
+      #     moves it.
+      #   - **The builder and the clone image are pulled by the node.** Both are
+      #     loaded below, so a build fetches neither from inside the cluster.
+      - name: Teach the buildpacks lifecycle where it is running
+        run: |
+          set -euo pipefail
+          # Read out of the operator rather than written down twice, exactly as
+          # the BuildKit image above is: a bump has to move what this job runs,
+          # or the case keeps proving something about a builder the platform no
+          # longer uses.
+          read_pin() { # read_pin <pattern>
+            grep -oE "$1" internal/controller/buildpacks.go | head -1
+          }
+          builder="$(read_pin 'paketobuildpacks/builder-jammy-base:[A-Za-z0-9._-]+')"
+          clone="$(read_pin 'alpine/git:[A-Za-z0-9._-]+')"
+          for pin in "${builder}" "${clone}"; do
+            [ -n "${pin}" ] || {
+              echo "::error::could not read the buildpacks images out of internal/controller"
+              exit 1
+            }
+          done
+          echo "the lifecycle runs ${builder} and clones with ${clone}"
+
+          # Google's Docker Hub mirror first, the hub itself as the fallback.
+          # The builder is a gigabyte and a half: pulling it anonymously from
+          # Docker Hub is the single most rate-limitable thing this job does.
+          pull_as() { # pull_as <name>
+            for attempt in 1 2 3; do
+              docker pull "mirror.gcr.io/$1" && { docker tag "mirror.gcr.io/$1" "$1"; return 0; }
+              sleep $((attempt * 10))
+            done
+            docker pull "$1"
+          }
+          pull_as "${builder}"
+          pull_as "${clone}"
+
+          # The run image the builder itself names. `stack.runImage` is where a
+          # builder built for platform API 0.12 and later still records it, and
+          # it is what the lifecycle would read out of /cnb/run.toml.
+          metadata="$(docker inspect --format \
+            '{{ index .Config.Labels "io.buildpacks.builder.metadata" }}' "${builder}")"
+          run_image="$(printf '%s' "${metadata}" | jq -r '.stack.runImage.image // empty')"
+          [ -n "${run_image}" ] || {
+            echo "::error::the builder names no run image, so the export phase has no base"
+            exit 1
+          }
+          mirrored_run="mirror.gcr.io/${run_image#index.docker.io/}"
+          echo "the application is built onto ${run_image}, pulled as ${mirrored_run}"
+
+          # The image keeps its own name, so the operator's pod spec is
+          # untouched and the node uses the copy loaded below.
+          mkdir -p /tmp/kitchen-lifecycle
+          cat > /tmp/kitchen-lifecycle/Dockerfile <<EOF
+          FROM ${builder}
+          ENV CNB_INSECURE_REGISTRIES=${REGISTRY_ADDR}
+          ENV CNB_RUN_IMAGE=${mirrored_run}
+          EOF
+          docker build --tag "${builder}" /tmp/kitchen-lifecycle
+
+          echo "BP_BUILDER_IMAGE=${builder}" >> "$GITHUB_ENV"
+          echo "BP_CLONE_IMAGE=${clone}" >> "$GITHUB_ENV"
+
       - name: Load the images into kind
         run: |
           set -euo pipefail
           kind load docker-image kitchen:ci
           kind load docker-image "${BUILDER_IMAGE}"
+          kind load docker-image "${BP_BUILDER_IMAGE}"
+          kind load docker-image "${BP_CLONE_IMAGE}"
+          df -h /
 
       - name: Install the Gateway API CRDs
         run: |
@@ -803,15 +903,198 @@ jobs:
             exit 1
           }
 
+      # The other build strategy, end to end (#424).
+      #
+      # Everything else about the buildpacks strategy is held by unit coverage
+      # over a pod spec, and a pod spec that is wrong in the way that matters
+      # here — a lifecycle phase that cannot resolve its inputs, an image that
+      # never gets pushed — is green in every one of those tests. So one
+      # project in this job has no Dockerfile at all: the Cloud Native
+      # Buildpacks lifecycle decides what the repository is, builds it, and
+      # pushes what it built.
+      #
+      # What the case asserts is the split the credential fix made (#424): the
+      # lifecycle runs as five containers, the two that run the repository's
+      # own build hold no registry credential at all, only the phase that
+      # pushes holds the one that can, and the image still comes back with the
+      # digest the exporter reported — which is the whole of what the
+      # termination-message path does for this strategy.
+      - name: A project with no Dockerfile builds with buildpacks, and only its push holds the credential
+        run: |
+          set -euo pipefail
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Project
+          metadata:
+            name: ${BP_PROJECT}
+            namespace: kitchen-system
+          spec:
+            source:
+              git:
+                connectionRef: {name: e2e-git}
+                repo: ${REPO}
+                productionBranch: ${BRANCH}
+            build:
+              strategy: buildpacks
+              rootDirectory: ${BP_FIXTURE}
+            registry:
+              connectionRef: {name: e2e-registry}
+            previews:
+              protected: false
+          EOF
+
+          build=""
+          for _ in $(seq 60); do
+            build="$(kubectl -n kitchen-system get builds \
+              -l "kitchen.bermos.dev/project=${BP_PROJECT}" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            [ -n "${build}" ] && break
+            sleep 5
+          done
+          [ -n "${build}" ] || {
+            echo "::error::the platform never seeded a build for the buildpacks project"
+            kubectl -n kitchen-system get project "${BP_PROJECT}" -o yaml
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=200
+            exit 1
+          }
+          echo "the platform seeded build ${build}"
+
+          # The lifecycle downloads its buildpacks and runs the application's
+          # own build, which is a longer wait than BuildKit assembling a
+          # busybox image: twenty minutes, and a failure that arrives sooner
+          # ends the loop rather than sitting it out.
+          phase=""
+          for _ in $(seq 120); do
+            phase="$(kubectl -n kitchen-system get build "${build}" -o jsonpath='{.status.phase}')"
+            [ "${phase}" = Succeeded ] && break
+            [ "${phase}" = Failed ] && break
+            sleep 10
+          done
+          [ "${phase}" = Succeeded ] || {
+            echo "::error::the buildpacks build ended ${phase}"
+            kubectl -n kitchen-system get build "${build}" -o yaml
+            kubectl -n "${BP_APP_NS}" get jobs,pods -o wide
+            for pod in $(kubectl -n "${BP_APP_NS}" get pods -o name); do
+              echo "--- ${pod}"
+              kubectl -n "${BP_APP_NS}" logs "${pod}" --all-containers --tail=300 || true
+            done
+            exit 1
+          }
+
+          # The digest is the exporter's own report, read back off the pod's
+          # termination message. A tag here rather than a digest means the
+          # report never arrived — which is what splitting `creator` into
+          # phases could have broken and nothing short of a real build can say.
+          image="$(kubectl -n kitchen-system get build "${build}" -o jsonpath='{.status.image}')"
+          echo "the build pushed ${image}"
+          case "${image}" in
+            *"@sha256:"*) ;;
+            *)
+              echo "::error::the build reported '${image}': the lifecycle's report never" \
+                   "reached the termination message, so the platform has a tag and not a digest"
+              exit 1
+              ;;
+          esac
+
+          # And the credential each phase held. The Job's TTL keeps the pod for
+          # an hour, so the spec that actually ran is still here to be read —
+          # this is the assertion the unit tests make against a rendered spec,
+          # made against the one Kubernetes admitted.
+          pod="$(kubectl -n "${BP_APP_NS}" get pods -l "kitchen.bermos.dev/build=${build}" \
+            -o jsonpath='{.items[0].metadata.name}')"
+          kubectl -n "${BP_APP_NS}" get pod "${pod}" -o json > /tmp/buildpacks-pod.json
+          ran="$(jq -r '[.spec.initContainers[].name] + [.spec.containers[].name] | join(" ")' \
+            /tmp/buildpacks-pod.json)"
+          echo "the build pod ran: ${ran}"
+          [ "${ran}" = "clone analyzer detector restorer builder exporter" ] || {
+            echo "::error::the lifecycle did not run as its five phases: ${ran}"
+            exit 1
+          }
+
+          held() { # held <container> — the docker configs it mounts
+            jq -r --arg c "$1" '[.spec.initContainers[], .spec.containers[]]
+              | map(select(.name == $c))[0].volumeMounts
+              | map(select(.name | startswith("docker-config"))) | map(.name) | sort | join(",")' \
+              /tmp/buildpacks-pod.json
+          }
+          for container in clone detector builder; do
+            [ -z "$(held "${container}")" ] || {
+              echo "::error::${container} runs code this platform did not write and mounts" \
+                   "$(held "${container}")"
+              exit 1
+            }
+          done
+          [ "$(held exporter)" = docker-config ] || {
+            echo "::error::the phase that pushes mounts '$(held exporter)'"
+            exit 1
+          }
+          for container in analyzer restorer; do
+            [ "$(held "${container}")" = docker-config-read ] || {
+              echo "::error::${container} only reads the registry and mounts" \
+                   "'$(held "${container}")'"
+              exit 1
+            }
+          done
+          echo "only the exporter holds the credential that can push"
+
+          # This installation's registry connection is an ordinary one with no
+          # read-only credential beside it, so the two volumes name the same
+          # Secret — the fallback the Connection's status reports, proved here
+          # rather than assumed.
+          secrets="$(jq -r '.spec.volumes | map(select(.name | startswith("docker-config")))
+            | map(.secret.secretName) | unique | join(",")' /tmp/buildpacks-pod.json)"
+          echo "the pod's docker configs come from ${secrets}"
+
+          # And it runs. An image that says `buildpacks` cannot have come from
+          # the other strategy: there is no Dockerfile in that directory.
+          #
+          # The Deployment arrives a reconcile after the build does — the
+          # release is frozen first, and the environment is what materializes
+          # it — so it is waited for rather than assumed, exactly as the
+          # workloads above are.
+          for _ in $(seq 60); do
+            kubectl -n "${BP_APP_NS}" get deploy "${BP_PROJECT}-production" >/dev/null 2>&1 && break
+            sleep 5
+          done
+          kubectl -n "${BP_APP_NS}" rollout status "deploy/${BP_PROJECT}-production" --timeout=5m || {
+            echo "::error::the buildpacks-built image never became ready"
+            kubectl -n "${BP_APP_NS}" get pods -o wide
+            kubectl -n "${BP_APP_NS}" describe deploy "${BP_PROJECT}-production"
+            kubectl -n "${BP_APP_NS}" logs -l "kitchen.bermos.dev/environment=${BP_PROJECT}-production" \
+              --all-containers --tail=200 || true
+            exit 1
+          }
+          # Asked from the other project's pod, which is the one thing in this
+          # cluster with a shell and a `wget` in it: the run image a buildpacks
+          # build produces carries the application and nothing else. It is
+          # asked through the environment's own Service — port 80 in front of
+          # the container's 8080 — so the answer says the platform routed to
+          # what it built, not merely that a process is listening somewhere.
+          served="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production" \
+            -- wget -q -O - "http://${BP_PROJECT}-production.${BP_APP_NS}.svc.cluster.local:80/")"
+          echo "the buildpacks application answered '${served}'"
+          case "${served}" in
+            buildpacks*) ;;
+            *)
+              echo "::error::the buildpacks environment answered '${served}'"
+              exit 1
+              ;;
+          esac
+
       - name: What the cluster looked like when it failed
         if: failure()
         run: |
           kubectl -n kitchen-system get projects,connections,builds,releases,environments -o wide || true
           kubectl -n kitchen-system get environments -o yaml || true
           kubectl -n "${APP_NS}" get all -o wide || true
+          kubectl -n "${BP_APP_NS}" get all -o wide || true
           kubectl -n "${APP_NS}" get events --sort-by=.lastTimestamp || true
+          kubectl -n "${BP_APP_NS}" get events --sort-by=.lastTimestamp || true
+          df -h / || true
           kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=400 || true
-          for pod in $(kubectl -n "${APP_NS}" get pods -o name); do
-            echo "--- ${pod}"
-            kubectl -n "${APP_NS}" logs "${pod}" --all-containers --tail=200 || true
+          for namespace in "${APP_NS}" "${BP_APP_NS}"; do
+            for pod in $(kubectl -n "${namespace}" get pods -o name); do
+              echo "--- ${namespace} ${pod}"
+              kubectl -n "${namespace}" logs "${pod}" --all-containers --tail=200 || true
+            done
           done

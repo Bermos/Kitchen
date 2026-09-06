@@ -1388,11 +1388,15 @@ running.
 
 Which job that is comes from the strategy. `dockerfile` runs **BuildKit** on the
 repository's own Dockerfile, with the commit as a git context BuildKit fetches itself.
-`buildpacks` runs the **Cloud Native Buildpacks** lifecycle (`creator`, in Paketo's
-jammy builder) over the repository, which needs the source on disk first — so the job
-clones the commit in an init container and hands the lifecycle a directory. A buildpacks
-build needs none of the privileges a BuildKit one does: it runs as the builder image's
-own unprivileged user throughout.
+`buildpacks` runs the **Cloud Native Buildpacks** lifecycle (Paketo's jammy builder)
+over the repository, which needs the source on disk first — so the job clones the commit
+in an init container and hands the lifecycle a directory. The lifecycle runs as its five
+phases, one container each: `analyzer`, `detector`, `restorer`, `builder` and finally
+`exporter`, which is the container that pushes. The two that run the repository's own
+build — `detector` and `builder` — mount no registry credential at all, so a build
+script cannot read the one the push uses (#424). A buildpacks build needs none of the
+privileges a BuildKit one does: it runs as the builder image's own unprivileged user
+throughout.
 
 Either builder reports the digest it pushed through the pod's termination message —
 BuildKit as JSON metadata, the lifecycle as its TOML report — which is what puts a

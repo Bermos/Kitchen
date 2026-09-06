@@ -44,7 +44,7 @@ func TestParsePodLog(t *testing.T) {
 	}, "\n")
 
 	lines := parsePodLog(strings.NewReader(out), clickhouse.LogLine{
-		Source: clickhouse.SourceBuild, Build: multiBuild, Container: "creator",
+		Source: clickhouse.SourceBuild, Build: multiBuild, Container: "exporter",
 	}, time.Time{})
 
 	if len(lines) != 3 {
@@ -53,7 +53,7 @@ func TestParsePodLog(t *testing.T) {
 	if lines[0].Message != "installing dependencies" {
 		t.Errorf("first message = %q", lines[0].Message)
 	}
-	if lines[0].Build != multiBuild || lines[0].Container != "creator" {
+	if lines[0].Build != multiBuild || lines[0].Container != "exporter" {
 		t.Errorf("the template's fields did not travel: %+v", lines[0])
 	}
 	if !lines[1].Timestamp.Equal(time.Date(2026, 8, 25, 10, 0, 1, 500000000, time.UTC)) {
@@ -121,16 +121,16 @@ func TestBuildPodContainerPrefersTheBuilder(t *testing.T) {
 			name: "the builder, once it is running",
 			pod: corev1.Pod{Status: corev1.PodStatus{
 				InitContainerStatuses: []corev1.ContainerStatus{{Name: "clone", State: done}},
-				ContainerStatuses:     []corev1.ContainerStatus{{Name: "creator", State: running}},
+				ContainerStatuses:     []corev1.ContainerStatus{{Name: "exporter", State: running}},
 			}},
-			want: "creator",
+			want: "exporter",
 		},
 		{
 			name: "the clone, while it is all there is",
 			pod: corev1.Pod{Status: corev1.PodStatus{
 				InitContainerStatuses: []corev1.ContainerStatus{{Name: "clone", State: running}},
 				ContainerStatuses: []corev1.ContainerStatus{{
-					Name:  "creator",
+					Name:  "exporter",
 					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}},
 				}},
 			}},
@@ -251,15 +251,15 @@ func TestBuildPodLinesNarrowedToAContainer(t *testing.T) {
 		workerPod: "2026-08-25T10:00:02.000000000Z " + workerOneLine + "\n",
 	}
 
-	// The workloads' pods run `creator`; the web process's runs `buildkit`.
+	// The workloads' pods run `exporter`; the web process's runs `buildkit`.
 	server := podLogServer(t, output, build)
-	got, err := server.buildPodLines(t.Context(), build, clickhouse.LogQuery{Container: "creator"})(
+	got, err := server.buildPodLines(t.Context(), build, clickhouse.LogQuery{Container: "exporter"})(
 		t.Context(), time.Time{})
 	if err != nil {
 		t.Fatalf("reading the narrowed tail: %v", err)
 	}
 	if len(got) != 2 || got[0].Message != "api: one" || got[1].Message != workerOneLine {
-		t.Fatalf("narrowing to creator kept %+v, want the two pods running it", got)
+		t.Fatalf("narrowing to exporter kept %+v, want the two pods running it", got)
 	}
 
 	server = podLogServer(t, output, build)
@@ -366,8 +366,8 @@ func podLogServer(t *testing.T, output map[string]string, build *kitchenv1alpha1
 	containers := map[string]string{build.Name + "-pod": "buildkit"}
 	pods := []runtime.Object{buildJobPod(namespace, build.Name, "buildkit")}
 	for _, workload := range build.Status.Workloads {
-		containers[workload.Job+"-pod"] = "creator"
-		pods = append(pods, buildJobPod(namespace, workload.Job, "creator"))
+		containers[workload.Job+"-pod"] = "exporter"
+		pods = append(pods, buildJobPod(namespace, workload.Job, "exporter"))
 	}
 	return &Server{
 		Client:    fake.NewClientBuilder().WithScheme(podLogScheme(t)).WithRuntimeObjects(pods...).Build(),

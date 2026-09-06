@@ -163,7 +163,7 @@ func TestTheGeneratorPodIsPointedAtTheDigestAndGivenNothingElse(t *testing.T) {
 	artifactRef := "ghcr.io/vendor/app@sha256:" + strings.Repeat("1", 64)
 
 	job := observedSBOMJob("shop-bld-1-sbom", "kitchen-app-shop", build, project, kitchen,
-		"", artifactRef, VendorSBOMGeneratorImage, "operator:dev")
+		credentialsWithRead("", ""), artifactRef, VendorSBOMGeneratorImage, "operator:dev")
 
 	generator := job.Spec.Template.Spec.InitContainers[0]
 	if generator.Args[0] != artifactRef {

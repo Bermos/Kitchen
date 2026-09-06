@@ -41,6 +41,48 @@ Three fields, whichever registry it points at:
   registry therefore needs one credential that can do both, which is the thing
   most of the failures below have in common.
 
+### The credential a build holds, and the one third-party code holds
+
+A connection's credential is per connection and not per project: on the
+bundled registry it is one account that can push over any tag in any project's
+repository. Several pods the platform runs contain code the platform did not
+write — the buildpacks lifecycle runs the repository's own build, a quality
+gate and a vulnerability scanner are images an operator chose — and reading a
+docker config off the filesystem is one line of a `postinstall` script. So a
+credential is mounted into the container that needs it and into no other, and
+where a **read-only** credential exists, that is the one those containers get
+(#424):
+
+| Pod | What holds the connection's credential | What holds a credential that cannot push |
+|---|---|---|
+| Dockerfile build | `buildkit` — the daemon, not the `RUN` steps, which never see it | — |
+| Buildpacks build | `exporter`, the phase that pushes | `analyzer` and `restorer`; `detector` and `builder`, which run the repository's own build, mount **no** credential at all |
+| Quality gate | `publish`, which writes the findings back | `gate` |
+| Vulnerability rescan | `sbom` and `publish` | `scan` |
+| Vendored SBOM | `publish` | `sbom`, the generator |
+
+The bundled registry issues one: the chart creates a second account
+(`registry.auth.readUsername`, `kitchen-read` by default) whose access control
+grants `read` and nothing else, the operator stores it as a second Secret, and
+the build copies it into the application namespace beside the first.
+
+**A registry the platform cannot mint from is not left to be discovered.** The
+connection's `status.registry` says which of the two this installation is, and
+the connections page prints it under the connection:
+
+```json
+{"scopedCredentials": false,
+ "message": "this registry issues no credential narrower than the connection's own, so a quality gate and a vulnerability scanner read an artifact with the credential builds push with. Store a read-only credential for this registry as the Secret kitchen-connection-ghcr-read to narrow it."}
+```
+
+Supplying one is exactly that: a `kubernetes.io/dockerconfigjson` Secret in
+`kitchen-system`, named after the connection's own credential Secret with
+`-read` on the end, holding an account of the same registry that may pull and
+not push — a Harbor robot account with pull rights, a GHCR token with
+`read:packages` alone, a second Distribution account. The platform picks it up
+on the next reconcile of the connection and every gate and scan after that
+reads with it. Nothing about builds changes either way: the push is the push.
+
 Create one on the dashboard's Connections page, or from a terminal:
 
 ```sh
@@ -79,6 +121,14 @@ there is no trusted certificate, so nothing is rendered, `RegistryReady` on the
 Kitchen object is False with the reason `TLSModeNone`, and every project on
 that installation needs a registry connection of its own. If you are choosing
 between this and GHCR, that is the first question to settle.
+
+**Its two accounts do two different things.** `registry.auth.username` is the
+account that may push and it is the platform's own; `registry.auth.readUsername`
+may read every repository and write none, and it is what a build's third-party
+code, a quality gate and a scanner are given. zot's access control is what
+makes the difference real: writing is granted to the first account by name and
+the default policy for an authenticated account is `read`. Both passwords are
+generated on install and preserved across upgrades.
 
 **The seeded Connection is a seed, not a fixture.** The operator creates it
 once, records the fact in `status.registry.connection`, and never creates it

@@ -217,6 +217,28 @@ spec:
                   - type
                   type: object
                 type: array
+              registry:
+                description: |-
+                  Registry is what this registry Connection can do about credentials
+                  narrower than its own. Only the `dockerRegistry` provider writes it.
+                properties:
+                  message:
+                    description: Message says in words what the two above mean for
+                      a scan.
+                    type: string
+                  readCredentialSecret:
+                    description: |-
+                      ReadCredentialSecret names the Secret holding a credential for this
+                      registry that can pull and cannot push, empty when there is none. It
+                      is never the credential itself — the API reads no credential back.
+                    type: string
+                  scopedCredentials:
+                    description: |-
+                      ScopedCredentials is whether such a credential exists. False is not a
+                      fault: it is an installation whose registry issues one credential, and
+                      it is what Message explains.
+                    type: boolean
+                type: object
             type: object
         type: object
     served: true

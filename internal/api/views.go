@@ -1408,6 +1408,20 @@ type connectionView struct {
 	Capabilities []string        `json:"capabilities,omitempty"`
 	CreatedAt    time.Time       `json:"createdAt"`
 	Conditions   []conditionView `json:"conditions,omitempty"`
+
+	// Registry is what a registry connection can do about credentials
+	// narrower than its own, absent for a connection that is not one.
+	Registry *connectionRegistryView `json:"registry,omitempty"`
+}
+
+// connectionRegistryView is what a pod that only reads an artifact from this
+// registry is given (#424): the connection's own credential, or one that
+// cannot push. It is a fact rather than a fault — a registry that issues no
+// scoped credential is not a broken connection — so it is a field of its own
+// and not a condition, which would turn the connection's dot red.
+type connectionRegistryView struct {
+	ScopedCredentials bool   `json:"scopedCredentials"`
+	Message           string `json:"message,omitempty"`
 }
 
 // newConnectionView deliberately says nothing about the Connection's
@@ -1418,13 +1432,23 @@ func newConnectionView(connection *kitchenv1alpha1.Connection) connectionView {
 	for _, capability := range connection.Status.Capabilities {
 		capabilities = append(capabilities, string(capability))
 	}
-	return connectionView{
+	view := connectionView{
 		Name:         connection.Name,
 		Provider:     connection.Spec.Provider,
 		Capabilities: capabilities,
 		CreatedAt:    connection.CreationTimestamp.Time,
 		Conditions:   conditionViews(connection.Status.Conditions),
 	}
+	if registry := connection.Status.Registry; registry != nil {
+		// The Secret holding the read-only credential is named in the
+		// Connection's status and not here, for the reason above: which
+		// Secret a credential lives in is the operator's business.
+		view.Registry = &connectionRegistryView{
+			ScopedCredentials: registry.ScopedCredentials,
+			Message:           registry.Message,
+		}
+	}
+	return view
 }
 
 // connectionChoiceView is a connection as somebody *choosing* one sees it,

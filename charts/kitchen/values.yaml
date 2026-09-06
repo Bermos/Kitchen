@@ -1426,12 +1426,23 @@ registry:
     tag: v2.1.20
     pullPolicy: IfNotPresent
   auth:
-    # -- Username builds and pulls authenticate with.
+    # -- Username builds and pulls authenticate with. It is the account that
+    # may push, and the only one: everything else the platform runs against
+    # the registry uses the read-only account below.
     username: kitchen
     # -- Password for that user. Generated on install and preserved across
     # upgrades when empty. Set it explicitly if you render manifests with
     # `helm template`, which cannot read the existing secret back.
     password: ""
+    # -- Username the platform hands to code it did not write: the buildpacks
+    # lifecycle's analyze and restore phases, a quality gate, a vulnerability
+    # scanner. It may read every repository and write none, so a build script
+    # that finds the credential still cannot push over another project's tags
+    # (#424).
+    readUsername: kitchen-read
+    # -- Password for the read-only user, generated and preserved exactly as
+    # the one above is.
+    readPassword: ""
   # -- Hostname the registry is published on, and therefore the prefix images
   # are pushed under: `<host>/<project>:<sha>`. Defaults to
   # `registry.<baseDomain>`.

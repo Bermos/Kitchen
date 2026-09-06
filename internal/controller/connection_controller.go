@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -108,6 +109,10 @@ func (r *ConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// nothing more: a provider without an implementation reports none, so
 	// capability matching never selects a connection nothing can use.
 	conn.Status.Capabilities = provider.Capabilities(conn.Spec.Provider)
+
+	// And a registry Connection reports whether the platform can hand a pod
+	// that only reads an artifact something narrower than this credential.
+	r.setRegistryCredentialScope(ctx, conn)
 
 	// A credential that stops being accepted is worth a record, and it is the
 	// one thing this reconciler learns that nobody asked it to. Reachability
@@ -206,6 +211,46 @@ func (r *ConnectionReconciler) probe(
 	}
 }
 
+// setRegistryCredentialScope records what the platform can give a pod that
+// only reads from this registry (#424).
+//
+// The answer is a Secret's existence and nothing cleverer: a credential named
+// after this Connection's own with the read suffix. The platform writes one
+// for the bundled registry from the read-only account the chart creates; an
+// installation pointing at a registry of its own supplies one by storing a
+// read-only credential — a Harbor robot account, a GHCR read token — under
+// that name. Where there is none, a gate and a scanner read the artifact with
+// the credential a build pushes with, and this is where that is said.
+func (r *ConnectionReconciler) setRegistryCredentialScope(
+	ctx context.Context, conn *kitchenv1alpha1.Connection,
+) {
+	if !slices.Contains(conn.Status.Capabilities, kitchenv1alpha1.CapabilityImageStore) {
+		// Not a registry. Nothing about image pulls to report — and a
+		// provider that was one and is not any more should stop reporting.
+		conn.Status.Registry = nil
+		return
+	}
+	status := &kitchenv1alpha1.RegistryConnectionStatus{}
+	read := readCredentialSecretName(conn.Spec.CredentialsSecretRef.Name)
+	if read != "" {
+		key := types.NamespacedName{Namespace: conn.Namespace, Name: read}
+		if err := r.Get(ctx, key, &corev1.Secret{}); err == nil {
+			status.ScopedCredentials = true
+			status.ReadCredentialSecret = read
+		}
+	}
+	if status.ScopedCredentials {
+		status.Message = "a build's third-party code, a quality gate and a vulnerability scanner read " +
+			"this registry with a credential that cannot push"
+	} else {
+		status.Message = "this registry issues no credential narrower than the connection's own, so a " +
+			"quality gate and a vulnerability scanner read an artifact with the credential builds push " +
+			"with. Store a read-only credential for this registry as the Secret " + read +
+			" to narrow it."
+	}
+	conn.Status.Registry = status
+}
+
 // mapSecretToConnections enqueues every Connection whose credentials live in
 // the changed Secret, so a rotated credential is revalidated immediately
 // rather than at the next periodic recheck.
@@ -216,7 +261,10 @@ func (r *ConnectionReconciler) mapSecretToConnections(ctx context.Context, obj c
 	}
 	requests := make([]ctrl.Request, 0, len(connections.Items))
 	for i := range connections.Items {
-		if connections.Items[i].Spec.CredentialsSecretRef.Name != obj.GetName() {
+		ref := connections.Items[i].Spec.CredentialsSecretRef.Name
+		// The read-only credential beside it counts too: it is what decides
+		// the registry scope below, and it is written after the Connection.
+		if ref != obj.GetName() && readCredentialSecretName(ref) != obj.GetName() {
 			continue
 		}
 		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{

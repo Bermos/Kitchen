@@ -115,11 +115,19 @@ func (r *KitchenReconciler) reconcileRegistry(
 	return true
 }
 
-// registryCredentials is the registry's own username and password, as the
-// chart wrote them.
+// registryCredentials is the registry's own accounts, as the chart wrote
+// them: the one builds push with, and the read-only one everything that only
+// reads an artifact is given (#424).
 type registryCredentials struct {
 	Username string
 	Password string
+
+	// ReadUsername and ReadPassword are the account that may pull and may
+	// not push. They are empty on an installation whose chart predates the
+	// second account, where every reader falls back to the pushing one and
+	// the Connection's status says so.
+	ReadUsername string
+	ReadPassword string
 }
 
 // registryCredential reads the credential the chart generated. It is the one
@@ -135,8 +143,10 @@ func (r *KitchenReconciler) registryCredential(
 		return nil, err
 	}
 	credential := &registryCredentials{
-		Username: string(secret.Data[registrySecretKeyUsername]),
-		Password: string(secret.Data[registrySecretKeyPassword]),
+		Username:     string(secret.Data[registrySecretKeyUsername]),
+		Password:     string(secret.Data[registrySecretKeyPassword]),
+		ReadUsername: string(secret.Data[registrySecretKeyReadUsername]),
+		ReadPassword: string(secret.Data[registrySecretKeyReadPassword]),
 	}
 	if credential.Username == "" || credential.Password == "" {
 		return nil, fmt.Errorf("secret %q needs both %q and %q: the registry admits no anonymous access",
@@ -252,17 +262,42 @@ func (r *KitchenReconciler) seedRegistryConnection(
 // dockerconfigjson for the registry's host. The build reconciler mounts a copy
 // of it as DOCKER_CONFIG, and the environment reconciler hands the same copy
 // to the kubelet as an image pull secret.
+//
+// The read-only account is written the same way beside it, under the name the
+// read-only credential convention gives it. That one is what a pod running
+// code the platform did not write is given — a buildpack, a quality gate, a
+// scanner — so the credential such a pod can read off its own filesystem
+// cannot push over another project's tags (#424). A chart that wrote no such
+// account leaves it absent rather than writing the pushing one under a name
+// that promises less than it holds.
 func (r *KitchenReconciler) writeRegistryCredentialSecret(
 	ctx context.Context,
 	registry *platformRegistry,
 	credential *registryCredentials,
 ) error {
-	dockerConfig, err := provider.DockerConfigJSON(registry.Host, credential.Username, credential.Password)
+	if err := r.writeRegistryDockerConfig(ctx, RegistryCredentialsSecretName,
+		registry.Host, credential.Username, credential.Password); err != nil {
+		return err
+	}
+	if credential.ReadUsername == "" || credential.ReadPassword == "" {
+		return r.deleteRegistryReadCredential(ctx)
+	}
+	return r.writeRegistryDockerConfig(ctx, RegistryReadCredentialsSecretName,
+		registry.Host, credential.ReadUsername, credential.ReadPassword)
+}
+
+// writeRegistryDockerConfig writes one account as a dockerconfigjson Secret in
+// the platform namespace.
+func (r *KitchenReconciler) writeRegistryDockerConfig(
+	ctx context.Context,
+	name, host, username, password string,
+) error {
+	dockerConfig, err := provider.DockerConfigJSON(host, username, password)
 	if err != nil {
 		return err
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-		Name: RegistryCredentialsSecretName, Namespace: PlatformNamespace,
+		Name: name, Namespace: PlatformNamespace,
 	}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		if secret.Labels == nil {
@@ -279,6 +314,20 @@ func (r *KitchenReconciler) writeRegistryCredentialSecret(
 		return nil
 	})
 	return err
+}
+
+// deleteRegistryReadCredential removes the read-only credential when the
+// registry has no read-only account any more. Leaving it would leave scans
+// authenticating with a password the registry has forgotten, which reads as a
+// broken scanner rather than as a setting that was turned off.
+func (r *KitchenReconciler) deleteRegistryReadCredential(ctx context.Context) error {
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: RegistryReadCredentialsSecretName, Namespace: PlatformNamespace,
+	}}
+	if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // removeRegistry takes down what the operator published. The Connection goes
@@ -316,6 +365,9 @@ func (r *KitchenReconciler) removeRegistry(ctx context.Context, kitchen *kitchen
 			Name: RegistryCredentialsSecretName, Namespace: PlatformNamespace,
 		}}
 		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if err := r.deleteRegistryReadCredential(ctx); err != nil {
 			return err
 		}
 	}
