@@ -21,6 +21,8 @@ import OperatorOnly from "../components/OperatorOnly.vue";
 import PageHeader from "../components/PageHeader.vue";
 import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
+import TracesPanel from "../components/TracesPanel.vue";
+import TrafficPanel from "../components/TrafficPanel.vue";
 
 // The observability view asks one selection four ways: the lines, when they
 // happened, what else is in them, and what they are actually saying. The
@@ -38,6 +40,12 @@ import StatusDot from "../components/StatusDot.vue";
 //
 // The bar has no default: an empty one asks for everything in the window, which
 // is the question someone opening this page is asking.
+//
+// Since #469 it is a *project's* screen, and the four ways of asking are four
+// tabs of it rather than three screens each beginning by asking which project:
+// the lines, the patterns they collapse to, the flow edges between workloads
+// and the traces the applications themselves reported. The project is the
+// address, so what is on screen is a link somebody else can open.
 
 const route = useRoute();
 const router = useRouter();
@@ -46,7 +54,29 @@ const toast = useToast();
 const query = ref((route.query.q as string) ?? "");
 const limit = ref(Number(route.query.limit) || 200);
 const limits = [200, 500, 1000, 5000];
-const tab = ref<"lines" | "patterns">(route.query.view === "patterns" ? "patterns" : "lines");
+/** The project this screen is about — `/projects/:name/observability`. */
+const project = computed(() => (route.params.name as string | undefined) ?? "");
+
+/** The four tabs. Two of them are two readings of the same log selection, so
+ * they share everything below; the other two are their own panels. */
+const VIEWS = ["lines", "patterns", "traffic", "traces"] as const;
+type View = (typeof VIEWS)[number];
+const TAB_LABELS: Record<View, string> = {
+  lines: "Logs",
+  patterns: "Patterns",
+  traffic: "Traffic",
+  traces: "Traces",
+};
+function viewFrom(value: unknown): View {
+  return (VIEWS as readonly string[]).includes(String(value)) ? (String(value) as View) : "lines";
+}
+const tab = ref<View>(viewFrom(route.query.view));
+/** Whether the log half of the screen is the one being read. */
+const readingLogs = computed(() => tab.value === "lines" || tab.value === "patterns");
+watch(
+  () => route.query.view,
+  (value) => (tab.value = viewFrom(value)),
+);
 
 // Kitchen collects every container on every node, so the store also holds the
 // logs of things Kitchen did not deploy — the CNI, the CSI sidecars, whatever
@@ -56,6 +86,12 @@ const tab = ref<"lines" | "patterns">(route.query.view === "patterns" ? "pattern
 // language as a clause of its own, which is what lets the chips below take it
 // back off again.
 const clusterClause: Clause = { field: "source", value: "cluster", negated: true };
+
+/** The scope, as a clause. It is applied to the request rather than typed into
+ * the bar because it is not a filter somebody chose — it is what the address
+ * says this screen is about, and the API narrows to the caller's projects
+ * around it either way. */
+const projectClause = computed<Clause>(() => ({ field: "project", value: project.value, negated: false }));
 
 // Whether the cluster's own lines are in the answer — a preference, narrowed
 // by the mode, exactly as `mode.ts` narrows the mode by the role.
@@ -104,7 +140,10 @@ const expanded = ref<number | null>(null);
 
 /** What every request this page makes is asked over. */
 function selection(): LogSelection {
-  const scoped = includeCluster.value ? query.value : toQueryWithCluster();
+  let scoped = includeCluster.value ? query.value : toQueryWithCluster();
+  if (project.value && !hasClause(scoped, projectClause.value)) {
+    scoped = toggleClause(scoped, projectClause.value);
+  }
   const window = pinned.value ?? {
     since: rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined,
     until: undefined,
@@ -292,6 +331,13 @@ onMounted(() => {
 });
 usePoll(() => void run(false), 5000, () => liveTail.value && !streaming.value && !loading.value);
 
+/** Choosing a tab. It is the address that changes, and everything else
+ *  follows from that: a tab is a link like the query and the window are. */
+function chooseView(next: View) {
+  tab.value = next;
+  syncURL();
+}
+
 watch(tab, (next) => {
   if (next === "patterns" && !patterns.value.length) void run();
   else syncURL();
@@ -372,7 +418,9 @@ async function saveQuery() {
       query: query.value.trim() || undefined,
       rangeMinutes: savedRange(),
       limit: limit.value,
-      view: tab.value,
+      // A saved query is a log query, and the two tabs that are not log
+      // readings have nothing to save. The control is only on the log half.
+      view: tab.value === "patterns" ? "patterns" : "lines",
       includeCluster: includeCluster.value,
     });
     toast.add({ title: `Saved “${savedTitle.value.trim()}”`, color: "success", icon: "i-lucide-bookmark" });
@@ -548,7 +596,11 @@ const placeholder = `level:error service:shop`;
 
 <template>
   <div class="space-y-6">
-    <PageHeader :freshness="freshness" title="Observability">
+    <PageHeader
+      :freshness="freshness"
+      title="Observability"
+      :breadcrumb="[{ label: 'Projects', to: '/projects' }, { label: project, mono: true }, { label: 'Observability' }]"
+    >
       <template #description>
         ClickHouse<template v-if="settings.data.value?.logRetentionDays">
           · {{ settings.data.value.logRetentionDays }} day retention</template
@@ -559,6 +611,7 @@ const placeholder = `level:error service:shop`;
       </template>
       <template #actions>
         <USelect
+          v-if="readingLogs"
           :model-value="pinned ? -1 : rangeMinutes"
           :items="pinned ? [{ label: 'Selected range', value: -1 }, ...ranges] : ranges"
           size="sm"
@@ -582,6 +635,7 @@ const placeholder = `level:error service:shop`;
           </UButton>
         </OperatorOnly>
         <UButton
+          v-if="readingLogs"
           size="sm"
           :color="liveTail ? 'success' : 'neutral'"
           :variant="liveTail ? 'soft' : 'subtle'"
@@ -593,6 +647,25 @@ const placeholder = `level:error service:shop`;
       </template>
     </PageHeader>
 
+    <!-- The four ways of asking one question about one project. They were
+         three screens — two of them cross-project with a project dropdown —
+         and the tab is in the address, so what is on screen is a link. -->
+    <div class="flex items-center gap-1 text-sm border-b border-default -mb-2">
+      <button
+        v-for="view in VIEWS"
+        :key="view"
+        class="px-3 py-1.5 -mb-px border-b-2"
+        :class="tab === view ? 'border-primary text-highlighted' : 'border-transparent text-muted hover:text-toned'"
+        @click="chooseView(view)"
+      >
+        {{ TAB_LABELS[view] }}
+      </button>
+    </div>
+
+    <TrafficPanel v-if="tab === 'traffic'" :project="project" />
+    <TracesPanel v-else-if="tab === 'traces'" :project="project" />
+
+    <template v-else>
     <!-- What the store saw in the last 24 hours, hourly. -->
     <div v-if="headline" class="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <div
@@ -711,20 +784,9 @@ const placeholder = `level:error service:shop`;
          for one; narrower than that they follow the results down the page. -->
     <div class="flex flex-col lg:flex-row gap-4 items-stretch lg:items-start">
       <div class="flex-1 min-w-0 space-y-2">
-        <div class="flex items-center gap-1 text-xs">
-          <button
-            v-for="view in (['lines', 'patterns'] as const)"
-            :key="view"
-            class="px-2 py-1 rounded capitalize"
-            :class="tab === view ? 'bg-elevated text-highlighted' : 'text-muted hover:text-toned'"
-            @click="tab = view"
-          >
-            {{ view }}
-          </button>
-          <span v-if="tab === 'patterns'" class="text-dimmed ml-2">
-            the newest lines in the window, collapsed to templates
-          </span>
-        </div>
+        <p v-if="tab === 'patterns'" class="text-xs text-dimmed">
+          The newest lines in the window, collapsed to templates.
+        </p>
 
         <div
           v-if="tab === 'lines'"
@@ -857,6 +919,7 @@ const placeholder = `level:error service:shop`;
         <p class="text-dimmed leading-relaxed">Counts are over the whole window, not the returned page.</p>
       </aside>
     </div>
+    </template>
 
     <UModal
       :open="naming"

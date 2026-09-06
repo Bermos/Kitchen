@@ -9,6 +9,7 @@ import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
 import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
+import WrittenVolumesPanel from "../components/WrittenVolumesPanel.vue";
 
 // Every volume the platform holds, what mounts it, and the health of the one
 // database Kitchen runs itself.
@@ -17,6 +18,13 @@ import StatusDot from "../components/StatusDot.vue";
 // means something else in this API — a ResourceClaim, the platform's own kind
 // for a provisioned database — and two things called claims in one dashboard is
 // one too many.
+//
+// Since #469 it also holds what used to be the Volumes screen — the storage
+// somebody pointed the platform at so that a project could mount something
+// older than the cluster. Two inventories of one subject, one of which was
+// sitting in the developer's navigation; and this address was already the
+// operator's and already emitted as evidence, so the merge is into an
+// occupied address rather than a move into a free one.
 //
 // The store's numbers come from the same query the `store.disk` rule fires on,
 // so the bar on this screen and the finding on the problems list cannot
@@ -63,7 +71,8 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
   <div class="space-y-6">
     <PageHeader :freshness="freshness" title="Storage" :breadcrumb="[{ label: 'Platform', to: '/platform' }, { label: 'Storage' }]">
       <template #description>
-        Every volume on the platform and what mounts it, plus the telemetry store's own disk.
+        Every volume on the platform and what mounts it, the storage somebody wrote for projects to mount, and the
+        telemetry store's own disk.
       </template>
       <template #actions>
         <UButton
@@ -122,7 +131,7 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
       />
 
       <div>
-        <h2 class="text-sm font-medium text-highlighted mb-2">Volumes</h2>
+        <h2 class="text-sm font-medium text-highlighted mb-2">Volumes projects claimed</h2>
         <div class="rounded-md border border-default overflow-x-auto">
           <table class="w-full min-w-[48rem] text-sm">
             <thead>
@@ -194,6 +203,10 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
           </table>
         </div>
       </div>
+
+      <!-- What was the Volumes screen: storage that existed before the
+           cluster did, written so a project can bind it. -->
+      <WrittenVolumesPanel />
 
       <div class="grid gap-4 lg:grid-cols-2">
         <div>

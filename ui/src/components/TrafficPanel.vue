@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { api, type TrafficEdge } from "../lib/api";
 import { compactCount } from "../lib/format";
-import { useFreshness } from "../lib/freshness";
 import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
-import OperatorOnly from "../components/OperatorOnly.vue";
-import PageHeader from "../components/PageHeader.vue";
+import OperatorOnly from "./OperatorOnly.vue";
+
+// One tab of a project's observability screen (#469). It was a cross-project
+// screen with a project dropdown, which is the shape this dashboard is moving
+// away from: the project is the address now, and this panel is handed it.
+const props = defineProps<{ project: string }>();
 
 // The traffic screen draws what the flow collector shipped: aggregated
 // Hubble flow edges out of ClickHouse, via GET /api/v1/traffic. The map is a
@@ -20,26 +23,19 @@ const ranges = [
   { label: "Last 24 hours", value: 1440 },
 ];
 const rangeMinutes = ref(60);
-const project = ref<string>("");
 const mode = ref<"all" | "http" | "network">("all");
 const dropsOnly = ref(false);
-
-const projects = useAsync(() => api.projects());
-const projectItems = computed(() => [
-  { label: "All projects", value: "" },
-  ...(projects.data.value ?? []).map((p) => ({ label: p.name, value: p.name })),
-]);
 
 const { data, error, loading, refresh } = useAsync(() =>
   api.traffic({
     since: new Date(Date.now() - rangeMinutes.value * 60000).toISOString(),
-    project: project.value || undefined,
+    project: props.project || undefined,
   }),
 );
-// How old this screen is, and the reader's hold on it: every fetch above
-// reports into it and the header renders it.
-const freshness = useFreshness();
+// The screen's freshness is the host's — every fetch here reports into it
+// through `useAsync`, and the one control lives in the one header.
 usePoll(() => void refresh(), 15000, () => true);
+watch([() => props.project, rangeMinutes], () => void refresh());
 function rerun() {
   void refresh();
 }
@@ -154,15 +150,12 @@ function edgeLabel(edge: TrafficEdge): string {
 
 <template>
   <div class="space-y-6">
-    <PageHeader :freshness="freshness" title="Traffic">
-      <template #description>
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+      <p class="text-xs text-muted max-w-2xl">
         The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
-      </template>
-      <template #actions>
-        <USelect v-model="project" :items="projectItems" value-key="value" size="sm" class="w-36 sm:w-40" @change="rerun" />
-        <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" @change="rerun" />
-      </template>
-    </PageHeader>
+      </p>
+      <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" @change="rerun" />
+    </div>
 
     <div class="flex items-center gap-2 flex-wrap">
       <UButton

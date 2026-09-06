@@ -3,9 +3,11 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type Span } from "../lib/api";
 import { compactCount } from "../lib/format";
-import { useFreshness } from "../lib/freshness";
 import { useAsync, usePoll } from "../lib/useAsync";
-import PageHeader from "../components/PageHeader.vue";
+
+// One tab of a project's observability screen (#469): the project is the
+// address now rather than a dropdown on a cross-project screen.
+const props = defineProps<{ project: string }>();
 
 // Traces: what one request did, across everything it touched.
 //
@@ -27,7 +29,6 @@ const ranges = [
   { label: "Last 24 hours", value: 1440 },
 ];
 const rangeMinutes = ref(Number(route.query.range ?? 60));
-const project = ref((route.query.project as string) ?? "");
 const errorsOnly = ref(route.query.errors === "1");
 const minDuration = ref(Number(route.query.slow ?? 0));
 const slowOptions = [
@@ -37,24 +38,17 @@ const slowOptions = [
   { label: "Slower than 2 s", value: 2000 },
 ];
 
-const projects = useAsync(() => api.projects());
-const projectItems = computed(() => [
-  { label: "All projects", value: "" },
-  ...(projects.data.value ?? []).map((p) => ({ label: p.name, value: p.name })),
-]);
-
 const traces = useAsync(() =>
   api.traces({
     since: new Date(Date.now() - rangeMinutes.value * 60_000).toISOString(),
-    project: project.value || undefined,
+    project: props.project || undefined,
     errors: errorsOnly.value || undefined,
     minDuration: minDuration.value || undefined,
     limit: 100,
   }),
 );
-// How old this screen is, and the reader's hold on it: every fetch above
-// reports into it and the header renders it.
-const freshness = useFreshness();
+// The screen's freshness is the host's — every fetch here reports into it
+// through `useAsync`, and the one control lives in the one header.
 usePoll(() => void traces.refresh(), 15_000, () => selected.value === null);
 
 /** The open trace. It is in the URL, so a trace is a link. */
@@ -64,9 +58,11 @@ const detailError = ref<string | null>(null);
 const detailLoading = ref(false);
 
 function syncURL() {
+  // The tab this is a tab of rides in the same query, so it is kept: a
+  // selection that dropped `view` would put the reader back on the logs.
   const params: Record<string, string> = {};
+  if (route.query.view) params.view = String(route.query.view);
   if (rangeMinutes.value !== 60) params.range = String(rangeMinutes.value);
-  if (project.value) params.project = project.value;
   if (errorsOnly.value) params.errors = "1";
   if (minDuration.value) params.slow = String(minDuration.value);
   if (selected.value) params.trace = selected.value;
@@ -101,7 +97,7 @@ function rerun() {
   void traces.refresh();
 }
 
-watch([rangeMinutes, project, errorsOnly, minDuration], rerun);
+watch([rangeMinutes, () => props.project, errorsOnly, minDuration], rerun);
 onMounted(() => {
   if (selected.value) void open(selected.value);
 });
@@ -187,13 +183,12 @@ function barTone(span: Span): string {
 
 <template>
   <div class="space-y-6">
-    <PageHeader :freshness="freshness" title="Traces">
-      <template #description>
+    <div class="flex items-start justify-between gap-3 flex-wrap">
+      <p class="text-xs text-muted max-w-2xl">
         What one request did, as the application reported it. Add an OpenTelemetry SDK and it exports here on its own —
         every environment is given the endpoint.
-      </template>
-      <template #actions>
-        <USelect v-model="project" :items="projectItems" size="sm" class="w-36 sm:w-40" />
+      </p>
+      <div class="flex items-center gap-2 flex-wrap">
         <USelect v-model="minDuration" :items="slowOptions" size="sm" class="w-36 sm:w-44" />
         <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-40" />
         <UButton
@@ -206,8 +201,8 @@ function barTone(span: Span): string {
         >
           Errors
         </UButton>
-      </template>
-    </PageHeader>
+      </div>
+    </div>
 
     <UAlert
       v-if="traces.error.value"
