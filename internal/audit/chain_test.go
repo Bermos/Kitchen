@@ -250,6 +250,12 @@ func TestTransitionEncodesDetailsDeterministically(t *testing.T) {
 	if first.Details != second.Details {
 		t.Errorf("details encoded two ways: %q then %q", first.Details, second.Details)
 	}
+	// Seal stamps a record with the clock when it carries no timestamp, so two
+	// records sealed either side of a millisecond boundary hash differently for
+	// a reason that has nothing to do with the details. Pin the instant, since
+	// the determinism under test is the encoding's.
+	at := time.Date(2026, time.September, 6, 12, 0, 0, 0, time.UTC)
+	first.Timestamp, second.Timestamp = at, at
 	if ChainHash(Seal(first, clickhouse.AuditRecord{})) != ChainHash(Seal(second, clickhouse.AuditRecord{})) {
 		t.Error("the same details produced two hashes, so a record could not be re-derived")
 	}
