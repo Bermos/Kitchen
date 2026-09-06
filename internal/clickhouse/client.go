@@ -24,6 +24,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -248,6 +249,38 @@ type QueryError struct {
 
 func (e *QueryError) Error() string {
 	return fmt.Sprintf("clickhouse refused the query (%s): %s", e.Status, e.Message)
+}
+
+// Refused reports whether ClickHouse judged the statement, as opposed to the
+// store not answering at all. It is the difference between a fault in the
+// platform's own query and a store a caller should simply try again for, and
+// nothing outside this package should have to know that the first arrives as a
+// *QueryError and the second as whatever net/http returned.
+func Refused(err error) bool {
+	var refused *QueryError
+	return errors.As(err, &refused)
+}
+
+// IsUnknownTable reports whether ClickHouse refused a statement because the
+// table it named is not in the store.
+//
+// It is worth telling apart from every other refusal because it is not a fault
+// in the statement: it is a table the platform has not created yet — the audit
+// log's, on an installation that keeps none — and answering that as a broken
+// query sends the caller looking for a bug that is not there (#441).
+//
+// The match is on the server's text because the HTTP interface offers nothing
+// else: the status is 404 for a whole class of refusals and the code is only in
+// the message. Both spellings ClickHouse uses are matched — it names the code
+// in parentheses at the end and leads with `Code: 60.` — so a message that
+// carries only one of them still reads.
+func IsUnknownTable(err error) bool {
+	var refused *QueryError
+	if !errors.As(err, &refused) {
+		return false
+	}
+	return strings.Contains(refused.Message, "(UNKNOWN_TABLE)") ||
+		strings.HasPrefix(strings.TrimSpace(refused.Message), "Code: 60.")
 }
 
 // QueryWithParams runs a statement whose `{name:Type}` placeholders are filled

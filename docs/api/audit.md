@@ -114,6 +114,24 @@ The chain fields come back with every record on purpose. An audit view that
 hid them would be asking to be believed, and the point of a chain is that it
 does not have to be.
 
+### When there is nothing to read
+
+The log is a table in the telemetry store, and the platform creates it when it
+reconciles an installation that keeps one. Both reads therefore have three ways
+to answer nothing, and they are told apart rather than collapsed into one
+failure — a caller who is only told "failed" cannot tell whether to retry, to
+fix the call, or to go and find somebody:
+
+| Answer | What happened | What to do |
+|---|---|---|
+| `503` | This installation keeps no audit log: `spec.compliance.audit` is off, so nothing has been recorded and there is no table to read | Nothing. `GET /compliance` says the same thing about the whole evidence surface |
+| `503` | The log's table is not in the store yet, or the store did not answer | Try again. Both clear on their own; the Kitchen object's compliance status says which it was |
+| `500` | The store refused the platform's own query | Report it. The message is deliberately not the store's diagnostic — that is a fault for whoever maintains Kitchen and is in the operator's log |
+
+The CLI publishes the first two as `unavailable` (exit 7) and the third as
+`failed` (exit 1), so `kitchen api GET /audit` answers the same question in the
+same words as the dashboard.
+
 ```
 GET /audit/verify?from=1
 ```

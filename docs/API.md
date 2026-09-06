@@ -386,7 +386,7 @@ such changes two changes to two different files.
 | `403` | Your account may not do this — the message names the role it wanted. Also the operator's own service account being refused by the cluster |
 | `404` | No such object, or no such endpoint |
 | `409` | Someone else changed the object first, it already exists, it already finished, or something still uses it |
-| `503` | A capability this endpoint needs is not installed |
+| `503` | A capability this endpoint needs is not installed, or a store it reads did not answer |
 
 ## Decisions
 

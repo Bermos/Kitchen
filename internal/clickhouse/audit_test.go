@@ -19,6 +19,8 @@ package clickhouse
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -257,5 +259,62 @@ func TestActorActivityAnswersTheNewestRecordPerPerson(t *testing.T) {
 	}
 	if !strings.Contains(store.query, "GROUP BY actor") {
 		t.Errorf("the survey must be one row per identity:\n%s", store.query)
+	}
+}
+
+// The two questions the audit route asks about a failure, over the wordings a
+// real server produced. They are a string match on the store's own text
+// because its HTTP interface offers nothing else — 404 is the status for a
+// missing table and for a mistyped column alike — so the wordings are pinned
+// here rather than trusted.
+func TestAFailedReadIsClassifiedByWhatTheStoreSaid(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		err          error
+		refused      bool
+		unknownTable bool
+	}{
+		{
+			name: "a table that is not there",
+			err: &QueryError{Status: "404 Not Found", Message: "Code: 60. DB::Exception: Unknown table " +
+				"expression identifier 'kitchen.audit_log' in scope SELECT toString(sequence) AS seq. " +
+				"(UNKNOWN_TABLE) (version 26.3.17.110 (official build))"},
+			refused:      true,
+			unknownTable: true,
+		},
+		{
+			// The same fault as the store words it when the table is named
+			// without a database, which is the older spelling.
+			name:         "the shorter wording",
+			err:          &QueryError{Status: "404 Not Found", Message: "Code: 60. DB::Exception: Table audit_log does not exist"},
+			refused:      true,
+			unknownTable: true,
+		},
+		{
+			// A column the query names and the table does not have answers
+			// 404 as well, and is emphatically not a missing table: it is the
+			// platform's own query being wrong.
+			name: "a column that is not there",
+			err: &QueryError{Status: "404 Not Found", Message: "Code: 47. DB::Exception: Unknown " +
+				"expression identifier `privileged` in scope SELECT. (UNKNOWN_IDENTIFIER)"},
+			refused: true,
+		},
+		{
+			name: "a store that did not answer",
+			err: fmt.Errorf("clickhouse at http://kitchen-clickhouse:8123/: %w",
+				errors.New("dial tcp 10.0.0.1:8123: connect: connection refused")),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if Refused(tc.err) != tc.refused {
+				t.Errorf("Refused answered %v, want %v", Refused(tc.err), tc.refused)
+			}
+			if IsUnknownTable(tc.err) != tc.unknownTable {
+				t.Errorf("IsUnknownTable answered %v, want %v", IsUnknownTable(tc.err), tc.unknownTable)
+			}
+		})
+	}
+	if Refused(nil) || IsUnknownTable(nil) {
+		t.Error("a read that did not fail is not a refusal")
 	}
 }

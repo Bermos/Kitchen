@@ -887,6 +887,14 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 		}
 	}
 
+	// The CRD defaults the audit log on and the fake client applies no
+	// defaults, so the harness stands in for the API server here: a Kitchen
+	// written by a test would otherwise describe an installation that keeps
+	// no audit log, which the reads now answer 503 to. A test that wants the
+	// log off writes the singleton itself — see
+	// TestTheAuditLogSaysSoWhenTheInstallationKeepsNone.
+	kitchen.Spec.Compliance.Audit.Enabled = true
+
 	objects := append([]runtime.Object{kitchen}, objs...)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(objects...).

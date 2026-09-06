@@ -117,6 +117,66 @@ func auditBody(record clickhouse.AuditRecord) auditRecordBody {
 	return body
 }
 
+// openAuditLog answers the request itself when this installation keeps no
+// audit log, and reports whether the caller may go on and read one. A false
+// return means the response has been written, in the same shape openLogStore
+// uses for a telemetry read on an installation with no store.
+//
+// The reads have to ask, because the log's table exists only when the answer is
+// yes: EnsureAuditSchema is the compliance reconcile's, and an installation
+// that turned the log off never gets one. Without this the store answers
+// UNKNOWN_TABLE and a log nobody is keeping reads as a 500 about a failed
+// query — which is #441, where the caller could not tell "this platform does
+// not do that" from "the platform is broken".
+func (s *Server) openAuditLog(w http.ResponseWriter, req *http.Request) bool {
+	kitchen := kitchenFrom(req.Context())
+	// The singleton travels with the request, so this costs nothing. Where it
+	// somehow did not, the store is left to answer — it is about to be asked
+	// anyway, and a claim about an installation nobody could read is worse
+	// than a refusal from the store.
+	if kitchen == nil || kitchen.Spec.Compliance.Audit.Enabled {
+		return true
+	}
+	writeJSON(w, http.StatusServiceUnavailable, errorBody{
+		Error: "this installation keeps no audit log: spec.compliance.audit is turned off, so no " +
+			"transition has been recorded and there is nothing to read. GET /compliance reports " +
+			"the same thing about attestation and the decision register",
+	})
+	return false
+}
+
+// writeAuditReadError answers a read of the audit log the store did not
+// complete, saying which of the three things went wrong without handing over
+// the store's diagnostic.
+//
+// The classification is the half of #441 that outlives the missing table: a
+// caller who is told only "failed" cannot tell whether to retry, to fix the
+// call, or to go and find somebody. So a store that did not answer and a log
+// this installation has not created are `503` — both clear on their own, and
+// both are what the CLI publishes as `unavailable` — while a statement
+// ClickHouse judged and refused stays `500`, because that one is a fault in
+// the platform's own query and nothing the caller does will change it.
+func (s *Server) writeAuditReadError(w http.ResponseWriter, err error, what string) {
+	s.log().Error(err, what+" failed")
+	switch {
+	case !clickhouse.Refused(err):
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{
+			Error: what + " could not be made: the telemetry store did not answer. " +
+				"The store rather than the request, so the same call is worth retrying",
+		})
+	case clickhouse.IsUnknownTable(err):
+		writeJSON(w, http.StatusServiceUnavailable, errorBody{
+			Error: "this installation has no audit log to read: the platform has not created the " +
+				"log's table in the telemetry store. GET /compliance says whether the audit log is " +
+				"being recorded, and the Kitchen object's compliance status says why it is not",
+		})
+	default:
+		writeJSON(w, http.StatusInternalServerError, errorBody{
+			Error: what + " failed; the operator's log has the store's diagnostic",
+		})
+	}
+}
+
 // listAuditRecords serves a page of the audit log, newest first.
 //
 // The filters are the four questions anyone asks of an audit log: what
@@ -160,6 +220,9 @@ func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if !s.openAuditLog(w, req) {
+		return
+	}
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
@@ -180,7 +243,7 @@ func (s *Server) listAuditRecords(w http.ResponseWriter, req *http.Request) {
 		Limit: limit,
 	})
 	if err != nil {
-		s.writeStoreError(w, err, "the audit log query")
+		s.writeAuditReadError(w, err, "the audit log query")
 		return
 	}
 
@@ -255,6 +318,9 @@ func (s *Server) verifyAuditChain(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if !s.openAuditLog(w, req) {
+		return
+	}
 	store := s.openLogStore(w, req)
 	if store == nil {
 		return
@@ -264,7 +330,7 @@ func (s *Server) verifyAuditChain(w http.ResponseWriter, req *http.Request) {
 	if from > 1 {
 		preceding, err := store.ScanAuditRecords(ctx, int64(from)-1, 1)
 		if err != nil {
-			s.writeStoreError(w, err, "the audit chain verification")
+			s.writeAuditReadError(w, err, "the audit chain verification")
 			return
 		}
 		if len(preceding) == 0 || preceding[0].Sequence != int64(from)-1 {
@@ -277,7 +343,7 @@ func (s *Server) verifyAuditChain(w http.ResponseWriter, req *http.Request) {
 
 	records, err := store.ScanAuditRecords(ctx, int64(from), limit)
 	if err != nil {
-		s.writeStoreError(w, err, "the audit chain verification")
+		s.writeAuditReadError(w, err, "the audit chain verification")
 		return
 	}
 	result := audit.Verify(records, previous)
