@@ -47,6 +47,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
+	"github.com/Bermos/Kitchen/internal/platformhost"
 	"github.com/Bermos/Kitchen/internal/previewgate"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
 )
@@ -147,6 +148,18 @@ const (
 	ConditionPreviewProtected = condPreviewProtected
 	// ReasonPreviewPublic is a preview nobody asked to gate.
 	ReasonPreviewPublic = "Public"
+
+	// reasonReservedHostname is the name of a project that would publish a
+	// hostname the platform already serves, or one another project's preview
+	// already has (#423). The API refuses such a name outright, so this only
+	// ever reaches a Project written straight to the cluster. The Project and
+	// its Environments say it in the same word, which is why it lives here
+	// rather than beside either of them.
+	//
+	// It is deliberately not exported: nothing outside the operator has to
+	// name it, and the API's severity table treats an unclassified reason as
+	// a fault — which this is.
+	reasonReservedHostname = "ReservedHostname"
 )
 
 // EnvironmentReconciler reconciles an Environment: it materializes the
@@ -275,7 +288,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	labels := childLabels(project.Name, env)
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
 
-	protected, gate, unprotectable := gatingFor(env, project, kitchen)
+	protected, gate, refusal := gatingFor(env, project, kitchen)
 
 	podEnv, effects, requeue, err := r.resolveEnv(ctx, env, release, appNS)
 	if err != nil {
@@ -324,7 +337,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// again once it did. It is empty exactly when the environment gets no
 	// route, which is a preview the platform will not publish.
 	publicURL := ""
-	if !unprotectable {
+	if refusal == nil {
 		publicURL = fmt.Sprintf("%s://%s", platformScheme(kitchen), host)
 	}
 	// The addresses of this environment's own service workloads go in with
@@ -383,7 +396,7 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		ceiling = 1
 	}
 	idle, idleCond, err := r.reconcileScaleToZero(ctx, env, project, kitchen, appNS, host, labels,
-		servicePort, replicas, ceiling, !unprotectable, effects.keepsPodsRunning)
+		servicePort, replicas, ceiling, refusal == nil, effects.keepsPodsRunning)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -411,11 +424,11 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// the status still holds from the previous reconcile.
 	env.Status.Processes = processes
 
-	if unprotectable {
+	if refusal != nil {
 		if err := r.deleteRoute(ctx, appNS, env.Name); err != nil {
 			return ctrl.Result{}, err
 		}
-		return r.unprotectable(ctx, env)
+		return r.unpublished(ctx, env, refusal)
 	}
 
 	// Verified custom domains ride this environment's route; see
@@ -437,26 +450,63 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // finalize deletes the Environment's children and releases the finalizer. The
 // children live in another namespace, so owner references cannot garbage
 // collect them for us.
+
+// publishRefusal is a reason the platform publishes this environment nowhere:
+// no route, no URL on the status, and nothing to cold-start. There are two,
+// and they are one type because everything downstream treats them alike — the
+// workloads are materialized either way, and it is the address that is
+// withheld.
+type publishRefusal struct {
+	reason  string
+	message string
+	// previewProtected says the refusal is also the answer to whether this
+	// preview is gated, and so belongs on that condition too.
+	previewProtected bool
+	// requeue is how long to wait before looking again, zero for a refusal
+	// nothing but a change to the objects can lift.
+	requeue time.Duration
+}
+
 // gatingFor decides what stands in front of this environment: whether it is
-// gated at all, the gate to route through, and whether it asked to be gated
-// on a platform that has none.
+// gated at all, the gate to route through, and whether the platform will
+// publish it at all.
 //
 // Only previews are ever gated: a production environment is the application's
 // public address. A preview asked to be protected on a platform with no gate
 // gets no route at all — publishing it anyway would be the one outcome the
-// Project explicitly did not ask for.
+// Project explicitly did not ask for. The other refusal is a project whose
+// name claims a hostname the platform already serves (#423): the API refuses
+// such a name, and this is the backstop for a Project written another way.
 func gatingFor(
 	env *kitchenv1alpha1.Environment,
 	project *kitchenv1alpha1.Project,
 	kitchen *kitchenv1alpha1.Kitchen,
-) (protected bool, gate *previewGateBackend, unprotectable bool) {
+) (protected bool, gate *previewGateBackend, refusal *publishRefusal) {
 	protected = env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected()
 	gate = previewGate(kitchen)
-	unprotectable = protected && gate == nil
+	unprotectable := protected && gate == nil
 	if !protected {
 		gate = nil
 	}
-	return protected, gate, unprotectable
+
+	// A reserved name is answered first: it is a fact about the project, and
+	// no amount of waiting for a gate changes it.
+	if reserved := platformhost.CheckProjectName(project.Name, kitchen.Spec.BaseDomain); reserved != nil {
+		return protected, gate, &publishRefusal{
+			reason: reasonReservedHostname,
+			message: reserved.Error() + ". No route is published: recreate the project under a name " +
+				"the platform does not already serve",
+		}
+	}
+	if unprotectable {
+		return protected, gate, &publishRefusal{
+			reason:           "PreviewGateUnavailable",
+			message:          previewGateUnavailableMessage,
+			previewProtected: true,
+			requeue:          time.Minute,
+		}
+	}
+	return protected, gate, nil
 }
 
 func (r *EnvironmentReconciler) finalize(ctx context.Context, env *kitchenv1alpha1.Environment) (ctrl.Result, error) {
@@ -1524,34 +1574,45 @@ func (r *EnvironmentReconciler) revisionOf(
 	return build.Spec.Git, true
 }
 
-// unprotectable records a preview that asked to be gated on a platform with
-// no gate to route it through. The workload is deployed either way — it is
-// the URL that is withheld, and only until the platform can protect it.
-func (r *EnvironmentReconciler) unprotectable(
+// previewGateUnavailableMessage explains a preview that asked to be gated on a
+// platform with no gate to route it through. The workload is deployed either
+// way — it is the URL that is withheld, and only until the platform can
+// protect it.
+const previewGateUnavailableMessage = "the Project asks for protected previews, but the platform runs no " +
+	"forward-auth gate (spec.auth.enabled and spec.auth.previewGate.enabled on the Kitchen object). " +
+	"No route is published: set spec.previews.protected=false on the Project to serve this preview openly."
+
+// unpublished records an environment the platform will not publish, and why.
+// The workloads it materialized stay: publishing is the part that is refused,
+// so it is the route, the URL and the cold start that are withheld.
+func (r *EnvironmentReconciler) unpublished(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
+	refusal *publishRefusal,
 ) (ctrl.Result, error) {
-	const message = "the Project asks for protected previews, but the platform runs no forward-auth gate " +
-		"(spec.auth.enabled and spec.auth.previewGate.enabled on the Kitchen object). " +
-		"No route is published: set spec.previews.protected=false on the Project to serve this preview openly."
-
 	env.Status.Phase = kitchenv1alpha1.EnvironmentPending
 	env.Status.URL = ""
 	// An environment with no route has nothing that could cold-start it, so it
 	// is not idling and does not report on it.
 	recordScaleToZero(env, nil)
-	for _, condition := range []metav1.Condition{
-		{Type: condPreviewProtected, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
-		{Type: condRouteProgrammed, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
-		{Type: condReady, Status: metav1.ConditionFalse, Reason: "PreviewGateUnavailable", Message: message},
-	} {
+	conditions := []metav1.Condition{
+		{Type: condRouteProgrammed, Status: metav1.ConditionFalse, Reason: refusal.reason, Message: refusal.message},
+		{Type: condReady, Status: metav1.ConditionFalse, Reason: refusal.reason, Message: refusal.message},
+	}
+	if refusal.previewProtected {
+		conditions = append(conditions, metav1.Condition{
+			Type: condPreviewProtected, Status: metav1.ConditionFalse,
+			Reason: refusal.reason, Message: refusal.message,
+		})
+	}
+	for _, condition := range conditions {
 		condition.ObservedGeneration = env.Generation
 		meta.SetStatusCondition(&env.Status.Conditions, condition)
 	}
 	if err := r.Status().Update(ctx, env); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: time.Minute}, nil
+	return ctrl.Result{RequeueAfter: refusal.requeue}, nil
 }
 
 // recordClaimsBound puts on the Environment which of its claims bind nothing

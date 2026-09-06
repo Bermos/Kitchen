@@ -33,6 +33,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/idp"
+	"github.com/Bermos/Kitchen/internal/platformhost"
 )
 
 // signingAlgorithms are the algorithms a platform token may be signed with.
@@ -226,7 +227,7 @@ func issuerFor(kitchen *kitchenv1alpha1.Kitchen) (issuerConfig, error) {
 		if kitchen.Spec.BaseDomain == "" {
 			return issuerConfig{}, errNoIssuer
 		}
-		host = "auth." + kitchen.Spec.BaseDomain
+		host = platformhost.Host(platformhost.Auth, kitchen.Spec.BaseDomain)
 	}
 	// The host is a hostname, so the scheme comes from the platform's TLS
 	// mode: in mode "none" the Gateway only listens on HTTP, and an issuer
@@ -263,7 +264,7 @@ func externalURL(kitchen *kitchenv1alpha1.Kitchen) string {
 	if kitchen.Spec.BaseDomain == "" {
 		return ""
 	}
-	return kitchen.Spec.TLS.Mode.Scheme() + "://kitchen." + kitchen.Spec.BaseDomain
+	return kitchen.Spec.TLS.Mode.Scheme() + "://" + platformhost.Host(platformhost.API, kitchen.Spec.BaseDomain)
 }
 
 // verifierFor returns a verifier for the given issuer, discovering it on first

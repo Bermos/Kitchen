@@ -40,6 +40,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/platformhost"
 )
 
 // get reads one object out of the platform namespace.
@@ -153,8 +154,27 @@ const defaultProductionBranch = "main"
 
 // validateProjectName checks a name before it becomes namespaces, hostnames
 // and generated object names, which is why plain DNS-1123 is not enough.
-func validateProjectName(name string) error {
-	return appconfig.ValidateProjectName(name)
+//
+// baseDomain is the platform's, and is only there for the message: a name is
+// refused for claiming a hostname the platform serves whether or not this
+// installation has a domain to spell that hostname out with.
+func validateProjectName(name, baseDomain string) error {
+	if err := appconfig.ValidateProjectName(name); err != nil {
+		return err
+	}
+	return platformhost.CheckProjectName(name, baseDomain)
+}
+
+// platformBaseDomain reads the base domain off the Kitchen singleton, for the
+// messages that name a hostname. It is best effort: an installation whose
+// singleton cannot be read is not one where creating a project should fail
+// with a platform error, so the refusals fall back to naming the label.
+func (s *Server) platformBaseDomain(ctx context.Context) string {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		return ""
+	}
+	return kitchen.Spec.BaseDomain
 }
 
 // requireConnection answers whether the named Connection can back the given
@@ -329,7 +349,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	body.DockerfilePath = normalizeDockerfilePath(body.DockerfilePath)
 	body.DockerfileTarget = normalizeDockerfileTarget(body.DockerfileTarget)
 
-	if err := validateProjectName(body.Name); err != nil {
+	if err := validateProjectName(body.Name, s.platformBaseDomain(ctx)); err != nil {
 		badRequest(w, "%s", err.Error())
 		return
 	}

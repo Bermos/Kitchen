@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/platformhost"
 )
 
 const (
@@ -54,8 +55,9 @@ const (
 	registryProviderName = "dockerRegistry"
 
 	// RegistryHostPrefix is the subdomain the registry is published on:
-	// registry.<baseDomain>.
-	RegistryHostPrefix = "registry"
+	// registry.<baseDomain>. It comes from platformhost because the same
+	// label is what a project may not be named (#423).
+	RegistryHostPrefix = platformhost.Registry
 
 	// defaultRegistryService, defaultRegistryPort and defaultRegistrySecret
 	// match what the chart writes under the conventional release name.
