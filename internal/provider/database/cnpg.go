@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -410,11 +411,16 @@ func (c *CNPG) ensureCluster(
 		// one is asking for a different database. The claim's config is
 		// applied when the Cluster is created and documented as such.
 		//
-		// The project label is the exception, and only where there is none:
+		// The project label is one exception, and only where there is none:
 		// a database an operator has just handed over records whose it is
 		// from now on, so the next claim of that name is answered from the
 		// record rather than from the hand-over.
 		if err := c.recordProject(ctx, existing, project); err != nil {
+			return nil, err
+		}
+		// The host-based authentication rules are the other, and unlike the
+		// label they are written every time: see ensurePgHBA.
+		if err := c.ensurePgHBA(ctx, existing); err != nil {
 			return nil, err
 		}
 		return existing, c.ready(existing)
@@ -509,6 +515,13 @@ func (c *CNPG) desiredCluster(
 			"storage":   storage,
 		},
 	}}
+	// Written through the setter rather than into the literal above, because
+	// an unstructured object holds `[]any` and nothing else: a `[]string` in
+	// there survives until the first deep copy and panics there.
+	if err := unstructured.SetNestedStringSlice(
+		cluster.Object, pgHBAFor(nil), "spec", "postgresql", "pg_hba"); err != nil {
+		return nil, err
+	}
 	cluster.SetGroupVersionKind(clusterGVK())
 	cluster.SetName(name)
 	cluster.SetNamespace(c.Namespace)
@@ -518,6 +531,79 @@ func (c *CNPG) desiredCluster(
 	}
 	cluster.SetLabels(labels)
 	return cluster, nil
+}
+
+// The two host-based authentication rules that make the server refuse what
+// the client no longer asks for (#431).
+//
+// `sslmode=require` — `verify-full` since #461 — is the *client's*
+// declaration and nothing more. The pg_hba.conf CloudNativePG generates ends
+// in `host all all all scram-sha-256`, so a pod that holds the application
+// password has always been able to ask for a plaintext connection and be
+// given one, over a network where the password and every row are then in the
+// clear.
+//
+// These two go in the operator's *user-defined* section, which it writes
+// after its own fixed rules and before that trailing default. First match
+// wins, so an encrypted connection matches the first line and authenticates
+// with scram, an unencrypted one matches the second and is refused, and the
+// default is never reached at all.
+//
+// What this must not break is CloudNativePG's own traffic, and it cannot: the
+// fixed rules above it — `local all all peer`, and the `hostssl …
+// streaming_replica … cert` and pooler rules, which are client-certificate
+// authentication the operator sets up for itself — match before anything
+// here. `local` is deliberately left alone for the same reason it is first: a
+// unix socket has no TLS to ask for and nothing on a wire to protect.
+func pgHBAEntries() []string {
+	return []string{
+		"hostssl all all all scram-sha-256",
+		"hostnossl all all all reject",
+	}
+}
+
+// pgHBAFor is the entry list a Cluster should carry: the platform's two rules
+// first, and anything else that was already there kept after them.
+//
+// The platform owns these Clusters, so there is normally nothing else. An
+// operator who added a rule to one by hand is not silently overruled — the
+// rule stays, below the two that decide whether the connection is encrypted
+// at all.
+func pgHBAFor(existing []string) []string {
+	required := pgHBAEntries()
+	merged := slices.Clone(required)
+	for _, entry := range existing {
+		if !slices.Contains(required, entry) {
+			merged = append(merged, entry)
+		}
+	}
+	return merged
+}
+
+// ensurePgHBA writes those rules onto a Cluster that was created before them.
+//
+// It is the one part of a found Cluster's spec this provisioner rewrites, and
+// the reason is the reason an application namespace is relabelled on every
+// reconcile rather than at creation: a database is created once and found by
+// every reconcile after that, so a rule written only at creation would never
+// reach an installation that already has databases — which is every
+// installation upgrading into this. It costs no restart; CloudNativePG rolls
+// the new pg_hba.conf out to the instances and Postgres reloads it.
+func (c *CNPG) ensurePgHBA(ctx context.Context, cluster *unstructured.Unstructured) error {
+	existing, _, err := unstructured.NestedStringSlice(cluster.Object, "spec", "postgresql", "pg_hba")
+	if err != nil {
+		return err
+	}
+	wanted := pgHBAFor(existing)
+	if slices.Equal(existing, wanted) {
+		return nil
+	}
+	patch := client.MergeFrom(cluster.DeepCopy())
+	if err := unstructured.SetNestedStringSlice(
+		cluster.Object, wanted, "spec", "postgresql", "pg_hba"); err != nil {
+		return err
+	}
+	return c.Client.Patch(ctx, cluster, patch)
 }
 
 // owner answers naming.Lookup: whether a Cluster of that name is there and
@@ -672,6 +758,11 @@ func (c *CNPG) binding(ctx context.Context, cluster *unstructured.Unstructured) 
 	// while node-postgres treats `require` as an alias for `verify-full` — so
 	// on a database signed by a CA it generated itself, `pg` fails with
 	// SELF_SIGNED_CERT_IN_CHAIN unless it is given the certificate.
+	//
+	// All of that is still only what the *client* asks for. What the server
+	// will accept is the other half and it is not written here: see
+	// [pgHBAEntries], which is what makes an unencrypted connection a refusal
+	// rather than a client that neglected to say `sslmode`.
 	dsn := url.URL{
 		Scheme:   "postgresql",
 		User:     url.UserPassword(user, password),

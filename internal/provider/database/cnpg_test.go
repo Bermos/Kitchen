@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -849,5 +850,129 @@ func TestCNPGIsAnIdlingProvisioner(t *testing.T) {
 	var _ IdlingProvisioner = &CNPG{}
 	if _, ok := any(&Neon{}).(IdlingProvisioner); ok {
 		t.Error("Neon suspends its own compute; it must not claim to be asked")
+	}
+}
+
+// pgHBAOf reads the host-based authentication rules off a Cluster.
+func pgHBAOf(t *testing.T, cluster *unstructured.Unstructured) []string {
+	t.Helper()
+	entries, _, err := unstructured.NestedStringSlice(cluster.Object, "spec", "postgresql", "pg_hba")
+	if err != nil {
+		t.Fatalf("reading pg_hba: %v", err)
+	}
+	return entries
+}
+
+// The binding asks for TLS; this is the half that makes the server refuse the
+// alternative. Without it CloudNativePG's generated pg_hba.conf ends in
+// `host all all all scram-sha-256`, so anything holding the application
+// password could connect in the clear.
+func TestAProvisionedClusterRefusesUnencryptedConnections(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t)
+
+	if _, err := cnpg.Provision(context.Background(), shopDB); !errors.Is(err, ErrNotReady) {
+		t.Fatalf("error %v, want ErrNotReady", err)
+	}
+
+	entries := pgHBAOf(t, getCluster(t, cnpg, testCluster))
+	want := []string{"hostssl all all all scram-sha-256", "hostnossl all all all reject"}
+	if !slices.Equal(entries, want) {
+		t.Fatalf("pg_hba %q, want %q", entries, want)
+	}
+}
+
+// The order is the whole of it: pg_hba.conf takes the first matching rule, so
+// the rule that admits an encrypted connection has to come before the one that
+// refuses an unencrypted one, and both have to come before CloudNativePG's own
+// trailing `host all all all`.
+func TestTheEncryptedRuleIsMatchedBeforeTheRefusal(t *testing.T) {
+	entries := pgHBAFor(nil)
+	if len(entries) != 2 {
+		t.Fatalf("pg_hba %q, want two rules", entries)
+	}
+	if !strings.HasPrefix(entries[0], "hostssl ") || !strings.HasSuffix(entries[0], " scram-sha-256") {
+		t.Fatalf("the first rule %q does not admit an encrypted connection", entries[0])
+	}
+	if !strings.HasPrefix(entries[1], "hostnossl ") || !strings.HasSuffix(entries[1], " reject") {
+		t.Fatalf("the second rule %q does not refuse an unencrypted one", entries[1])
+	}
+	// `local` is never mentioned: CloudNativePG's own fixed rules put
+	// `local all all peer` and the streaming_replica certificate rules above
+	// anything written here, and a rule about the unix socket would be both
+	// unreachable and wrong.
+	for _, entry := range entries {
+		if strings.HasPrefix(entry, "local") {
+			t.Fatalf("rule %q writes about the local socket, which is the operator's", entry)
+		}
+	}
+}
+
+// A database created before this rule existed is found by every reconcile
+// after it and would otherwise keep accepting plaintext forever.
+func TestAnExistingClusterIsGivenTheRulesOnTheNextReconcile(t *testing.T) {
+	cnpg := cnpgAgainstFakeCluster(t, readyCluster(), appSecret(testCluster))
+
+	if _, err := cnpg.Provision(context.Background(), shopDB); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := pgHBAOf(t, getCluster(t, cnpg, testCluster))
+	if !slices.Equal(entries, pgHBAFor(nil)) {
+		t.Fatalf("pg_hba %q, want the platform's rules", entries)
+	}
+}
+
+// An operator who added a rule of their own to one of these Clusters keeps it,
+// below the two that decide whether the connection is encrypted at all.
+func TestARuleSomebodyAddedByHandSurvivesBelowThePlatformsOwn(t *testing.T) {
+	existing := readyCluster()
+	if err := unstructured.SetNestedStringSlice(existing.Object,
+		[]string{"host all all 10.0.0.0/8 scram-sha-256"}, "spec", "postgresql", "pg_hba"); err != nil {
+		t.Fatal(err)
+	}
+	cnpg := cnpgAgainstFakeCluster(t, existing, appSecret(testCluster))
+
+	if _, err := cnpg.Provision(context.Background(), shopDB); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := pgHBAOf(t, getCluster(t, cnpg, testCluster))
+	want := append(pgHBAFor(nil), "host all all 10.0.0.0/8 scram-sha-256")
+	if !slices.Equal(entries, want) {
+		t.Fatalf("pg_hba %q, want %q", entries, want)
+	}
+}
+
+// And a Cluster that already carries them is not patched again, which is what
+// keeps a reconcile that changes nothing from writing to the API server.
+func TestAClusterThatAlreadyCarriesTheRulesIsNotWrittenTo(t *testing.T) {
+	existing := readyCluster()
+	if err := unstructured.SetNestedStringSlice(
+		existing.Object, pgHBAFor(nil), "spec", "postgresql", "pg_hba"); err != nil {
+		t.Fatal(err)
+	}
+	scheme := cnpgScheme(t)
+	patched := false
+	cnpg := &CNPG{
+		Client: fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(existing, appSecret(testCluster)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object,
+					patch client.Patch, opts ...client.PatchOption) error {
+					patched = true
+					return c.Patch(ctx, obj, patch, opts...)
+				},
+			}).Build(),
+		Namespace:   testDatabaseNamespace,
+		Images:      DefaultPostgresImages,
+		StorageSize: DefaultStorageSize,
+		Instances:   DefaultInstances,
+	}
+
+	if _, err := cnpg.Provision(context.Background(), shopDB); err != nil {
+		t.Fatal(err)
+	}
+	if patched {
+		t.Fatal("the cluster was patched although its pg_hba was already the platform's")
 	}
 }
