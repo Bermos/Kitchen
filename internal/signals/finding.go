@@ -23,7 +23,7 @@ import (
 )
 
 // ID is a signal's name. It is part of every fingerprint and so of every
-// transition record a later release writes, which makes it an interface: a
+// transition record the background loop writes, which makes it an interface: a
 // renamed signal is a signal that resolved and a different one that opened.
 type ID string
 
@@ -165,8 +165,8 @@ type Finding struct {
 
 	// Fingerprint identifies the condition across evaluations. Two rounds that
 	// both find the same container crash-looping produce the same string, which
-	// is what lets a later release diff rounds and record transitions instead
-	// of re-announcing the same problem every interval.
+	// is what lets the background loop diff rounds and record transitions
+	// instead of re-announcing the same problem every interval.
 	Fingerprint string `json:"fingerprint"`
 
 	// Title is the short human sentence — "crash-looping", "memory at 96% of
@@ -188,8 +188,9 @@ type Finding struct {
 	// a condition's last transition, an event's first occurrence, the start of
 	// the run of buckets that made it sustained. Where nothing in the snapshot
 	// dates the condition it is the evaluation time, which is honest for a
-	// stateless evaluator and is the field a background loop replaces with the
-	// real opening time once it keeps history.
+	// stateless evaluator. It is deliberately not "when the platform first saw
+	// this": that is [Transition.OpenedAt], which the background loop keeps
+	// because only a history can know it.
 	Since time.Time `json:"since"`
 
 	// Evidence is a dashboard path to the screen that shows the numbers behind

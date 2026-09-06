@@ -243,6 +243,12 @@ type logReader interface {
 	// the API server's side.
 	QueryK8sEvents(ctx context.Context, query clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error)
 
+	// The signal catalogue's history, as the operator's background evaluation
+	// loop records it: every condition currently open. It is what the two
+	// signals endpoints answer from when the loop is running — see
+	// recordedSignals.
+	OpenSignalTransitions(ctx context.Context) ([]clickhouse.SignalTransition, error)
+
 	// Node saturation and per-claim fill. These are here, rather than handed to
 	// the Server once at startup, because they are read from the same store as
 	// everything above and it is resolved per request off the Kitchen singleton:

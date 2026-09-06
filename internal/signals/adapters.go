@@ -18,6 +18,7 @@ package signals
 
 import (
 	"context"
+	"net"
 	"time"
 
 	"github.com/Bermos/Kitchen/internal/clickhouse"
@@ -161,3 +162,105 @@ var (
 	_ HostMetricsSource = hostMetrics{}
 	_ VolumeUsageSource = volumeUsage{}
 )
+
+// SystemResolver is the standard library's resolver with a deadline per
+// lookup, which is what both callers of the catalogue hand [Sources.Resolver].
+//
+// The deadline is what makes name resolution safe to do from a request handler
+// and from a loop alike: dns.mismatch probes a handful of published names every
+// evaluation, and a resolver that is itself unreachable would otherwise hold
+// each one open for the resolv.conf timeout multiplied by the probe limit.
+//
+// It lives here, beside the interface it satisfies, because the API and the
+// background evaluation loop must probe DNS the same way. Two copies of it
+// would be two rounds that can disagree about whether a name resolves, which is
+// exactly the disagreement between "the screen says" and "the history recorded"
+// that this package exists to prevent.
+//
+// The distinction the rule rests on survives the deadline: a lookup that timed
+// out comes back as a *net.DNSError whose IsNotFound is false, which the
+// gatherer reads as an input it could not read — and an error carrying no
+// DNSError at all fails that test the same way. Only a name the resolver
+// positively says does not exist becomes a finding.
+func SystemResolver(timeout time.Duration) Resolver {
+	return boundedResolver{resolver: net.DefaultResolver, timeout: timeout}
+}
+
+type boundedResolver struct {
+	resolver *net.Resolver
+	timeout  time.Duration
+}
+
+func (r boundedResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+	return r.resolver.LookupHost(ctx, host)
+}
+
+// The signal history's two mappings: a round's transitions as rows, and rows
+// as transitions.
+//
+// They are here, beside the store adapters, for the same reason those are: the
+// store returns its own row types and knows nothing about severities,
+// audiences or scope kinds, and this is the one place that translates. Both
+// callers of the history — the loop that writes it and the API that reads it —
+// go through them, so a column can never mean one thing on the way in and
+// another on the way out.
+
+// TransitionRows is a round's transitions in the shape the store writes.
+func TransitionRows(transitions []Transition) []clickhouse.SignalTransition {
+	rows := make([]clickhouse.SignalTransition, 0, len(transitions))
+	for _, transition := range transitions {
+		rows = append(rows, clickhouse.SignalTransition{
+			At:          transition.At,
+			State:       string(transition.State),
+			Signal:      string(transition.Signal),
+			Fingerprint: transition.Fingerprint,
+			Audience:    string(transition.Audience),
+			Version:     transition.Version,
+			Severity:    string(transition.Severity),
+			Scope:       string(transition.Scope.Kind),
+			Project:     transition.Scope.Project,
+			Environment: transition.Scope.Environment,
+			Namespace:   transition.Scope.Namespace,
+			Node:        transition.Scope.Node,
+			Name:        transition.Scope.Name,
+			Title:       transition.Title,
+			Detail:      transition.Detail,
+			Evidence:    transition.Evidence,
+			Since:       transition.Since,
+			OpenedAt:    transition.OpenedAt,
+		})
+	}
+	return rows
+}
+
+// TransitionsFrom is recorded rows read back as what they were about.
+func TransitionsFrom(rows []clickhouse.SignalTransition) []Transition {
+	transitions := make([]Transition, 0, len(rows))
+	for _, row := range rows {
+		transitions = append(transitions, Transition{
+			At:          row.At,
+			State:       TransitionState(row.State),
+			Signal:      ID(row.Signal),
+			Fingerprint: row.Fingerprint,
+			Audience:    Audience(row.Audience),
+			Version:     row.Version,
+			Severity:    Severity(row.Severity),
+			Scope: Scope{
+				Kind:        ScopeKind(row.Scope),
+				Project:     row.Project,
+				Environment: row.Environment,
+				Namespace:   row.Namespace,
+				Node:        row.Node,
+				Name:        row.Name,
+			},
+			Title:    row.Title,
+			Detail:   row.Detail,
+			Evidence: row.Evidence,
+			Since:    row.Since,
+			OpenedAt: row.OpenedAt,
+		})
+	}
+	return transitions
+}

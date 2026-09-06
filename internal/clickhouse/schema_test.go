@@ -493,6 +493,7 @@ func TestEnsureTelemetrySchemaCreatesEveryTable(t *testing.T) {
 		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
 		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
 		RequestsTable, RequestsMinuteTable, RequestsHourTable, K8sEventsTable,
+		SignalTransitionsTable,
 	} {
 		want := "CREATE TABLE IF NOT EXISTS " + qualified(table)
 		if !store.sent(want) {
@@ -637,5 +638,32 @@ func TestConfigFromSecret(t *testing.T) {
 	secret.Data[SecretKeyDatabase] = []byte("kitchen`; DROP DATABASE kitchen; --")
 	if _, err := ConfigFromSecret(secret); err == nil {
 		t.Fatal("expected an unusable database name to be rejected")
+	}
+}
+
+// The signal history's TTL is the one conditional TTL a single class produces,
+// and both halves of it matter: it deletes resolved transitions past their
+// date, and the part-drop mode has to come off — a part holding one open
+// condition is not wholly expired however old its neighbours are, and dropping
+// it whole would delete the outage nobody has fixed.
+func TestTheSignalHistoryExpiresResolvedTransitionsOnly(t *testing.T) {
+	store := newFakeStore(t)
+	store.engine = ""
+
+	if err := store.client(t).EnsureSignalsSchema(context.Background(), 30); err != nil {
+		t.Fatalf("EnsureSignalsSchema: %v", err)
+	}
+
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS " + qualified(SignalTransitionsTable),
+		// Keyed on the condition and the audience it was delivered to, after
+		// the project every other table here leads with.
+		"ORDER BY (project, environment, fingerprint, audience, timestamp)",
+		"TTL toDateTime(timestamp) + toIntervalDay(30) DELETE WHERE state = 'resolved'",
+		"ttl_only_drop_parts = 0",
+	} {
+		if !store.sent(want) {
+			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
+		}
 	}
 }

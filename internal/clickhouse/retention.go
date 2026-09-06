@@ -89,6 +89,11 @@ var retentionTargets = []retentionTarget{
 	// either against the class's horizon would be measuring the wrong rule.
 	{retention.ClassRequests, RequestsMinuteTable, timeColumnRollup, ""},
 	{retention.ClassClusterEvents, K8sEventsTable, timeColumnKitchen, ""},
+	// Resolved transitions only, because that is what the class's window is
+	// about: an open condition is kept for as long as it is open, and
+	// measuring it against the horizon would report the platform holding
+	// data past its date every time an outage outlasted the retention.
+	{retention.ClassSignals, SignalTransitionsTable, timeColumnKitchen, resolvedTransitionsCondition},
 	{retention.ClassActivity, EventsTable, timeColumnKitchen, ""},
 	{retention.ClassAudit, AuditTable, timeColumnKitchen, ""},
 }
@@ -132,7 +137,7 @@ func (o RetentionObservation) Measured() bool { return o.Error == "" }
 //
 // It never returns an error for a class it could not reach: one unreachable
 // table must not cost the record of the other eight. A store that is entirely
-// down produces nine observations that each say so, and the caller records
+// down produces one observation per class that each say so, and the caller records
 // that — a sweep that ran and found nothing readable is itself a fact worth
 // keeping.
 func (c *Client) SweepRetention(ctx context.Context, model retention.Model, now time.Time) []RetentionObservation {

@@ -239,8 +239,8 @@ func (s *RetentionSweeper) store(
 // record appends the deletion evidence.
 //
 // One record per pass rather than one per class, because the pass is the
-// event: nine records saying "swept, found nothing to remove" would be nine
-// lines of noise a day for the same fact. The details carry every class, so
+// event: one record per class saying "swept, found nothing to remove" would be
+// a line of noise per class per day for the same fact. The details carry every class, so
 // the record is complete without being repetitive — and it goes in through the
 // same chained, single-appender log every other piece of evidence does, which
 // is the point of the instruction not to invent a second ledger for it.

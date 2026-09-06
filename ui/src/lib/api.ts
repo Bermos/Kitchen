@@ -3372,9 +3372,14 @@ export interface SignalsAnswer {
   items: Finding[];
   counts: SignalCounts;
   unreadable?: InputFailure[];
-  /** When the snapshot was taken — findings are ephemeral, so this is how fresh
-   * the answer is. */
+  /** When the round was taken: the snapshot's, for a round evaluated to serve
+   * the request, and the background loop's last round for a recorded one. */
   evaluatedAt: string;
+  /** Which of the two answers this is: `recorded` is the round the operator's
+   * background evaluation loop wrote to `signal_transitions`, `evaluated` is
+   * one taken to serve this request — the loop being off, having no store to
+   * record into, or being behind. Both are the same shape. */
+  source?: "recorded" | "evaluated";
   project?: string;
   environment?: string;
 }
@@ -3758,6 +3763,7 @@ export interface PlatformRetentionPatch {
   traces?: number;
   requests?: number;
   clusterEvents?: number;
+  signals?: number;
   activity?: number;
   audit?: number;
   auditFloorOverride?: RetentionOverride;

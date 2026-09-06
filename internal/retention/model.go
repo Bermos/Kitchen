@@ -49,6 +49,7 @@ const (
 	ClassTraces        Class = "traces"
 	ClassRequests      Class = "requests"
 	ClassClusterEvents Class = "clusterEvents"
+	ClassSignals       Class = "signals"
 	ClassActivity      Class = "activity"
 	ClassAudit         Class = "audit"
 )
@@ -93,16 +94,20 @@ type Definition struct {
 	// Sweepable is whether the retention sweep may delete this class's
 	// expired data itself.
 	//
-	// It is false in two situations, and both are rules rather than
+	// It is false in three situations, and all of them are rules rather than
 	// configurations. The **audit** class is not sweepable because a sweeper
 	// that could delete audit rows on a schedule is a sweeper that could
 	// delete the record of its own deletions; its expiry is left entirely to
 	// the store's own TTL. **Container logs and build logs** are not
 	// sweepable because they share one table, and the sweep's only exact
 	// deletion is dropping a partition whole — which would take the
-	// longer-lived class with it. The rule the two cases share is the one
-	// worth remembering: *the sweep never deletes rows it cannot attribute
-	// to exactly one class.*
+	// longer-lived class with it. **Signal history** is not sweepable for
+	// the same shape of reason from the other direction: its window applies
+	// to resolved conditions alone, and a day's partition holds the
+	// transitions of conditions that are still open. The rule all three
+	// share is the one worth remembering: *the sweep never deletes rows it
+	// cannot attribute to exactly one class* — nor, which is the same rule
+	// read once more, to exactly one fate.
 	Sweepable bool
 }
 
@@ -123,6 +128,8 @@ var definitions = []Definition{
 		"HTTP request telemetry; raw rows live a week or this window, whichever is shorter", true},
 	{ClassClusterEvents, "Cluster events",
 		"the cluster's Warning history, which the API server itself keeps for about an hour", true},
+	{ClassSignals, "Signal history",
+		"when each condition the catalogue detects opened and resolved; open ones are never expired", false},
 	{ClassActivity, "Activity",
 		"the dashboard's activity feed — prose for a person catching up, not evidence", true},
 	{ClassAudit, "Audit log",
@@ -221,6 +228,8 @@ func configuredFor(spec kitchenv1alpha1.RetentionSpec, class Class) *int32 {
 		return spec.Requests
 	case ClassClusterEvents:
 		return spec.ClusterEvents
+	case ClassSignals:
+		return spec.Signals
 	case ClassActivity:
 		return spec.Activity
 	case ClassAudit:

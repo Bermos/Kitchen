@@ -766,6 +766,20 @@ kitchen:
       # stops being safe to say across machines. A synchronised cluster sits
       # three orders of magnitude inside it.
       maxDriftSeconds: 5
+    signals:
+      # -- Evaluate the operator's signal catalogue on a timer, under the same
+      # leader lease every other sweep runs under, and record the conditions
+      # that open and resolve. It is what makes "this has been failing for
+      # four hours and nobody has touched it" answerable: a round evaluated
+      # for a screen is thrown away with the response. Off leaves every screen
+      # exactly as it was — they evaluate on request — and records nothing.
+      enabled: true
+      # -- Seconds between rounds. It is the resolution of every duration the
+      # history can report: a condition that opened and resolved between two
+      # rounds was never seen, and "since 03:14" is only ever accurate to one
+      # interval. Below a minute the cost is real, since a round reads the
+      # cluster and queries the store.
+      intervalSeconds: 60
   # How long each class of what the platform keeps is kept, in days. Every
   # entry is optional and an empty one *inherits*: the telemetry classes from
   # `kitchen.observability.clickhouse.retentionDays`, and `audit` from
@@ -799,6 +813,10 @@ kitchen:
     # -- Days to retain the cluster's Warning-event history. The API server
     # expires the originals after about an hour, so this is the only copy.
     clusterEvents: ~
+    # -- Days to retain the signal catalogue's history — when each condition
+    # opened and resolved. The window applies to resolved conditions only: one
+    # that is still open is never expired for being old.
+    signals: ~
     # -- Days to retain the dashboard's activity feed. Prose for a person
     # catching up rather than evidence, so a short window costs only
     # convenience.

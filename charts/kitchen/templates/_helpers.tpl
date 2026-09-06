@@ -1062,7 +1062,7 @@ that later moved the inherited knob would find eight classes ignoring it.
 */}}
 {{- define "kitchen.retentionBlock" -}}
 {{- $retention := .Values.kitchen.retention -}}
-{{- $classes := list "containerLogs" "buildLogs" "flows" "metrics" "traces" "requests" "clusterEvents" "activity" "audit" -}}
+{{- $classes := list "containerLogs" "buildLogs" "flows" "metrics" "traces" "requests" "clusterEvents" "signals" "activity" "audit" -}}
 {{- $set := dict -}}
 {{- range $class := $classes -}}
 {{- $days := get $retention $class -}}

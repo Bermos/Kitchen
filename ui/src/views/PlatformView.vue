@@ -107,10 +107,11 @@ const sections = [
     />
 
     <p class="text-[11px] text-dimmed leading-relaxed">
-      The catalogue is evaluated when this screen asks rather than on a timer, so nothing here is stored and
-      “evaluated <em>n</em> ago” is exactly how fresh it is. Each finding carries a fingerprint that is stable for the
-      same underlying condition, which is what will let a later release record open and resolve transitions instead of
-      re-announcing the same problem — this screen is that inbox, minus the persistence.
+      The catalogue runs on a timer in the operator, which records when each condition opened and resolved; where that
+      is not running — switched off, no telemetry store, or a round that has not landed recently enough — this screen
+      evaluates one itself when it asks. Either way “evaluated <em>n</em> ago” is exactly how fresh this is. Each
+      finding carries a fingerprint that is stable for the same underlying condition, which is what makes one round
+      diffable against the last — this screen is that inbox, minus acknowledgement.
     </p>
 
     <div>

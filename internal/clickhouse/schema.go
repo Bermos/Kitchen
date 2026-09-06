@@ -106,6 +106,26 @@ const AuditTable = "audit_log"
 // neither.
 const K8sEventsTable = "k8s_events"
 
+// SignalTransitionsTable holds what the signal catalogue found, as changes
+// rather than as samples: one row when a condition opened, one when it
+// resolved, and nothing at all for the rounds in between where it went on
+// being true.
+//
+// It is what makes a finding outlive the response it was rendered into. A
+// screen asking what is wrong gets an answer either way; "this has been
+// failing for four hours", "nobody has acknowledged it" and "everything
+// blipped at 04:05 and recovered by 04:07" are questions that need the
+// history, and they are the ones the inbox and the delivery layer are built
+// on.
+//
+// A row is keyed by (fingerprint, audience), never by fingerprint alone. The
+// fingerprint is stable for the same underlying condition across evaluations
+// by design; the audience is who the condition was delivered to, and a
+// developer-audience finding is delivered twice — to the project and to the
+// operator — because those are two deliveries in two vocabularies that are
+// acknowledged and silenced separately.
+const SignalTransitionsTable = "signal_transitions"
+
 // TracesTable holds spans, one row each, as the collector receives them over
 // OTLP from instrumented applications.
 //
@@ -258,6 +278,15 @@ const (
 	containerLogsCondition = "source != 'build'"
 )
 
+// resolvedTransitionsCondition is the signal history's expiry rule, and it is
+// a condition rather than a date because the class is only half history. A
+// transition that closed a condition is a record of something that is over,
+// and it ages out like anything else. A transition that opened one the
+// platform still believes is true is the platform's current knowledge, and
+// expiring it because it is old would delete the outage nobody has fixed —
+// which is the single row on this table most worth having.
+const resolvedTransitionsCondition = "state = 'resolved'"
+
 // EnsureTelemetrySchema creates every telemetry table — logs, events, flows,
 // requests, cluster events, metrics and traces — and keeps their TTLs in step
 // with the retention model configured on the Kitchen object.
@@ -291,6 +320,9 @@ func (c *Client) EnsureTelemetrySchema(ctx context.Context, model retention.Mode
 		return err
 	}
 	if err := c.EnsureK8sEventsSchema(ctx, model.Days(retention.ClassClusterEvents)); err != nil {
+		return err
+	}
+	if err := c.EnsureSignalsSchema(ctx, model.Days(retention.ClassSignals)); err != nil {
 		return err
 	}
 	if err := c.EnsureMetricsSchema(ctx, model.Days(retention.ClassMetrics)); err != nil {
@@ -409,6 +441,26 @@ func (c *Client) EnsurePolicySchema(ctx context.Context, retentionDays int32) er
 // EnsureK8sEventsSchema creates the cluster's Warning-event history.
 func (c *Client) EnsureK8sEventsSchema(ctx context.Context, retentionDays int32) error {
 	return c.ensureTable(ctx, K8sEventsTable, createK8sEventsTable(c.cfg.Database, retentionDays), retentionDays)
+}
+
+// EnsureSignalsSchema creates the signal history and keeps its TTL in step
+// with the retention its class asks for.
+//
+// The TTL carries a condition, which is the whole of what is unusual here: it
+// deletes resolved transitions past their date and never touches an open one.
+// That costs the table `ttl_only_drop_parts` — a part holding one open
+// condition is never wholly expired — for the same reason a log table holding
+// two classes loses it, and it is the same trade: row-level expiry during
+// merge, in exchange for a promise the store actually keeps.
+func (c *Client) EnsureSignalsSchema(ctx context.Context, retentionDays int32) error {
+	return c.ensureTableRules(ctx, SignalTransitionsTable,
+		createSignalTransitionsTable(c.cfg.Database, retentionDays),
+		timeColumnKitchen, signalRetentionRules(retentionDays))
+}
+
+// signalRetentionRules is the signal history's TTL: one rule, conditional.
+func signalRetentionRules(retentionDays int32) []ttlRule {
+	return []ttlRule{{days: retentionDays, where: resolvedTransitionsCondition}}
 }
 
 // EnsureMetricsSchema creates the five OTel metric tables, the five-minute
@@ -613,11 +665,24 @@ func sameDays(a, b []int32) bool {
 	return true
 }
 
-// onlyDropParts is 1 while a table has one date for every row, and 0 once it
-// has two. See EnsureLogsSchema.
+// onlyDropParts is 1 while every row in a table expires on the same rule, and
+// 0 as soon as one part can hold rows that do not.
+//
+// Two rules is one way to get there — see EnsureLogsSchema, where a part holds
+// both log classes. A single *conditional* rule is the other, and it is the
+// same failure by a different route: with only-drop-parts on, ClickHouse
+// decides a part is expired from its dates alone, so a part holding one open
+// signal transition would be dropped whole at the date its resolved
+// neighbours were due. The condition is exactly what must not be ignored, so
+// the setting comes off wherever there is one.
 func onlyDropParts(rules []ttlRule) int {
 	if len(rules) > 1 {
 		return 0
+	}
+	for _, rule := range rules {
+		if rule.where != "" {
+			return 0
+		}
 	}
 	return 1
 }
@@ -1403,4 +1468,49 @@ ENGINE = MergeTree
 PARTITION BY toDate(timestamp)
 ORDER BY (project, environment, timestamp)
 TTL %s`, quoteIdentifier(database), quoteIdentifier(K8sEventsTable), ttlExpression(retentionDays))
+}
+
+// createSignalTransitionsTable is the signal catalogue's history: what opened,
+// what resolved, and when.
+//
+// The ordering key leads with the project like every other table here, and
+// then with the two columns that are this table's identity — the fingerprint
+// and the audience it was delivered to — because the reads are "what is open
+// for this key" and "what happened to this key", both of which are point
+// lookups rather than scans. Platform-scoped conditions carry an empty project
+// and are the operator's whole list, which is the same bucket k8s_events keeps
+// for the cluster's own objects.
+//
+// `opened_at` is on the resolving row as well as the opening one, so that how
+// long a condition lasted is one row rather than a join, and `version` is the
+// rule's own version at the moment the row was written: a catalogue change
+// mid-condition is then visible in the history instead of silently
+// reinterpreting it.
+func createSignalTransitionsTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    timestamp   DateTime64(3, 'UTC'),
+    state       LowCardinality(String),
+    signal      LowCardinality(String),
+    version     UInt32,
+    fingerprint String,
+    audience    LowCardinality(String),
+    severity    LowCardinality(String),
+    scope       LowCardinality(String),
+    project     LowCardinality(String),
+    environment LowCardinality(String),
+    namespace   LowCardinality(String),
+    node        LowCardinality(String),
+    name        String,
+    title       String,
+    detail      String,
+    evidence    String,
+    since       DateTime64(3, 'UTC'),
+    opened_at   DateTime64(3, 'UTC')
+)
+ENGINE = MergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY (project, environment, fingerprint, audience, timestamp)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(SignalTransitionsTable),
+		ttlExpressionRules(timeColumnKitchen, signalRetentionRules(retentionDays)))
 }

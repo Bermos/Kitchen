@@ -816,7 +816,7 @@ environment page: *"2 problems: crash-looping (12 restarts in 30m), memory at
 
 ```json
 {"project": "shop", "environment": "shop-production",
- "evaluatedAt": "2026-08-16T10:00:00Z",
+ "evaluatedAt": "2026-08-16T10:00:00Z", "source": "evaluated",
  "counts": {"critical": 1, "warning": 1, "info": 0},
  "items": [
    {"signal": "workload.crashloop", "severity": "critical",
@@ -828,14 +828,23 @@ environment page: *"2 problems: crash-looping (12 restarts in 30m), memory at
  "unreadable": [{"input": "http_requests_1m", "reason": "the request series query failed: …"}]}
 ```
 
-The rules are a versioned catalogue in the operator, evaluated when a screen
-asks rather than on a timer: nothing is stored, and `evaluatedAt` is how fresh
-the answer is. `fingerprint` is stable for the same underlying condition across
-evaluations, which is what will let a later release diff rounds and record
-transitions instead of re-announcing the same problem every interval — the
-shape is designed for that and does not change when it arrives. `detail`'s
-first clause is the headline number, so a strip can render `title (first
-clause)` without knowing anything about the rule that produced it.
+The rules are a versioned catalogue in the operator, and `evaluatedAt` is how
+fresh the answer is. `source` says how it was arrived at: `recorded` is the
+round the operator's background evaluation loop last wrote to
+`signal_transitions`, and `evaluated` is a round taken to serve this request —
+which is what comes back when the loop is off, has no store to record into, or
+has not run recently enough to be about now. Both are the same shape, and the
+strip renders either without knowing which it got. `fingerprint` is stable for
+the same underlying condition across evaluations, which is what lets the loop
+diff rounds and record transitions instead of re-announcing the same problem
+every interval. `detail`'s first clause is the headline number, so a strip can
+render `title (first clause)` without knowing anything about the rule that
+produced it.
+
+A recorded round is narrowed to this environment the same way an evaluated one
+is, and to the *developer's* delivery of each condition: a condition that
+reaches both audiences is recorded twice, and the row on this strip is the
+project's rather than the operator's.
 
 Findings here are the environment's own and its project's; a saturated node or
 an unprogrammed Gateway belongs to the platform and is on the operator's list

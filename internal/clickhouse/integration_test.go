@@ -106,7 +106,7 @@ func retainedTables() []string {
 		LogsTable, EventsTable, FlowsTable, TracesTable, TracesIDLookupTable,
 		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
 		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
-		K8sEventsTable, RequestsMinuteTable,
+		K8sEventsTable, RequestsMinuteTable, SignalTransitionsTable,
 	}
 }
 
@@ -1466,4 +1466,102 @@ func volumeResourceAttributes(namespace, pod, claim string) string {
 func hostSumValues(resource, metric, attributes string, at time.Time, value float64) string {
 	return fmt.Sprintf(`(%s, '', 'kitchen', '1.0', {}, 0, '', '', %s, '', '', %s, %s, %s, %v, 0, [], [], [], [], [], 1, false)`,
 		resource, quoteLiteral(metric), attributes, seconds(at), seconds(at), value)
+}
+
+// TestIntegrationSignalTransitions runs the signal history's whole cycle
+// against a real server: the conditional TTL the schema asks for, the write
+// the evaluation loop makes, and the argMax-per-key read the API and the loop
+// both seed themselves from.
+//
+// Every one of those is a statement that reads perfectly and can fail. A TTL
+// with a DELETE WHERE is refused outright by a server that will not have it; a
+// GROUP BY whose HAVING names an aggregate over a column also in the key is
+// the shape that silently answers something else; and "what is open" is a
+// question no fake can answer, because the answer is what the last write left
+// behind.
+func TestIntegrationSignalTransitions(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureSignalsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureSignalsSchema: %v", err)
+	}
+	// Idempotent, and a retention change is applied rather than refused: the
+	// MODIFY TTL carries the condition too.
+	if err := client.EnsureSignalsSchema(ctx, 9); err != nil {
+		t.Fatalf("EnsureSignalsSchema at a new retention: %v", err)
+	}
+	if err := client.EnsureSignalsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureSignalsSchema back again: %v", err)
+	}
+
+	opened := time.Now().UTC().Add(-time.Hour)
+	environment := uniqueEnvironment("signals")
+	fingerprint := "workload.crashloop/" + integrationProject + "/" + environment + "/web"
+	transition := func(state, audience string, at time.Time) SignalTransition {
+		return SignalTransition{
+			At: at, State: state, Signal: "workload.crashloop", Version: 1,
+			Fingerprint: fingerprint, Audience: audience, Severity: "critical",
+			Scope: "environment", Project: integrationProject, Environment: environment,
+			Name: "web", Title: "crash-looping", Detail: "12 restarts in 30m",
+			Evidence: "/environments/" + environment, Since: opened, OpenedAt: opened,
+		}
+	}
+
+	// One condition, two deliveries — which is the whole reason a transition
+	// is keyed on (fingerprint, audience) rather than on the fingerprint.
+	if err := client.InsertSignalTransitions(ctx, []SignalTransition{
+		transition("open", "developer", opened),
+		transition("open", "operator", opened),
+	}); err != nil {
+		t.Fatalf("InsertSignalTransitions: %v", err)
+	}
+
+	open, err := client.OpenSignalTransitions(ctx)
+	if err != nil {
+		t.Fatalf("OpenSignalTransitions: %v", err)
+	}
+	audiences := map[string]SignalTransition{}
+	for _, row := range open {
+		if row.Fingerprint == fingerprint {
+			audiences[row.Audience] = row
+		}
+	}
+	if len(audiences) != 2 {
+		t.Fatalf("both deliveries are open, got %d of them: %+v", len(audiences), open)
+	}
+	recorded := audiences["operator"]
+	switch {
+	case recorded.Signal != "workload.crashloop" || recorded.Version != 1:
+		t.Errorf("the rule and its version come back with the row: %+v", recorded)
+	case recorded.Severity != "critical" || recorded.Scope != "environment":
+		t.Errorf("the finding comes back as it went in: %+v", recorded)
+	case recorded.Project != integrationProject || recorded.Environment != environment:
+		t.Errorf("the subject comes back as it went in: %+v", recorded)
+	case recorded.OpenedAt.Truncate(time.Second).Before(opened.Truncate(time.Second)):
+		t.Errorf("when the platform first saw it is the point of the row: %+v", recorded)
+	}
+
+	// Resolving one delivery leaves the other open, which is the property an
+	// acknowledgement model is built on.
+	if err := client.InsertSignalTransitions(ctx, []SignalTransition{
+		transition("resolved", "developer", time.Now().UTC()),
+	}); err != nil {
+		t.Fatalf("InsertSignalTransitions (resolved): %v", err)
+	}
+	open, err = client.OpenSignalTransitions(ctx)
+	if err != nil {
+		t.Fatalf("OpenSignalTransitions after resolving: %v", err)
+	}
+	remaining := map[string]bool{}
+	for _, row := range open {
+		if row.Fingerprint == fingerprint {
+			remaining[row.Audience] = true
+		}
+	}
+	if remaining["developer"] {
+		t.Errorf("the developer's delivery resolved and must not read as open: %+v", open)
+	}
+	if !remaining["operator"] {
+		t.Errorf("the operator's delivery is untouched by it: %+v", open)
+	}
 }

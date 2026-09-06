@@ -794,7 +794,69 @@ type ObservabilitySpec struct {
 	// +kubebuilder:default={}
 	// +optional
 	ClockSync ClockSyncSpec `json:"clockSync,omitempty"`
+
+	// Signals evaluates the operator's signal catalogue on a timer and
+	// records the conditions that opened and resolved. The empty-object
+	// default turns it on for an installation that predates the field, for
+	// the reason spelled out above Metrics.
+	// +kubebuilder:default={}
+	// +optional
+	Signals SignalsSpec `json:"signals,omitempty"`
 }
+
+// SignalsSpec configures background evaluation of the signal catalogue.
+//
+// The catalogue itself is evaluated whenever a screen asks, and that does not
+// change. What this turns on is the *other* caller: a loop in the operator,
+// under the same leader lease every other sweep runs under, which evaluates
+// the same rules on an interval and writes the transitions — a condition
+// opening, a condition resolving — to `signal_transitions`. That history is
+// what makes "this has been failing for four hours and nobody has touched it"
+// a question the platform can answer at all; a round evaluated for a screen is
+// thrown away with the response.
+type SignalsSpec struct {
+	// Enabled runs the loop. Off leaves every screen exactly as it was —
+	// they evaluate on request — and stops the platform recording when
+	// anything opened or resolved.
+	// +kubebuilder:default=true
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// IntervalSeconds between rounds.
+	//
+	// A minute is the default because the interval is the resolution of
+	// every duration this history can report: a condition that opened and
+	// resolved between two rounds was never seen, and "since 03:14" is only
+	// ever accurate to one interval. Much below it the cost is real — a
+	// round reads the API server's caches and queries the store per
+	// environment — and much above it the record stops being usable for the
+	// thing it exists for.
+	// +kubebuilder:validation:Minimum=15
+	// +kubebuilder:validation:Maximum=3600
+	// +kubebuilder:default=60
+	// +optional
+	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
+}
+
+// SignalsEnabled reads the pointer with its default applied, for a Kitchen
+// object written before the field existed.
+func (s *SignalsSpec) SignalsEnabled() bool {
+	return s == nil || s.Enabled == nil || *s.Enabled
+}
+
+// Interval is the configured interval with the compiled-in default applied, so
+// that every caller gets the same answer for an object the API server never
+// defaulted.
+func (s *SignalsSpec) Interval() time.Duration {
+	if s == nil || s.IntervalSeconds < 1 {
+		return time.Duration(DefaultSignalIntervalSeconds) * time.Second
+	}
+	return time.Duration(s.IntervalSeconds) * time.Second
+}
+
+// DefaultSignalIntervalSeconds matches the CRD default, for Kitchen objects
+// written before the field existed.
+const DefaultSignalIntervalSeconds int32 = 60
 
 // APISpec configures how the operator's API is exposed.
 type APISpec struct {
@@ -1186,6 +1248,68 @@ type KitchenStatus struct {
 	// should be read without the caveat that belongs to it.
 	// +optional
 	ClockSync *ClockSyncStatus `json:"clockSync,omitempty"`
+
+	// Signals reports the background evaluation loop's last round: when it
+	// ran, how many conditions it holds open, and which inputs it could not
+	// read. Absent means no round has completed — the loop is off, the
+	// installation has no telemetry store to record into, or this operator
+	// has only just become the leader.
+	// +optional
+	Signals *SignalEvaluationStatus `json:"signals,omitempty"`
+}
+
+// SignalEvaluationStatus is the background evaluation loop's own report.
+//
+// It is on the object rather than only in the operator's log because two
+// readers need it. An operator needs to know whether detection is running at
+// all — a loop that stopped is a platform that has quietly gone back to
+// noticing things only while somebody has a screen open. And the API needs it
+// to decide honestly whether the recorded transitions are current enough to
+// answer from: a table nobody has written to for an hour is not the answer to
+// "what is wrong right now", and falling back to evaluating on request is.
+type SignalEvaluationStatus struct {
+	// LastEvaluated is when the loop last completed a round.
+	// +optional
+	LastEvaluated *metav1.Time `json:"lastEvaluated,omitempty"`
+
+	// Open is how many conditions were open at the end of it, counted per
+	// delivery: a finding a developer signal produced is open once for the
+	// project and once for the operator, which is how the two are
+	// acknowledged separately.
+	// +optional
+	Open int32 `json:"open,omitempty"`
+
+	// IntervalSeconds is the interval the round was evaluated on, carried so
+	// that a reader can tell a stale record from a slow one without going to
+	// look at the spec.
+	// +optional
+	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
+
+	// Unreadable names each input the last round could not read, once, with
+	// the reason. It is the same list the signals endpoints carry, and it is
+	// here for the same purpose: a round with nothing to report because
+	// nothing was wrong and a round with nothing to report because nothing
+	// could be read are different answers.
+	// +optional
+	// +listType=map
+	// +listMapKey=input
+	Unreadable []SignalInputStatus `json:"unreadable,omitempty"`
+
+	// Message explains a loop that is configured and not recording — no
+	// telemetry store, most often, or a store that refused the write.
+	// +optional
+	Message string `json:"message,omitempty"`
+}
+
+// SignalInputStatus is one input the last round could not read.
+type SignalInputStatus struct {
+	// Input names the source as the catalogue names it: a table, a
+	// Kubernetes kind, a derived reading.
+	Input string `json:"input"`
+
+	// Reason is what went wrong reading it.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // +kubebuilder:object:root=true

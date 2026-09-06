@@ -211,7 +211,7 @@ type storeHealthView struct {
 	RowsPerSecond float64 `json:"rowsPerSecond"`
 	// RetentionDays is the longest telemetry class's retention — the horizon
 	// past which the store deliberately holds nothing at all. Retention is a
-	// model of nine classes since #140 and this screen is about the disk, so
+	// model of classes since #140 and this screen is about the disk, so
 	// what it wants is the one that bounds it; `GET /platform/retention` has
 	// the whole of it, class by class.
 	RetentionDays int32 `json:"retentionDays,omitempty"`

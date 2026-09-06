@@ -51,6 +51,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/api"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/detection"
 	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/k8sevents"
 	"github.com/Bermos/Kitchen/internal/notify"
@@ -713,6 +714,28 @@ func main() {
 		Audit:  auditor,
 	}); err != nil {
 		setupLog.Error(err, "unable to add the retention sweep to manager")
+		os.Exit(1)
+	}
+
+	// Background evaluation of the signal catalogue: the same rules the
+	// screens ask, run on an interval under the same leader lease, diffed
+	// against the previous round and recorded as transitions. It is what
+	// makes "this has been failing for four hours and nobody has touched it"
+	// answerable at all — a round evaluated for a screen is thrown away with
+	// the response. It idles until the Kitchen object names a store to record
+	// into, so it is added unconditionally like the collectors above.
+	if err := mgr.Add(&detection.Loop{
+		// The cached client, unlike the API's gather of the same catalogue:
+		// a warm informer over the cluster's objects is a permanent cost, and
+		// a reader that asks every minute for as long as the operator runs is
+		// exactly what pays for one.
+		Client: mgr.GetClient(),
+		// The follower's loss ledger, for the same reason the API gets it:
+		// nothing else sees what Hubble reported dropping, and the loop runs
+		// on the leader, which is where the follower runs too.
+		Ingest: api.FlowIngest(flowCollector),
+	}); err != nil {
+		setupLog.Error(err, "unable to add the signal evaluation loop to manager")
 		os.Exit(1)
 	}
 

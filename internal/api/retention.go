@@ -35,7 +35,7 @@ import (
 //
 // It is the operator's, like every other platform setting, and it is its own
 // route rather than four more fields on `PATCH /settings` for two reasons.
-// One is size: nine classes with a floor, an override and a per-class
+// One is size: ten classes with a floor, an override and a per-class
 // measurement is a screen, not a form field. The other is that this is the
 // answer to a question somebody outside the platform asks — "what is your
 // retention policy, and can you show me it is enforced" — and an answer with
@@ -174,6 +174,7 @@ type patchRetentionRequest struct {
 	Traces        *int32 `json:"traces"`
 	Requests      *int32 `json:"requests"`
 	ClusterEvents *int32 `json:"clusterEvents"`
+	Signals       *int32 `json:"signals"`
 	Activity      *int32 `json:"activity"`
 	Audit         *int32 `json:"audit"`
 
@@ -306,6 +307,7 @@ func (s *Server) applyRetentionDays(
 		{"traces", body.Traces, &spec.Traces},
 		{"requests", body.Requests, &spec.Requests},
 		{"clusterEvents", body.ClusterEvents, &spec.ClusterEvents},
+		{"signals", body.Signals, &spec.Signals},
 		{"activity", body.Activity, &spec.Activity},
 		{"audit", body.Audit, &spec.Audit},
 	} {

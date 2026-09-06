@@ -105,7 +105,7 @@ platform, worst first. It answers in exactly the shape
 `unreadable` list — narrowed to nothing instead of to one environment:
 
 ```json
-{"evaluatedAt": "2026-08-16T10:00:00Z",
+{"evaluatedAt": "2026-08-16T10:00:00Z", "source": "recorded",
  "counts": {"critical": 2, "warning": 3, "info": 0},
  "items": [{"signal": "node.silent", "severity": "critical",
             "scope": {"kind": "node", "node": "node-b"},
@@ -118,9 +118,31 @@ platform, worst first. It answers in exactly the shape
 Rules that could not be evaluated are *not* in `items`: they are in
 `unreadable`, named once each, because a store outage that darkened thirty
 rules should be one sentence at the top of the screen and not thirty rows in
-it. This screen is the alert inbox minus persistence — when background
-evaluation lands it reads recorded transitions instead of evaluating on view,
-and answers in this same shape.
+it.
+
+**`source` is which of two answers this is**, and both are the same shape:
+
+- `recorded` — the operator's background evaluation loop ran a round, diffed
+  it against the previous one and wrote the transitions; this is the set of
+  conditions it holds open. `evaluatedAt` is when that round ran, not when the
+  newest transition happened: a platform where nothing has changed for a day
+  is current, not stale.
+- `evaluated` — a round taken to serve this request, exactly as this endpoint
+  has always answered. It is what comes back when the loop is switched off
+  (`spec.observability.signals.enabled`), when the installation has no
+  telemetry store to record into, when the last round is more than three
+  intervals old, or when the history could not be read.
+
+The fallback is not a transitional courtesy. An empty problems list is the
+strongest claim this platform makes, and it must never be made because
+detection was not running.
+
+Findings from a recorded round carry one thing an evaluated round cannot know:
+`since` is still what the objects can prove, but the platform's own record of
+when it *first saw* the condition is in the store beside it — which is what
+makes "failing for four hours and nobody has touched it" a question the
+alerting work (#471) can ask. This screen is still the alert inbox minus
+acknowledgement.
 
 ### Nodes
 

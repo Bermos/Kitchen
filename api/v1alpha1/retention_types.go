@@ -110,6 +110,18 @@ type RetentionSpec struct {
 	// +optional
 	ClusterEvents *int32 `json:"clusterEvents,omitempty"`
 
+	// Signals is how long the record of what the signal catalogue found is
+	// kept: one row each time a condition opened and each time it resolved.
+	//
+	// The window applies to *resolved* conditions. A condition that is still
+	// open is not history and is never expired for being old — an outage
+	// nobody has fixed in twice this many days is exactly the row worth
+	// keeping — which is why this class is the one the store expires
+	// conditionally rather than by date alone.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	Signals *int32 `json:"signals,omitempty"`
+
 	// Activity is how long the dashboard's activity feed is kept. It is
 	// prose for a person catching up rather than evidence — the audit log is
 	// the evidence — so it is the one class where a short window costs
