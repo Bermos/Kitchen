@@ -63,7 +63,69 @@ jobs:
             exit 1
           }
 
+      # `internal/clickhouse`'s integration suite runs here and nowhere else.
+      # Every other test in that package asks "did we build the statement we
+      # meant to" of a fake that records what it was sent; only a real server
+      # answers "will ClickHouse accept it", and that is where the interesting
+      # mistakes are — a statement a server refuses reads perfectly, passes
+      # every unit test, and then fails deterministically in front of whoever
+      # opens the page (#449).
+      #
+      # The store is started by a step rather than declared as a `services:`
+      # block, for two reasons that are the same reason. Its version is pinned
+      # in one place — `clickhouse.image` in the chart's values, so that
+      # bumping the platform's ClickHouse moves CI with it — and a service
+      # container's `image:` is an expression resolved before any step of its
+      # own job runs, so there is no checkout for it to read the pin from. And
+      # when a service container does not come up, the job dies in "Initialize
+      # containers" with every step skipped and nothing but a health-check
+      # verdict to go on; a step can print what the store itself said.
+      - name: Start the store at the version the chart pins
+        run: |
+          set -euo pipefail
+          values=charts/kitchen/values.yaml
+          # The quote stripping is not superstition: the two programs called
+          # `yq` disagree about whether a scalar comes back quoted, and this
+          # reads the same under either.
+          field() { yq ".clickhouse.image.$1" "${values}" | tr -d '"' | tr -d '[:space:]'; }
+          repository=$(field repository)
+          tag=$(field tag)
+          if [ -z "${repository}" ] || [ "${repository}" = "null" ] ||
+             [ -z "${tag}" ] || [ "${tag}" = "null" ]; then
+            echo "::error::clickhouse.image.repository/.tag is not readable from ${values}."
+            echo "::error::The store below has nothing to pin to."
+            exit 1
+          fi
+          image="${repository}:${tag}"
+          echo "Store image: ${image}"
+          docker run -d --name kitchen-store -p 8123:8123 \
+            -e CLICKHOUSE_USER=kitchen \
+            -e CLICKHOUSE_PASSWORD=hunter2 \
+            -e CLICKHOUSE_DB=kitchen \
+            "${image}"
+          # Ready means "answers a query as the user, over the port and the
+          # interface the tests use", not "the process started". The entrypoint
+          # creates the user and the database with a server of its own before
+          # it starts the real one, so a socket that accepts is not yet a store
+          # that reads.
+          for _ in $(seq 1 90); do
+            if curl -fsS 'http://kitchen:hunter2@127.0.0.1:8123/?query=SELECT%201' >/dev/null 2>&1; then
+              echo "The store answered after ${SECONDS}s."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::The store never answered on 127.0.0.1:8123. Its own output follows."
+          docker logs kitchen-store 2>&1 | tail -50 || true
+          docker exec kitchen-store \
+            tail -50 /var/log/clickhouse-server/clickhouse-server.err.log 2>&1 || true
+          exit 1
+
       - name: Running Tests
+        env:
+          # The store above, as the integration suite reads it. Unset on a
+          # laptop, where the suite skips itself and `make test` needs no store.
+          KITCHEN_CLICKHOUSE_URL: http://kitchen:hunter2@127.0.0.1:8123/kitchen
         run: |
           go mod tidy
           make test

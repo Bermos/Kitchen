@@ -54,8 +54,13 @@ import (
 //	KITCHEN_CLICKHOUSE_URL=http://kitchen:hunter2@127.0.0.1:8123/kitchen \
 //	  go test ./internal/clickhouse/ -run Integration -v
 //
-// It is not part of `make test` on purpose: CI has no ClickHouse, and a test
-// that silently needs one is a test that silently stops running.
+// **CI runs it.** The Tests workflow's "Unit and envtest" job stands a store up
+// at the version the chart pins and exports KITCHEN_CLICKHOUSE_URL for `make
+// test` — so a statement this package builds and a real server refuses fails a
+// pull request rather than an installation.
+// The skip above is what keeps `make test` on a laptop working without one; it
+// is a convenience, not the contract. A read that only a real server can judge
+// belongs here, and it will be run.
 
 // The fixtures' names: the database the store is expected to hold, the project
 // every row written here belongs to, the node every collected signal claims to
@@ -623,32 +628,38 @@ func TestIntegrationLogQuery(t *testing.T) {
 		t.Fatalf("writing a log line: %v", err)
 	}
 
-	scope := "environment:" + environment
+	// The query language's own `environment:` term narrows to the fixture's
+	// rows; the selection's Scope is a different thing entirely and both are
+	// required. A selection that names no scope reads nothing by design, so
+	// these fixtures carry the shape the API builds on a project read: the
+	// caller's projects, by name (internal/api/logs.go).
+	readable := LogScope{Projects: []string{integrationProject}}
+	prefix := "environment:" + environment
 	for _, query := range []struct{ name, query string }{
 		// Kitchen's own materialized columns, under the names they always had.
-		{"project", scope + " project:" + integrationProject},
-		{"source", scope + " source:" + SourceRuntime},
-		{"pod", scope + " pod:shop-*"},
-		{"container", scope + " container:app"},
+		{"project", prefix + " project:" + integrationProject},
+		{"source", prefix + " source:" + SourceRuntime},
+		{"pod", prefix + " pod:shop-*"},
+		{"container", prefix + " container:app"},
 		// stdout/stderr is a column again, materialized out of the record's
 		// attributes rather than the resource's.
-		{"stream", scope + " stream:stderr"},
+		{"stream", prefix + " stream:stderr"},
 		// The renamed ones.
-		{"level", scope + " level:error"},
-		{"message", scope + " checkout"},
-		{"message phrase", scope + ` message:"checkout failed"`},
+		{"level", prefix + " level:error"},
+		{"message", prefix + " checkout"},
+		{"message phrase", prefix + ` message:"checkout failed"`},
 		// Every spelling of a trace id resolves to the column.
-		{"traceId", scope + " traceId:" + traceID},
-		{"trace_id", scope + " trace_id:" + traceID},
-		{"trace.id", scope + " trace.id:" + traceID},
+		{"traceId", prefix + " traceId:" + traceID},
+		{"trace_id", prefix + " trace_id:" + traceID},
+		{"trace.id", prefix + " trace.id:" + traceID},
 		// An unknown dotted name is a log attribute.
-		{"attribute", scope + " http.status:500"},
-		{"attribute comparison", scope + " http.status:>=500"},
+		{"attribute", prefix + " http.status:500"},
+		{"attribute comparison", prefix + " http.status:>=500"},
 		// A pod label rides in the resource attributes.
-		{"label", scope + " labels.tier:web"},
+		{"label", prefix + " labels.tier:web"},
 	} {
 		t.Run(query.name, func(t *testing.T) {
-			lines, err := client.FilterLogs(ctx, LogFilter{LogSelection: LogSelection{Query: query.query}})
+			lines, err := client.FilterLogs(ctx, LogFilter{LogSelection: LogSelection{Query: query.query, Scope: readable}})
 			if err != nil {
 				t.Fatalf("FilterLogs(%q): %v", query.query, err)
 			}
@@ -677,7 +688,7 @@ func TestIntegrationLogQuery(t *testing.T) {
 	// The analytics run over the same selection and must survive a real server:
 	// the histogram buckets a DateTime64, the facets are a UNION ALL of
 	// subqueries, and the patterns nest a regular expression per line.
-	histogram, err := client.LogHistogram(ctx, LogHistogramQuery{LogSelection: LogSelection{Query: scope}})
+	histogram, err := client.LogHistogram(ctx, LogHistogramQuery{LogSelection: LogSelection{Query: prefix, Scope: readable}})
 	if err != nil {
 		t.Fatalf("LogHistogram: %v", err)
 	}
@@ -685,7 +696,7 @@ func TestIntegrationLogQuery(t *testing.T) {
 		t.Errorf("want the one line in the histogram, got %d", histogram.Total)
 	}
 
-	facets, err := client.LogFacets(ctx, LogFacetQuery{LogSelection: LogSelection{Query: scope}})
+	facets, err := client.LogFacets(ctx, LogFacetQuery{LogSelection: LogSelection{Query: prefix, Scope: readable}})
 	if err != nil {
 		t.Fatalf("LogFacets: %v", err)
 	}
@@ -706,7 +717,7 @@ func TestIntegrationLogQuery(t *testing.T) {
 		}
 	}
 
-	patterns, err := client.LogPatterns(ctx, LogPatternQuery{LogSelection: LogSelection{Query: scope}})
+	patterns, err := client.LogPatterns(ctx, LogPatternQuery{LogSelection: LogSelection{Query: prefix, Scope: readable}})
 	if err != nil {
 		t.Fatalf("LogPatterns: %v", err)
 	}
