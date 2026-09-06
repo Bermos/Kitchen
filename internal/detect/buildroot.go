@@ -33,16 +33,16 @@ const DefaultDockerfile = "Dockerfile"
 // relative to — its `kitchen.json`, its Dockerfile. Nothing above it is part
 // of the build.
 //
-// The two build strategies reach that meaning differently, and neither
-// pretends to be the other:
+// Both build strategies clone the commit in an init container and are then
+// pointed inside the checkout, and neither pretends to be the other:
 //
-//   - BuildKit takes the commit as a git context and clones it itself, so the
-//     root directory goes into the context reference (`#<sha>:<root>`). The
-//     git source hands the frontend that directory as the whole context,
-//     which is what makes `filename` — the Dockerfile — relative to it.
+//   - BuildKit is handed the build root as its local context, which is what
+//     makes `filename` — the Dockerfile — relative to it. It could fetch a
+//     git context itself, and does not: the credential for a private
+//     repository can only reach it as a build secret the repository's own
+//     Dockerfile could mount straight back out (#425).
 //   - The CNB lifecycle only ever builds a directory that is already on disk,
-//     so the clone lands the repository in an init container and the
-//     lifecycle is pointed inside it with `-app`.
+//     so it is pointed inside the checkout with `-app`.
 //
 // Detection is the third: it lists the build root through the provider's API
 // and looks for the project's Dockerfile relative to it, so that the answer a

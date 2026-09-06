@@ -103,8 +103,8 @@ jobs:
   # does not arrive before a deploy task has finished, and that the stage
   # `dockerfileTarget` names is the stage that was pushed.
   #
-  # So this is the one job in the tree that runs real builds: BuildKit fetches
-  # this repository at the commit under test, builds the fixture under
+  # So this is the one job in the tree that runs real builds: the build clones
+  # this repository at the commit under test, BuildKit builds the fixture under
   # test/fixtures/multi-workload twice — once with no target and once at the
   # stage the unit's `api` workload names — pushes both to a registry beside
   # the cluster, and the operator releases and deploys the set.
@@ -128,12 +128,11 @@ jobs:
   #     it and loaded into the node under their own names — and containerd told
   #     so once, which is a hosts.toml. The operator needs nothing: `http://`
   #     on a registry Connection is a shape internal/provider already honours.
-  #   - **The source is this repository.** The builder fetches the commit
-  #     itself from github.com, and the fixture is a directory of this
-  #     repository, so the project points at this repository at the pull
-  #     request's head commit. That is why the job does not run for a pull
-  #     request from a fork: the head commit is not in this repository, and
-  #     there is nothing for the builder to fetch.
+  #   - **The source is this repository.** Every build clones the commit from
+  #     github.com, and the fixture is a directory of this repository, so the
+  #     project points at this repository at the pull request's head commit.
+  #     That is why the job does not run for a pull request from a fork: the
+  #     head commit is not in this repository, and there is nothing to fetch.
   #
   # The job's token is read-only on purpose and not merely by hygiene. The
   # operator registers a git webhook on the repository it is pointed at and
@@ -348,11 +347,13 @@ jobs:
           # the BuildKit image above is: a bump has to move what this job runs,
           # or the case keeps proving something about a builder the platform no
           # longer uses.
-          read_pin() { # read_pin <pattern>
-            grep -oE "$1" internal/controller/buildpacks.go | head -1
+          read_pin() { # read_pin <file> <pattern>
+            grep -oE "$2" "internal/controller/$1" | head -1
           }
-          builder="$(read_pin 'paketobuildpacks/builder-jammy-base:[A-Za-z0-9._-]+')"
-          clone="$(read_pin 'alpine/git:[A-Za-z0-9._-]+')"
+          builder="$(read_pin buildpacks.go 'paketobuildpacks/builder-jammy-base:[A-Za-z0-9._-]+')"
+          # Both strategies clone in a container of their own now (#425), so
+          # the image is pinned beside the clone rather than in either.
+          clone="$(read_pin gitclone.go 'alpine/git:[A-Za-z0-9._-]+')"
           for pin in "${builder}" "${clone}"; do
             [ -n "${pin}" ] || {
               echo "::error::could not read the buildpacks images out of internal/controller"
@@ -540,6 +541,87 @@ jobs:
             -o jsonpath='{.items[0].metadata.name}')"
           echo "BUILD=${build}" >> "$GITHUB_ENV"
           echo "RELEASE=${release}" >> "$GITHUB_ENV"
+
+      # #425, against the pod that actually built. The project above points at
+      # a git Connection holding this job's token, so these are the pods the
+      # finding is about: BuildKit used to be handed that token as a session
+      # secret — `--secret id=GIT_AUTH_TOKEN` — and a session secret is
+      # addressed by id from inside the build, so the fixture's own Dockerfile
+      # could have mounted it straight back out with `RUN
+      # --mount=type=secret,id=GIT_AUTH_TOKEN`.
+      #
+      # The Job's TTL keeps the pods for an hour, so the specs Kubernetes
+      # admitted are still here to be read: this is the unit tests' assertion
+      # made against what ran, exactly as the buildpacks case below is.
+      - name: No Dockerfile build's builder holds the platform's git token
+        run: |
+          set -euo pipefail
+          pods="$(kubectl -n "${APP_NS}" get pods -l "kitchen.bermos.dev/build=${BUILD}" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+          [ -n "${pods}" ] || {
+            echo "::error::the build left no pod to read"
+            exit 1
+          }
+          for pod in ${pods}; do
+            kubectl -n "${APP_NS}" get pod "${pod}" -o json > /tmp/buildkit-pod.json
+
+            ran="$(jq -r '[.spec.initContainers[].name] + [.spec.containers[].name] | join(" ")' \
+              /tmp/buildkit-pod.json)"
+            echo "${pod} ran: ${ran}"
+            [ "${ran}" = "clone buildkit" ] || {
+              echo "::error::${pod} did not fetch the commit in a container of its own: ${ran}"
+              exit 1
+            }
+
+            # The token is in the pod — the project's source Connection has
+            # one — which is what makes the next two assertions worth making.
+            [ "$(jq -r '[.spec.volumes[] | select(.name == "git-credential")] | length' \
+              /tmp/buildkit-pod.json)" = 1 ] || {
+              echo "::error::${pod} carries no git credential, so it proves nothing about" \
+                   "which container holds one"
+              jq -r '.spec.volumes[].name' /tmp/buildkit-pod.json
+              exit 1
+            }
+
+            mounts() { # mounts <container>
+              jq -r --arg c "$1" '[.spec.initContainers[], .spec.containers[]]
+                | map(select(.name == $c))[0].volumeMounts | map(.name) | sort | join(",")' \
+                /tmp/buildkit-pod.json
+            }
+            case "$(mounts buildkit)" in
+              *git-credential*)
+                echo "::error::the builder that runs the repository's Dockerfile mounts" \
+                     "$(mounts buildkit)"
+                exit 1
+                ;;
+            esac
+            case "$(mounts clone)" in
+              *git-credential*) ;;
+              *)
+                echo "::error::the clone cannot fetch a private repository: $(mounts clone)"
+                exit 1
+                ;;
+            esac
+
+            # And the argv, because a secret is named there rather than
+            # mounted: an id is all a Dockerfile needs to mount one.
+            args="$(jq -r '.spec.containers[] | select(.name == "buildkit") | .args | join(" ")' \
+              /tmp/buildkit-pod.json)"
+            case "${args}" in
+              *--secret*|*GIT_AUTH_TOKEN*)
+                echo "::error::the builder was given a session secret: ${args}"
+                exit 1
+                ;;
+            esac
+            case "${args}" in
+              *"--local context=/kitchen/context/source"*) ;;
+              *)
+                echo "::error::the builder did not build the checkout: ${args}"
+                exit 1
+                ;;
+            esac
+          done
+          echo "every builder was handed a checkout and no credential"
 
       # #301's first and fourth criteria. They share a step because they share
       # a Dockerfile: the same file produced both images from the same commit,

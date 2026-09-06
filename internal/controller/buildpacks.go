@@ -37,12 +37,6 @@ const (
 	// same commit rebuilt tomorrow produces something else.
 	BuildpacksBuilderImage = "paketobuildpacks/builder-jammy-base:0.4.625"
 
-	// GitCloneImage fetches the commit a buildpacks build builds. BuildKit
-	// fetches its own git context; the CNB lifecycle only ever builds a
-	// directory that is already on disk, so the clone runs in front of it as
-	// an init container.
-	GitCloneImage = "alpine/git:v2.54.0"
-
 	// BuildpacksPlatformAPI is the version of the CNB platform contract the
 	// job speaks. The lifecycle refuses to start without being told one —
 	// it has no default — and 0.13 is supported by every lifecycle from 0.17
@@ -74,40 +68,6 @@ const (
 	volumeWorkspace = "workspace"
 	volumeLayers    = "layers"
 )
-
-// cloneScript fetches exactly the commit under build, and nothing else: the
-// history is not what is being built, and a shallow fetch of one revision is
-// the cheapest thing a large repository can be asked for.
-//
-// The repository and the commit arrive as environment variables rather than
-// substituted into the script. Both come out of a Project's spec, and nothing
-// constrains a repository name to characters a shell reads literally.
-//
-// A private repository is cloned with the token mounted at
-// KITCHEN_GIT_TOKEN_FILE, and git is told about it the one way that keeps the
-// value out of everything that is written down: an askpass helper, which git
-// runs with this process's environment and which reads the file itself. The
-// URL keeps no credential, so `git remote -v` says what the pod spec says.
-// GIT_TERMINAL_PROMPT=0 is what turns "wait forever for a username nobody can
-// type" into an error, credential or not.
-const cloneScript = `set -e
-export GIT_TERMINAL_PROMPT=0
-if [ -n "$KITCHEN_GIT_TOKEN_FILE" ]; then
-	cat >"$KITCHEN_ASKPASS" <<'EOF'
-#!/bin/sh
-case "$1" in
-Username*) printf 'x-access-token' ;;
-*) cat "$KITCHEN_GIT_TOKEN_FILE" ;;
-esac
-EOF
-	chmod 0700 "$KITCHEN_ASKPASS"
-	export GIT_ASKPASS="$KITCHEN_ASKPASS"
-fi
-git init -q "$KITCHEN_SOURCE_DIR"
-cd "$KITCHEN_SOURCE_DIR"
-git remote add origin "$KITCHEN_GIT_URL"
-git fetch -q --depth 1 origin "$KITCHEN_GIT_SHA"
-git checkout -q FETCH_HEAD`
 
 // buildpacksPod is a build that hands the repository to the Cloud Native
 // Buildpacks lifecycle: no Dockerfile, no instructions of any kind — the
@@ -162,15 +122,18 @@ func buildpacksPod(
 	workspace := corev1.VolumeMount{Name: volumeWorkspace, MountPath: buildpacksWorkspaceDir}
 	layers := corev1.VolumeMount{Name: volumeLayers, MountPath: buildpacksLayersDir}
 
-	cloneEnv := []corev1.EnvVar{
-		{Name: "KITCHEN_SOURCE_DIR", Value: buildpacksSourceDir},
-		{Name: "KITCHEN_GIT_URL", Value: repoCloneURL(project)},
-		{Name: "KITCHEN_GIT_SHA", Value: build.Spec.Git.SHA},
-		// git wants a home to look for configuration in, and the
-		// user it runs as here has none of its own.
-		{Name: "HOME", Value: buildpacksWorkspaceDir},
-	}
-	cloneMounts := []corev1.VolumeMount{workspace}
+	// The clone is the only container in this pod that holds the git
+	// credential, and it keeps the repository's `.git`: the lifecycle has
+	// been handed a checkout with one since buildpacks builds existed, and a
+	// buildpack may read it.
+	clone := gitClone{
+		SourceDir:  buildpacksSourceDir,
+		ScratchDir: buildpacksWorkspaceDir,
+		Mount:      workspace,
+		Secret:     gitSecret,
+		KeepGitDir: true,
+	}.container(project, build)
+
 	volumes := []corev1.Volume{
 		{Name: volumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: volumeLayers, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -178,13 +141,6 @@ func buildpacksPod(
 		readDockerConfigVolume(credentials.Read),
 	}
 	if gitSecret != "" {
-		cloneEnv = append(cloneEnv,
-			corev1.EnvVar{Name: "KITCHEN_GIT_TOKEN_FILE", Value: gitCredentialFile},
-			// The askpass helper is written into the workspace, which is
-			// the one directory this pod has that it can write to.
-			corev1.EnvVar{Name: "KITCHEN_ASKPASS", Value: buildpacksWorkspaceDir + "/askpass"},
-		)
-		cloneMounts = append(cloneMounts, gitCredentialMount())
 		volumes = append(volumes, gitCredentialVolume(gitSecret))
 	}
 
@@ -235,13 +191,7 @@ func buildpacksPod(
 				RunAsGroup: ptr.To(cnbGID),
 			},
 			InitContainers: []corev1.Container{
-				{
-					Name:         "clone",
-					Image:        GitCloneImage,
-					Command:      []string{"/bin/sh", "-c", cloneScript},
-					Env:          cloneEnv,
-					VolumeMounts: cloneMounts,
-				},
+				clone,
 				// What is already in the registry under this tag, and what
 				// the image will be built on. It writes analyzed.toml, which
 				// is where export reads the run image from.

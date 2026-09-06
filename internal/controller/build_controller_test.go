@@ -336,7 +336,10 @@ var _ = Describe("Build Controller", func() {
 			container := job.Spec.Template.Spec.Containers[0]
 			Expect(container.Image).To(Equal(BuildkitImage))
 			joined := strings.Join(container.Args, " ")
-			Expect(joined).To(ContainSubstring("context=https://github.com/acme/shop.git#" + sha))
+			// The context is the checkout the clone left on the pod's own
+			// volume, not a git URL the builder resolves for itself (#425).
+			Expect(joined).To(ContainSubstring("--local context=" + buildContextSourceDir))
+			Expect(joined).To(ContainSubstring("vcs:revision=" + sha))
 			Expect(joined).To(ContainSubstring("name=" + wantTag + ",push=true"))
 			// Plain progress keeps the build log readable once the collector
 			// has shipped it into ClickHouse.
@@ -353,15 +356,25 @@ var _ = Describe("Build Controller", func() {
 			Expect(synced.Type).To(Equal(corev1.SecretTypeDockerConfigJson))
 
 			// The project's source connection holds a token, so the build gets
-			// it too — synced beside the registry credential, mounted, and
-			// named as the secret BuildKit resolves the git context with.
+			// it too — synced beside the registry credential and mounted into
+			// the one container that fetches the commit.
 			gitSynced := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "kitchen-git-gh", Namespace: appNS}, gitSynced)).To(Succeed())
 			Expect(gitSynced.Labels).To(HaveKeyWithValue(labelManagedByKey, labelManagedByValue))
 			Expect(gitSynced.Data).To(HaveKeyWithValue(gitCredentialsTokenKey, []byte("gh-token")))
-			Expect(joined).To(ContainSubstring("--secret id=GIT_AUTH_TOKEN,src=" + gitCredentialFile))
-			Expect(mountsGitCredential(container.VolumeMounts)).To(BeTrue())
 			Expect(hasGitCredentialVolume(job.Spec.Template.Spec.Volumes, "kitchen-git-gh")).To(BeTrue())
+
+			// And the builder never holds it: a session secret is addressed
+			// by id from inside the build, so a Dockerfile could mount one
+			// straight back out (#425).
+			Expect(joined).NotTo(ContainSubstring("--secret"))
+			Expect(mountsGitCredential(container.VolumeMounts)).To(BeFalse())
+
+			clone := job.Spec.Template.Spec.InitContainers[0]
+			Expect(clone.Name).To(Equal("clone"))
+			Expect(clone.Image).To(Equal(GitCloneImage))
+			Expect(mountsGitCredential(clone.VolumeMounts)).To(BeTrue())
+			Expect(clone.Env).To(ContainElement(corev1.EnvVar{Name: "KITCHEN_GIT_SHA", Value: sha}))
 
 			build := &kitchenv1alpha1.Build{}
 			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
@@ -653,13 +666,17 @@ var _ = Describe("Build Controller", func() {
 			container := job.Spec.Template.Spec.Containers[0]
 			Expect(container.Image).To(Equal(BuildkitImage))
 			joined := strings.Join(container.Args, " ")
-			// The build root goes into the git reference, which is what makes
-			// BuildKit's context that directory rather than the repository.
-			Expect(joined).To(ContainSubstring("context=https://github.com/acme/shop.git#" + sha + ":apps/shop"))
+			// The build root is the directory of the checkout the context
+			// names, which is what makes BuildKit's context that directory
+			// rather than the repository.
+			Expect(joined).To(ContainSubstring(
+				"--local context=" + buildContextSourceDir + "/apps/shop "))
 			// And the Dockerfile is named relative to it — never joined onto
 			// it a second time, which would ask for apps/shop/apps/shop.
-			Expect(joined).To(ContainSubstring("filename=docker/prod.Dockerfile"))
-			Expect(joined).NotTo(ContainSubstring("filename=apps/shop"))
+			Expect(joined).To(ContainSubstring(
+				"--local dockerfile=" + buildContextSourceDir + "/apps/shop/docker "))
+			Expect(joined).To(ContainSubstring("--opt filename=prod.Dockerfile"))
+			Expect(joined).NotTo(ContainSubstring("apps/shop/apps/shop"))
 		})
 
 		It("points the lifecycle at the same directory the container build gets", func() {
@@ -1973,27 +1990,107 @@ func outputArg(t *testing.T, pod corev1.PodTemplateSpec) string {
 // source connection carries no token has to produce the pod it produced
 // before any of this existed.
 
-func TestDockerfilePodTakesTheGitTokenAsABuildSecret(t *testing.T) {
+func TestDockerfilePodGivesTheGitTokenToTheCloneAndNotToTheBuilder(t *testing.T) {
 	project, build := buildFixtures()
 	pod := dockerfilePod(project, build, testWebPlan(project, build), nil, "creds", "kitchen-git-gh",
 		kitchenv1alpha1.BuildAttestationSpec{})
 	args := strings.Join(pod.Spec.Containers[0].Args, " ")
 
-	// GIT_AUTH_TOKEN is the id BuildKit looks for when the git context it
-	// resolves for itself is asked for authentication.
-	if !strings.Contains(args, "--secret id=GIT_AUTH_TOKEN,src="+gitCredentialFile) {
-		t.Errorf("the git token was not passed as a build secret: %s", args)
+	// The whole of #425: a `--secret` is addressed by id from inside the
+	// build, so a Dockerfile that names the same id mounts the platform's
+	// token — a Connection's, which reads every repository that Connection
+	// reads. The builder is handed a directory instead, and holds nothing.
+	if strings.Contains(args, "--secret") {
+		t.Errorf("the builder was given a session secret a Dockerfile could mount: %s", args)
+	}
+	if strings.Contains(args, "GIT_AUTH_TOKEN") {
+		t.Errorf("the builder was told about the git token at all: %s", args)
+	}
+	if mountsGitCredential(pod.Spec.Containers[0].VolumeMounts) {
+		t.Error("the buildkit container mounts the git credential")
+	}
+
+	// The clone is where the token goes, and the only container that holds
+	// it. It has exited before the builder — and so before the Dockerfile —
+	// runs at all.
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("want one init container, the clone: %+v", pod.Spec.InitContainers)
+	}
+	clone := pod.Spec.InitContainers[0]
+	if clone.Name != "clone" || clone.Image != GitCloneImage {
+		t.Errorf("the commit is not fetched by the clone image: %+v", clone)
+	}
+	if !mountsGitCredential(clone.VolumeMounts) {
+		t.Error("the clone does not mount the git credential")
+	}
+	if envValue(clone.Env, "KITCHEN_GIT_TOKEN_FILE") != gitCredentialFile {
+		t.Errorf("the clone was not pointed at the mounted token: %v", clone.Env)
+	}
+	if envValue(clone.Env, "KITCHEN_ASKPASS") == "" {
+		t.Errorf("the clone was given no askpass to write: %v", clone.Env)
 	}
 	// The clone URL is what a pod spec, a `git remote -v` and a build log all
 	// show. A token in it would be in all three.
-	if strings.Contains(args, "@github.com") {
-		t.Errorf("a credential reached the clone URL: %s", args)
-	}
-	if !mountsGitCredential(pod.Spec.Containers[0].VolumeMounts) {
-		t.Error("the buildkit container does not mount the git credential")
+	if url := envValue(clone.Env, "KITCHEN_GIT_URL"); strings.Contains(url, "@") {
+		t.Errorf("a credential reached the clone URL: %s", url)
 	}
 	if !hasGitCredentialVolume(pod.Spec.Volumes, "kitchen-git-gh") {
 		t.Error("the pod does not carry the git credential volume")
+	}
+}
+
+// What the builder is given instead of the URL: the directory the clone left
+// on a volume of the pod's, with the build root and the Dockerfile resolved
+// inside it exactly as the git context resolved them.
+func TestDockerfilePodBuildsTheCheckoutTheCloneLeft(t *testing.T) {
+	project, build := buildFixtures()
+	project.Spec.Build.RootDirectory = "services/api"
+	project.Spec.Build.DockerfilePath = "build/api.Dockerfile"
+	plan := testWebPlan(project, build)
+	pod := dockerfilePod(project, build, plan, nil, "creds", "",
+		kitchenv1alpha1.BuildAttestationSpec{})
+	args := strings.Join(pod.Spec.Containers[0].Args, " ")
+
+	appDir := buildContextSourceDir + "/services/api"
+	if !strings.Contains(args, "--local context="+appDir+" ") {
+		t.Errorf("the context is not the build root of the checkout: %s", args)
+	}
+	// `filename` is resolved inside the second local directory, so a
+	// Dockerfile in a subdirectory is that directory and a bare name.
+	if !strings.Contains(args, "--local dockerfile="+appDir+"/build ") {
+		t.Errorf("the Dockerfile's own directory was not sent: %s", args)
+	}
+	if !strings.Contains(args, "--opt filename=api.Dockerfile") {
+		t.Errorf("the Dockerfile was not named: %s", args)
+	}
+	// Provenance still says what was built: a local context cannot carry the
+	// commit the way a git one does.
+	if !strings.Contains(args, "--opt vcs:source=https://github.com/acme/shop.git") ||
+		!strings.Contains(args, "--opt vcs:revision="+build.Spec.Git.SHA) {
+		t.Errorf("the build does not record the commit it was made from: %s", args)
+	}
+
+	clone := pod.Spec.InitContainers[0]
+	if envValue(clone.Env, "KITCHEN_SOURCE_DIR") != buildContextSourceDir {
+		t.Errorf("the clone lands somewhere else: %v", clone.Env)
+	}
+	// The repository's own `.git` is removed, because BuildKit's git context
+	// hands the frontend a checkout without one: a `COPY . .` has to put
+	// into the image what it put into the image before.
+	if envValue(clone.Env, "KITCHEN_PRUNE_GIT_DIR") == "" {
+		t.Errorf("the checkout keeps its .git, which the git context did not: %v", clone.Env)
+	}
+	// The builder reads that volume and writes nothing to it; the clone
+	// writes it as the user the builder reads it as.
+	if !mountsBuildContext(pod.Spec.Containers[0].VolumeMounts, true) {
+		t.Errorf("the builder does not mount the checkout read-only: %+v", pod.Spec.Containers[0].VolumeMounts)
+	}
+	if !mountsBuildContext(clone.VolumeMounts, false) {
+		t.Errorf("the clone cannot write the checkout: %+v", clone.VolumeMounts)
+	}
+	if clone.SecurityContext == nil || clone.SecurityContext.RunAsUser == nil ||
+		*clone.SecurityContext.RunAsUser != *pod.Spec.Containers[0].SecurityContext.RunAsUser {
+		t.Errorf("the clone does not run as the user that reads the checkout: %+v", clone.SecurityContext)
 	}
 }
 
@@ -2008,9 +2105,28 @@ func TestDockerfilePodAsksForNoGitSecretWithoutOne(t *testing.T) {
 	if mountsGitCredential(pod.Spec.Containers[0].VolumeMounts) {
 		t.Error("a build with no git credential mounted one anyway")
 	}
+	if mountsGitCredential(pod.Spec.InitContainers[0].VolumeMounts) {
+		t.Error("the clone mounted a git credential the project has none of")
+	}
 	if hasGitCredentialVolume(pod.Spec.Volumes, "") {
 		t.Error("a build with no git credential carries the volume anyway")
 	}
+	// A public repository is cloned the same way, so the clone still asks
+	// nothing of anybody: no askpass, no token file.
+	if envValue(pod.Spec.InitContainers[0].Env, "KITCHEN_GIT_TOKEN_FILE") != "" {
+		t.Error("the clone was pointed at a token that does not exist")
+	}
+}
+
+// mountsBuildContext reports whether a container mounts the checkout, and
+// whether it may write to it.
+func mountsBuildContext(mounts []corev1.VolumeMount, readOnly bool) bool {
+	for _, m := range mounts {
+		if m.Name == volumeBuildContext && m.MountPath == buildContextDir {
+			return m.ReadOnly == readOnly
+		}
+	}
+	return false
 }
 
 func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
