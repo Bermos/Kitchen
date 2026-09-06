@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.34.1](https://github.com/Bermos/Kitchen/compare/v0.34.0...v0.34.1) (2026-09-06)
+
+
+### Bug fixes
+
+* **claims:** say when a serve-mode inngest claim covers the web process alone ([#462](https://github.com/Bermos/Kitchen/issues/462)) ([b1439fb](https://github.com/Bermos/Kitchen/commit/b1439fbb2847d7c1156a801ac6480499f600199c)), closes [#405](https://github.com/Bermos/Kitchen/issues/405)
+* **security:** pin every image the operator runs by digest ([#463](https://github.com/Bermos/Kitchen/issues/463)) ([ce341cf](https://github.com/Bermos/Kitchen/commit/ce341cf018518f8f2dc0e99ad978b60d925bfe30)), closes [#427](https://github.com/Bermos/Kitchen/issues/427)
+* **security:** reserve the hostnames the platform serves from project names ([#464](https://github.com/Bermos/Kitchen/issues/464)) ([9598f27](https://github.com/Bermos/Kitchen/commit/9598f2760efad95557adf9dbaf1a46ca3319b13b)), closes [#423](https://github.com/Bermos/Kitchen/issues/423)
+* **security:** verify a replayed decision against the digests that name it ([#466](https://github.com/Bermos/Kitchen/issues/466)) ([6617b5c](https://github.com/Bermos/Kitchen/commit/6617b5c0e7d842a73c583f675802d5911b4b20ca)), closes [#429](https://github.com/Bermos/Kitchen/issues/429)
+
+
+### Documentation
+
+* **ux:** mockups for the UI restructure and alerting model ([83afc1a](https://github.com/Bermos/Kitchen/commit/83afc1aa821c0986459c3298b84d5ac0f5040a22))
+
 ## [0.34.0](https://github.com/Bermos/Kitchen/compare/v0.33.4...v0.34.0) (2026-09-06)
 
 
