@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.33.3](https://github.com/Bermos/Kitchen/compare/v0.33.2...v0.33.3) (2026-09-06)
+
+
+### Bug fixes
+
+* **api:** tell a caller why the audit log cannot be read ([#447](https://github.com/Bermos/Kitchen/issues/447)) ([744c1ef](https://github.com/Bermos/Kitchen/commit/744c1ef0ddd854fe2ed7b9fb66cb8f08222dc720)), closes [#441](https://github.com/Bermos/Kitchen/issues/441)
+* **operator:** say why a run failed when its container never printed anything ([#451](https://github.com/Bermos/Kitchen/issues/451)) ([0c5ba24](https://github.com/Bermos/Kitchen/commit/0c5ba243ea24298462aad7b08ee88af56bff348b)), closes [#442](https://github.com/Bermos/Kitchen/issues/442)
+* **operator:** send a command through the CNB launcher on a buildpacks image ([#444](https://github.com/Bermos/Kitchen/issues/444)) ([2047624](https://github.com/Bermos/Kitchen/commit/204762495480cc2cb6917a84234ff171b5a193a1)), closes [#440](https://github.com/Bermos/Kitchen/issues/440)
+* **security:** keep the registry push credential out of third-party build code ([#448](https://github.com/Bermos/Kitchen/issues/448)) ([cdd9853](https://github.com/Bermos/Kitchen/commit/cdd9853a602c8b960fff58cef72e99212cee5a41))
+* **security:** refuse a fromSecret naming the platform's own credentials ([#450](https://github.com/Bermos/Kitchen/issues/450)) ([92b4fdf](https://github.com/Bermos/Kitchen/commit/92b4fdffbdd242067e33575901b0ed139748cb2b)), closes [#426](https://github.com/Bermos/Kitchen/issues/426)
+
 ## [0.33.2](https://github.com/Bermos/Kitchen/compare/v0.33.1...v0.33.2) (2026-09-05)
 
 
