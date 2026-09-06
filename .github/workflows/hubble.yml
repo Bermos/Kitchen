@@ -42,7 +42,7 @@ concurrency:
 #
 # It is not a job in the Helm workflow because it is not about the chart: it
 # installs no Kitchen, and what it tests is the platform's CNI. The cluster
-# underneath it is the same one the chart's "Chart install on Cilium" leg
+# underneath it is the same one the chart's "Chart install (Cilium)" leg
 # builds — hack/install-cilium.sh, kind without kube-proxy (Cilium's Gateway
 # API support requires the kube-proxy replacement), Cilium with Gateway API,
 # and Cilium's own LB IPAM for the LoadBalancer address a Gateway needs before

@@ -215,7 +215,7 @@ That is measured rather than reasoned about: CI installs this chart on a Cilium
 cluster on every change, and from inside a real application namespace it asserts
 that the telemetry store, the identity provider's Postgres and the private
 `/kitchen` listener answer nothing at all, while the object store and the
-issuer still answer. The job is *Chart install on Cilium* in
+issuer still answer. The job is *Chart install (Cilium)* in
 [`.github/workflows/helm.yml`](../../.github/workflows/helm.yml).
 
 **Inter-application policy is deliberately not here.** Two applications in two

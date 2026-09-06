@@ -242,7 +242,7 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
 ### The five kind jobs run once per change
 
-Chart install on kind, Chart install on Cilium, E2E on kind, Several workloads
+Chart install (kind), Chart install (Cilium), E2E on kind, Several workloads
 on kind and Gateway L7 flows on kind cost twelve to twenty minutes each. They
 are gated to `pull_request` events, and skipped on the push to `main` that
 merges one, because that run was checking a tree that had already passed:
@@ -301,9 +301,9 @@ What that means in practice:
   fails the Dashboard workflow's `npm run build` in forty seconds — a required
   check of its own.
 - **The chart install job is two legs of one matrix, and both are gated
-  together.** Chart install on kind is the cheap one: kind's own CNI, kindnet,
+  together.** Chart install (kind) is the cheap one: kind's own CNI, kindnet,
   which enforces no NetworkPolicy at all, so a failure there can never be the
-  network's doing. Chart install on Cilium builds the cluster
+  network's doing. Chart install (Cilium) builds the cluster
   `hack/install-cilium.sh` builds for the Hubble job — no default CNI, no
   kube-proxy, the Gateway API CRDs the pinned Cilium release requires — and it
   is the only job that can say anything about the chart's NetworkPolicies:
@@ -311,9 +311,14 @@ What that means in practice:
   have left the workflow green. It runs a few minutes longer than the kindnet
   leg, which is what installing Cilium costs, and it installs the bundled
   object store because that is the one policy rule an application namespace is
-  admitted by. It reports as its own check, `Chart install on Cilium`; making
-  it *required* is a one-time change under Settings → Branches, and like the
-  others it survives being skipped.
+  admitted by. It reports as its own check, `Chart install (Cilium)` — but
+  neither leg is a candidate for a *required* check, because a matrix leg does
+  not survive being skipped (see [Skipped is not
+  missing](#skipped-is-not-missing)). The required name, `Chart install on
+  kind`, belongs to `install-result`: a one-step job that reads the whole
+  matrix's result and passes only on `success` or `skipped`. Both legs are
+  already required through it, since one leg failing makes that result
+  `failure`.
 - **The release pull request runs all of them regardless.** Its `if:` says so
   explicitly. Its tree is what gets tagged and published, so it is the one
   place where "nothing relevant changed" is not a good enough answer. Nothing
@@ -339,6 +344,22 @@ on `main` never reports at all and the pull request waits on it forever.
 
 Anything added to the required checks under Settings → Branches has to survive
 being skipped for that reason. Path filters remain deliberately unused.
+
+**A matrix job does not survive it.** GitHub expands `name:` per leg only when
+the matrix actually starts; skipped, the job reports a single check named with
+the literal, unexpanded expression — `Chart install on ${{ matrix.label }}` —
+so the name that was required is absent rather than skipped, and branch
+protection refuses the merge with *Required status check … is expected* (#476).
+It stayed latent for 27 merges because every one of them touched a
+chart-relevant path.
+
+So a required check is owned by a job that is not a matrix. The chart install's
+is `install-result` in `.github/workflows/helm.yml`: `needs: install`,
+`if: always()`, one step that passes when `needs.install.result` is `success`
+or `skipped` and fails otherwise. That result is the whole matrix's — with
+`fail-fast: false` one failing leg still makes it `failure` — so the gate is no
+weaker than requiring a leg would have been, and a third CNI leg can be added
+later without touching branch protection at all.
 
 Each workflow also declares a `concurrency` group keyed on the pull request
 number, or on the ref outside one. Superseded runs on a pull request are

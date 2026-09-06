@@ -6,7 +6,7 @@
 #   - "Gateway L7 flows on kind" (hack/check-hubble-l7.sh) reads Hubble's L7
 #     flow records off the shared Gateway's Envoy, which needs Cilium's Gateway
 #     API support and therefore its kube-proxy replacement;
-#   - "Chart install on Cilium" (.github/workflows/helm.yml) installs the whole
+#   - "Chart install (Cilium)" (.github/workflows/helm.yml) installs the whole
 #     chart on a CNI that actually enforces NetworkPolicy, because kindnet does
 #     not and a policy that blocked every flow on the platform would still
 #     leave that job green.

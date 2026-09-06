@@ -1050,10 +1050,15 @@ jobs:
   #     existed, a policy that blocked every flow on the platform would have
   #     left this workflow green (#383).
   #
-  # The name is what branch protection has required since before the split, so
-  # the kindnet leg keeps it exactly: "Chart install on kind".
+  # Neither leg carries the protected name. GitHub does not expand a matrix it
+  # never starts, so a skipped matrix job reports one check named with the
+  # literal, unexpanded expression — and the name branch protection requires
+  # never appears at all, which reads as missing rather than skipped and
+  # refuses the merge (#476). The required name belongs to `install-result`
+  # below, which is not a matrix and therefore always reports it; these two are
+  # named for what they are.
   install:
-    name: Chart install on ${{ matrix.label }}
+    name: Chart install (${{ matrix.label }})
     needs: changes
     # Pull requests only, and only when something this job can see has changed.
     # The release pull request is the exception: it runs whatever it touched,
@@ -2803,3 +2808,39 @@ jobs:
             printf 'before:\n%s\nafter:\n%s\n' "${before}" "${after}"
             exit 1
           }
+
+  # "Chart install on kind" is a required check under Settings → Branches, and
+  # this job is what reports it. It exists because a *matrix* job cannot: when
+  # the matrix runs, the legs report their expanded names, but when it is
+  # skipped GitHub reports a single check named with the raw expression, so the
+  # required name is absent and branch protection refuses the merge as though
+  # the check were missing (#476). A plain job has no such hole — skipped, it
+  # still reports its own name with conclusion `skipped`, which branch
+  # protection accepts. It also means a third CNI leg can be added without
+  # touching what branch protection requires.
+  #
+  # `needs.install.result` is the whole matrix's result, not one leg's, and
+  # `fail-fast: false` does not soften it: a single failing leg makes it
+  # `failure`. Only `success` (every leg passed) and `skipped` (the gate said
+  # this pull request cannot affect the chart) are allowed through; `failure`
+  # and `cancelled` fall to the catch-all and fail this gate with them.
+  install-result:
+    name: Chart install on kind
+    needs: install
+    # Not `success()`: this job has to report on the run where `install` was
+    # skipped, which is the entire point of it.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the matrix's result under the required name
+        run: |
+          set -euo pipefail
+          result='${{ needs.install.result }}'
+          echo "chart install matrix: ${result}"
+          case "${result}" in
+            success|skipped) exit 0 ;;
+            *)
+              echo "::error::the chart install matrix concluded '${result}'"
+              exit 1
+              ;;
+          esac
