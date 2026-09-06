@@ -239,13 +239,38 @@ type processRunView struct {
 	// DurationSeconds is how long it took, absent while it is still going.
 	DurationSeconds *float64 `json:"durationSeconds,omitempty"`
 	Message         string   `json:"message,omitempty"`
+	// Reason is what ended the run in one word, and it is the field a client
+	// switches on: the container's own where the pod could be asked
+	// (`StartError`, `ImagePullBackOff`, `CreateContainerConfigError`,
+	// `OOMKilled`, `Error`), and the Job controller's otherwise
+	// (`BackoffLimitExceeded`, `DeadlineExceeded`).
+	//
+	// It exists because the Job controller's answer is the same for every
+	// failed run there can be — `backoffLimit` is zero deliberately — so a
+	// message that carried only it distinguished nothing (#442).
+	Reason string `json:"reason,omitempty"`
+	// ExitCode is what the container exited with, where the pod was still
+	// there to be asked.
+	ExitCode *int32 `json:"exitCode,omitempty"`
+	// Refused is a run whose container never ran at all: the kubelet would
+	// not create it, or created it and could not start it. It is the field
+	// that says **this run has no output** — the logs are empty because
+	// nothing printed anything, not because anything was lost.
+	Refused bool `json:"refused,omitempty"`
 }
 
 func newProcessRunView(run *kitchenv1alpha1.ProcessRun) *processRunView {
 	if run == nil {
 		return nil
 	}
-	view := &processRunView{Name: run.Name, Phase: string(run.Phase), Message: run.Message}
+	view := &processRunView{
+		Name:     run.Name,
+		Phase:    string(run.Phase),
+		Message:  run.Message,
+		Reason:   run.Reason,
+		ExitCode: run.ExitCode,
+		Refused:  run.Refused,
+	}
 	if run.StartedAt != nil {
 		view.StartedAt = &run.StartedAt.Time
 	}
@@ -486,6 +511,27 @@ func (s *Server) processRuns(w http.ResponseWriter, req *http.Request) {
 	for i := range jobs.Items {
 		runs = append(runs, controller.RunOf(&jobs.Items[i]))
 	}
+	// What each failed run's own container said, read the same way the
+	// Environment's status was written from — one reading, so this listing
+	// and the row on `GET /environments/{name}/processes` cannot disagree
+	// about the same run. Without it every failure here reads
+	// `BackoffLimitExceeded`, which is on every failure there can be (#442).
+	//
+	// The pods are the workload's, listed once: a run whose pod the cluster
+	// has collected keeps whatever its Job said, which is the best account
+	// that still exists.
+	pods := &corev1.PodList{}
+	if err := s.reader().List(ctx, pods,
+		client.InNamespace(controller.AppNamespace(env.Spec.ProjectRef.Name)),
+		client.MatchingLabels{
+			controller.LabelEnvironment: env.Name,
+			controller.LabelProcess:     process.Name,
+		},
+	); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	controller.DiagnoseRuns(runs, pods.Items)
 	sort.Slice(runs, func(a, b int) bool {
 		if runs[a].StartedAt == nil || runs[b].StartedAt == nil {
 			return runs[b].StartedAt == nil

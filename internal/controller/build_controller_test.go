@@ -1491,6 +1491,77 @@ var _ = Describe("Build Controller", func() {
 				Expect(meta.FindStatusCondition(build.Status.Conditions, condStalled)).To(BeNil())
 			})
 
+			// #442. The Job's counters are the job controller's summary and
+			// it writes them a moment behind the pod: `active` counts pods
+			// that are pending or running, so a pod that has just *finished*
+			// is counted nowhere until `succeeded` catches up. A build whose
+			// pod took longer than the grace to run therefore had a pass in
+			// which every counter was zero, and was told it had created no
+			// pod — which is how a `Stalled` condition came to be on almost
+			// every build here, the ones that pushed images included.
+			It("does not call a job stalled when its pod is right there", func() {
+				reconcileOnce()
+				startedAgo(buildStallGrace + time.Minute)
+
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      buildName + "-counted-late",
+						Namespace: appNS,
+						Labels:    map[string]string{labelJobName: jobKey.Name},
+					},
+					Spec: corev1.PodSpec{
+						RestartPolicy: corev1.RestartPolicyNever,
+						Containers:    []corev1.Container{{Name: "build", Image: "busybox"}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+				DeferCleanup(func() {
+					Expect(client.IgnoreNotFound(
+						k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))).To(Succeed())
+				})
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(meta.FindStatusCondition(build.Status.Conditions, condStalled)).To(BeNil(),
+					"a job with a pod has created a pod, whatever its counters have got round to saying")
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+			})
+
+			// A stall the build recovered from is not something the build
+			// carries afterwards. `Stalled=True` on a `Succeeded` build is a
+			// fault report on a build that worked, and it was read as one.
+			It("does not leave the condition on a build that went on to succeed", func() {
+				reconcileOnce()
+				refusedAtAdmission("stall-then-succeeded.1")
+				startedAgo(buildStallGrace + time.Minute)
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(meta.IsStatusConditionTrue(build.Status.Conditions, condStalled)).To(BeTrue())
+
+				By("finishing, which is what a build that was only slow does next")
+				job := &batchv1.Job{}
+				Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+				now := metav1.Now()
+				job.Status.Succeeded = 1
+				job.Status.CompletionTime = &now
+				job.Status.Conditions = []batchv1.JobCondition{
+					{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue},
+					{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+				}
+				Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+				reconcileOnce()
+
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildSucceeded))
+				Expect(meta.FindStatusCondition(build.Status.Conditions, condStalled)).To(BeNil(),
+					"a build that produced a pod and an image carries no report of not having")
+			})
+
 			It("clears the stall once a pod exists", func() {
 				reconcileOnce()
 				refusedAtAdmission("stall-cleared.1")

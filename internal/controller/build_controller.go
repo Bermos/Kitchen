@@ -1502,6 +1502,10 @@ func (r *BuildReconciler) succeed(
 
 	build.Status.Phase = kitchenv1alpha1.BuildSucceeded
 	build.Status.Image = image
+	// Whatever this build looked like on the way here, it produced a pod and
+	// an image. A Stalled condition left behind on it is a fault report on a
+	// build that worked (#442).
+	clearStall(build)
 	reason, msg := "BuildSucceeded", fmt.Sprintf("image %s pushed", image)
 	if !digestFound {
 		reason, msg = "ImageDigestUnavailable", "build succeeded but the image digest could not be read; recorded the tag reference"
@@ -2257,6 +2261,10 @@ func (r *BuildReconciler) fail(
 	}
 	build.Status.Phase = kitchenv1alpha1.BuildFailed
 	build.Status.CompletedAt = ptr.To(metav1.Now())
+	// The build is over, so "is it moving" has no answer worth carrying. Why
+	// it ended is on Ready and, for a build that never got a pod, on
+	// status.failure — which is where a stall is read from once it is one.
+	clearStall(build)
 	meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
 		Type: condReady, Status: metav1.ConditionFalse, Reason: reason,
 		Message: message, ObservedGeneration: build.Generation,

@@ -719,15 +719,40 @@ type ProcessRun struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
-	// Refused says this run failed because the kubelet would not create its
-	// container at all — the run never started, as opposed to starting and
-	// exiting non-zero (#391).
+	// Reason is what ended the run, in one word: the container's own
+	// terminated or waiting reason where the pod could be asked —
+	// `StartError`, `ContainerCannotRun`, `ImagePullBackOff`,
+	// `CreateContainerConfigError`, `OOMKilled`, `Error` — and the Job
+	// controller's otherwise, which is `BackoffLimitExceeded` or
+	// `DeadlineExceeded`.
+	//
+	// It exists because the Job controller's summary is the same sentence
+	// for every failed run the platform can produce (#442). `backoffLimit`
+	// is zero deliberately, so `BackoffLimitExceeded` is *guaranteed* on
+	// every failure whatever caused it, and a message that says only that
+	// says nothing. The most specific reason available wins: the pod's own
+	// where there is a pod to read, the Job's where there is not.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// ExitCode is what the container exited with, where the pod was still
+	// there to be asked. It is absent for a run whose container never ran at
+	// all and for one whose pod has been collected.
+	// +optional
+	ExitCode *int32 `json:"exitCode,omitempty"`
+
+	// Refused says this run failed without its container ever running — the
+	// kubelet would not create it, or created it and could not start it
+	// (#391, #442). Either way nothing of the program executed.
 	//
 	// It is a fact worth keeping apart from an ordinary failure because the
 	// two ask for different things. A migration that ran and failed may have
-	// left half a schema behind; one that was refused ran nothing, so there
-	// is nothing to undo and the fix is in the spec rather than in the
-	// program. The reason and the kubelet's own sentence are in Message.
+	// left half a schema behind; one that never started ran nothing, so there
+	// is nothing to undo, the fix is in the spec or the image rather than in
+	// the program, and — the half that cost #442 the most time — **there are
+	// no logs**, because a container that never ran printed nothing. Reason
+	// says which of the causes it was and Message carries the kubelet's own
+	// sentence about it.
 	// +optional
 	Refused bool `json:"refused,omitempty"`
 }

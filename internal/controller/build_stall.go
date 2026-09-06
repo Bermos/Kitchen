@@ -22,6 +22,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -122,7 +123,7 @@ func (r *BuildReconciler) observeRunning(
 	changed := build.Status.Phase != kitchenv1alpha1.BuildRunning
 	build.Status.Phase = kitchenv1alpha1.BuildRunning
 
-	noPod := jobHasNoPod(job)
+	noPod := r.jobHasNoPod(ctx, job)
 	since := jobStalledSince(job)
 
 	switch {
@@ -236,13 +237,59 @@ func (r *BuildReconciler) stallMessage(ctx context.Context, job *batchv1.Job) st
 
 // jobHasNoPod is a Job that has not got as far as a pod.
 //
-// It is read off the Job's own counters rather than by listing pods, because
-// they are the thing that stays at zero: a pod refused at admission is never
-// created, so it is counted nowhere and the rejection lands on the Job as an
-// event instead. A pod that was created and has since gone still leaves
-// Succeeded or Failed behind it.
-func jobHasNoPod(job *batchv1.Job) bool {
-	return job.Status.Active == 0 && job.Status.Succeeded == 0 && job.Status.Failed == 0
+// The Job's counters are asked first, because they are the thing that stays
+// at zero: a pod refused at admission is never created, so it is counted
+// nowhere and the rejection lands on the Job as an event instead.
+//
+// **The counters alone are not an answer, and believing they were is #442.**
+// They are the job-controller's summary and it writes them a moment behind
+// the pod. `active` counts pods that are pending or running, so a pod that
+// has just *finished* is counted nowhere at all until the controller catches
+// up — active back to zero, succeeded not yet one — and a build whose pod
+// took longer than buildStallGrace to run would be declared to have created
+// no pod in the window between the two. That is a `Stalled` condition with
+// reason `JobHasNoPod` on almost every build the platform ran, including the
+// ones that succeeded and pushed images, and it was read as evidence.
+//
+// So a Job the counters have nothing to say about is settled by asking the
+// only source that cannot be behind: the pods themselves. A pod that exists
+// in any phase is a pod the Job created, which is the whole of the question.
+// It is read through the API reader rather than the cache for the same reason
+// the counters are not trusted — a stale answer here is a build declared dead
+// — and it costs one request per running pass of a build that appears stuck,
+// which is exactly the case worth spending one on.
+//
+// A listing that fails is not evidence of anything: the build stays running
+// and the next pass asks again.
+func (r *BuildReconciler) jobHasNoPod(ctx context.Context, job *batchv1.Job) bool {
+	if job.Status.Active > 0 || job.Status.Succeeded > 0 || job.Status.Failed > 0 {
+		return false
+	}
+	pods := &corev1.PodList{}
+	if err := r.APIReader.List(ctx, pods, client.InNamespace(job.Namespace),
+		client.MatchingLabels{labelJobName: job.Name}); err != nil {
+		logf.FromContext(ctx).Error(err, "the build job's pods could not be listed, so it is not called stalled",
+			"namespace", job.Namespace, "job", job.Name)
+		return false
+	}
+	return len(pods.Items) == 0
+}
+
+// clearStall takes the Stalled condition off a build that has stopped being
+// one.
+//
+// A build that reaches a terminal phase carries whatever conditions it had at
+// the moment it got there, and `Stalled=True` on a `Succeeded` build is worse
+// than no condition at all: it is a fault report on a build that worked, and
+// it was read as one (#442). The running path only clears the condition on a
+// pass that sees a pod, and a build can go from stalled-looking to finished
+// between two passes without one.
+//
+// It is removed rather than set False. The question the condition answers —
+// "is this build moving" — has no meaning for a build that is over, and a
+// False condition is an answer where none was asked for.
+func clearStall(build *kitchenv1alpha1.Build) {
+	meta.RemoveStatusCondition(&build.Status.Conditions, condStalled)
 }
 
 // jobStalledSince is how long the Job has had to create a pod in.

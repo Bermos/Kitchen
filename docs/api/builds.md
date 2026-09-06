@@ -469,9 +469,20 @@ event on the Job. The reconciler now reads that event and puts it here.
 
 It is a condition rather than a phase because the build may still recover: a
 quota someone is raising, a namespace label someone is fixing. `status`
-returns to `False` the moment a pod exists. What does not happen is waiting
-forever — a build with no pod for ten minutes is failed, with this message,
-and `failure.reason` is `JobHasNoPod`.
+returns to `False` the moment a pod exists, and the condition is **removed
+entirely** once the build ends: a `Stalled` condition on a build that
+succeeded and pushed an image is a fault report on a build that worked, and it
+was read as one (#442). What does not happen is waiting forever — a build with
+no pod for ten minutes is failed, with this message, and `failure.reason` is
+`JobHasNoPod`.
+
+**"No pod" is settled against the pods, not against the Job's counters.** The
+counters are the job controller's summary and it writes them a moment behind
+the pod: `active` counts only pods that are pending or running, so a pod that
+has just *finished* is counted nowhere at all until `succeeded` catches up.
+Believing the counters alone put this condition on almost every build the
+platform ran, the successful ones included. A Job the counters have nothing to
+say about is now settled by listing its pods, which cannot be behind.
 
 `lastTransitionTime` is when the stall started; the message deliberately
 carries no elapsed time, so that a stuck build is not rewriting its own status

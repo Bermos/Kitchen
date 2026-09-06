@@ -231,10 +231,11 @@ replicas are on "kitchen processes".`),
 				rows := make([][]string, 0, len(runs))
 				for _, run := range runs {
 					rows = append(rows, []string{
-						run.Name, s.Phase(run.Phase), runStarted(run), runTook(run), run.Message,
+						run.Name, s.Phase(run.Phase), runStarted(run), runTook(run),
+						runReason(run), runDetail(run),
 					})
 				}
-				return s.Table([]string{"RUN", "PHASE", "STARTED", "TOOK", "MESSAGE"}, rows)
+				return s.Table([]string{"RUN", "PHASE", "STARTED", "TOOK", "REASON", "MESSAGE"}, rows)
 			})
 		}),
 	}
@@ -460,8 +461,10 @@ func processNote(p process) string {
 	// this needs to be told rather than left to infer from a phase.
 	if p.Deploy == deployFailed {
 		note := "this release was not deployed — what was serving still is"
-		if p.LastFailure != nil && p.LastFailure.Message != "" {
-			note += ": " + p.LastFailure.Message
+		if p.LastFailure != nil {
+			if why := runWhy(*p.LastFailure); why != "" {
+				note += ": " + why
+			}
 		}
 		return note
 	}
@@ -480,10 +483,54 @@ func processNote(p process) string {
 		return ""
 	}
 	note := strings.ToLower(p.LastRun.Phase) + " " + runStarted(*p.LastRun)
-	if p.LastRun.Message != "" {
-		note += " — " + p.LastRun.Message
+	if why := runWhy(*p.LastRun); why != "" {
+		note += " — " + why
 	}
 	return note
+}
+
+// runWhy is the sentence a failed run gets where it has one line and no
+// column of its own: what it said for itself, and — for a run that never
+// started — the fact that there is nothing to read under `kitchen logs
+// --run`, which is the sentence #442 was missing.
+func runWhy(run processRun) string {
+	why := run.failure()
+	if run.Refused && why != "" {
+		return why + " (it never started, so this run has no output)"
+	}
+	return why
+}
+
+// runReason is the REASON column of the runs table: the failure's own name,
+// with the exit status beside it where there was one.
+func runReason(run processRun) string {
+	if run.Reason == "" || run.ExitCode == nil {
+		return run.Reason
+	}
+	return run.Reason + " (" + strconv.FormatInt(int64(*run.ExitCode), 10) + ")"
+}
+
+// runDetail is the MESSAGE column: the same line with what REASON already
+// says taken out of it, since the two sit side by side.
+func runDetail(run processRun) string {
+	detail := run.failure()
+	if run.Reason != "" {
+		detail = strings.TrimPrefix(detail, run.Reason+": ")
+	}
+	if run.ExitCode != nil {
+		detail = strings.ReplaceAll(detail,
+			" (exit code "+strconv.FormatInt(int64(*run.ExitCode), 10)+")", "")
+	}
+	if detail == run.Reason {
+		detail = ""
+	}
+	if run.Refused && detail != "" {
+		return detail + " (it never started, so this run has no output)"
+	}
+	if run.Refused {
+		return "it never started, so this run has no output"
+	}
+	return detail
 }
 
 func runStarted(run processRun) string {

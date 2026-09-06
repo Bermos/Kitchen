@@ -312,11 +312,12 @@ func (r *EnvironmentReconciler) recordTaskVerdict(
 				"serving what it was. Run %s: %s",
 			task.process.Name, task.env.Name, status.LastRun.Name, taskFailureDetail(status.LastRun))
 		if status.LastRun.Refused {
-			// A refused run is failed under its own reason, because it is a
-			// different fault with a different fix: nothing ran, so there is
-			// nothing to undo, and what has to change is the spec the kubelet
-			// would not accept rather than the program. The kubelet's own
-			// sentence is the message; it names the field and the image.
+			// A run that never started is failed under its own reason,
+			// because it is a different fault with a different fix: nothing
+			// ran, so there is nothing to undo, and what has to change is the
+			// spec or the image rather than the program. The kubelet's own
+			// sentence is the message; it names the field, the image or the
+			// command that could not be run.
 			out.reason = reasonTaskRefused
 			out.message = fmt.Sprintf(
 				"%s could not be started, so nothing of this release was deployed and %s is still serving "+
@@ -332,14 +333,27 @@ func (r *EnvironmentReconciler) recordTaskVerdict(
 	}
 }
 
-// taskFailureDetail is what the Job said, or the sentence to read instead
-// when it said nothing worth repeating. The output itself is in the logs
-// under the run, which is where a stack trace belongs.
+// taskFailureDetail is what the run said for itself, and where the rest of it
+// is.
+//
+// Where to send the reader is the half #442 got wrong. A run that ran has its
+// output in the log store under its own name, which is where a stack trace
+// belongs and where this points. A run whose container **never started**
+// printed nothing, so the logs are empty and correct — and sending somebody
+// to read them is sending them to rule out the only place they were looking.
+// Its own sentence is all there is, and it is enough: it names the image, the
+// field or the command that could not be run.
 func taskFailureDetail(run *kitchenv1alpha1.ProcessRun) string {
-	if run.Message != "" {
-		return run.Message
+	if run.Refused {
+		if run.Message == "" {
+			return "its container never started, so it has no output"
+		}
+		return run.Message + " — nothing ran, so this run has no output"
 	}
-	return "its output is in this environment's logs under this run"
+	if run.Message == "" {
+		return "its output is in this environment's logs under this run"
+	}
+	return run.Message + "; its output is in this environment's logs under this run"
 }
 
 // startDeployTask creates the Job for one run of a task.
@@ -377,10 +391,19 @@ func (r *EnvironmentReconciler) startDeployTask(
 	podSpec.RestartPolicy = corev1.RestartPolicyNever
 	job.Spec.Template.Spec = podSpec
 
+	// created is what makes the activity entry below one per run rather than
+	// one per pass. A reconcile that comes back before the status write it
+	// made is visible — the Job's own watch event, a second later — finds no
+	// record of the run and arrives here again, which is harmless for the
+	// Job and was not for the feed: one deploy announced its migration
+	// twice, a second apart, for one run (#442). The Job already existing is
+	// exactly the signal that this pass is not the one that started it.
+	created := true
 	if err := r.Create(ctx, job); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return err
 		}
+		created = false
 		// The name is derived rather than generated exactly so that this is
 		// recoverable: a pass that created the Job and then failed to record
 		// it finds its own run here instead of starting a second one.
@@ -398,21 +421,31 @@ func (r *EnvironmentReconciler) startDeployTask(
 		"%s is running as %s; nothing of this release takes traffic until it succeeds",
 		task.process.Name, name)
 
-	r.Activity.Record(ctx, clickhouse.Event{
-		Type:        clickhouse.EventRunStarted,
-		Project:     task.env.Spec.ProjectRef.Name,
-		Environment: task.env.Name,
-		Process:     task.process.Name,
-		Run:         name,
-		Message: fmt.Sprintf("deploy task %s started for release %s",
-			task.process.Name, task.release.Name),
-	})
+	if created {
+		r.Activity.Record(ctx, clickhouse.Event{
+			Type:        clickhouse.EventRunStarted,
+			Project:     task.env.Spec.ProjectRef.Name,
+			Environment: task.env.Name,
+			Process:     task.process.Name,
+			Run:         name,
+			Message: fmt.Sprintf("deploy task %s started for release %s",
+				task.process.Name, task.release.Name),
+		})
+	}
 	return r.pruneTaskRuns(ctx, task.appNS, task.env.Name, task.process.Name, name)
 }
 
 // The two terminal reasons a blocked deploy carries. They are apart because
 // the two failures are: a task that ran and failed may have left half its work
-// behind, and a task the kubelet refused ran nothing at all (#391).
+// behind, and a task that never started ran nothing at all (#391).
+//
+// `TaskRefused` covers both ways of never starting — a container the kubelet
+// would not create, and one it created and could not start (#442) — because
+// they ask the same thing of the reader: there is nothing to undo, there is
+// no output, and the fix is in the spec or the image. *Which* of them it was
+// is on the run itself, as `reason`, where it can be `StartError`,
+// `ImagePullBackOff` or `CreateContainerConfigError` without a condition
+// reason per cause; the message carries it either way.
 const (
 	reasonTaskFailed  = "TaskFailed"
 	reasonTaskRefused = "TaskRefused"
@@ -447,8 +480,15 @@ func (r *EnvironmentReconciler) observeTaskRun(
 	}
 	if refused {
 		out.refusedJobs = append(out.refusedJobs, run.Name)
+		return run, found, nil
 	}
-	return run, found, nil
+	// A run the Job has already failed is asked what its container said,
+	// because the Job itself will only ever say `BackoffLimitExceeded` —
+	// which is guaranteed, means "it is over", and is the message that made
+	// a start failure undiagnosable (#442). The Job is left exactly where it
+	// is: it is finished, it is holding nothing, and if the container ran
+	// then its output is what the run's row points at.
+	return run, found, r.diagnoseRunPods(ctx, appNS, &run)
 }
 
 // observeRun reads one Job back as a run. found=false means the Job is not
