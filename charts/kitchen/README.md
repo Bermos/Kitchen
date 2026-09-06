@@ -1999,7 +1999,7 @@ kubectl delete namespace kitchen-system
 | `selfUpdate.allowMinor` | `false` | Allow an upgrade that crosses a minor version — pre-1.0, where breaking changes land. |
 | `selfUpdate.timeout` | `15m` | How long helm is given to finish. |
 | `selfUpdate.serviceAccountName` | `""` | Generated when empty. |
-| `selfUpdate.image.repository` / `.tag` | `alpine/helm` / `3.19.0` | Image the update job runs helm from. |
+| `selfUpdate.image.repository` / `.tag` / `.digest` | `""` / `""` / `""` | Image the update job runs helm from. Empty takes the operator's own pin, which names a digest as well as a tag — this job rewrites every object the platform is made of under an account bound to cluster-admin, so what it pulls is not something to inherit from a tag anyone can repoint. A repository named here needs a tag or a digest, and the digest wins where there is one. |
 | `backup.serviceAccountName` | `""` | Generated when empty. The identity a **scheduled** backup runs as. The schedule, the destination and the retention are not chart values: they are runtime configuration on the `Kitchen` object, edited on the Backup screen, because a backup that could only be reconfigured by a `helm upgrade` is one nobody reconfigures. See [docs/BACKUP.md](../../docs/BACKUP.md). |
 | `backup.rbac.create` | `true` | Create the scheduled backup's ServiceAccount and its roles. Read-only, and not a privilege reduction: a backup reads every credential the platform holds. It is separate so the grant is legible in one file and gone with the release. |
 | `restore.enabled` | `false` | Run the restore Job. A bootstrap step, not something an install does — see [docs/BACKUP.md](../../docs/BACKUP.md). Needs one of the two sources below. |
@@ -2206,8 +2206,9 @@ kubectl delete namespace kitchen-system
 | `scaleToZero.install.addOnVersion` | `""` | HTTP add-on chart version to install. Empty takes the operator's own pin. |
 | `scaleToZero.install.timeout` | `10m` | How long helm is given for each of the two installs. Both wait for their workloads. |
 | `scaleToZero.install.serviceAccountName` | `""` | Name of the install job's ServiceAccount. Generated when empty. |
-| `scaleToZero.install.image.repository` | `alpine/helm` | Image the install job runs helm from. |
-| `scaleToZero.install.image.tag` | `3.19.0` | Tag of that image. |
+| `scaleToZero.install.image.repository` | `""` | Image the install job runs helm from. Empty takes the operator's own pin, which names a digest as well as a tag. |
+| `scaleToZero.install.image.tag` | `""` | Tag of that image. Read only when the repository is set. |
+| `scaleToZero.install.image.digest` | `""` | Digest of that image, as `sha256:…`. Takes precedence over the tag. |
 | `scaleToZero.interceptor.service` | `keda-add-ons-http-interceptor-proxy` | Interceptor Service idling environments are routed through. The add-on names it after its own chart, so this is a constant. |
 | `scaleToZero.interceptor.namespace` | `keda` | Namespace the HTTP add-on was installed into. |
 | `scaleToZero.interceptor.port` | `8080` | Port the interceptor accepts traffic on. |
@@ -2217,8 +2218,9 @@ kubectl delete namespace kitchen-system
 | `databases.install.version` | `""` | CloudNativePG chart version to install. Empty takes the operator's own pin. |
 | `databases.install.timeout` | `10m` | How long helm is given for the install. It waits for the operator's workloads. |
 | `databases.install.serviceAccountName` | `""` | Name of the install job's ServiceAccount. Generated when empty. |
-| `databases.install.image.repository` | `alpine/helm` | Image the install job runs helm from. |
-| `databases.install.image.tag` | `3.19.0` | Tag of that image. |
+| `databases.install.image.repository` | `""` | Image the install job runs helm from. Empty takes the operator's own pin, which names a digest as well as a tag. |
+| `databases.install.image.tag` | `""` | Tag of that image. Read only when the repository is set. |
+| `databases.install.image.digest` | `""` | Digest of that image, as `sha256:…`. Takes precedence over the tag. |
 | `api.port` | `8092` | Container port for the REST API. |
 | `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `80` / `{}` | |
 | `api.route.enabled` | `true` | Publish the API on the shared Gateway under `/api/`. |

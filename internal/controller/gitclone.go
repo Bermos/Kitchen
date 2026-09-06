@@ -22,13 +22,6 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
-// GitCloneImage fetches the commit a build builds. It is a container of its
-// own for both strategies, and for the same reason twice over: the CNB
-// lifecycle only ever builds a directory that is already on disk, and BuildKit
-// — which can fetch a git context itself — must not be given a credential it
-// would then hold while it runs the repository's Dockerfile (#425).
-const GitCloneImage = "alpine/git:v2.54.0"
-
 // cloneScript fetches exactly the commit under build, and nothing else: the
 // history is not what is being built, and a shallow fetch of one revision is
 // the cheapest thing a large repository can be asked for.

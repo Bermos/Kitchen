@@ -80,15 +80,6 @@ const (
 	// apart from a gate's without parsing their names.
 	labelObservedSBOM = "kitchen.bermos.dev/observed-sbom"
 
-	// VendorSBOMGeneratorImage is the default generator: Syft, pinned.
-	//
-	// It is a different image from SBOMGeneratorImage, which is BuildKit's
-	// scanner-protocol wrapper around the same tool and cannot be run
-	// standalone. Pinned rather than floating for the reason the other is:
-	// evidence about an artifact should not change because somebody else's
-	// tag moved overnight.
-	VendorSBOMGeneratorImage = "anchore/syft:v1.18.1"
-
 	// observedSBOMFile is where the generator writes and the publisher
 	// reads. It reuses the quality gate's volume and its publisher, because
 	// it is the same problem: a document that does not fit in a 4 KiB

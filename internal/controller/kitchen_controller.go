@@ -46,9 +46,6 @@ import (
 )
 
 const (
-	// CloudflaredImage runs the optional tunnel.
-	CloudflaredImage = "cloudflare/cloudflared:2025.8.1"
-
 	cloudflaredDeploymentName = "kitchen-cloudflared"
 
 	// WildcardTLSSecretName holds the wildcard certificate for the base

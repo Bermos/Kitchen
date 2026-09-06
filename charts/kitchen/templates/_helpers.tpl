@@ -112,6 +112,43 @@ Container image reference, digest taking precedence over tag.
 {{- end }}
 
 {{/*
+Refuse half an image. A repository with no tag and no digest renders
+"alpine/helm:", and a tag with no repository renders nothing at all — which
+would silently leave the operator's pin in place while the values say
+otherwise. Takes a dict of "name" (the values path, for the message) and
+"image".
+*/}}
+{{- define "kitchen.validateNamedImage" -}}
+{{- $image := .image -}}
+{{- if and $image.repository (not (or $image.tag $image.digest)) }}
+{{- fail (printf "%s.repository is set without %s.tag or %s.digest: an image reference needs one of them, and a digest is what makes the reference immutable. Clear the repository to run the helm the operator pins, which names both." .name .name .name) }}
+{{- end }}
+{{- if and (not $image.repository) (or $image.tag $image.digest) }}
+{{- fail (printf "%s names a tag or a digest but no repository, so nothing here says which image to run and the operator would quietly use its own pin. Set %s.repository, or clear both." .name .name) }}
+{{- end }}
+{{- end }}
+
+{{/*
+An image an installation named for one of the jobs the operator runs helm in,
+or nothing at all — which is the default, and leaves the operator's own pin in
+place. The pin names a digest as well as a tag (internal/controller/images.go
+says why at length), and it is one constant rather than a value repeated here,
+so that bumping it is one edit and cannot half-happen.
+
+A repository named here is completed the way kitchen.image is: the digest wins
+where there is one, the tag serves where there is not.
+*/}}
+{{- define "kitchen.namedImage" -}}
+{{- if .repository -}}
+{{- if .digest -}}
+{{- printf "%s@%s" .repository .digest }}
+{{- else -}}
+{{- printf "%s:%s" .repository .tag }}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 The scheme every generated URL is reached over, following kitchen.tls.mode as
 the operator does. In mode "none" the shared Gateway gets an HTTP listener and
 nothing else, so publishing https there names a scheme nothing serves.
@@ -1113,6 +1150,9 @@ does not run in.
 {{- fail (printf "%s values are missing: upgrade with --reset-then-reuse-values so new chart defaults are merged with existing overrides." $values) }}
 {{- end }}
 {{- end }}
+{{- include "kitchen.validateNamedImage" (dict "name" "selfUpdate.image" "image" .Values.selfUpdate.image) }}
+{{- include "kitchen.validateNamedImage" (dict "name" "scaleToZero.install.image" "image" .Values.scaleToZero.install.image) }}
+{{- include "kitchen.validateNamedImage" (dict "name" "databases.install.image" "image" .Values.databases.install.image) }}
 {{- if .Values.selfUpdate.enabled }}
 {{- if not .Values.rbac.create }}
 {{- fail "selfUpdate.enabled requires rbac.create: the update job runs as its own ServiceAccount bound to cluster-admin, which this chart is not creating. Set rbac.create=true, or leave selfUpdate.enabled=false and upgrade with helm." }}

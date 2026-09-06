@@ -43,12 +43,6 @@ import (
 )
 
 const (
-	// DefaultHelmImage runs the self-update job when the chart names no
-	// other. It is pinned rather than floating: the job it runs rewrites
-	// every object the platform is made of, so which helm does it is part of
-	// the release, not something to inherit from a moving tag.
-	DefaultHelmImage = "alpine/helm:3.19.0"
-
 	// DefaultSelfUpdateTimeout is how long helm is given to finish. It waits
 	// for the whole release to come back up, StatefulSets included, so it is
 	// generous by the standards of the API call that starts it.

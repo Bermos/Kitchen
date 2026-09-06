@@ -589,10 +589,10 @@ spec:
   provider: inngestSelfHosted
   config:
     namespace: kitchen-inngest          # where the servers run
-    image: inngest/inngest:v1.44.0      # what they run; the default is pinned in
-                                        # internal/provider/inngest/selfhosted.go, and bumping it
-                                        # means checking Inngest's release notes for the
-                                        # persistence flags the provisioner sets
+    image: inngest/inngest:v1.44.0      # what they run; the default is pinned by tag and
+                                        # digest in internal/provider/inngest/selfhosted.go, and
+                                        # bumping it means checking Inngest's release notes for
+                                        # the persistence flags the provisioner sets
     storageSize: 1Gi                    # the volume behind a preview's embedded store
     storageClass: fast-ssd              # default: the cluster's own default StorageClass
 ```

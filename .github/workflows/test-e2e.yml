@@ -284,14 +284,18 @@ jobs:
           # Read out of the operator rather than written down twice: bumping
           # BuildkitImage has to bump what this job actually runs, or the case
           # would keep proving something about a builder the platform no longer
-          # uses.
-          builder="$(grep -oE 'moby/buildkit:[A-Za-z0-9._-]+' \
-            internal/controller/build_controller.go | head -1)"
+          # uses. Every pin lives in internal/controller/images.go (#427) and
+          # names a digest as well as a tag; the tag alone is what is pulled
+          # and rebuilt here, and the whole pin is what the loaded copy is
+          # given as a name further down, because the pod spec asks for it.
+          pin="$(grep -oE 'moby/buildkit:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}' \
+            internal/controller/images.go | head -1)"
+          builder="${pin%@*}"
           [ -n "${builder}" ] || {
             echo "::error::could not read the builder image out of internal/controller"
             exit 1
           }
-          echo "the operator builds with ${builder}"
+          echo "the operator builds with ${pin}"
           docker pull "${builder}"
 
           # The one thing BuildKit cannot be told from outside the daemon: it
@@ -318,6 +322,7 @@ jobs:
           EOF
           docker build --tag "${builder}" /tmp/kitchen-builder
           echo "BUILDER_IMAGE=${builder}" >> "$GITHUB_ENV"
+          echo "BUILDER_PIN=${pin}" >> "$GITHUB_ENV"
 
       # The other builder, and what the lifecycle has to be told about a
       # cluster nobody configured for it.
@@ -346,21 +351,27 @@ jobs:
           # Read out of the operator rather than written down twice, exactly as
           # the BuildKit image above is: a bump has to move what this job runs,
           # or the case keeps proving something about a builder the platform no
-          # longer uses.
-          read_pin() { # read_pin <file> <pattern>
-            grep -oE "$2" "internal/controller/$1" | head -1
+          # longer uses. Same file, same shape — a pin is a tag and a digest
+          # (#427), the tag half is what is pulled and rebuilt here, and the
+          # whole pin is what the loaded copy is named further down.
+          read_pin() { # read_pin <repository>
+            grep -oE "$1:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}" \
+              internal/controller/images.go | head -1
           }
-          builder="$(read_pin buildpacks.go 'paketobuildpacks/builder-jammy-base:[A-Za-z0-9._-]+')"
+          builder_pin="$(read_pin paketobuildpacks/builder-jammy-base)"
           # Both strategies clone in a container of their own now (#425), so
-          # the image is pinned beside the clone rather than in either.
-          clone="$(read_pin gitclone.go 'alpine/git:[A-Za-z0-9._-]+')"
-          for pin in "${builder}" "${clone}"; do
+          # the image is pinned as the clone's rather than as either
+          # strategy's.
+          clone_pin="$(read_pin alpine/git)"
+          for pin in "${builder_pin}" "${clone_pin}"; do
             [ -n "${pin}" ] || {
               echo "::error::could not read the buildpacks images out of internal/controller"
               exit 1
             }
           done
-          echo "the lifecycle runs ${builder} and clones with ${clone}"
+          builder="${builder_pin%@*}"
+          clone="${clone_pin%@*}"
+          echo "the lifecycle runs ${builder_pin} and clones with ${clone_pin}"
 
           # Google's Docker Hub mirror first, the hub itself as the fallback.
           # The builder is a gigabyte and a half: pulling it anonymously from
@@ -400,7 +411,21 @@ jobs:
 
           echo "BP_BUILDER_IMAGE=${builder}" >> "$GITHUB_ENV"
           echo "BP_CLONE_IMAGE=${clone}" >> "$GITHUB_ENV"
+          echo "BP_BUILDER_PIN=${builder_pin}" >> "$GITHUB_ENV"
+          echo "BP_CLONE_PIN=${clone_pin}" >> "$GITHUB_ENV"
 
+      # The three images a build runs are loaded rather than pulled, and two of
+      # them were rebuilt above so that they know about this cluster's
+      # registry. That means the copy on the node is not the content the
+      # operator's pin is a digest over — so the pod spec's reference would
+      # miss it and the kubelet would go to Docker Hub for the unmodified
+      # original, which is the thing being avoided.
+      #
+      # So the loaded copy is given the name the kubelet will ask for. It has
+      # to be `ctr`: a digest is not something `docker tag` will write, and
+      # `kind load` names an image whatever docker called it. Both spellings
+      # are written, because a reference carrying a tag *and* a digest
+      # resolves as the digest alone.
       - name: Load the images into kind
         run: |
           set -euo pipefail
@@ -408,6 +433,22 @@ jobs:
           kind load docker-image "${BUILDER_IMAGE}"
           kind load docker-image "${BP_BUILDER_IMAGE}"
           kind load docker-image "${BP_CLONE_IMAGE}"
+
+          answer_to_pin() { # answer_to_pin <repository:tag@sha256:…>
+            local pin="$1" reference digest repository
+            reference="${pin%@*}"
+            digest="${pin##*@}"
+            repository="${reference%:*}"
+            docker exec kind-control-plane ctr --namespace k8s.io images tag --force \
+              "docker.io/${reference}" \
+              "docker.io/${repository}@${digest}" \
+              "docker.io/${reference}@${digest}"
+          }
+          answer_to_pin "${BUILDER_PIN}"
+          answer_to_pin "${BP_BUILDER_PIN}"
+          answer_to_pin "${BP_CLONE_PIN}"
+          docker exec kind-control-plane crictl images
+
           df -h /
 
       - name: Install the Gateway API CRDs

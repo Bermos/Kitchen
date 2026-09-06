@@ -113,9 +113,20 @@ selfUpdate:
   timeout: 15m
   # -- Name of the update job's ServiceAccount. Generated when empty.
   serviceAccountName: ""
+  # The helm this job runs. Left empty it is the operator's own pin, which
+  # names a digest as well as a tag — and this is the job that matters most
+  # for that: it rewrites every object the platform is made of, under an
+  # account bound to cluster-admin, so an image that could be repointed under
+  # it is somebody else's code with the whole cluster in its hands.
   image:
-    repository: alpine/helm
-    tag: 3.19.0
+    # -- Repository of the image the update job runs helm from. Empty takes
+    # the operator's own pin.
+    repository: ""
+    # -- Tag of that image. Read only when repository is set.
+    tag: ""
+    # -- Digest of that image, as `sha256:…`. Read only when repository is
+    # set, and takes precedence over the tag the way image.digest does.
+    digest: ""
 
 # Restoring a backup archive into this installation.
 #
@@ -1703,11 +1714,18 @@ scaleToZero:
     timeout: 10m
     # -- Name of the install job's ServiceAccount. Generated when empty.
     serviceAccountName: ""
+    # The helm this job runs. Left empty it is the operator's own pin, which
+    # names a digest as well as a tag; the account this job runs under is
+    # bound to cluster-admin, so what pulls is worth being sure of.
     image:
-      # -- Image the install job runs helm from.
-      repository: alpine/helm
-      # -- Tag of that image.
-      tag: 3.19.0
+      # -- Repository of the image the install job runs helm from. Empty takes
+      # the operator's own pin.
+      repository: ""
+      # -- Tag of that image. Read only when repository is set.
+      tag: ""
+      # -- Digest of that image, as `sha256:…`. Read only when repository is
+      # set, and takes precedence over the tag the way image.digest does.
+      digest: ""
   # The add-on's interceptor: what an idling environment's URL points at, since
   # it has no pods of its own. The defaults describe the add-on installed the
   # way the README describes; change them to match wherever yours runs.
@@ -1765,11 +1783,18 @@ databases:
     timeout: 10m
     # -- Name of the install job's ServiceAccount. Generated when empty.
     serviceAccountName: ""
+    # The helm this job runs. Left empty it is the operator's own pin, which
+    # names a digest as well as a tag; the account this job runs under is
+    # bound to cluster-admin, so what pulls is worth being sure of.
     image:
-      # -- Image the install job runs helm from.
-      repository: alpine/helm
-      # -- Tag of that image.
-      tag: 3.19.0
+      # -- Repository of the image the install job runs helm from. Empty takes
+      # the operator's own pin.
+      repository: ""
+      # -- Tag of that image. Read only when repository is set.
+      tag: ""
+      # -- Digest of that image, as `sha256:…`. Read only when repository is
+      # set, and takes precedence over the tag the way image.digest does.
+      digest: ""
 
 healthProbe:
   # -- Port the /healthz and /readyz endpoints bind to.
