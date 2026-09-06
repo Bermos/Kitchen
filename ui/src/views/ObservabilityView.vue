@@ -14,10 +14,8 @@ import {
 import { compactCount, formatBytes, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
-import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
 import LogHistogram from "../components/LogHistogram.vue";
-import OperatorOnly from "../components/OperatorOnly.vue";
 import PageHeader from "../components/PageHeader.vue";
 import Sparkline from "../components/Sparkline.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -80,11 +78,14 @@ watch(
 
 // Kitchen collects every container on every node, so the store also holds the
 // logs of things Kitchen did not deploy — the CNI, the CSI sidecars, whatever
-// else the cluster runs. They are worth having (a sick node is exactly when
-// Kitchen looks broken) and they are not what someone opening this page is
-// looking for, so they are scoped out unless asked for. It rides in the query
-// language as a clause of its own, which is what lets the chips below take it
-// back off again.
+// else the cluster runs. Every request from this screen scopes them out.
+//
+// There used to be a switch that took the scoping off, gated on operator mode,
+// and a `?cluster=1` that did the same from a pasted link. Both are gone with
+// the mode (#469): this is a project's screen, and what the cluster's own
+// workloads are logging is not a fact about anybody's project. It is the
+// Platform scope's question, and the Platform scope has no log screen yet —
+// see the follow-up on #469.
 const clusterClause: Clause = { field: "source", value: "cluster", negated: true };
 
 /** The scope, as a clause. It is applied to the request rather than typed into
@@ -92,24 +93,6 @@ const clusterClause: Clause = { field: "source", value: "cluster", negated: true
  * says this screen is about, and the API narrows to the caller's projects
  * around it either way. */
 const projectClause = computed<Clause>(() => ({ field: "project", value: project.value, negated: false }));
-
-// Whether the cluster's own lines are in the answer — a preference, narrowed
-// by the mode, exactly as `mode.ts` narrows the mode by the role.
-//
-// The narrowing is the point. Everything the cluster runs that Kitchen did not
-// deploy is the operator's to look at, and the switch below is theirs; but the
-// switch is not the only way in. `?cluster=1` rides in the URL so a view can be
-// shared, and a pasted link is precisely how an operator's screen ends up in
-// front of somebody in the developer's view. So the preference is stored and
-// the *effective* value is the preference and the mode, which is what every
-// read below asks for.
-const clusterPreference = ref(route.query.cluster === "1");
-const includeCluster = computed<boolean>({
-  get: () => clusterPreference.value && operatorMode.value,
-  set: (on: boolean) => {
-    if (operatorMode.value) clusterPreference.value = on;
-  },
-});
 
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
@@ -140,7 +123,7 @@ const expanded = ref<number | null>(null);
 
 /** What every request this page makes is asked over. */
 function selection(): LogSelection {
-  let scoped = includeCluster.value ? query.value : toQueryWithCluster();
+  let scoped = withoutClusterLines();
   if (project.value && !hasClause(scoped, projectClause.value)) {
     scoped = toggleClause(scoped, projectClause.value);
   }
@@ -155,7 +138,7 @@ function selection(): LogSelection {
   };
 }
 
-function toQueryWithCluster(): string {
+function withoutClusterLines(): string {
   return hasClause(query.value, clusterClause) ? query.value : toggleClause(query.value, clusterClause);
 }
 
@@ -233,12 +216,6 @@ function startStream() {
     });
 }
 
-function toggleCluster() {
-  // The watch below re-runs it — a write the mode refuses changes nothing and
-  // should ask the store nothing.
-  includeCluster.value = !includeCluster.value;
-}
-
 function toggleLiveTail() {
   liveTail.value = !liveTail.value;
   if (liveTail.value && !streamBroken.value) startStream();
@@ -252,7 +229,6 @@ function toggleLiveTail() {
 function syncURL() {
   const params: Record<string, string> = {};
   if (query.value.trim()) params.q = query.value.trim();
-  if (includeCluster.value) params.cluster = "1";
   if (limit.value !== 200) params.limit = String(limit.value);
   if (tab.value !== "lines") params.view = tab.value;
   if (pinned.value) {
@@ -343,12 +319,6 @@ watch(tab, (next) => {
   else syncURL();
 });
 
-// The switch above is not the only thing that moves `includeCluster`: leaving
-// operator mode narrows it, and the lines already on the screen were answered
-// under the old value. Re-asking is what makes the mode a property of what is
-// rendered rather than of what happens to be fetched next.
-watch(includeCluster, () => void run());
-
 /** A preset range releases whatever the histogram pinned. */
 function chooseRange(minutes: number) {
   // The "Selected range" entry only exists to show what is pinned; choosing it
@@ -421,7 +391,8 @@ async function saveQuery() {
       // A saved query is a log query, and the two tabs that are not log
       // readings have nothing to save. The control is only on the log half.
       view: tab.value === "patterns" ? "patterns" : "lines",
-      includeCluster: includeCluster.value,
+      // Nothing on this screen asks for the cluster's own lines any more.
+      includeCluster: false,
     });
     toast.add({ title: `Saved “${savedTitle.value.trim()}”`, color: "success", icon: "i-lucide-bookmark" });
     naming.value = false;
@@ -463,7 +434,6 @@ function applySaved(entry: SavedQuery) {
   rangeMinutes.value = entry.rangeMinutes;
   pinned.value = null;
   tab.value = entry.view === "patterns" ? "patterns" : "lines";
-  includeCluster.value = entry.includeCluster ?? false;
   void run();
 }
 
@@ -618,22 +588,6 @@ const placeholder = `level:error service:shop`;
           class="w-36 sm:w-44"
           @update:model-value="chooseRange"
         />
-        <OperatorOnly>
-          <UButton
-            size="sm"
-            :color="includeCluster ? 'primary' : 'neutral'"
-            :variant="includeCluster ? 'soft' : 'subtle'"
-            icon="i-lucide-server"
-            :title="
-              includeCluster
-                ? 'Showing everything on the node, Kitchen\'s and the cluster\'s'
-                : 'Showing Kitchen\'s own logs. The cluster\'s other pods are collected too.'
-            "
-            @click="toggleCluster"
-          >
-            Cluster
-          </UButton>
-        </OperatorOnly>
         <UButton
           v-if="readingLogs"
           size="sm"
@@ -756,14 +710,11 @@ const placeholder = `level:error service:shop`;
       >
         {{ clause.negated ? "−" : "" }}{{ clause.field }}:{{ clause.value }} ×
       </button>
-      <!-- What can be typed here. The last example is only worth knowing about
-           if the cluster's own lines are in the answer, and they are the
-           operator's. -->
+      <!-- What can be typed here. -->
       <span class="text-dimmed">
         <template v-if="!activeClauses.length">
           <span class="font-mono">level:error</span> · <span class="font-mono">service:shop</span> ·
           <span class="font-mono">http.status:&gt;=500</span>
-          <OperatorOnly> · <span class="font-mono">-source:cluster</span></OperatorOnly>
         </template>
       </span>
     </div>

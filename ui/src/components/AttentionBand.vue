@@ -27,7 +27,6 @@ import { callerFor } from "../lib/me";
 import { buildLink, environmentLink } from "../lib/links";
 import { may } from "../lib/policy";
 import ConditionsTable from "./ConditionsTable.vue";
-import OperatorOnly from "./OperatorOnly.vue";
 import StatusDot from "./StatusDot.vue";
 
 const props = defineProps<{ incidents: Incident[] }>();
@@ -225,9 +224,7 @@ function rollbackTo(incident: Incident) {
           No output was kept for this one — the build's own screen has whatever the log store still holds.
         </p>
 
-        <OperatorOnly>
-          <ConditionsTable :conditions="incident.conditions" />
-        </OperatorOnly>
+        <ConditionsTable :conditions="incident.conditions" />
       </div>
     </div>
 

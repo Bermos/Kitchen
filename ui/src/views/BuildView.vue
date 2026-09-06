@@ -19,7 +19,6 @@ import { useAsync, usePoll } from "../lib/useAsync";
 import ArtifactEvidenceCell from "../components/ArtifactEvidenceCell.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import LogViewer from "../components/LogViewer.vue";
-import OperatorOnly from "../components/OperatorOnly.vue";
 import CommitBody from "../components/CommitBody.vue";
 import SourceLink from "../components/SourceLink.vue";
 import PageHeader from "../components/PageHeader.vue";
@@ -865,9 +864,9 @@ const logRunLabels = computed<Record<string, string>>(() => {
         :role="project.data.value?.role"
       />
 
-      <OperatorOnly>
-        <ConditionsTable :conditions="build.conditions" />
-      </OperatorOnly>
+      <!-- Everybody's since #469: a build's conditions are a fact about that
+           build, and the single most diagnostic thing on this page. -->
+      <ConditionsTable :conditions="build.conditions" />
 
       <div>
         <h2 class="text-sm font-medium text-highlighted mb-2">Build output</h2>

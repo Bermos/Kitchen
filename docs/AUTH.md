@@ -326,10 +326,14 @@ route → role table (`internal/api/policy.go`), the preview gate and the API
 both resolve membership through `internal/access`, and the dashboard's copy of
 the table is generated from the API's so the two cannot disagree.
 
-The other half of that sentence — what operator mode *renders*, as against what
-the role permits — is [the dashboard's design guide](UI.md#the-mode-rule), and
-it is enforced too: `ui/src/lib/design.test.ts` refuses a developer screen that
-prints a Kubernetes noun outside an operator gate. It was
+The other half of that sentence — what a *screen* renders, as against what the
+role permits — is [the dashboard's design guide](UI.md#the-scope-rule), and it
+is enforced too: the dashboard has four scopes, the address says which one a
+screen is in, and `ui/src/lib/design.test.ts` refuses a Fleet- or
+Project-scope screen that prints a Kubernetes noun. There is no mode toggle any
+more: what is on a screen is decided by what the screen is about rather than by
+who is reading it, so a project managed by an operator and one managed by a
+member get the same diagnostics. It was
 written down before any of it was built on purpose — enforcement without a
 written model is how a permission system ends up meaning whatever the first
 three `if` statements happened to mean — and it remains the authority: where

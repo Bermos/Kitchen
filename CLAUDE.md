@@ -55,20 +55,26 @@ weights for the same heading.
 
 The half of it a machine can hold is held by `ui/src/lib/design.test.ts`, which
 runs in `npm test` and so in CI. Adding a screen is therefore cheap: it inherits
-the frame from `PageHeader`, `PageSection` and `OperatorOnly`, and the test names
-the one thing it forgot. Changing a rule means changing both halves together —
-a rule loosened only in the test turns the file into an allowlist and the guide
-into folklore.
+the frame from `PageHeader` and `PageSection`, it declares its scope in
+`ui/src/routes.ts`, and the test names the one thing it forgot. Changing a rule
+means changing both halves together — a rule loosened only in the test turns
+the file into an allowlist and the guide into folklore.
 
 The rule that guide exists for above all others is **role decides what is
-permitted, mode decides what is rendered**. The role half is enforced from the
-API's own table (see Regeneration below); the mode half was, until the guide,
-enforced only by whoever wrote the screen remembering to write
-`v-if="operatorMode"`, which is why three developer screens were showing pod
-names, cluster events and a cluster-wide log switch to an operator who had asked
-for the developer's view. Operator vocabulary — Pod, Node, namespace, manifest,
-cluster Event — belongs behind `<OperatorOnly>` on a developer screen, and a
-platform screen is the operator's entire and gates nothing inside itself.
+permitted, and the scope decides what is rendered**. The role half is enforced
+from the API's own table (see Regeneration below). The scope half is the
+address: the dashboard has four scopes — Fleet (`/`), Project
+(`/projects/:name/…`), Platform (`/platform/…`) and Compliance
+(`/compliance/…`) — every route declares which one it is in, and operator
+vocabulary (Pod, Node, namespace, manifest, cluster Event) may appear on a
+Platform- or Compliance-scope screen and nowhere else. There is no mode toggle
+and no `<OperatorOnly>`: a gate keyed to who is reading would give a project
+staffed by an operator better diagnostics than an identical project staffed by
+a member, so what is on a screen is decided by what the screen is about. A fact
+about somebody's own project — `status.conditions`, the container that
+crashed — is shown to every member; a fact about the cluster belongs to the
+Platform scope; an instruction only an operator could act on is reworded as a
+statement of fact.
 
 ## The CLI is the third client, and it exists
 

@@ -27,7 +27,6 @@ import EnvironmentCard from "../components/EnvironmentCard.vue";
 import KeysPanel from "../components/KeysPanel.vue";
 import MembersPanel from "../components/MembersPanel.vue";
 import NotificationsPanel from "../components/NotificationsPanel.vue";
-import OperatorOnly from "../components/OperatorOnly.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import SourceLink from "../components/SourceLink.vue";
@@ -1035,9 +1034,10 @@ function host(url?: string): string {
         :promotions="promotions"
       />
 
-      <OperatorOnly>
-        <ConditionsTable :conditions="project.conditions" />
-      </OperatorOnly>
+      <!-- Everybody's since #469. Conditions are a fact about this project;
+           they were gated in four places, so a developer whose project was
+           unhappy could not read the statement saying why. -->
+      <ConditionsTable :conditions="project.conditions" />
 
       <!-- Seven tabs do not fit across a phone, and a tab abbreviated to
            "Dep…" names nothing: the strip scrolls instead. -->
@@ -1476,12 +1476,6 @@ function host(url?: string): string {
                     >
                       shared with {{ claim.volume.bound.sharedWith.join(", ") }}
                     </span>
-                    <OperatorOnly>
-                      <span v-if="claim.volume.bound" class="block text-dimmed">
-                        PersistentVolume {{ claim.volume.bound.persistentVolume }}
-                        <template v-if="claim.volume.bound.identity"> · {{ claim.volume.bound.identity }}</template>
-                      </span>
-                    </OperatorOnly>
                   </template>
                   <template v-else-if="claim.redirectURIs?.length">
                     <span :title="claim.redirectURIs.join('\n')">
@@ -1495,19 +1489,6 @@ function host(url?: string): string {
                   <span v-if="claimRecoveryPoint(claim)" class="block text-dimmed">
                     {{ claimRecoveryPoint(claim) }}
                   </span>
-                  <!-- Where the archives actually are, and what the database
-                       said about its own archiving: the bucket the operator
-                       configured, in the operator's vocabulary. -->
-                  <OperatorOnly>
-                    <span v-if="claim.backup?.destination" class="block text-dimmed">
-                      {{ claim.backup.destination }}
-                      <template v-if="claim.backup.schedule"> · {{ claim.backup.schedule }}</template>
-                      <template v-if="claim.backup.retentionPolicy"> · keep {{ claim.backup.retentionPolicy }}</template>
-                    </span>
-                    <span v-if="claim.backup?.archivingMessage" class="block text-dimmed">
-                      {{ claim.backup.archivingMessage }}
-                    </span>
-                  </OperatorOnly>
                 </td>
                 <td class="px-3 py-2"><PhaseBadge :phase="claim.phase" /></td>
                 <!-- What the binding is: the secret the env vars read, or

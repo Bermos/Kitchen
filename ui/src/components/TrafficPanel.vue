@@ -2,9 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { api, type TrafficEdge } from "../lib/api";
 import { compactCount } from "../lib/format";
-import { operatorMode } from "../lib/mode";
 import { useAsync, usePoll } from "../lib/useAsync";
-import OperatorOnly from "./OperatorOnly.vue";
 
 // One tab of a project's observability screen (#469). It was a cross-project
 // screen with a project dropdown, which is the shape this dashboard is moving
@@ -48,13 +46,13 @@ const edges = computed<TrafficEdge[]>(() => {
   return edges;
 });
 
-// The second line under a box on the map. A namespace is a Kubernetes noun and
-// so the operator's; what a developer needs from the same field is the one
-// thing it says in their vocabulary — whether the other end of the edge is on
-// this platform at all, which is exactly the case where it is missing.
+// The second line under a box on the map. The field is a namespace, which is
+// the cluster's vocabulary and belongs in the Platform scope; what this screen
+// needs from it is the one thing it says in a developer's — whether the other
+// end of the edge is on this platform at all, which is exactly the case where
+// it is missing.
 function boxDetail(box: Node): string {
-  if (!box.namespace) return "off the platform";
-  return operatorMode.value ? box.namespace : "";
+  return box.namespace ? "" : "off the platform";
 }
 
 // The map draws the busiest edges; the table below has all of them.
@@ -194,23 +192,15 @@ function edgeLabel(edge: TrafficEdge): string {
       class="rounded-md border border-default px-6 py-14 text-center text-sm text-muted space-y-2"
     >
       <p>{{ loading ? "Loading…" : dropsOnly ? "Nothing was dropped in this window." : "No flow data in this window." }}</p>
-      <!-- Turning the flow pipeline on is the operator's job and reads as an
-           instruction; a developer who cannot act on it is only being told
-           their screen is empty for a reason nobody named. -->
-      <template v-if="!loading && !dropsOnly">
-        <OperatorOnly>
-          <p class="text-xs text-dimmed max-w-xl mx-auto">
-            The traffic view needs the flow pipeline: enable Hubble in Cilium and point
-            <span class="font-mono">Kitchen.spec.observability.hubble.relayAddress</span> at Hubble Relay (typically
-            <span class="font-mono">hubble-relay.kube-system.svc.cluster.local:80</span>). The operator follows the
-            stream from there and this screen fills in.
-          </p>
-        </OperatorOnly>
-        <p v-if="!operatorMode" class="text-xs text-dimmed max-w-xl mx-auto">
-          The platform is not measuring flows yet — an operator has to turn the pipeline on before this screen has
-          anything to draw.
-        </p>
-      </template>
+      <!-- An empty answer is an answer and says why. It used to say it twice:
+           an instruction addressed to an operator, and a sentence for everyone
+           else. The instruction is not something the reader of a project's
+           screen can act on and naming what they cannot do is not telling them
+           anything, so what is left is the fact (#469). -->
+      <p v-if="!loading && !dropsOnly" class="text-xs text-dimmed max-w-xl mx-auto">
+        No flow data reaches this project — the platform is not measuring flows yet, and until it is there is nothing
+        for this map to draw.
+      </p>
     </div>
 
     <template v-else>
@@ -278,11 +268,6 @@ function edgeLabel(edge: TrafficEdge): string {
                 <span class="text-toned">{{ edge.source }}</span>
                 <span class="text-dimmed mx-1.5">→</span>
                 <span class="text-toned">{{ edge.destination }}</span>
-                <OperatorOnly>
-                  <span v-if="edge.destinationNamespace" class="text-dimmed ml-1.5">
-                    {{ edge.destinationNamespace }}
-                  </span>
-                </OperatorOnly>
               </td>
               <td class="px-3 py-2 text-xs text-muted">{{ edge.protocol }}</td>
               <td class="px-3 py-2 text-right font-mono text-xs text-toned">
