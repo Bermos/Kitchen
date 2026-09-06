@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -976,7 +977,11 @@ func (r *BuildReconciler) createJob(
 ) error {
 	template := dockerfilePod(project, build, plan, cache, credentials.Push, gitSecret, r.platformAttestation(ctx))
 	if plan.Strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		template = buildpacksPod(project, build, plan, detected, cache, credentials, gitSecret)
+		// The ceiling twice, for the two things it decides: what the pod may
+		// take, and — for a Node build, which sizes its heap from the machine
+		// and not from the cgroup — how much of that the heap may be.
+		template = buildpacksPod(project, build, plan, detected, cache, credentials, gitSecret,
+			buildHeapMiB(ctx, builds.Resources))
 	}
 	// What a build may take, from the platform object rather than from
 	// anything the commit or the project can say. It is applied here rather
@@ -1661,21 +1666,36 @@ func imagesByName(images []kitchenv1alpha1.WorkloadImage) map[string]string {
 }
 
 // runtimeFor is the runtime the Release freezes: the project's own, with the
-// one thing a project may leave to the platform filled in.
+// two things a project may leave to the platform filled in.
 //
 // A project that names no port takes the detected framework's, because that
 // is the number the framework's own tooling uses and the one an application
-// that ignores $PORT will be listening on. It is resolved here, once, into
-// the snapshot — so a release keeps the port it was built with even if the
-// same project detects differently later, and so the number is visible rather
-// than implied.
+// that ignores $PORT will be listening on. A project that names no command
+// takes the detected framework's for the same reason and with the same
+// precedence: it is how that framework's own documentation starts what it
+// built, and on the buildpacks path it is often the only thing that can start
+// it at all — the lifecycle exports `processes: []` for every framework whose
+// server does not exist until after the build (#440, #468).
+//
+// Both are resolved here, once, into the snapshot — so a release keeps what
+// it was built with even if the same project detects differently later, and
+// so what the platform decided is visible rather than implied. Anything the
+// project or the commit's own kitchen.json declares wins: this fills blanks
+// and overrules nothing.
 func runtimeFor(project *kitchenv1alpha1.Project, build *kitchenv1alpha1.Build) kitchenv1alpha1.RuntimeSpec {
 	runtimeSpec := project.Spec.Runtime
-	if runtimeSpec.Port != 0 {
+	detected, ok := framework.ByName(build.Status.DetectedFramework)
+	if !ok {
 		return runtimeSpec
 	}
-	if detected, ok := framework.ByName(build.Status.DetectedFramework); ok {
+	if runtimeSpec.Port == 0 {
 		runtimeSpec.Port = detected.Port
+	}
+	if len(runtimeSpec.Command) == 0 {
+		// Cloned rather than shared: the catalogue hands out one slice per
+		// framework, and a Release that took it would be holding the
+		// platform's own table.
+		runtimeSpec.Command = slices.Clone(detected.Command)
 	}
 	return runtimeSpec
 }

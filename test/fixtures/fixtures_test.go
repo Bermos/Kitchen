@@ -47,6 +47,15 @@ const (
 	// lifecycle rather than BuildKit.
 	buildpacksNode = "buildpacks-node"
 
+	// nuxtStock is the fixture behind the default-path case (#468): a stock
+	// Nuxt application, a deploy task and a postgres claim, with no
+	// Dockerfile, no strategy, no port, no start command and no build
+	// environment of its own. Everything it needs to build and to run is
+	// something the platform works out, which is exactly what makes it worth
+	// a kind job — every one of those was missing at once, and the only way
+	// to ship such an application was to write a Dockerfile.
+	nuxtStock = "nuxt-stock"
+
 	// namedStage is the stage the unit's api workload asks for, and lastStage
 	// the one the file ends on and so the one a build asking for nothing
 	// ships. They are the whole of what the fourth case observes, and the
@@ -218,5 +227,132 @@ func TestBuildpacksFixtureStarts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(buildpacksNode, "server.js")); err != nil {
 		t.Errorf("the start script runs server.js and it is not there: %v", err)
+	}
+}
+
+// The stock-Nuxt fixture. What the expensive half proves is that the default
+// path works end to end; what these hold is everything about the fixture that
+// would make that job fail for a reason of its own — a file that would send
+// the build down another strategy, a workaround that would make the case
+// prove nothing, or a manifest missing what the assertions read.
+
+// TestNuxtFixtureIsOnTheDefaultPath is the whole reason this fixture exists.
+// A Dockerfile would send `auto` to BuildKit, and a `strategy` in the
+// kitchen.json would answer the question the case exists to ask.
+func TestNuxtFixtureIsOnTheDefaultPath(t *testing.T) {
+	entries, err := os.ReadDir(nuxtStock)
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Name(), "Dockerfile") {
+			t.Fatal("the fixture has a Dockerfile: `auto` would build it with BuildKit, " +
+				"and the case is about the path a repository without one takes")
+		}
+		if strings.EqualFold(entry.Name(), "Procfile") {
+			t.Fatal("the fixture has a Procfile: the lifecycle would declare a process " +
+				"from it, and the case is about an image that declares none")
+		}
+	}
+
+	raw, err := os.ReadFile(filepath.Join(nuxtStock, "kitchen.json"))
+	if err != nil {
+		t.Fatalf("reading the fixture's kitchen.json: %v", err)
+	}
+	config, err := repoconfig.Parse(raw)
+	if err != nil {
+		t.Fatalf("the fixture's kitchen.json is not one the platform accepts: %v", err)
+	}
+	if config == nil {
+		t.Fatal("the fixture declares nothing")
+	}
+	if config.Build != nil && config.Build.Strategy != "" {
+		t.Errorf("the fixture names strategy %q: `auto` reading the repository is what "+
+			"the case is about", config.Build.Strategy)
+	}
+	if config.Runtime != nil {
+		if config.Runtime.Port != nil {
+			t.Error("the fixture names a port: the detected framework's is what the platform " +
+				"is supposed to supply")
+		}
+		if len(config.Runtime.Command) > 0 {
+			t.Errorf("the fixture names command %q: the detected framework's is what the "+
+				"platform is supposed to supply (#440)", config.Runtime.Command)
+		}
+	}
+
+	migrate := kitchenv1alpha1.ProcessSpec{}
+	for _, process := range config.Processes {
+		if process.Name == "migrate" {
+			migrate = process
+		}
+	}
+	if migrate.Name == "" {
+		t.Fatal("the fixture declares no deploy task, so nothing proves a command reaches " +
+			"the launcher on the default path")
+	}
+	if migrate.Type != kitchenv1alpha1.ProcessTask {
+		t.Errorf("the migrate workload is %q, not a task, so no deploy waits for it", migrate.Type)
+	}
+	if len(migrate.Command) == 0 {
+		t.Error("the deploy task names no command, so it would start the image's own process")
+	}
+}
+
+// TestNuxtFixtureIsStock holds the fixture to being what the case claims it
+// is: a repository that says nothing about how to build or start itself, with
+// a build script for the buildpacks to run, a runtime version for them to
+// pick, and no workaround anywhere for the four defects #468 is about.
+func TestNuxtFixtureIsStock(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(nuxtStock, "package.json"))
+	if err != nil {
+		t.Fatalf("reading the fixture's package.json: %v", err)
+	}
+	manifest := struct {
+		Scripts         map[string]string `json:"scripts"`
+		Engines         map[string]string `json:"engines"`
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}{}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("the fixture's package.json does not parse: %v", err)
+	}
+
+	if manifest.Scripts["build"] == "" {
+		t.Error("the fixture declares no build script, so BP_NODE_RUN_SCRIPTS would name " +
+			"nothing and the assertion about it would pass vacuously")
+	}
+	// The defect in one line. Stock Nuxt has no start script, which is why
+	// npm-start passes, node-start passes, the Procfile buildpack passes, and
+	// the lifecycle exports an image with `processes: []`.
+	if manifest.Scripts["start"] != "" {
+		t.Errorf("the fixture declares a start script (%q): the `npm-start` buildpack would "+
+			"give the image a process type, and the case would stop being about an image "+
+			"that declares none", manifest.Scripts["start"])
+	}
+	if manifest.Engines["node"] == "" {
+		t.Error("the fixture's manifest names no node version, so BP_NODE_VERSION would " +
+			"not be set and the build would take whatever is newest that day")
+	}
+	if _, ok := manifest.DevDependencies["nuxt"]; !ok {
+		t.Error("the fixture does not depend on nuxt, so detection would not recognise it")
+	}
+	// The deploy task and the server route both open the database, and
+	// verifying the server is the whole of what the claim half asserts.
+	if _, ok := manifest.Dependencies["pg"]; !ok {
+		t.Error("the fixture does not depend on pg, so nothing in it connects to its claim")
+	}
+	for _, script := range manifest.Scripts {
+		if strings.Contains(script, "NODE_OPTIONS") {
+			t.Errorf("a script bakes NODE_OPTIONS in (%q): capping the build heap is the "+
+				"platform's job, and the case exists to prove it does it", script)
+		}
+	}
+
+	for _, name := range []string{"nuxt.config.ts", "app.vue", "migrate.mjs",
+		filepath.Join("server", "api", "kitchen.get.ts")} {
+		if _, err := os.Stat(filepath.Join(nuxtStock, name)); err != nil {
+			t.Errorf("the fixture is missing %s: %v", name, err)
+		}
 	}
 }

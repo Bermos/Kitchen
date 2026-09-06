@@ -118,6 +118,44 @@ func buildRequirements(
 	return requirements
 }
 
+// nodeHeapShare is how much of the build's memory ceiling a Node build is
+// allowed to hold as V8 heap. The rest is everything else in the pod that is
+// not the heap — the Node binary and its native allocations, npm and the
+// package manager's own child processes, esbuild and Rollup's workers, and
+// the layer directory the lifecycle is writing into. Three quarters leaves
+// that room and still lets the heap grow to most of the ceiling.
+const nodeHeapShare = 3
+
+// buildHeapMiB is the heap a Node build may hold, in mebibytes, derived from
+// the same ceiling applyBuildResources writes onto the pod.
+//
+// It exists because V8 does not read the cgroup it is in. It sizes its old
+// space from the *machine's* memory, which on any cluster node is far more
+// than a build pod's limit, so a front-end build grows past the limit and the
+// kernel kills it — arriving as exit 137, a container the kubelet often
+// reports as a plain "Error" because the process it was watching was not the
+// one that died, and no explanation at all. Every stock Nuxt build did
+// exactly that at the platform's 4Gi ceiling (#468).
+//
+// A build ceiling that is empty answers zero, which is the installation that
+// has decided its builds are unbounded: there is no number to take a share
+// of, and inventing one would cap a build the operator deliberately did not.
+// A ceiling too small to divide answers zero for the same reason — a heap of
+// a few mebibytes would fail the build sooner and more confusingly than the
+// limit does.
+func buildHeapMiB(ctx context.Context, resources kitchenv1alpha1.BuildResourcesSpec) int64 {
+	limits := buildRequirements(ctx, resources).Limits
+	ceiling, ok := limits[corev1.ResourceMemory]
+	if !ok {
+		return 0
+	}
+	mib := ceiling.Value() / (1024 * 1024) * nodeHeapShare / 4
+	if mib < 1 {
+		return 0
+	}
+	return mib
+}
+
 // outOfMemory reports whether a build failure is the memory ceiling rather
 // than the repository.
 //

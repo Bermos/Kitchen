@@ -17,6 +17,7 @@ limitations under the License.
 package framework
 
 import (
+	"slices"
 	"testing"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -202,10 +203,55 @@ func TestDetectBuildEnv(t *testing.T) {
 				"BP_WEB_SERVER_ROOT": ".",
 			},
 		},
-		"a framework that starts its own server is told nothing": {
+		// #468: the build script reached the three static frameworks and no
+		// other, so a framework that compiles its own server was built with
+		// an empty environment and never ran its build at all.
+		"a framework that starts its own server is told to run its build": {
 			signals: Signals{
 				Files:       []string{"package.json"},
 				PackageJSON: []byte(`{"dependencies":{"next":"15.0.0"},"scripts":{"build":"next build"}}`),
+			},
+			want: map[string]string{"BP_NODE_RUN_SCRIPTS": "build"},
+		},
+		"nuxt is told to run its build": {
+			signals: Signals{
+				Files:       []string{"package.json"},
+				PackageJSON: []byte(`{"dependencies":{"nuxt":"3.14.0"},"scripts":{"build":"nuxt build"}}`),
+			},
+			want: map[string]string{"BP_NODE_RUN_SCRIPTS": "build"},
+		},
+		// The manifest is the only place a repository says which runtime it
+		// wants. Without this the node-engine buildpack reports no version
+		// source at all and takes whatever is newest that day.
+		"a manifest that names a node version is passed it": {
+			signals: Signals{
+				Files: []string{"package.json"},
+				PackageJSON: []byte(`{"dependencies":{"nuxt":"3.14.0"},` +
+					`"scripts":{"build":"nuxt build"},"engines":{"node":">=22.0.0"}}`),
+			},
+			want: map[string]string{
+				"BP_NODE_RUN_SCRIPTS": "build",
+				"BP_NODE_VERSION":     ">=22.0.0",
+			},
+		},
+		"a static framework is told both as well": {
+			signals: Signals{
+				Files: []string{"package.json"},
+				PackageJSON: []byte(`{"dependencies":{"vite":"5.0.0"},` +
+					`"scripts":{"build":"vite build"},"engines":{"node":"22.x"}}`),
+			},
+			want: map[string]string{
+				"BP_NODE_RUN_SCRIPTS":             "build",
+				"BP_NODE_VERSION":                 "22.x",
+				"BP_WEB_SERVER":                   "nginx",
+				"BP_WEB_SERVER_ROOT":              "dist",
+				"BP_WEB_SERVER_ENABLE_PUSH_STATE": "true",
+			},
+		},
+		"a repository with no build script and no engine is told neither": {
+			signals: Signals{
+				Files:       []string{"package.json", "server.js"},
+				PackageJSON: []byte(`{"scripts":{"start":"node server.js"}}`),
 			},
 			want: map[string]string{},
 		},
@@ -285,5 +331,68 @@ func TestCatalogueIsConsistent(t *testing.T) {
 	}
 	if catalogue[Dockerfile].Port != 0 {
 		t.Error("a Dockerfile decides its own port; detection must not imply one")
+	}
+}
+
+// What each framework starts with, and which of them only start because the
+// platform says so.
+//
+// The four commands here are the whole of #440's default path: their servers
+// are written by the build into a directory that does not exist while the
+// buildpacks are deciding what to run, so `npm-start`, `node-start` and the
+// Procfile buildpack all pass and the lifecycle exports an image declaring no
+// process at all. The two that name `npm start` are the frameworks whose
+// stock manifest binds that script to their own CLI.
+func TestFrameworkCommands(t *testing.T) {
+	for name, want := range map[string][]string{
+		Nuxt:      {"node", ".output/server/index.mjs"},
+		SvelteKit: {"node", "build"},
+		NestJS:    {"node", "dist/main"},
+		Astro:     {"node", "./dist/server/entry.mjs"},
+		NextJS:    {"npm", "start"},
+		Remix:     {"npm", "start"},
+
+		// Plain Node is recognised from four shapes and the buildpacks read
+		// the same signals; a command here would be the platform guessing
+		// between them.
+		Node: nil,
+
+		// A Dockerfile declares its own entrypoint, the static frameworks are
+		// started by the web-server buildpack, and every other language's
+		// buildpack declares a process of its own.
+		Dockerfile:  nil,
+		Vite:        nil,
+		ReactApp:    nil,
+		AstroStatic: nil,
+		Static:      nil,
+		Go:          nil,
+		Python:      nil,
+		Ruby:        nil,
+		Java:        nil,
+		DotNet:      nil,
+	} {
+		f, ok := ByName(name)
+		if !ok {
+			t.Fatalf("ByName(%q) found nothing", name)
+		}
+		if !slices.Equal(f.Command, want) {
+			t.Errorf("%s starts with %q, want %q", name, f.Command, want)
+		}
+	}
+}
+
+// Which frameworks the platform caps the build heap for. It is a fact about
+// what runs the build, so the static front-ends are in it — a Vite bundle is
+// assembled by the same tool a Nuxt server is, and dies the same way — and
+// a directory that is already a website is not, because nothing builds it.
+func TestFrameworksThatRunNode(t *testing.T) {
+	node := map[string]bool{
+		NextJS: true, Nuxt: true, SvelteKit: true, Remix: true, NestJS: true,
+		Astro: true, AstroStatic: true, Vite: true, ReactApp: true, Node: true,
+	}
+	for name, f := range catalogue {
+		if f.RunsNode != node[name] {
+			t.Errorf("framework %q RunsNode = %v, want %v", name, f.RunsNode, node[name])
+		}
 	}
 }
