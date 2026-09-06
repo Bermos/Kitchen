@@ -300,6 +300,10 @@ func TestEveryCustomResourceKindIsInTheArchive(t *testing.T) {
 	// outcome, the decision store carries the history (internal/backup says
 	// so at the Kinds list).
 	carried["PlatformUpdate"] = true
+	// AddonUpgrade is PlatformUpdate's reasoning one layer down: the history
+	// of releases in the cluster that died, at versions the restored operator
+	// installs afresh from its own pins. The Addons themselves are carried.
+	carried["AddonUpgrade"] = true
 	carried["Promotion"] = true
 	// NotificationDelivery is the third, and it is Promotion's reasoning
 	// exactly: a delivery is one message in flight, so a restore would post a

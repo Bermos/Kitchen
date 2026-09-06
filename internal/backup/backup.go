@@ -117,6 +117,12 @@ type Kind struct {
 // cluster that no longer exists by the time anyone is restoring, and every
 // record in it names a Job that was reaped long ago.
 //
+// AddonUpgrade is absent for exactly that reason, one layer down: it is the
+// history of releases in the cluster that died, at versions the operator
+// doing the restore will install afresh from its own pins. The Addons
+// themselves — which entries this installation asked for, and where — are
+// carried, because those are configuration.
+//
 // Promotion is deliberately absent too, and for a sharper reason: a
 // promotion is a *request* to move an environment, and its status — the
 // evaluated verdict — does not travel through a restore. Restored requests
@@ -238,8 +244,9 @@ var Excluded = []string{
 		"The bundled registry's volume is not in this archive.",
 	"application data: databases a ResourceClaim provisioned belong to the provider that runs them. " +
 		"The claim is restored; what it points at is that provider's to keep.",
-	"the platform's upgrade history (PlatformUpdate objects), which describes a cluster that will not " +
-		"exist by the time this is restored.",
+	"the platform's upgrade history (PlatformUpdate objects) and its addons' (AddonUpgrade objects), " +
+		"which describe a cluster that will not exist by the time this is restored. Which addons this " +
+		"installation asked for is carried; what happened to them in the old cluster is not.",
 	"Secrets outside the platform namespace: the registry pull credential each application namespace " +
 		"holds is a copy the operator syncs, and it is written again on the next build.",
 }

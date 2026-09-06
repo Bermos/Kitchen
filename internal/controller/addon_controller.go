@@ -256,6 +256,13 @@ func (r *AddonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	// Before anything writes to the status: `status.charts` is the only
+	// statement of what was installed before this upgrade, and settle is what
+	// overwrites it.
+	if err := r.recordUpgrade(ctx, addon, entry, cfg, observed); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	plan := planAddon(addon, entry, cfg, observed)
 	if plan.install {
 		return r.runInstall(ctx, addon, entry, cfg, namespace)
@@ -546,6 +553,13 @@ func (r *AddonReconciler) settle(
 		}
 	}
 	addon.Status.ObservedGeneration = addon.Generation
+	// From here on this entry's upgrades are recorded, and an empty history
+	// means there have been none rather than that nobody was watching. It is
+	// written once and never moved: an installation upgraded from an operator
+	// that kept no records keeps a history that honestly begins today.
+	if addon.Status.UpgradeHistorySince == nil {
+		addon.Status.UpgradeHistorySince = ptr.To(metav1.Now())
+	}
 	if plan.namespace != "" {
 		addon.Status.Namespace = plan.namespace
 	}

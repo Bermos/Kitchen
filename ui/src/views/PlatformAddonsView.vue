@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { api, APIError, type Addon } from "../lib/api";
+import { api, APIError, type Addon, type AddonUpgrade, type AddonUpgrades } from "../lib/api";
+import { exactTime, timeAgo } from "../lib/format";
 import { conditionSeverity } from "../lib/status";
 import { useAsync } from "../lib/useAsync";
 import PageHeader from "../components/PageHeader.vue";
@@ -24,7 +25,26 @@ import StatusDot from "../components/StatusDot.vue";
 // after — an account bound to cluster-admin is not something to discover from
 // a condition message.
 
-const { data, error, loading, refresh } = useAsync(() => api.addons());
+// The catalogue and, for each entry, what the platform has done to it. The
+// two are fetched together so the screen is one answer with one age: an
+// addon's installed versions are singular and current, and the history beside
+// them is the only thing that says they ever moved.
+const { data, error, loading, refresh } = useAsync(async () => {
+  const catalogue = await api.addons();
+  const histories: Record<string, AddonUpgrades> = {};
+  await Promise.all(
+    catalogue.items.map(async (addon) => {
+      try {
+        histories[addon.id] = await api.addonUpgrades(addon.id);
+      } catch (err) {
+        // A history that cannot be read leaves the row's other answers
+        // standing. An expired session is not that, and belongs to the shell.
+        if (err instanceof APIError && err.status === 401) throw err;
+      }
+    }),
+  );
+  return { items: catalogue.items, histories };
+});
 
 const busy = ref("");
 const failure = ref("");
@@ -39,6 +59,24 @@ function askToRemove(addon: Addon) {
 }
 
 const addons = computed(() => data.value?.items ?? []);
+
+// What the platform has upgraded this entry from and to. Undefined where the
+// history could not be read at all, which the row says rather than passing
+// off as "nothing happened".
+function history(addon: Addon): AddonUpgrades | undefined {
+  return data.value?.histories[addon.id];
+}
+
+function upgrades(addon: Addon): AddonUpgrade[] {
+  return history(addon)?.items ?? [];
+}
+
+// One side of a transition, as versions rather than as chart names: the row
+// above already says which charts the entry installs.
+function transition(charts: AddonUpgrade["from"]): string {
+  if (!charts?.length) return "unknown";
+  return charts.map((chart) => chart.version || "unknown").join(" + ");
+}
 
 function ready(addon: Addon) {
   return (addon.conditions ?? []).find((condition) => condition.type === "Ready");
@@ -179,6 +217,50 @@ async function remove() {
             <span class="font-mono">{{ addon.namespace || addon.defaultNamespace }}</span>
             <span v-if="addon.dependsOn?.length">needs {{ addon.dependsOn.join(", ") }}</span>
           </div>
+
+          <!-- What the platform did to it, and when. The versions above are
+               singular and current: without this, an upgrade that broke
+               something an hour later leaves a number that has always said
+               what it says now. An empty history under a date is "nothing has
+               moved since then"; one with no date at all is an installation
+               older than the records, and says so. -->
+          <div v-if="upgrades(addon).length" class="space-y-1">
+            <p class="text-[11px] font-medium text-muted">Upgrades</p>
+            <table class="w-full text-xs">
+              <thead>
+                <tr class="text-left text-muted">
+                  <th class="py-1 pr-4 font-medium">When</th>
+                  <th class="py-1 pr-4 font-medium">From</th>
+                  <th class="py-1 pr-4 font-medium">To</th>
+                  <th class="py-1 font-medium">Outcome</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="upgrade in upgrades(addon)"
+                  :key="upgrade.name"
+                  class="border-t border-default/50"
+                >
+                  <td class="py-1 pr-4 text-toned" :title="exactTime(upgrade.startedAt)">
+                    {{ timeAgo(upgrade.startedAt) }}
+                  </td>
+                  <td class="py-1 pr-4 font-mono text-dimmed">{{ transition(upgrade.from) }}</td>
+                  <td class="py-1 pr-4 font-mono text-highlighted">{{ transition(upgrade.to) }}</td>
+                  <td class="py-1" :class="upgrade.phase === 'Failed' ? 'text-error' : 'text-toned'">
+                    {{ (upgrade.phase ?? "").toLowerCase() }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- Said only where an upgrade is a thing that could have happened:
+               the platform upgrades what it installed and nothing else. -->
+          <p v-else-if="addon.managed && history(addon)?.recordedSince" class="text-[11px] text-dimmed">
+            No upgrades recorded since {{ exactTime(history(addon)?.recordedSince ?? undefined) }}.
+          </p>
+          <p v-else-if="addon.managed && history(addon)" class="text-[11px] text-dimmed">
+            No upgrade history for this entry yet.
+          </p>
 
           <!-- The grant, before it is made. An account bound to cluster-admin
                is not something to find out about from a condition. -->

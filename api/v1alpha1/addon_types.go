@@ -115,6 +115,18 @@ type AddonStatus struct {
 	// +optional
 	Charts []AddonChartStatus `json:"charts,omitempty"`
 
+	// UpgradeHistorySince is when this operator started keeping a record of
+	// this entry's upgrades, as AddonUpgrade objects.
+	//
+	// It exists so that "no upgrades recorded" and "never upgraded" are
+	// different sentences. An installation whose addon was installed by an
+	// operator from before the records existed has a history that begins
+	// where the operator did, and reporting its empty list as "never
+	// upgraded" would be asserting something nobody can know. Empty is that
+	// older installation, until its first reconcile writes this.
+	// +optional
+	UpgradeHistorySince *metav1.Time `json:"upgradeHistorySince,omitempty"`
+
 	// ObservedGeneration is the spec generation this status was written for.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

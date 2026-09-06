@@ -313,6 +313,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/addons` | The catalogue of platform dependencies this operator can install, each with what the cluster has | `operator` |
 | POST | `/addons` | Ask for a catalogue entry the platform has no addon for | `operator` |
 | GET | `/addons/{name}` | One entry | `operator` |
+| GET | `/addons/{name}/upgrades` | What the platform has upgraded it from and to, when, and how it went | `operator` |
 | PATCH | `/addons/{name}` | Turn its install on or off, or say where it goes | `operator` |
 | DELETE | `/addons/{name}` | Remove it. `202` — the operator finishes it, and refuses while anything provisions through it | `operator` |
 | GET | `/connections` | An operator: every connection (never their credentials). Anybody else: the picker — name, capabilities, readiness | any account — body varies |

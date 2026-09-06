@@ -173,6 +173,7 @@ rules:
   resources:
   - accessreviews/status
   - addons/status
+  - addonupgrades/status
   - builds/status
   - connections/status
   - domains/status
@@ -207,6 +208,17 @@ rules:
   - resourceclaims/finalizers
   verbs:
   - update
+- apiGroups:
+  - kitchen.bermos.dev
+  resources:
+  - addonupgrades
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - postgresql.cnpg.io
   resources:
