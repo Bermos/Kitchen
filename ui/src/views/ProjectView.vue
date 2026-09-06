@@ -7,6 +7,7 @@ import { claimCautions, deletionGatedByName, destroysData, destroysDataRefusal, 
 import { duration, exactTime, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
+import { buildLink, environmentLink } from "../lib/links";
 import { may } from "../lib/policy";
 import { pipelineShown } from "../lib/promotions";
 import { releaseHistoryEntry, releaseHistoryLabel } from "../lib/status";
@@ -44,7 +45,7 @@ const name = computed(() => route.params.name as string);
 function openBuild(build: string, event: MouseEvent) {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
   if ((event.target as HTMLElement | null)?.closest("a")) return;
-  void router.push({ name: "build", params: { name: build } });
+  void router.push(buildLink(build, name.value));
 }
 
 /** The build whose commit message is open, if any. One at a time, so the list
@@ -999,7 +1000,7 @@ function host(url?: string): string {
         <div>
           <p class="text-xs text-muted mb-1">Release</p>
           <RouterLink
-            :to="{ name: 'environment', params: { name: production.name } }"
+            :to="environmentLink(production.name, name)"
             class="font-mono text-sm text-highlighted hover:underline"
             >{{ production.release }}</RouterLink
           >
@@ -1094,11 +1095,11 @@ function host(url?: string): string {
                 <p v-if="release.environments?.length" class="text-xs text-muted mt-1 flex flex-wrap gap-x-1.5">
                   <span>Serving</span>
                   <RouterLink
-                    v-for="name in release.environments"
-                    :key="name"
-                    :to="{ name: 'environment', params: { name } }"
+                    v-for="served in release.environments"
+                    :key="served"
+                    :to="environmentLink(served, name)"
                     class="font-mono text-toned hover:text-highlighted hover:underline"
-                    >{{ name }}</RouterLink
+                    >{{ served }}</RouterLink
                   >
                 </p>
               </td>
@@ -1171,7 +1172,7 @@ function host(url?: string): string {
               >#{{ preview.preview?.pullRequest ?? "—" }}</SourceLink
             >
             <RouterLink
-              :to="{ name: 'environment', params: { name: preview.name } }"
+              :to="environmentLink(preview.name, name)"
               class="text-sm text-highlighted font-medium hover:underline"
               >{{ preview.name }}</RouterLink
             >
@@ -1205,7 +1206,7 @@ function host(url?: string): string {
                   </td>
                   <td class="px-3 py-2">
                     <RouterLink
-                      :to="{ name: 'build', params: { name: build.name } }"
+                      :to="buildLink(build.name, name)"
                       class="block max-w-2xl truncate text-toned hover:text-highlighted hover:underline"
                       :title="build.git.message || build.name"
                       >{{ build.git.message || build.name }}</RouterLink
@@ -1256,7 +1257,7 @@ function host(url?: string): string {
                 <td class="px-3 py-2">
                   <span class="flex items-center gap-1 max-w-2xl">
                     <RouterLink
-                      :to="{ name: 'build', params: { name: build.name } }"
+                      :to="buildLink(build.name, name)"
                       class="block min-w-0 truncate text-highlighted hover:underline"
                       :title="build.git.message || build.name"
                     >
@@ -1324,7 +1325,7 @@ function host(url?: string): string {
               </td>
               <td class="px-3 py-2">
                 <RouterLink
-                  :to="{ name: 'environment', params: { name: domain.environment } }"
+                  :to="environmentLink(domain.environment, name)"
                   class="text-toned hover:underline"
                   >{{ domain.environment }}</RouterLink
                 >
@@ -2135,7 +2136,7 @@ function host(url?: string): string {
             >
               <td class="px-3 py-2">
                 <RouterLink
-                  :to="{ name: 'environment', params: { name: environment.name } }"
+                  :to="environmentLink(environment.name, name)"
                   class="text-highlighted font-medium hover:underline"
                   >{{ environment.name }}</RouterLink
                 >

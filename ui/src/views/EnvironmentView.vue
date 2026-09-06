@@ -38,7 +38,8 @@ import StatusDot from "../components/StatusDot.vue";
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
-const name = computed(() => route.params.name as string);
+// `:env` under a project, `:name` at the address this screen used to have.
+const name = computed(() => (route.params.env ?? route.params.name) as string);
 
 const { data, error, loading, refresh } = useAsync(async () => {
   const environment = await api.environment(name.value);
@@ -61,6 +62,23 @@ const { data, error, loading, refresh } = useAsync(async () => {
   return { environment, releases, builds, project, promotions, claims, exceptions };
 });
 watch(name, () => void refresh());
+
+// An environment's address is its project's now, and `/environments/:name`
+// cannot be redirected by the route table: only the environment knows which
+// project it is in. So the old address opens this screen and the payload
+// finishes the move. It is emitted by the API as a finding's evidence
+// (`environmentEvidence`) with `?section=` naming the part of the page to open
+// at, so the query travels with it — a redirect that dropped it would land the
+// reader on the right screen showing the wrong thing.
+watch(data, (loaded) => {
+  if (!loaded || route.name !== "environment") return;
+  void router.replace({
+    name: "project-environment",
+    params: { name: loaded.environment.project, env: loaded.environment.name },
+    query: route.query,
+    hash: route.hash,
+  });
+});
 
 const environment = computed(() => data.value?.environment);
 // A promotion into this environment that stands blocked is the one thing the

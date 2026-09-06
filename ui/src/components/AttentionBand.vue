@@ -24,6 +24,7 @@ import { api } from "../lib/api";
 import { ATTENTION_CAP, dismiss, type Incident } from "../lib/attention";
 import { timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
+import { buildLink, environmentLink } from "../lib/links";
 import { may } from "../lib/policy";
 import ConditionsTable from "./ConditionsTable.vue";
 import OperatorOnly from "./OperatorOnly.vue";
@@ -96,7 +97,7 @@ async function retry(incident: Incident) {
 // nothing the release list had not already shown. The band's job is to put
 // that flow one click away with the reason for taking it already read.
 function rollbackTo(incident: Incident) {
-  return { name: "environment", params: { name: incident.environment?.name ?? "" }, query: { rollback: "1" } };
+  return environmentLink(incident.environment?.name ?? "", incident.project, { rollback: "1" });
 }
 </script>
 
@@ -168,7 +169,7 @@ function rollbackTo(incident: Incident) {
             size="xs"
             color="neutral"
             variant="subtle"
-            :to="{ name: 'build', params: { name: incident.build.name } }"
+            :to="buildLink(incident.build.name, incident.project)"
           >
             Open build
           </UButton>
@@ -177,7 +178,7 @@ function rollbackTo(incident: Incident) {
             size="xs"
             color="neutral"
             variant="subtle"
-            :to="{ name: 'environment', params: { name: incident.environment.name } }"
+            :to="environmentLink(incident.environment.name, incident.project)"
           >
             Open environment
           </UButton>

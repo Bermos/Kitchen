@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { environmentLink } from "../lib/links";
 import { computed, ref, watch } from "vue";
 import { api, type Build, type Environment, type Release, type RequestSummary, type VariableChange } from "../lib/api";
 import { compactCount, shortImage, shortSHA, timeAgo } from "../lib/format";
@@ -599,7 +600,7 @@ function commitLabel(build: Build): string {
                   variant="subtle"
                   size="sm"
                   icon="i-lucide-scroll-text"
-                  :to="{ name: 'environment', params: { name: props.environment.name }, query: { section: 'workload' } }"
+                  :to="environmentLink(props.environment.name, props.environment.project, { section: 'workload' })"
                   @click="close(false)"
                 >
                   Watch the workload

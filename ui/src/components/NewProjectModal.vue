@@ -454,7 +454,7 @@ async function create() {
         >
           {{ !sourcesAvailable.length ? "No gitSource connection yet" : "No imageStore connection yet" }} —
           <template v-if="managesConnections">
-            create one on the <RouterLink to="/connections" class="underline">Connections</RouterLink> page first.
+            create one on the <RouterLink to="/platform/connections" class="underline">Connections</RouterLink> page first.
           </template>
           <template v-else>ask an operator to add one before creating this project.</template>
         </p>

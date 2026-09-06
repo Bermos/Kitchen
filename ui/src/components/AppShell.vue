@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { api } from "../lib/api";
 import { user, signOut } from "../lib/auth";
 import { loadConfig, platformVersion } from "../lib/config";
 import { callerFor, forgetMe, meError } from "../lib/me";
-import { canSwitchMode, operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
+import { completedBy, SCOPES, type Scope } from "../routes";
 import { unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import CommandPalette from "./CommandPalette.vue";
@@ -14,6 +14,7 @@ import NewProjectModal from "./NewProjectModal.vue";
 import StatusDot from "./StatusDot.vue";
 
 const route = useRoute();
+const router = useRouter();
 
 // Below `lg` the sidebar is an off-canvas drawer rather than a column: on a
 // phone it would otherwise eat two thirds of the viewport. It stays one
@@ -81,106 +82,166 @@ function previewCount(name: string): number {
   return (inventory.data.value?.environments ?? []).filter((e) => e.project === name && e.type === "preview").length;
 }
 
-// The navigation is the role's, not the mode's. Everything down to Traces is
-// filtered server-side to the caller's own projects, so it is everybody's
-// screen with everybody's answer in it; Connections is the operator's
-// outright, and a member gets no entry rather than an entry that leads to a
-// refusal. Each one names the API route it stands for, so this and the route
-// guard are the same decision made twice from the same table.
-//
-// The platform's own settings are not here: they are platform-scoped, and
-// they live in the Platform section below with everything else that is.
-const nav = computed(() =>
-  [
-    {
-      label: "Overview",
-      icon: "i-lucide-layout-dashboard",
-      to: "/",
-      name: "overview",
-      count: inventory.data.value?.projects.length,
-      shown: true,
-    },
-    {
-      label: "Builds",
-      icon: "i-lucide-hammer",
-      to: "/builds",
-      name: "builds",
-      count: inventory.data.value?.builds.length,
-      shown: true,
-    },
-    {
-      label: "Observability",
-      icon: "i-lucide-activity",
-      to: "/observability",
-      name: "observability",
-      count: undefined,
-      shown: true,
-    },
-    { label: "Traffic", icon: "i-lucide-waypoints", to: "/traffic", name: "traffic", count: undefined, shown: true },
-    { label: "Traces", icon: "i-lucide-git-fork", to: "/traces", name: "traces", count: undefined, shown: true },
-    {
-      label: "Connections",
-      icon: "i-lucide-plug",
-      to: "/connections",
-      name: "connections",
-      count: undefined,
-      shown: may("GET /api/v1/connections/{name}", callerFor()),
-    },
-    {
-      // Storage that existed before the platform did, written so a project
-      // can mount it. The operator's outright, like Connections above it, and
-      // for the same reason: it is written once by whoever administers the
-      // installation and pointed at by projects afterwards.
-      label: "Volumes",
-      icon: "i-lucide-hard-drive",
-      to: "/volumes",
-      name: "volumes",
-      count: undefined,
-      shown: may("GET /api/v1/persistent-volumes", callerFor()),
-    },
-  ].filter((item) => item.shown),
+/**
+ * Which scope the shell is in, and what the sidebar is therefore a list of.
+ *
+ * The dashboard used to render one flat list of every audience's screens, so
+ * the operator's two inventories were items six and seven of the developer's
+ * navigation and every cross-project developer screen began with a question
+ * the address could not answer (#469). Now the scope is in the address, the
+ * switcher says which one you are in, and the sidebar is that scope's own.
+ *
+ * A scope nobody may open is not offered — the same rule every affordance here
+ * follows, asked of the same table the route guard asks. Compliance is gated
+ * on the audit log rather than on the compliance posture, because four of the
+ * five routes behind it are answered for anybody who can see a project.
+ */
+const scope = computed<Scope>(() => (route.meta.scope as Scope | undefined) ?? "fleet");
+
+/** The project the address names, if it names one. The two legacy addresses
+ * in this scope — `/builds/:name`, `/environments/:name` — name an object
+ * rather than a project, so the path is asked as well as the parameter. */
+const activeProject = computed<string | null>(() => {
+  if (!route.path.startsWith("/projects/")) return null;
+  const name = route.params.name;
+  return typeof name === "string" && name ? name : null;
+});
+
+const scopeLabel = computed(() => SCOPES.find((definition) => definition.id === scope.value)?.label ?? "Fleet");
+
+const scopes = computed(() =>
+  SCOPES.filter((definition) => !definition.requires || may(definition.requires, callerFor())).map((definition) => ({
+    ...definition,
+    // Picking Project with a project already open stays on it rather than
+    // asking again; picking it without one is the picker.
+    to: definition.id === "project" && activeProject.value ? `/projects/${activeProject.value}` : definition.root,
+    active: scope.value === definition.id,
+  })),
 );
 
-function navActive(item: { name: string }): boolean {
-  if (item.name === "overview") return route.name === "overview";
-  if (item.name === "builds") return route.name === "builds" || route.name === "build";
+/** The environments of the project in the address, for the Project scope's
+ * own navigation: `/projects/:name/environments/:env` is otherwise reachable
+ * only from a table inside a screen. */
+const projectEnvironments = computed(() => {
+  const project = activeProject.value;
+  if (!project) return [];
+  return (inventory.data.value?.environments ?? []).filter((environment) => environment.project === project);
+});
+
+interface NavItem {
+  label: string;
+  icon: string;
+  to: string | { name: string; params?: Record<string, string> };
+  name: string;
+  count?: number;
+}
+
+/**
+ * The sidebar, per scope.
+ *
+ * Fleet is the only one that spans projects and it holds the questions that
+ * genuinely do — what is wrong, what shipped. (`/alerts` is the third and has
+ * no route behind it yet; #471 is what puts something there, and an entry
+ * leading nowhere is worse than none.) Everything a developer asks about one
+ * project is in the Project scope, addressed by that project.
+ */
+const nav = computed<NavItem[]>(() => {
+  const project = activeProject.value;
+  switch (scope.value) {
+    case "fleet":
+      return [
+        {
+          label: "Overview",
+          icon: "i-lucide-layout-dashboard",
+          to: "/",
+          name: "overview",
+          count: inventory.data.value?.projects.length,
+        },
+        {
+          label: "Deploys",
+          icon: "i-lucide-rocket",
+          to: "/deploys",
+          name: "deploys",
+          count: inventory.data.value?.builds.length,
+        },
+      ];
+    case "project":
+      if (!project) return [];
+      return [
+        {
+          label: "Overview",
+          icon: "i-lucide-layout-dashboard",
+          to: { name: "project", params: { name: project } },
+          name: "project",
+        },
+        {
+          label: "Deploys",
+          icon: "i-lucide-rocket",
+          to: { name: "project-deploys", params: { name: project } },
+          name: "project-deploys",
+        },
+        {
+          label: "Observability",
+          icon: "i-lucide-activity",
+          to: { name: "project-observability", params: { name: project } },
+          name: "project-observability",
+        },
+      ];
+    case "platform":
+      return [
+        { label: "Overview", icon: "i-lucide-gauge", to: "/platform", name: "platform" },
+        { label: "Nodes", icon: "i-lucide-server", to: "/platform/nodes", name: "platform-nodes" },
+        { label: "Workloads", icon: "i-lucide-boxes", to: "/platform/workloads", name: "platform-workloads" },
+        { label: "Edge", icon: "i-lucide-globe", to: "/platform/edge", name: "platform-edge" },
+        { label: "Addons", icon: "i-lucide-puzzle", to: "/platform/addons", name: "platform-addons" },
+        // Both inventories of storage: the volumes projects claimed, and the
+        // storage somebody wrote so a project could mount something older
+        // than the cluster. They were two screens, one of them in the
+        // developer's navigation.
+        { label: "Storage", icon: "i-lucide-hard-drive", to: "/platform/storage", name: "platform-storage" },
+        { label: "Events", icon: "i-lucide-list", to: "/platform/events", name: "platform-events" },
+        // Written once by whoever administers the installation and pointed at
+        // by projects afterwards, which is the operator's standing exactly.
+        { label: "Connections", icon: "i-lucide-plug", to: "/platform/connections", name: "platform-connections" },
+        { label: "Backup", icon: "i-lucide-archive", to: "/platform/backup", name: "platform-backup" },
+        { label: "Settings", icon: "i-lucide-settings-2", to: "/platform/settings", name: "platform-settings" },
+      ];
+    case "compliance":
+      return [{ label: "Audit", icon: "i-lucide-shield-check", to: "/compliance/audit", name: "compliance-audit" }];
+  }
+  return [];
+});
+
+function navActive(item: NavItem): boolean {
+  // A build opened from the deploy list is still the deploy list as far as
+  // the sidebar is concerned; so is an environment opened from a project.
+  if (item.name === "deploys") return route.name === "deploys" || route.name === "build";
+  if (item.name === "project-deploys") return route.name === "project-deploys" || route.name === "project-build";
   return route.name === item.name;
 }
 
-// The operator's section: the platform seen across every project, which is a
-// different question from any of the screens above and a differently
-// authorized one. It is shown in operator mode alone — and operator mode is
-// now something only an operator can be in, so a member never sees it and an
-// operator who has switched to the developer's view does not either.
-//
-// The routes still exist for an operator in both modes: a finding's evidence
-// link is a link somebody pastes, and it should land where it says it does.
-//
-// The paths are the ones the API emits as evidence, and they are load-bearing:
-// `internal/signals/evidence.go` names them.
-const platformNav = [
-  { label: "Overview", icon: "i-lucide-gauge", to: "/platform", name: "platform" },
-  { label: "Nodes", icon: "i-lucide-server", to: "/platform/nodes", name: "platform-nodes" },
-  { label: "Workloads", icon: "i-lucide-boxes", to: "/platform/workloads", name: "platform-workloads" },
-  { label: "Edge", icon: "i-lucide-globe", to: "/platform/edge", name: "platform-edge" },
-  { label: "Addons", icon: "i-lucide-puzzle", to: "/platform/addons", name: "platform-addons" },
-  { label: "Storage", icon: "i-lucide-hard-drive", to: "/platform/storage", name: "platform-storage" },
-  { label: "Events", icon: "i-lucide-list", to: "/platform/events", name: "platform-events" },
-  // The audit log had a screen, a route and a tile on the platform overview,
-  // and no way into it from here — so the one screen an auditor opens was the
-  // one screen the navigation did not list.
-  { label: "Audit", icon: "i-lucide-shield-check", to: "/platform/audit", name: "platform-audit" },
-  { label: "Backup", icon: "i-lucide-archive", to: "/platform/backup", name: "platform-backup" },
-  // The installation's own configuration. It is the platform's, so it is
-  // here: nothing on that screen is a developer's to read, let alone change,
-  // and an entry above the fold only told them the platform has settings.
-  { label: "Settings", icon: "i-lucide-settings-2", to: "/platform/settings", name: "platform-settings" },
-];
-
-const activeProject = computed(() => {
-  if (route.name === "project") return route.params.name as string;
-  return null;
-});
+/**
+ * A screen that needs a project and was opened without one.
+ *
+ * `/observability` is not a screen: it is a question about a project nobody
+ * named. So the address is kept exactly as it was asked for, the fleet
+ * dashboard renders underneath, and the picker completes the sentence — which
+ * is what makes a pasted link say what its author meant rather than resolving
+ * to whichever project a dropdown happened to be on.
+ */
+const picker = computed(() => route.meta.picker);
+const pickerOpen = ref(false);
+watch(
+  () => route.fullPath,
+  () => (pickerOpen.value = Boolean(route.meta.picker)),
+  { immediate: true },
+);
+function chooseProject(name: string) {
+  const target = route.meta.picker;
+  if (!target) return;
+  pickerOpen.value = false;
+  void router.replace(completedBy(target, route, name));
+}
 
 // The gateway is the operator's half of /status: absent, not zeroed, for an
 // account that may not read it — so there is simply no tile.
@@ -288,7 +349,10 @@ const userMenu = computed(() => [
         />
       </div>
 
-      <nav class="p-2 space-y-0.5">
+      <div class="px-4 pt-3 pb-1">
+        <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">{{ scopeLabel }}</span>
+      </div>
+      <nav class="px-2 pb-2 space-y-0.5">
         <RouterLink
           v-for="item in nav"
           :key="item.name"
@@ -302,26 +366,33 @@ const userMenu = computed(() => [
         </RouterLink>
       </nav>
 
-      <!-- Operator mode's own section. Everything platform-scoped lives behind
-           one prefix and nothing project-scoped does. -->
-      <template v-if="operatorMode">
+      <!-- The Project scope's own list: the environments of the project in
+           the address. Without it `/projects/:name/environments/:env` is
+           reachable only from a table inside a screen. -->
+      <template v-if="scope === 'project' && activeProject">
         <div class="px-4 pt-4 pb-1">
-          <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Platform</span>
+          <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Environments</span>
         </div>
         <nav class="px-2 space-y-0.5">
           <RouterLink
-            v-for="item in platformNav"
-            :key="item.name"
-            :to="item.to"
+            v-for="environment in projectEnvironments"
+            :key="environment.name"
+            :to="{ name: 'project-environment', params: { name: activeProject, env: environment.name } }"
             class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
-            :class="route.name === item.name ? 'bg-elevated text-highlighted' : 'text-toned'"
+            :class="route.params.env === environment.name ? 'bg-elevated text-highlighted' : 'text-toned'"
           >
-            <UIcon :name="item.icon" class="size-4 shrink-0" />
-            {{ item.label }}
+            <StatusDot :tone="environment.url ? 'success' : 'neutral'" />
+            <span class="truncate">{{ environment.name }}</span>
           </RouterLink>
+          <p v-if="!projectEnvironments.length" class="px-2.5 py-1.5 text-xs text-dimmed">
+            Nothing deployed yet.
+          </p>
         </nav>
       </template>
 
+      <!-- The projects, which are how the Project scope is entered. They are
+           in the sidebar in every scope: an operator reading the platform's
+           events still gets there from a project name. -->
       <div class="px-4 pt-4 pb-1 flex items-center justify-between">
         <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>
         <NewProjectModal @created="() => void inventory.refresh()">
@@ -406,38 +477,26 @@ const userMenu = computed(() => [
           :aria-expanded="sidebarOpen"
           @click="sidebarOpen = true"
         />
+        <!-- Which of the four scopes this address is in, and the way into
+             the other three. It is the one thing in this header that says
+             what you are looking at: the mode toggle that used to sit here
+             did the structure's job while being invisible in the URL, which
+             is why it is gone and this is here (#469). -->
+        <nav class="flex items-center gap-0.5 rounded-md border border-default p-0.5" aria-label="Scope">
+          <RouterLink
+            v-for="item in scopes"
+            :key="item.id"
+            :to="item.to"
+            class="px-2 sm:px-2.5 py-1 rounded text-sm hover:text-highlighted"
+            :class="item.active ? 'bg-elevated text-highlighted' : 'text-muted'"
+            :aria-current="item.active ? 'page' : undefined"
+          >
+            {{ item.label }}
+          </RouterLink>
+        </nav>
         <span class="flex-1" />
         <CommandPalette />
         <span class="flex-1" />
-        <!-- Both labels collapse to their icons on a phone: the pair is the
-             widest thing in the header and the least in need of words.
-
-             The switch is an operator's own choice to look at the platform the
-             way a developer does. A member has nothing on the other side of it,
-             so they get no switch rather than a switch that leads to panels
-             they may not fill. -->
-        <UFieldGroup v-if="canSwitchMode" size="sm">
-          <UButton
-            :color="operatorMode ? 'neutral' : 'primary'"
-            :variant="operatorMode ? 'subtle' : 'soft'"
-            icon="i-lucide-code"
-            title="Developer"
-            aria-label="Developer view"
-            @click="operatorMode = false"
-          >
-            <span class="hidden sm:inline">Developer</span>
-          </UButton>
-          <UButton
-            :color="operatorMode ? 'primary' : 'neutral'"
-            :variant="operatorMode ? 'soft' : 'subtle'"
-            icon="i-lucide-server-cog"
-            title="Operator"
-            aria-label="Operator view"
-            @click="operatorMode = true"
-          >
-            <span class="hidden sm:inline">Operator</span>
-          </UButton>
-        </UFieldGroup>
         <UDropdownMenu :items="userMenu">
           <UButton
             color="neutral"
@@ -473,9 +532,49 @@ const userMenu = computed(() => [
             title="The platform could not say who you are signed in as"
             :description="`${meError} — until it can, only what every account may see is shown.`"
           />
+          <!-- The address named a screen that is a project's, and no project.
+               Rather than guessing one or refusing, the picker asks and the
+               fleet dashboard renders underneath — so the address somebody
+               pasted still says what they meant. -->
+          <UAlert
+            v-if="picker && !pickerOpen"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-folder-search"
+            title="This screen is a project's"
+            :description="`${route.path} does not name one yet.`"
+          >
+            <template #actions>
+              <UButton size="xs" color="neutral" variant="subtle" @click="pickerOpen = true">Choose a project</UButton>
+            </template>
+          </UAlert>
           <slot />
         </div>
       </main>
     </div>
+
+    <UModal
+      :open="Boolean(picker) && pickerOpen"
+      title="Which project?"
+      :description="`${route.path} is a project's screen. Choosing one finishes the address; the question it was asked with is kept.`"
+      @update:open="(open: boolean) => (pickerOpen = open)"
+    >
+      <template #body>
+        <div class="space-y-0.5 max-h-96 overflow-y-auto">
+          <button
+            v-for="project in projects"
+            :key="project.name"
+            class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm text-toned hover:bg-elevated hover:text-highlighted"
+            @click="chooseProject(project.name)"
+          >
+            <StatusDot :tone="projectTone(project.name)" />
+            <span class="truncate">{{ project.name }}</span>
+          </button>
+          <p v-if="inventory.data.value && !projects.length" class="px-2.5 py-1.5 text-xs text-dimmed">
+            No projects yet — there is nothing for this screen to be about.
+          </p>
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

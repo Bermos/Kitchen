@@ -3,7 +3,6 @@ import { onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build, type Domain, type Environment, type Project } from "../lib/api";
 import { callerFor } from "../lib/me";
-import { operatorMode } from "../lib/mode";
 import { may } from "../lib/policy";
 
 // The mockup's "Jump to project, release, domain… ⌘K": one palette over
@@ -56,6 +55,10 @@ function go(to: { name: string; params?: Record<string, string>; query?: Record<
 const groups = () => {
   const inv = inventory.value;
   if (!inv) return [];
+  // A domain names its environment and not the project it is in, and an
+  // environment's address is its project's now. The environment list is
+  // already here, so the join is here rather than a route away.
+  const projectOf = (environment: string) => inv.environments.find((e) => e.name === environment)?.project ?? "";
   return [
     {
       id: "projects",
@@ -74,18 +77,18 @@ const groups = () => {
         label: e.name,
         suffix: e.url || e.type,
         icon: "i-lucide-globe",
-        onSelect: () => go({ name: "environment", params: { name: e.name } }),
+        onSelect: () => go({ name: "project-environment", params: { name: e.project, env: e.name } }),
       })),
     },
     {
       id: "builds",
-      label: "Builds",
+      label: "Deploys",
       // The newest fifty are the ones anyone jumps to.
       items: inv.builds.slice(0, 50).map((b) => ({
         label: b.git.message || b.name,
         suffix: b.name,
         icon: "i-lucide-hammer",
-        onSelect: () => go({ name: "build", params: { name: b.name } }),
+        onSelect: () => go({ name: "project-build", params: { name: b.project, build: b.name } }),
       })),
     },
     {
@@ -95,7 +98,12 @@ const groups = () => {
         label: d.hostname,
         suffix: d.environment,
         icon: "i-lucide-link",
-        onSelect: () => go({ name: "environment", params: { name: d.environment } }),
+        onSelect: () =>
+          go(
+            projectOf(d.environment)
+              ? { name: "project-environment", params: { name: projectOf(d.environment), env: d.environment } }
+              : { name: "environment", params: { name: d.environment } },
+          ),
       })),
     },
     {
@@ -106,19 +114,22 @@ const groups = () => {
       // on it — the same rule the sidebar follows, asked of the same table.
       items: [
         { label: "Overview", icon: "i-lucide-layout-dashboard", onSelect: () => go({ name: "overview" }) },
+        { label: "Deploys", icon: "i-lucide-rocket", onSelect: () => go({ name: "deploys" }) },
         { label: "Account", icon: "i-lucide-user-round", onSelect: () => go({ name: "account" }) },
-        { label: "Builds", icon: "i-lucide-hammer", onSelect: () => go({ name: "builds" }) },
+        // A project's screen reached without a project: the address is kept
+        // and the shell asks which project, which is the same conversation
+        // the palette would have had one step later anyway.
         { label: "Observability", icon: "i-lucide-activity", onSelect: () => go({ name: "observability" }) },
-        ...(may("GET /api/v1/connections/{name}", callerFor())
-          ? [{ label: "Connections", icon: "i-lucide-plug", onSelect: () => go({ name: "connections" }) }]
+        ...(may("GET /api/v1/audit", callerFor())
+          ? [{ label: "Audit", icon: "i-lucide-shield-check", onSelect: () => go({ name: "compliance-audit" }) }]
           : []),
-        // The one page here that is the platform's rather than an account's,
-        // and so the one asked of the mode as well as of the table: an
-        // operator looking at the platform the way a developer does is not
-        // offered the settings the Platform section is not offering them
-        // either. The route still admits them — a pasted link lands — but
-        // finding it is switching back.
-        ...(operatorMode.value && may("GET /api/v1/settings", callerFor())
+        ...(may("GET /api/v1/platform/signals", callerFor())
+          ? [{ label: "Platform", icon: "i-lucide-gauge", onSelect: () => go({ name: "platform" }) }]
+          : []),
+        ...(may("GET /api/v1/connections/{name}", callerFor())
+          ? [{ label: "Connections", icon: "i-lucide-plug", onSelect: () => go({ name: "platform-connections" }) }]
+          : []),
+        ...(may("GET /api/v1/settings", callerFor())
           ? [
               {
                 label: "Platform settings",
