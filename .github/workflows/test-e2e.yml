@@ -163,6 +163,21 @@ jobs:
       BP_PROJECT: bpnode
       BP_APP_NS: kitchen-bpnode
       BP_FIXTURE: test/fixtures/buildpacks-node
+      # The third project, and the one that is about the *default* path: a
+      # stock Nuxt application with a deploy task and a postgres claim, no
+      # Dockerfile and no workaround anywhere in it (#468). It is the only
+      # case here where the platform decides the strategy, the port, the
+      # start command, the build environment and the build's heap ceiling —
+      # every one of which was missing when a real Nuxt deployment could not
+      # be made to work at all.
+      NUXT_PROJECT: nuxtapp
+      NUXT_APP_NS: kitchen-nuxtapp
+      NUXT_FIXTURE: test/fixtures/nuxt-stock
+      NUXT_CLAIM: appdb
+      # 75% of the build ceiling below, in MiB, which is what the platform
+      # caps a Node build's heap to. Written here so the assertion and the
+      # `--set` are read together.
+      NUXT_BUILD_HEAP_MIB: 2304
       REPO: ${{ github.repository }}
       COMMIT: ${{ github.event.pull_request.head.sha }}
       BRANCH: ${{ github.head_ref }}
@@ -456,10 +471,42 @@ jobs:
           kubectl apply -f \
             "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
 
+      # A postgres claim becomes a CloudNativePG Cluster, so a cluster with no
+      # CloudNativePG has no databases to claim — and the stock-Nuxt case
+      # below is about an application that reads one.
+      #
+      # It is installed here by hand rather than through the platform's own
+      # addon, because what that addon does is run this same helm install in a
+      # Job bound to cluster-admin: making the database half of the case wait
+      # on it would put the addon under test rather than the claim. Which
+      # chart version is read out of the operator, exactly as the two builder
+      # images above are, so a bump moves what this job runs.
+      - name: Install CloudNativePG, so a claim has a database to become
+        run: |
+          set -euo pipefail
+          version="$(grep -oE 'DefaultCNPGChartVersion = "[0-9.]+"' \
+            internal/controller/addon_cnpg.go | grep -oE '[0-9.]+')"
+          [ -n "${version}" ] || {
+            echo "::error::could not read the CloudNativePG chart version out of internal/controller"
+            exit 1
+          }
+          echo "installing the CloudNativePG chart the operator pins: ${version}"
+          helm install cnpg cloudnative-pg \
+            --repo https://cloudnative-pg.github.io/charts \
+            --version "${version}" \
+            --namespace cnpg-system --create-namespace \
+            --wait --timeout 6m
+
       # Only what a build and a deploy need. The identity provider, its
       # database, the telemetry store, the collector, the preview gate and the
       # bundled registry are all somebody else's job to check, and every one of
       # them is minutes of install this job would spend proving nothing.
+      #
+      # The build ceiling is the one thing here that is not "as little as will
+      # do". A stock Nuxt build is a real front-end build — npm install, Vite
+      # and Nitro — and 1Gi is not a ceiling it fits under; 3Gi is, and it is
+      # also what makes the heap cap a number worth asserting, since the
+      # platform derives NODE_OPTIONS from exactly this value.
       - name: Install the chart
         run: |
           helm install kitchen charts/kitchen \
@@ -477,8 +524,8 @@ jobs:
             --set kitchen.compliance.attestation.enabled=false \
             --set kitchen.compliance.audit.enabled=false \
             --set kitchen.builds.cache.enabled=false \
-            --set kitchen.builds.resources.cpu=500m \
-            --set kitchen.builds.resources.memory=1Gi \
+            --set kitchen.builds.resources.cpu=1 \
+            --set kitchen.builds.resources.memory=3Gi \
             --wait --timeout 6m || {
               kubectl -n kitchen-system get pods -o wide
               kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
@@ -1204,6 +1251,280 @@ jobs:
               ;;
           esac
 
+      # The default path, end to end (#468). Everything above this point is a
+      # project that told the platform what it is: a strategy, a port, a
+      # Dockerfile, a start script. This one tells it nothing.
+      #
+      # `test/fixtures/nuxt-stock` is what `nuxi init` writes, plus a database
+      # driver and a migration. It has no Dockerfile, so `auto` reads the
+      # repository and answers `buildpacks`. It has no `start` script, so none
+      # of the three start buildpacks fires and the lifecycle exports an image
+      # declaring no process at all. It has no port and no command, so the
+      # detected framework supplies both. It sets no build environment,
+      # because a project cannot: the build's variables are the platform's,
+      # and until this change they were `CNB_PLATFORM_API` and nothing else —
+      # so the repository's own `build` script never ran, the node version was
+      # whatever was newest that day, and the build was killed at the memory
+      # ceiling with exit 137 and no explanation.
+      #
+      # And it reads a postgres claim, which is the other half. A claim's
+      # binding names `sslmode=verify-full` and the certificate authority the
+      # platform mounts beside it, and until this case existed nothing
+      # anywhere ran an application against one — #461 landed that pair with
+      # no end-to-end cover, because no kind job had a claim in it.
+      - name: A stock Nuxt application deploys on the default path
+        run: |
+          set -euo pipefail
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Connection
+          metadata:
+            name: e2e-cnpg
+            namespace: kitchen-system
+          spec:
+            provider: cnpg
+            config:
+              # A kind node's local-path volumes are the runner's disk, and
+              # this case reads one row.
+              storageSize: 1Gi
+              instances: 1
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Project
+          metadata:
+            name: ${NUXT_PROJECT}
+            namespace: kitchen-system
+          spec:
+            source:
+              git:
+                connectionRef: {name: e2e-git}
+                repo: ${REPO}
+                productionBranch: ${BRANCH}
+            build:
+              rootDirectory: ${NUXT_FIXTURE}
+            registry:
+              connectionRef: {name: e2e-registry}
+            previews:
+              protected: false
+            env:
+              - name: DATABASE_URL
+                fromResourceClaim: {name: ${NUXT_CLAIM}, key: url}
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: ResourceClaim
+          metadata:
+            name: ${NUXT_CLAIM}
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: ${NUXT_PROJECT}}
+            connectionRef: {name: e2e-cnpg}
+            type: postgres
+            deletionPolicy: Delete
+          EOF
+
+          # The database and the build come up in parallel; neither waits for
+          # the other, and the environment waits for both.
+          for _ in $(seq 90); do
+            phase="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            [ "${phase}" = Bound ] && break
+            [ "${phase}" = Failed ] && break
+            sleep 10
+          done
+          claim_phase="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
+            -o jsonpath='{.status.phase}')"
+          [ "${claim_phase}" = Bound ] || {
+            echo "::error::the postgres claim is ${claim_phase}"
+            kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" -o yaml
+            kubectl -n kitchen-databases get clusters,pods -o wide || true
+            kubectl -n cnpg-system logs -l app.kubernetes.io/name=cloudnative-pg --tail=100 || true
+            exit 1
+          }
+          echo "the claim bound to $(kubectl -n kitchen-system get resourceclaim \
+            "${NUXT_CLAIM}" -o jsonpath='{.status.instanceName}')"
+
+          build=""
+          for _ in $(seq 60); do
+            build="$(kubectl -n kitchen-system get builds \
+              -l "kitchen.bermos.dev/project=${NUXT_PROJECT}" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            [ -n "${build}" ] && break
+            sleep 5
+          done
+          [ -n "${build}" ] || {
+            echo "::error::the platform never seeded a build for the nuxt project"
+            kubectl -n kitchen-system get project "${NUXT_PROJECT}" -o yaml
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=200
+            exit 1
+          }
+
+          # A real front-end build: npm install, Vite and Nitro, on one CPU.
+          # Twenty-five minutes, and a failure that arrives sooner ends the
+          # loop rather than sitting it out.
+          phase=""
+          for _ in $(seq 150); do
+            phase="$(kubectl -n kitchen-system get build "${build}" -o jsonpath='{.status.phase}')"
+            [ "${phase}" = Succeeded ] && break
+            [ "${phase}" = Failed ] && break
+            sleep 10
+          done
+          [ "${phase}" = Succeeded ] || {
+            echo "::error::the stock Nuxt build ended ${phase}"
+            kubectl -n kitchen-system get build "${build}" -o yaml
+            kubectl -n "${NUXT_APP_NS}" get jobs,pods -o wide
+            for pod in $(kubectl -n "${NUXT_APP_NS}" get pods -o name); do
+              echo "--- ${pod}"
+              kubectl -n "${NUXT_APP_NS}" logs "${pod}" --all-containers --tail=300 || true
+            done
+            exit 1
+          }
+
+          # Read the repository, and answer buildpacks. Nothing in the project
+          # or in the commit named either.
+          strategy="$(kubectl -n kitchen-system get build "${build}" -o jsonpath='{.status.strategy}')"
+          detected="$(kubectl -n kitchen-system get build "${build}" \
+            -o jsonpath='{.status.detectedFramework}')"
+          echo "the platform decided ${strategy}/${detected}"
+          [ "${strategy}" = buildpacks ] && [ "${detected}" = nuxt ] || {
+            echo "::error::a repository with no Dockerfile on strategy auto resolved to" \
+                 "'${strategy}'/'${detected}'"
+            exit 1
+          }
+
+          # What the lifecycle was told about the repository, read off the pod
+          # that actually ran. Three variables, and every one of them was
+          # missing: the build script the framework compiles itself with, the
+          # runtime version the manifest asks for, and the heap ceiling — 75%
+          # of the platform's build ceiling, because V8 sizes its old space
+          # from the machine rather than from the cgroup it is in.
+          pod="$(kubectl -n "${NUXT_APP_NS}" get pods -l "kitchen.bermos.dev/build=${build}" \
+            -o jsonpath='{.items[0].metadata.name}')"
+          kubectl -n "${NUXT_APP_NS}" get pod "${pod}" -o json > /tmp/nuxt-build-pod.json
+          told() { # told <variable> — its value in the builder phase
+            jq -r --arg v "$1" '[.spec.initContainers[], .spec.containers[]]
+              | map(select(.name == "builder"))[0].env
+              | map(select(.name == $v))[0].value // ""' /tmp/nuxt-build-pod.json
+          }
+          for pair in \
+            "BP_NODE_RUN_SCRIPTS=build" \
+            "BP_NODE_VERSION=22.x" \
+            "NODE_OPTIONS=--max-old-space-size=${NUXT_BUILD_HEAP_MIB}"; do
+            name="${pair%%=*}"
+            want="${pair#*=}"
+            got="$(told "${name}")"
+            [ "${got}" = "${want}" ] || {
+              echo "::error::the build was told ${name}='${got}', want '${want}'"
+              exit 1
+            }
+            echo "the build was told ${name}=${got}"
+          done
+
+          # The deploy task, which is a command on an image whose entrypoint
+          # is the buildpacks launcher. It connects to the claim's database
+          # over a verified TLS connection and creates the table the
+          # application reads, and the environment does not roll if it fails.
+          for _ in $(seq 90); do
+            run="$(kubectl -n kitchen-system get environment "${NUXT_PROJECT}-production" \
+              -o jsonpath='{.status.processes[?(@.name=="migrate")].lastRun.phase}' 2>/dev/null || true)"
+            case "${run}" in
+              Succeeded|Failed) break ;;
+            esac
+            sleep 10
+          done
+          run="$(kubectl -n kitchen-system get environment "${NUXT_PROJECT}-production" \
+            -o jsonpath='{.status.processes[?(@.name=="migrate")].lastRun.phase}' 2>/dev/null || true)"
+          [ "${run}" = Succeeded ] || {
+            echo "::error::the deploy task ended '${run}'"
+            kubectl -n kitchen-system get environment "${NUXT_PROJECT}-production" -o yaml
+            kubectl -n "${NUXT_APP_NS}" get jobs,pods -o wide
+            kubectl -n "${NUXT_APP_NS}" logs -l "kitchen.bermos.dev/process=migrate" \
+              --all-containers --tail=200 || true
+            exit 1
+          }
+          echo "the deploy task ran the migration"
+
+          kubectl -n "${NUXT_APP_NS}" rollout status "deploy/${NUXT_PROJECT}-production" \
+            --timeout=5m || {
+            echo "::error::the stock Nuxt image never became ready"
+            kubectl -n "${NUXT_APP_NS}" get pods -o wide
+            kubectl -n "${NUXT_APP_NS}" describe deploy "${NUXT_PROJECT}-production"
+            kubectl -n "${NUXT_APP_NS}" logs \
+              -l "kitchen.bermos.dev/environment=${NUXT_PROJECT}-production" \
+              --all-containers --tail=200 || true
+            exit 1
+          }
+
+          # How it is started: the launcher named explicitly, with the
+          # framework's own start command as its arguments. A command written
+          # in place of the launcher would run where no buildpack has put
+          # anything and say `exec: "node": executable file not found in
+          # $PATH`; no command at all would exit on `when there is no default
+          # process a command is required`, since this image declares none.
+          kubectl -n "${NUXT_APP_NS}" get deploy "${NUXT_PROJECT}-production" -o json \
+            > /tmp/nuxt-deploy.json
+          started="$(jq -r '.spec.template.spec.containers[]
+            | select(.name == "app")
+            | (.command + .args) | join(" ")' /tmp/nuxt-deploy.json)"
+          echo "the web process starts with: ${started}"
+          [ "${started}" = "/cnb/lifecycle/launcher node .output/server/index.mjs" ] || {
+            echo "::error::the web process starts with '${started}'"
+            exit 1
+          }
+
+          # And the claim's certificate authority, mounted where the binding
+          # says it is. The two halves have to name the same path or the URL
+          # points at a file that is not there.
+          ca_dir="/var/run/kitchen/claims/${NUXT_CLAIM}"
+          mounted="$(jq -r --arg d "${ca_dir}" '.spec.template.spec.containers[]
+            | select(.name == "app") | .volumeMounts
+            | map(select(.mountPath == $d)) | length' /tmp/nuxt-deploy.json)"
+          [ "${mounted}" = 1 ] || {
+            echo "::error::the application container does not mount ${ca_dir}"
+            jq '.spec.template.spec.containers[] | select(.name == "app") | .volumeMounts' \
+              /tmp/nuxt-deploy.json
+            exit 1
+          }
+          secret="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
+            -o jsonpath='{.status.secretName}')"
+          dsn="$(kubectl -n "${NUXT_APP_NS}" get secret "${secret}" \
+            -o jsonpath='{.data.url}' | base64 -d)"
+          # Printed without its credentials: this is a log anybody can read.
+          echo "the binding connects with $(printf '%s' "${dsn}" | sed 's#//[^@]*@#//***@#')"
+          case "${dsn}" in
+            *"sslmode=verify-full&sslrootcert=${ca_dir}/ca.crt"*) ;;
+            *)
+              echo "::error::the binding does not verify against the authority the platform mounts"
+              exit 1
+              ;;
+          esac
+
+          # Finally, the application itself, asked through its own Service —
+          # port 80 in front of the container's 3000, which is the detected
+          # framework's port and nothing the repository ever named. The
+          # answer is the whole case in one line: Nitro is serving, so the
+          # build ran; the migration count is non-zero, so the deploy task
+          # ran against this database; and `verified` is what the application
+          # sees in its own connection string.
+          served="$(kubectl -n "${APP_NS}" exec "deploy/${PROJECT}-production" \
+            -- wget -q -O - \
+            "http://${NUXT_PROJECT}-production.${NUXT_APP_NS}.svc.cluster.local:80/api/kitchen")"
+          echo "the nuxt application answered '${served}'"
+          for expected in '"framework":"nuxt"' '"verified":true' '"port":3000'; do
+            case "${served}" in
+              *"${expected}"*) ;;
+              *)
+                echo "::error::the application did not answer ${expected}"
+                exit 1
+                ;;
+            esac
+          done
+          migrations="$(printf '%s' "${served}" | jq -r '.migrations')"
+          [ "${migrations}" -ge 1 ] || {
+            echo "::error::the application sees ${migrations} migrations: the deploy task's" \
+                 "work is not in the database the application reads"
+            exit 1
+          }
+
       - name: What the cluster looked like when it failed
         if: failure()
         run: |
@@ -1211,11 +1532,15 @@ jobs:
           kubectl -n kitchen-system get environments -o yaml || true
           kubectl -n "${APP_NS}" get all -o wide || true
           kubectl -n "${BP_APP_NS}" get all -o wide || true
+          kubectl -n "${NUXT_APP_NS}" get all -o wide || true
           kubectl -n "${APP_NS}" get events --sort-by=.lastTimestamp || true
           kubectl -n "${BP_APP_NS}" get events --sort-by=.lastTimestamp || true
+          kubectl -n "${NUXT_APP_NS}" get events --sort-by=.lastTimestamp || true
+          kubectl -n kitchen-system get resourceclaims -o wide || true
+          kubectl -n kitchen-databases get clusters,pods,pvc -o wide || true
           df -h / || true
           kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=400 || true
-          for namespace in "${APP_NS}" "${BP_APP_NS}"; do
+          for namespace in "${APP_NS}" "${BP_APP_NS}" "${NUXT_APP_NS}"; do
             for pod in $(kubectl -n "${namespace}" get pods -o name); do
               echo "--- ${namespace} ${pod}"
               kubectl -n "${namespace}" logs "${pod}" --all-containers --tail=200 || true

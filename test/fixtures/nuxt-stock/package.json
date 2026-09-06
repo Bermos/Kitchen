@@ -1,0 +1,24 @@
+{
+  "name": "kitchen-e2e-nuxt",
+  "private": true,
+  "type": "module",
+  "description": "The application behind the stock-Nuxt end-to-end case: what `nuxi init` writes, plus a database driver and a migration. There is deliberately no `start` script, no Dockerfile and no NODE_OPTIONS anywhere — the platform supplies all three.",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "pg": "8.13.1"
+  },
+  "devDependencies": {
+    "nuxt": "3.14.0",
+    "vue": "3.5.12",
+    "vue-router": "4.4.5"
+  }
+}

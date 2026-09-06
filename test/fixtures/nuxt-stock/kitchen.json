@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Bermos/Kitchen/main/docs/schemas/kitchen.schema.json",
+  "processes": [
+    {
+      "name": "migrate",
+      "type": "task",
+      "command": ["node", "migrate.mjs"],
+      "timeout": "5m"
+    }
+  ]
+}
