@@ -235,6 +235,20 @@ inventory with holes in it is worse than one that repeats itself.
   is deliberately not persisted — a dismissal says "I have seen it, I am on
   it", and a reload is somebody asking what is wrong again.
 
+- **What counts as wrong is the API's `severity`, never the condition's
+  status.** A `status` says whether the statement in a condition's type holds,
+  and `Previews=False` with reason `Disabled` is previews turned off — a
+  setting, drawn for a while as a red dot, a red condition line and a slot in
+  this band. The API classifies every condition it serves
+  ([API.md](API.md#conditions)), and `conditionSeverity` in `lib/status` is the
+  only place the dashboard reads that from: anything deciding whether something
+  is *wrong* — a tone, a failure count, a row hoisted up here — goes through it
+  or through `unhealthyConditions` and `conditionsTone` above it, rather than
+  comparing a status to `"True"`. Asking whether one named condition has
+  arrived yet is a different question and stays a direct read. A list of benign
+  reasons kept here would drift from the operator the first time somebody added
+  one.
+
 The `conditions` in the expanded row are operator content like any other, and
 sit behind `<OperatorOnly>`; the error line and the failing step's output are
 the developer's and are not gated.

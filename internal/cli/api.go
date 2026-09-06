@@ -53,10 +53,17 @@ type account struct {
 	PlatformRole string `json:"platformRole"`
 }
 
-// condition is one of the platform's conditions, in Kubernetes' own shape.
+// condition is one of the platform's conditions, in Kubernetes' own shape
+// plus the severity the API attaches to it.
 type condition struct {
-	Type               string    `json:"type"`
-	Status             string    `json:"status"`
+	Type   string `json:"type"`
+	Status string `json:"status"`
+	// Severity is how much attention this condition deserves — `error`,
+	// `warning`, `info` or `none` — which its status does not say: previews
+	// turned off is a `False` that is a setting. No command reads it today;
+	// it is carried so that `--json` is the API's answer rather than a
+	// lossy copy of it. docs/API.md, "Conditions".
+	Severity           string    `json:"severity,omitempty"`
 	Reason             string    `json:"reason,omitempty"`
 	Message            string    `json:"message,omitempty"`
 	LastTransitionTime time.Time `json:"lastTransitionTime"`

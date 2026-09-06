@@ -108,6 +108,15 @@ const (
 
 	condInternalCAReady = "InternalCAReady"
 
+	// ConditionInternalCAReady and ReasonStoreInTheClear are exported
+	// because the API classifies them, on the same reading the component
+	// survey below already takes: a store left in the clear is a choice this
+	// platform reports, not a component that failed. See
+	// internal/api/conditions.go.
+	ConditionInternalCAReady = condInternalCAReady
+	// ReasonStoreInTheClear is a store somebody chose to leave unencrypted.
+	ReasonStoreInTheClear = "StoreInTheClear"
+
 	// The two keys this controller reads out of a connection secret,
 	// whichever store the secret belongs to. Every bundled store's secret
 	// spells them the same way — clickhouse.SecretKeyHost and
@@ -375,7 +384,7 @@ func (r *KitchenReconciler) reconcileInternalTLS(
 		issued = append(issued, store.issued)
 	}
 	if len(readable) > 0 {
-		setCond(condInternalCAReady, metav1.ConditionFalse, "StoreInTheClear",
+		setCond(condInternalCAReady, metav1.ConditionFalse, ReasonStoreInTheClear,
 			strings.Join(readable, "; and ")+
 				". Anything that can watch traffic inside "+PlatformNamespace+
 				", or the node under it, reads all of it")
@@ -745,7 +754,7 @@ func internalTLSComponent(kitchen *kitchenv1alpha1.Kitchen) *kitchenv1alpha1.Com
 	// A store somebody chose to leave in the clear is reported by the
 	// condition and is not a broken component: an unhealthy row here would
 	// hold ComponentsHealthy false for as long as that choice stands.
-	if cond.Status == metav1.ConditionFalse && cond.Reason == "StoreInTheClear" {
+	if cond.Status == metav1.ConditionFalse && cond.Reason == ReasonStoreInTheClear {
 		return nil
 	}
 	healthy := cond.Status == metav1.ConditionTrue

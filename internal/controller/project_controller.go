@@ -66,6 +66,19 @@ const (
 	// none, because its source is an image somebody else built (#307).
 	reasonNoRepository = "NoRepository"
 
+	// ConditionPreviews and the two reasons a project has no previews are
+	// exported because the API classifies them: neither answer is a fault —
+	// one is a setting somebody chose, the other is a project that cannot
+	// have previews at all — and the dashboard reads that classification
+	// rather than deciding from the status. See internal/api/conditions.go.
+	ConditionPreviews = condPreviews
+	// ReasonPreviewsDisabled is previews turned off in the project's own
+	// settings.
+	ReasonPreviewsDisabled = "Disabled"
+	// ReasonNoRepository is previews asked of a project whose source is an
+	// image.
+	ReasonNoRepository = reasonNoRepository
+
 	// initialBuildAnnotation says a Build was the platform's own idea rather
 	// than a push or a request, which is the difference between "nobody has
 	// deployed this yet" and "this is what connecting the repository did".
@@ -700,7 +713,7 @@ func (r *ProjectReconciler) setPreviewsCondition(
 				"against: its source is the image %s. Nothing about it changes until that image does.",
 			project.Spec.Source.ImageSource().Reference()))
 	case !project.Spec.Previews.IsEnabled():
-		setCond(condPreviews, metav1.ConditionFalse, "Disabled",
+		setCond(condPreviews, metav1.ConditionFalse, ReasonPreviewsDisabled,
 			"previews are turned off for this project: a pull request against it gets no environment of its own")
 	default:
 		setCond(condPreviews, metav1.ConditionTrue, "Enabled",

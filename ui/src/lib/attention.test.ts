@@ -147,6 +147,25 @@ describe("what the band hoists", () => {
     expect(withBuild.map((i) => i.kind)).toEqual(["build"]);
   });
 
+  it("does not hoist a project for a setting somebody chose", () => {
+    // #436: two healthy projects held both slots of the band because previews
+    // were switched off on them. The API classifies that as `info` and the
+    // band never sees it.
+    const previewsOff = project({
+      conditions: [
+        {
+          type: "Previews",
+          status: "False",
+          reason: "Disabled",
+          severity: "info",
+          message: "previews are turned off for this project: a pull request against it gets no environment of its own",
+          lastTransitionTime: "2026-08-24T21:00:00Z",
+        },
+      ],
+    });
+    expect(incidentsFrom([previewsOff], [environment()], [])).toHaveLength(0);
+  });
+
   it("hoists exactly the projects the table marks, and leaves healthy ones alone", () => {
     const healthy = project({ name: "paste", productionEnvironment: "paste-production" });
     const incidents = incidentsFrom(

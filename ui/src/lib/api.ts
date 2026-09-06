@@ -4,9 +4,24 @@ import { renew, signOut, token } from "./auth";
 // Typed client for the operator REST API (docs/API.md). The types mirror the
 // API's view shapes — the platform's own vocabulary, nothing Kubernetes.
 
+/**
+ * How much attention a condition's current state deserves, as the API decided
+ * it (`internal/api/conditions.go`).
+ *
+ * It is not derivable from `status`: `Previews=False` with reason `Disabled`
+ * is a setting somebody chose, and `BackupReady=False` with reason
+ * `NotScheduled` is an unprotected installation. The severity is the operator's
+ * own reading of its own reasons, and reading it here is what keeps the
+ * dashboard from holding a list of benign reasons that would drift from it.
+ */
+export type ConditionSeverity = "error" | "warning" | "info" | "none";
+
 export interface Condition {
   type: string;
   status: string;
+  /** Always sent. Optional here only so that a fixture need not spell it out;
+   * `conditionSeverity` in `lib/status` falls back to the status. */
+  severity?: ConditionSeverity;
   reason?: string;
   message?: string;
   lastTransitionTime: string;

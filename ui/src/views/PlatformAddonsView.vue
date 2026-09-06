@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { api, APIError, type Addon } from "../lib/api";
+import { conditionSeverity } from "../lib/status";
 import { useAsync } from "../lib/useAsync";
 import PageHeader from "../components/PageHeader.vue";
 import PageSection from "../components/PageSection.vue";
@@ -53,7 +54,7 @@ function state(addon: Addon): { label: string; tone: "success" | "warning" | "er
   if (condition?.reason === "Installing" || condition?.reason === "Uninstalling") {
     return { label: condition.reason.toLowerCase(), tone: "warning" };
   }
-  if (condition && condition.status === "False" && condition.reason !== "NotInstalled") {
+  if (condition && conditionSeverity(condition) === "error") {
     return { label: "not serving", tone: "error" };
   }
   return { label: "not installed", tone: "neutral" };
