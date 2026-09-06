@@ -19,13 +19,15 @@ package api
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/signals"
 )
@@ -35,11 +37,19 @@ import (
 // developer asks what is wrong with their environment, and gets the subset of
 // the same round that is about it.
 //
-// Nothing is evaluated on a timer. A screen asks, the gatherer reads the API
-// server and the store once, and the thirty-odd rules run over the value it
-// produced — which is what makes them free to be pure, and what makes this
-// endpoint the same shape as the inbox that will one day read
-// `signal_transitions` instead.
+// There are two ways to answer, and they are the same shape on purpose. Where
+// the operator's background evaluation loop is running, these endpoints read
+// what it recorded: the conditions `signal_transitions` says are open, which
+// carry when the platform first saw them rather than only what the objects can
+// prove about themselves. Where it is not — switched off, no telemetry store
+// to record into, or a round has not landed recently enough to be current — a
+// screen asks, the gatherer reads the API server and the store once, and the
+// thirty-odd rules run over the value it produced.
+//
+// The fallback is not a transitional courtesy. It is what makes the loop safe
+// to switch off and safe to be behind: an empty problems list because nothing
+// has been recorded yet would be the strongest claim this platform makes,
+// made about nothing.
 //
 // The interesting half of this file is the degradation. A snapshot is normally
 // partial: the store may be down, a CRD may not be installed, a resolver may
@@ -60,7 +70,7 @@ type FlowFollower interface {
 // unreachable would otherwise hold the request open for the resolv.conf
 // timeout multiplied by the probe limit. A lookup that runs out of time is an
 // input that could not be read, which is not the same as a name that does not
-// exist — see boundedResolver.
+// exist — see [signals.SystemResolver].
 const dnsLookupTimeout = 2 * time.Second
 
 // environmentSignals answers the environment page's diagnostics strip: what is
@@ -72,6 +82,13 @@ func (s *Server) environmentSignals(w http.ResponseWriter, req *http.Request) {
 	}
 	ctx := req.Context()
 	project := env.Spec.ProjectRef.Name
+
+	if recorded, ok := s.recordedSignals(ctx); ok {
+		body := recorded.body(recorded.findings.ForEnvironment(project, env.Name))
+		body.Project, body.Environment = project, env.Name
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
 
 	// The narrowing is the store reads', not the cluster's: it saves a query
 	// per environment on the platform, which is the whole reason a strip about
@@ -90,11 +107,21 @@ func (s *Server) environmentSignals(w http.ResponseWriter, req *http.Request) {
 // platformSignals answers the operator's problems list: every finding that is
 // currently firing anywhere on the platform, worst first.
 //
-// This screen is the inbox docs/OBSERVABILITY.md §7 designs, minus persistence.
-// When background evaluation lands it reads `signal_transitions` instead of
-// evaluating here, and answers in this same shape.
+// This screen is the inbox docs/OBSERVABILITY.md §7 designs. Where the loop is
+// running it *is* reading the recorded round; where it is not it evaluates one
+// here, in the same shape, so that the screen never depends on detection being
+// switched on.
 func (s *Server) platformSignals(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
+
+	if recorded, ok := s.recordedSignals(ctx); ok {
+		// Firing drops the unknowns for the same reason the evaluated path
+		// does — except that a recorded round has none: a rule that could not
+		// be evaluated is not a condition, so the loop never wrote one. What
+		// it could not read is in `unreadable`, off the round's own report.
+		writeJSON(w, http.StatusOK, recorded.body(recorded.findings.Firing()))
+		return
+	}
 
 	snapshot := signals.Gather(ctx, s.signalSources(ctx), signals.Options{})
 	// Firing drops the rules that could not be evaluated. They are not lost:
@@ -118,9 +145,19 @@ type signalsBody struct {
 	// nothing is wrong, and no findings because nothing could be read, are
 	// different answers and this is where they differ.
 	Unreadable []signals.InputFailure `json:"unreadable,omitempty"`
-	// EvaluatedAt is the instant the snapshot was taken. Findings are
-	// ephemeral today, so this is how a screen says how fresh they are.
+	// EvaluatedAt is the instant the round was taken — the snapshot's, when
+	// this request evaluated one, and the loop's last round when the answer
+	// came out of the recorded history. It is how a screen says how fresh the
+	// answer is, and it is the field that moves when detection stops.
 	EvaluatedAt time.Time `json:"evaluatedAt"`
+
+	// Source says which of the two answers this is: `evaluated` for a round
+	// taken to serve this request, `recorded` for one the background loop
+	// took and wrote down. It is served rather than inferred because the two
+	// differ in a way a reader can act on — a recorded finding's history is
+	// in the store and an evaluated one's is nowhere — and because "detection
+	// is not running" is worth being able to see from a screen.
+	Source string `json:"source"`
 
 	Project     string `json:"project,omitempty"`
 	Environment string `json:"environment,omitempty"`
@@ -135,10 +172,29 @@ type findingCounts struct {
 }
 
 func newSignalsBody(findings signals.Findings, snapshot *signals.Snapshot) signalsBody {
+	return signalsRound(findings, snapshot.Unreadable(), snapshot.Now, sourceEvaluated)
+}
+
+// The two answers, named. They are values on the wire, so they are constants
+// here rather than literals in two handlers.
+const (
+	sourceEvaluated = "evaluated"
+	sourceRecorded  = "recorded"
+)
+
+// signalsRound is one answer, however it was arrived at: the findings, what
+// could not be read, and when.
+func signalsRound(
+	findings signals.Findings,
+	unreadable []signals.InputFailure,
+	at time.Time,
+	source string,
+) signalsBody {
 	body := signalsBody{
 		Items:       itemsOf(findings),
-		Unreadable:  snapshot.Unreadable(),
-		EvaluatedAt: snapshot.Now,
+		Unreadable:  unreadable,
+		EvaluatedAt: at,
+		Source:      source,
 	}
 	for _, finding := range findings {
 		switch finding.Severity {
@@ -159,6 +215,82 @@ func newSignalsBody(findings signals.Findings, snapshot *signals.Snapshot) signa
 		body.Unreadable = nil
 	}
 	return body
+}
+
+// recordedRound is the background loop's last round as these endpoints answer
+// from it: the conditions it holds open, the inputs it could not read, and
+// when it ran.
+type recordedRound struct {
+	findings   signals.Findings
+	unreadable []signals.InputFailure
+	at         time.Time
+}
+
+// body is the recorded round narrowed to what one screen renders.
+func (r recordedRound) body(findings signals.Findings) signalsBody {
+	return signalsRound(findings, r.unreadable, r.at, sourceRecorded)
+}
+
+// staleRounds is how many intervals the recorded history may be behind before
+// these endpoints stop answering from it.
+//
+// Three, because a round is allowed to be slow and a leader is allowed to
+// change: one missed round is a store query that took longer than usual, and
+// three in a row is a loop that has stopped. Past it the endpoints evaluate
+// instead, which costs a screen a gather and costs the reader nothing —
+// whereas serving a history that stopped moving an hour ago would answer "what
+// is wrong right now" with what was wrong an hour ago, and say `evaluatedAt`
+// quietly enough that nobody notices.
+const staleRounds = 3
+
+// recordedSignals is the loop's last round, or nothing when the history cannot
+// answer for the platform's current state.
+//
+// Four things have to hold, and each of them is a way the recorded answer
+// would otherwise be worse than an evaluated one: the loop has completed a
+// round, that round is recent enough to be about now, the store it wrote to is
+// readable, and the read succeeded. Any of them failing is a fallback rather
+// than an error — there is a correct answer available, it just costs a gather.
+func (s *Server) recordedSignals(ctx context.Context) (recordedRound, bool) {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		return recordedRound{}, false
+	}
+	status := kitchen.Status.Signals
+	if status == nil || status.LastEvaluated == nil {
+		return recordedRound{}, false
+	}
+	interval := kitchen.Spec.Observability.Signals.Interval()
+	if seconds := status.IntervalSeconds; seconds > 0 {
+		// The interval the round was actually evaluated on, which is the one
+		// its age has to be judged against: an operator who has just widened
+		// the interval has not made the last round stale.
+		interval = time.Duration(seconds) * time.Second
+	}
+	if time.Since(status.LastEvaluated.Time) > staleRounds*interval {
+		return recordedRound{}, false
+	}
+
+	store, err := s.logStore(ctx)
+	if err != nil {
+		return recordedRound{}, false
+	}
+	rows, err := store.OpenSignalTransitions(ctx)
+	if err != nil {
+		return recordedRound{}, false
+	}
+
+	round := recordedRound{
+		findings: signals.TransitionsFindings(signals.TransitionsFrom(rows)),
+		at:       status.LastEvaluated.Time,
+	}
+	for _, failure := range status.Unreadable {
+		round.unreadable = append(round.unreadable, signals.InputFailure{
+			Input:  signals.Input(failure.Input),
+			Reason: failure.Reason,
+		})
+	}
+	return round, true
 }
 
 // signalSources is where a snapshot comes from, on this side of the operator.
@@ -234,42 +366,31 @@ func (s *Server) signalStore(ctx context.Context) signals.Store {
 	}
 }
 
-// dnsResolver is how dns.mismatch resolves a published name.
+// dnsResolver is how dns.mismatch resolves a published name. It is the
+// catalogue's own bounded resolver rather than a second copy of one, so that
+// this evaluation and the background loop's cannot disagree about whether a
+// name resolves.
 func (s *Server) dnsResolver() signals.Resolver {
 	if s.resolver != nil {
 		return s.resolver
 	}
-	return boundedResolver{resolver: net.DefaultResolver, timeout: dnsLookupTimeout}
+	return signals.SystemResolver(dnsLookupTimeout)
 }
 
-// boundedResolver is the standard library's resolver with a deadline per
-// lookup.
-//
-// The deadline is what makes this safe to call from a request handler, and it
-// is also why the type exists rather than passing net.DefaultResolver
-// straight through. The distinction the rule rests on survives it: the resolver
-// answers a lookup that timed out with a *net.DNSError whose IsNotFound is
-// false, which the gatherer reads as an input it could not read — and even an
-// error that carried no DNSError at all would fail that test the same way.
-// Only a name the resolver positively says does not exist becomes a finding.
-type boundedResolver struct {
-	resolver *net.Resolver
-	timeout  time.Duration
-}
-
-func (r boundedResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
-	return r.resolver.LookupHost(ctx, host)
-}
-
-// flowIngest adapts the follower's loss ledger to what the catalogue asks for.
+// FlowIngest adapts the follower's loss ledger to what the catalogue asks for.
 //
 // The two shapes differ because they are answering different questions: the
 // follower counts what it saw go missing, and the rule wants to know whether
-// the request numbers under-report. The adapter lives here — in the caller,
-// where the two packages are already both in scope — so that neither the
-// follower nor the signals package has to know the other exists.
+// the request numbers under-report. The adapter lives on this side of the
+// seam so that neither the follower nor the signals package has to know the
+// other exists — and it is exported because the catalogue now has a second
+// caller: the operator's background evaluation loop gathers the same sources,
+// and two copies of this mapping would be two rounds that can disagree about
+// how much was lost.
+func FlowIngest(follower FlowFollower) signals.IngestAccounting {
+	return flowIngest{follower: follower}
+}
+
 type flowIngest struct {
 	follower FlowFollower
 }

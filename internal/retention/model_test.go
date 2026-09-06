@@ -67,8 +67,8 @@ func TestAnUnsetSingletonFallsBackToTheCompiledInDefaults(t *testing.T) {
 	}
 }
 
-// TestEachClassIsConfigurableOnItsOwn is the criterion itself: nine classes,
-// nine numbers, and setting one does not move another.
+// TestEachClassIsConfigurableOnItsOwn is the criterion itself: one number per
+// class, and setting one does not move another.
 func TestEachClassIsConfigurableOnItsOwn(t *testing.T) {
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	kitchen.Spec.Observability.ClickHouse.RetentionDays = 30
@@ -92,6 +92,8 @@ func TestEachClassIsConfigurableOnItsOwn(t *testing.T) {
 			spec.Requests = ptr.To(days)
 		case ClassClusterEvents:
 			spec.ClusterEvents = ptr.To(days)
+		case ClassSignals:
+			spec.Signals = ptr.To(days)
 		case ClassActivity:
 			spec.Activity = ptr.To(days)
 		case ClassAudit:

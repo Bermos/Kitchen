@@ -29,7 +29,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"k8s.io/utils/ptr"
+
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/flows"
 	"github.com/Bermos/Kitchen/internal/signals"
@@ -372,3 +375,176 @@ func giveTheGatewayAnAddress(t *testing.T, h *harness) {
 type failingResolver struct{ err error }
 
 func (r failingResolver) LookupHost(context.Context, string) ([]string, error) { return nil, r.err }
+
+// Once the operator's background evaluation loop is running, these endpoints
+// answer from what it recorded rather than evaluating a round of their own.
+// The point is not the saving: it is that a recorded finding carries when the
+// platform *first saw* the condition, which no round evaluated for a screen can
+// know.
+func TestPlatformSignalsAnswerFromWhatTheLoopRecorded(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	recordRound(t, h, time.Now().Add(-30*time.Second))
+	opened := time.Now().Add(-4 * time.Hour).UTC().Truncate(time.Second)
+	h.logs.openTransitions = []clickhouse.SignalTransition{recordedCrashLoop("operator", opened)}
+
+	res := h.do(t, http.MethodGet, platformSignalsPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", platformSignalsPath, res.Code, res.Body.String())
+	}
+	body := decode[signalsBody](t, res)
+	if body.Source != sourceRecorded {
+		t.Fatalf("a running loop is what this screen reads: %+v", body)
+	}
+	if len(body.Items) != 1 || body.Items[0].Fingerprint != recordedFingerprint {
+		t.Fatalf("the recorded condition is the answer: %+v", body.Items)
+	}
+	if h.logs.transitionReads == 0 {
+		t.Error("the history is what was read")
+	}
+	// And the round's own report is what dates it, rather than the newest row:
+	// a quiet platform records nothing for hours and is not stale for it.
+	if body.EvaluatedAt.Before(time.Now().Add(-time.Minute)) {
+		t.Errorf("the answer is dated by the loop's last round: %s", body.EvaluatedAt)
+	}
+	// What the loop could not read is carried through, because an empty list
+	// of problems means nothing at all unless it says what it could see.
+	if len(body.Unreadable) != 1 || body.Unreadable[0].Input != signals.InputRequests {
+		t.Errorf("the round's unreadable inputs come with it: %+v", body.Unreadable)
+	}
+}
+
+// A loop that has stopped must not go on answering. The endpoints evaluate
+// instead, which costs a gather and is never wrong.
+func TestPlatformSignalsEvaluateWhenTheRecordedRoundIsStale(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), crashLoopingPod("shop-production-7d9f4"))...)
+	recordRound(t, h, time.Now().Add(-time.Hour))
+	h.logs.openTransitions = []clickhouse.SignalTransition{
+		recordedCrashLoop("operator", time.Now().Add(-4*time.Hour)),
+	}
+
+	res := h.do(t, http.MethodGet, platformSignalsPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", platformSignalsPath, res.Code, res.Body.String())
+	}
+	body := decode[signalsBody](t, res)
+	if body.Source != sourceEvaluated {
+		t.Fatalf("an hour-old round does not answer for now: %+v", body)
+	}
+	if len(body.Items) == 0 {
+		t.Fatalf("the round evaluated here is the answer: %+v", body)
+	}
+}
+
+// The other two fallbacks, which are the reason this endpoint cannot simply
+// read the table: a loop that has never run, and a history that cannot be read.
+func TestSignalsFallBackToEvaluating(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		recorded bool
+		broken   bool
+	}{
+		{name: "the loop has never completed a round"},
+		{name: "the history cannot be read", recorded: true, broken: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, nil, append(fixtures(), crashLoopingPod("shop-production-7d9f4"))...)
+			if tc.recorded {
+				recordRound(t, h, time.Now())
+			}
+			if tc.broken {
+				h.logs.transitionsErr = errors.New("read timeout")
+			}
+
+			res := h.do(t, http.MethodGet, platformSignalsPath, "")
+			if res.Code != http.StatusOK {
+				t.Fatalf("GET %s = %d: %s", platformSignalsPath, res.Code, res.Body.String())
+			}
+			body := decode[signalsBody](t, res)
+			if body.Source != sourceEvaluated {
+				t.Fatalf("this round was evaluated here: %+v", body)
+			}
+			if len(body.Items) == 0 {
+				t.Fatalf("the crash loop is still a finding: %+v", body)
+			}
+		})
+	}
+}
+
+// The developer's strip reads the recorded round too, and reads the delivery
+// that is theirs: a condition recorded for both audiences appears on their
+// strip as their row, never as the operator's.
+func TestEnvironmentSignalsAnswerFromTheDevelopersDelivery(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	recordRound(t, h, time.Now())
+	opened := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
+	h.logs.openTransitions = []clickhouse.SignalTransition{
+		recordedCrashLoop("developer", opened),
+		recordedCrashLoop("operator", opened),
+	}
+
+	res := h.do(t, http.MethodGet, environmentSignalsPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", environmentSignalsPath, res.Code, res.Body.String())
+	}
+	body := decode[signalsBody](t, res)
+	if body.Source != sourceRecorded {
+		t.Fatalf("the strip reads the recorded round as well: %+v", body)
+	}
+	if len(body.Items) != 1 {
+		t.Fatalf("one condition is one row on this strip: %+v", body.Items)
+	}
+	if body.Items[0].Audience != signals.AudienceDeveloper {
+		t.Errorf("the developer's strip renders the developer's delivery: %+v", body.Items[0])
+	}
+	if body.Project != feedProject || body.Environment != testEnvironment {
+		t.Errorf("the answer still names what it is about: %+v", body)
+	}
+}
+
+const recordedFingerprint = "workload.crashloop/" + feedProject + "/" + testEnvironment + "/app"
+
+// recordedCrashLoop is one delivery of one condition, as the loop wrote it.
+func recordedCrashLoop(audience string, opened time.Time) clickhouse.SignalTransition {
+	return clickhouse.SignalTransition{
+		At:          opened,
+		State:       "open",
+		Signal:      "workload.crashloop",
+		Fingerprint: recordedFingerprint,
+		Audience:    audience,
+		Version:     1,
+		Severity:    string(signals.SeverityCritical),
+		Scope:       string(signals.ScopeEnvironment),
+		Project:     feedProject,
+		Environment: testEnvironment,
+		Name:        "app",
+		Title:       "crash-looping",
+		Detail:      "12 restarts in 30m",
+		Evidence:    "/environments/" + testEnvironment,
+		Since:       opened,
+		OpenedAt:    opened,
+	}
+}
+
+// recordRound puts a completed round of the background evaluation loop on the
+// singleton, which is how these endpoints know detection is running and how
+// current what it recorded is.
+func recordRound(t *testing.T, h *harness, lastRound time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	key := types.NamespacedName{Name: controller.KitchenSingletonName}
+	if err := h.server.Client.Get(ctx, key, kitchen); err != nil {
+		t.Fatalf("reading the singleton: %v", err)
+	}
+	kitchen.Status.Signals = &kitchenv1alpha1.SignalEvaluationStatus{
+		LastEvaluated:   ptr.To(metav1.NewTime(lastRound)),
+		IntervalSeconds: 60,
+		Open:            1,
+		Unreadable: []kitchenv1alpha1.SignalInputStatus{
+			{Input: string(signals.InputRequests), Reason: "the request series query failed"},
+		},
+	}
+	if err := h.server.Client.Update(ctx, kitchen); err != nil {
+		t.Fatalf("recording a round on the singleton: %v", err)
+	}
+}

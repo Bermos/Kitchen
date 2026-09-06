@@ -1686,10 +1686,10 @@ any of it, and together they could not answer the question a records-retention
 policy asks, which is per *class* and not per table: how long do you keep
 container logs.
 
-So `spec.retention` is now the one place that says it, in nine classes —
+So `spec.retention` is now the one place that says it, in ten classes —
 `containerLogs`, `buildLogs`, `flows`, `metrics`, `traces`, `requests`,
-`clusterEvents`, `activity`, `audit` — and everything that enforces a retention
-reads it. `internal/retention` resolves the singleton into a model; the store's
+`clusterEvents`, `signals`, `activity`, `audit` — and everything that enforces
+a retention reads it. `internal/retention` resolves the singleton into a model; the store's
 TTLs, the sweep's horizons, the API's answer and the singleton's status are four
 readers of that one decision rather than four decisions.
 
@@ -1947,7 +1947,8 @@ inside a week, and a check that is off is worth nothing at all.
   anything might cite it, and there are few enough of them that retention is not
   a disk question. It is deliberately not a retention class.
 - **The retention sweep records even when it measured nothing.** A store that was
-  down produces nine observations that each say so, and the pass records that.
+  down produces one observation per class that each say so, and the pass
+  records that.
   "We hold nothing" and "we could not ask" are the two answers a retention record
   must never confuse.
 
@@ -2224,7 +2225,7 @@ kitchen:
     containerLogs: 14        # empty inherits observability.clickhouse.retentionDays
     buildLogs: 180           # its own class: read beside an artifact's provenance
     flows:                   # …and so on for metrics, traces, requests,
-    metrics:                 #    clusterEvents and activity
+    metrics:                 #    clusterEvents, signals and activity
     audit: 365               # empty inherits compliance.audit.retentionDays
     auditFloorOverride:      # the only way under the 90-day floor
       reason: ""             # at least 20 characters, and read back in full

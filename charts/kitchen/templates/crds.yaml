@@ -6551,6 +6551,38 @@ spec:
                         minimum: 10
                         type: integer
                     type: object
+                  signals:
+                    default: {}
+                    description: |-
+                      Signals evaluates the operator's signal catalogue on a timer and
+                      records the conditions that opened and resolved. The empty-object
+                      default turns it on for an installation that predates the field, for
+                      the reason spelled out above Metrics.
+                    properties:
+                      enabled:
+                        default: true
+                        description: |-
+                          Enabled runs the loop. Off leaves every screen exactly as it was —
+                          they evaluate on request — and stops the platform recording when
+                          anything opened or resolved.
+                        type: boolean
+                      intervalSeconds:
+                        default: 60
+                        description: |-
+                          IntervalSeconds between rounds.
+
+                          A minute is the default because the interval is the resolution of
+                          every duration this history can report: a condition that opened and
+                          resolved between two rounds was never seen, and "since 03:14" is only
+                          ever accurate to one interval. Much below it the cost is real — a
+                          round reads the API server's caches and queries the store per
+                          environment — and much above it the record stops being usable for the
+                          thing it exists for.
+                        format: int32
+                        maximum: 3600
+                        minimum: 15
+                        type: integer
+                    type: object
                   traces:
                     default: {}
                     description: |-
@@ -6834,6 +6866,19 @@ spec:
                       thing in it and live a week or this window, whichever is shorter, and
                       the hourly rollup keeps twelve of these windows so a year-scale view
                       has something to read. Those two ratios are not configurable.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  signals:
+                    description: |-
+                      Signals is how long the record of what the signal catalogue found is
+                      kept: one row each time a condition opened and each time it resolved.
+
+                      The window applies to *resolved* conditions. A condition that is still
+                      open is not history and is never expired for being old — an outage
+                      nobody has fixed in twice this many days is exactly the row worth
+                      keeping — which is why this class is the one the store expires
+                      conditionally rather than by date alone.
                     format: int32
                     minimum: 1
                     type: integer
@@ -7558,6 +7603,65 @@ spec:
                       Message explains a model that is configured and not being enforced —
                       an installation with no telemetry store, most often.
                     type: string
+                type: object
+              signals:
+                description: |-
+                  Signals reports the background evaluation loop's last round: when it
+                  ran, how many conditions it holds open, and which inputs it could not
+                  read. Absent means no round has completed — the loop is off, the
+                  installation has no telemetry store to record into, or this operator
+                  has only just become the leader.
+                properties:
+                  intervalSeconds:
+                    description: |-
+                      IntervalSeconds is the interval the round was evaluated on, carried so
+                      that a reader can tell a stale record from a slow one without going to
+                      look at the spec.
+                    format: int32
+                    type: integer
+                  lastEvaluated:
+                    description: LastEvaluated is when the loop last completed a round.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      Message explains a loop that is configured and not recording — no
+                      telemetry store, most often, or a store that refused the write.
+                    type: string
+                  open:
+                    description: |-
+                      Open is how many conditions were open at the end of it, counted per
+                      delivery: a finding a developer signal produced is open once for the
+                      project and once for the operator, which is how the two are
+                      acknowledged separately.
+                    format: int32
+                    type: integer
+                  unreadable:
+                    description: |-
+                      Unreadable names each input the last round could not read, once, with
+                      the reason. It is the same list the signals endpoints carry, and it is
+                      here for the same purpose: a round with nothing to report because
+                      nothing was wrong and a round with nothing to report because nothing
+                      could be read are different answers.
+                    items:
+                      description: SignalInputStatus is one input the last round could
+                        not read.
+                      properties:
+                        input:
+                          description: |-
+                            Input names the source as the catalogue names it: a table, a
+                            Kubernetes kind, a derived reading.
+                          type: string
+                        reason:
+                          description: Reason is what went wrong reading it.
+                          type: string
+                      required:
+                      - input
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - input
+                    x-kubernetes-list-type: map
                 type: object
             type: object
         type: object

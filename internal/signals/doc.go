@@ -36,19 +36,28 @@ limitations under the License.
 //   - A rule is a unit test with a struct literal. No cluster, no store, no
 //     clock — the snapshot carries its own [Snapshot.Now].
 //   - Thirty-odd rules over one snapshot cost one round of reads, not thirty-odd.
-//   - Evaluating on request (what happens today, when a screen asks) and
-//     evaluating on a timer (what stage 5 of docs/OBSERVABILITY.md adds) are the
-//     same call. The loop is additive; nothing here has to move for it.
+//   - Evaluating on request (when a screen asks) and evaluating on a timer
+//     (what internal/detection does) are the same call. The loop was additive
+//     when it landed, exactly as this said it would be: nothing here moved
+//     for it.
 //
 // A [Finding] is one firing condition, and its [Finding.Fingerprint] is stable
 // for the same underlying condition across evaluations — `workload.crashloop/
 // shop/pr-41/web` names that container's crash loop today, tomorrow, and after
 // an operator restart. That stability is what makes a round of findings
 // diffable against the previous one, which is what turns "the screen shows a
-// problem" into "the inbox recorded that the problem opened at 03:14". The
-// diffing loop and the `signal_transitions` table are deliberately not built
-// yet (§5 of the design says the table is not created); the fingerprint is what
-// keeps that later work from being a rewrite.
+// problem" into "the inbox recorded that the problem opened at 03:14".
+//
+// # Transitions
+//
+// [Tracker] is the diff, and it is as pure as the rules are: the previous
+// round in, the next one in, and what changed out. A transition is keyed on
+// (fingerprint, audience) rather than on the fingerprint alone, because a
+// condition reaches up to two audiences and those are two deliveries — see
+// [TransitionKey]. What runs the tracker on a timer and writes the result to
+// `signal_transitions` is internal/detection; what reads the result back is
+// that loop, on a restart, and the API, to answer a screen without
+// re-evaluating.
 //
 // # Honest degradation
 //

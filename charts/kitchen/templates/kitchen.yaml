@@ -321,6 +321,13 @@ spec:
       # — the survey being where an operator already looks.
       enabled: {{ .Values.kitchen.observability.clockSync.enabled }}
       maxDriftSeconds: {{ int .Values.kitchen.observability.clockSync.maxDriftSeconds }}
+    signals:
+      # Background evaluation of the signal catalogue: the same rules the
+      # screens ask, run on an interval on the leader, diffed against the
+      # previous round and recorded as transitions. Detection, in other words
+      # — the screens go on evaluating on request either way.
+      enabled: {{ .Values.kitchen.observability.signals.enabled }}
+      intervalSeconds: {{ int .Values.kitchen.observability.signals.intervalSeconds }}
   {{- with include "kitchen.retentionBlock" . }}
   # How long each class of what the platform keeps is kept. Only the classes
   # set in values appear here: an absent one inherits the telemetry or the

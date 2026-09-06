@@ -196,8 +196,10 @@ spec:
         timeoutSeconds: 900
   retention:                            # how long each class is kept; absent = inherit
     containerLogs: 14                   # empty inherits observability.clickhouse.retentionDays,
-    buildLogs: 180                      # as flows, metrics, traces, requests, clusterEvents
+    buildLogs: 180                      # as flows, metrics, traces, requests, clusterEvents, signals
     audit: 365                          # and activity do; audit inherits compliance.audit.retentionDays
+    signals: 90                         # the signal history. The window applies to *resolved*
+                                        # conditions: one still open is never expired for being old
     auditFloorOverride:                 # the only way under the 90-day floor, and an audit record
       reason: demonstration cluster; holds no production data at all
       approvedBy: cto@example.com
@@ -258,6 +260,13 @@ spec:
       enabled: true                     # do the clocks that stamp all of this agree with each other?
       maxDriftSeconds: 5                # measured off the kubelet node leases; drift beyond this is
                                         # an unhealthy `clock-sync` entry in status.components
+    signals:
+      enabled: true                     # evaluate the signal catalogue on a timer, on the leader, and
+                                        # record what opened and resolved in `signal_transitions`.
+                                        # Off leaves every screen evaluating on request, as before
+      intervalSeconds: 60               # the resolution of every duration the history can report: a
+                                        # condition that opened and resolved between two rounds was
+                                        # never seen
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
@@ -319,6 +328,13 @@ status:
     lastFailure: null
     archives: 30                        # what the last run left at the destination, after its prune
     message: the last archive was written to s3://kitchen-backups/prod 6 hours ago
+  signals:                              # the background evaluation loop's last round. Absent means no
+    lastEvaluated: 2026-08-24T09:00:00Z # round has completed: it is off, there is no store to record
+    open: 7                             # into, or this replica has only just won the lease. `open` is
+    intervalSeconds: 60                 # counted per delivery, so a condition reaching both audiences
+    unreadable:                         # is two. The API reads this to decide whether the recorded
+      - input: http_requests_1m         # history is current enough to answer a screen from — three
+        reason: the request series query failed   # intervals — and falls back to evaluating if not
   clockSync:
     checked: 2026-08-24T09:00:00Z
     method: kubelet node lease renewTime, compared with the operator's own clock

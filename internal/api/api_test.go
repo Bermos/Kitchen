@@ -350,6 +350,12 @@ type stubLogs struct {
 	storeStatsReads int
 	storeStatsErr   error
 
+	// What the operator's background evaluation loop recorded, which these
+	// endpoints answer from when it is running.
+	openTransitions []clickhouse.SignalTransition
+	transitionsErr  error
+	transitionReads int
+
 	histogram     clickhouse.LogHistogram
 	lastHistogram clickhouse.LogHistogramQuery
 	facets        []clickhouse.LogFacet
@@ -585,6 +591,17 @@ func (s *stubLogs) ProjectTraffic(
 		return nil, s.requestErr
 	}
 	return s.projectTraffic, nil
+}
+
+// The signal history, as the background evaluation loop leaves it. Empty is an
+// installation whose loop has recorded nothing, which is not the same answer as
+// one whose history cannot be read — see transitionsErr.
+func (s *stubLogs) OpenSignalTransitions(context.Context) ([]clickhouse.SignalTransition, error) {
+	s.transitionReads++
+	if s.transitionsErr != nil {
+		return nil, s.transitionsErr
+	}
+	return s.openTransitions, nil
 }
 
 func (s *stubLogs) QueryK8sEvents(

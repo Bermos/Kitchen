@@ -29,7 +29,7 @@ const mayWrite = computed(() => may("PATCH /api/v1/platform/retention", caller.v
 const readOnlyReason = computed(() => refusal("PATCH /api/v1/platform/retention", caller.value));
 
 // The form is a copy of the served days, keyed by class, so that only what
-// moved is sent — the route leaves an absent class alone, and sending all nine
+// moved is sent — the route leaves an absent class alone, and sending them all
 // back would make every save a change to every class in the audit log.
 const days = ref<Record<string, number>>({});
 watch(data, (value: PlatformRetention | null) => {

@@ -68,6 +68,9 @@ under it is for whoever runs the installation, or works on Kitchen itself.
   Hubble flow observations, and the restarts, OOM kills, resource limits and
   replica counts the operator samples off the API server and exports to the
   node collector over OTLP
+- `internal/signals/`, `internal/detection/` — the catalogue of derived rules
+  (what is wrong, computed from what the platform already collects) and the
+  loop that evaluates it on a timer and records what opened and resolved
 - `internal/clickhouse/` — the telemetry store's schema, which the operator
   owns for every table including the ones only the collector writes, and every
   query the API answers out of it

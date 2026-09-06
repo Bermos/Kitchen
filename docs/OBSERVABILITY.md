@@ -1,11 +1,12 @@
 # Kitchen — Observability Design
 
-> Status: **implemented**, stages 0–4. This document is kept as the design it
-> was, in the present tense it was written in, because the reasoning is the
-> part worth keeping — what was rejected and why is not recoverable from the
-> code. Stage 5 (background evaluation, `signal_transitions`, the inbox and
-> delivery) is still designed-for and not built; §7's model is what makes it
-> additive.
+> Status: **implemented**, stages 0–4, plus stage 5's detection half —
+> background evaluation and `signal_transitions` (#473). This document is kept
+> as the design it was, in the present tense it was written in, because the
+> reasoning is the part worth keeping — what was rejected and why is not
+> recoverable from the code. The inbox, acknowledgement and delivery are still
+> designed-for and not built; §7's model is what made the loop additive, as it
+> said it would.
 >
 > Two things the implementation learned that this text could not, both about
 > metrics the collector was assumed to emit and does not — see the verification
@@ -463,7 +464,7 @@ two installations need to disagree about.
 
 What did move is the number they scale. Retention was one knob for every
 telemetry table (`observability.clickhouse.retentionDays`) until #140 made it
-one *model* of nine classes — see §5.1 below, and docs/COMPLIANCE.md §12 for
+one *model* of ten classes — see §5.1 below, and docs/COMPLIANCE.md §12 for
 the reasoning. That old field is still there and still means what it meant: it
 is the default every telemetry class inherits.
 
@@ -489,11 +490,51 @@ ORDER BY (project, environment, timestamp)
 TTL toDateTime(timestamp) + toIntervalDay(30)
 ```
 
-**`signal_transitions`** — *not created yet.* When background evaluation
-lands, open/resolve transitions of §7's findings persist here (timestamp,
-signal id, fingerprint, state, severity, scope, title, detail); the inbox
-reads it and delivery routes from it. It is named now so the finding shape
-is designed against it; creating it costs one `ensureTableTTL` call later.
+**`signal_transitions`** — the history of §7's findings, written by the
+background evaluation loop (§7, "Detection"):
+
+```sql
+CREATE TABLE signal_transitions
+(
+    timestamp   DateTime64(3, 'UTC'),
+    state       LowCardinality(String),   -- 'open' | 'resolved'
+    signal      LowCardinality(String),
+    version     UInt32,                   -- the rule's own, at the moment of the row
+    fingerprint String,
+    audience    LowCardinality(String),   -- 'operator' | 'developer' — the delivery
+    severity    LowCardinality(String),
+    scope       LowCardinality(String),
+    project     LowCardinality(String),
+    environment LowCardinality(String),
+    namespace   LowCardinality(String),
+    node        LowCardinality(String),
+    name        String,
+    title       String,
+    detail      String,
+    evidence    String,
+    since       DateTime64(3, 'UTC'),     -- what the round could prove about its age
+    opened_at   DateTime64(3, 'UTC')      -- when this platform first saw it
+)
+ENGINE = MergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY (project, environment, fingerprint, audience, timestamp)
+TTL toDateTime(timestamp) + toIntervalDay(days) DELETE WHERE state = 'resolved'
+```
+
+**A row is keyed on `(fingerprint, audience)`, never on the fingerprint
+alone.** The fingerprint is stable for the same condition across evaluations
+by design; the audience is *who it was delivered to*, and a developer-audience
+finding is delivered twice — to the project and to the operator, since a
+developer signal is additive. Those are two deliveries in two vocabularies,
+acknowledged and silenced separately, and a key that could not tell them apart
+would let a member acking their project's row acknowledge the operator's row
+about the same condition.
+
+Nothing is written for the rounds in between: a condition that goes on being
+true is not a row per interval. "What is open now" is therefore an argMax per
+key — the newest row per `(fingerprint, audience)`, kept when it is an
+opening — which is what the API reads and what a restarted operator seeds
+itself from.
 
 Migration honesty: the schema mechanism is `CREATE TABLE IF NOT EXISTS` plus
 TTL reconciliation — it never reshapes an existing table. Every table above
@@ -507,7 +548,8 @@ into any future one.)
 
 `spec.retention` on the Kitchen singleton says how long each *class* of what
 the platform keeps is kept — container logs, build logs, flows, metrics,
-traces, requests, cluster events, the activity feed and the audit log — and
+traces, requests, cluster events, the signal history, the activity feed and
+the audit log — and
 `internal/retention` resolves it into the one model everything else reads.
 Every field is optional and an absent one inherits: the telemetry classes from
 `observability.clickhouse.retentionDays`, the audit class from
@@ -529,6 +571,21 @@ worth knowing:
   types and the rollup; the traces class to the spans and the id lookup; the
   requests class to the raw table and both rollups, scaled by the ratios below.
   The TTL is applied to all of them.
+- **The signal history's window applies to half its rows.** A *resolved*
+  transition is history and ages out with its class; an *open* one is the
+  platform's current knowledge of a condition nobody has fixed, and a
+  condition open for longer than the retention window is exactly the row worth
+  keeping. So its TTL carries a condition (`DELETE WHERE state = 'resolved'`),
+  which costs the table `ttl_only_drop_parts` for the same reason two log
+  classes in one table costs it — a part holding one open condition is never
+  wholly expired — and the sweep may not delete for it at all, because its one
+  exact deletion is dropping a partition whole. The rule the three
+  non-sweepable classes share: *the sweep never deletes rows it cannot
+  attribute to exactly one class, nor to exactly one fate.* One consequence is
+  worth stating rather than discovering: the *opening* row of an episode that
+  later resolved outlives the window, because no TTL expression can see the
+  row that closed it. It is one row per episode, and it is the price of never
+  expiring a condition that is still true.
 
 A daily leader-elected sweep then measures each class against the horizon its
 own configuration puts there and records the result in the audit log — how far
@@ -629,9 +686,10 @@ the policy table admits and which is where an operator lands on sign-in:
   components M/M, ingest, store, edge, certificates, builds — each green or
   naming its problem) and the **problems list**: every currently-firing
   signal from §7, ordered by severity, each with its evidence link. This
-  screen *is* the future inbox, minus persistence: today it evaluates on
-  view (`GET /api/v1/platform/signals`), later it reads
-  `signal_transitions`. Same screen, same data shape.
+  screen *is* the future inbox, minus acknowledgement:
+  `GET /api/v1/platform/signals` reads `signal_transitions` where the
+  background loop is running and evaluates on view where it is not. Same
+  screen, same data shape, either way.
 - **Nodes** — per node: conditions (Ready, pressure), CPU/load/memory/disk
   series, filesystem fill with a "full in ~N days" projection, pod count,
   and **telemetry freshness** — when the store last received anything from
@@ -676,12 +734,46 @@ promise instead of a hope:
   The **fingerprint** is stable for the same underlying condition across
   evaluations (e.g. `workload.crashloop/shop/pr-41/web`), which is what
   makes findings diffable.
-- Today: evaluated on request when a screen asks; findings are ephemeral.
-- Later, with **zero change to the above**: a background loop evaluates the
-  same catalogue on an interval, diffs fingerprints against the previous
-  round, writes open/resolve transitions to `signal_transitions`, and a
-  delivery layer routes transitions to Slack/email. Detection is this
-  design; only the loop, the table write and the routing are new work.
+- Evaluated on request when a screen asks — and, where the background loop is
+  running, read back from what it recorded. Both answers are the same shape.
+
+### Detection
+
+The loop landed with **zero change to the model above**, which was the claim
+this design made and is worth recording as kept: `Evaluate(snapshot) →
+[]Finding` is unchanged and still pure, the fingerprint is unchanged, and the
+new code is the caller.
+
+- **The loop** (`internal/detection`) runs in the operator's process as a
+  leader-elected Runnable, beside the retention sweep and the event recorder.
+  Every `spec.observability.signals.intervalSeconds` (60 by default) it
+  gathers one snapshot, evaluates the catalogue, diffs the round against the
+  previous one and writes what changed. Two replicas each recording that the
+  same condition opened would read as two conditions, which is why it is
+  leader-elected like every other sweep here.
+- **The diff** (`signals.Tracker`) is as pure as the rules: previous round in,
+  next round in, transitions out. Three rules decide it — a key that is new
+  opened, a key that has gone resolved, and a key whose *rule could not be
+  evaluated this round did neither*. That last one is the whole of why a store
+  outage does not resolve thirty conditions at once: an unevaluable rule
+  answers with an `unknown` finding, which is not a condition, and its
+  conditions are carried forward.
+- **The seed.** A loop that has just started — a restart, or a replica that
+  has won the lease — reads back what the table says is open before its first
+  round, so it announces what changed while it was not looking rather than
+  re-announcing everything. A seed that cannot be read is a round that does
+  not happen.
+- **The read back.** `GET /platform/signals` and
+  `GET /environments/{name}/signals` answer from the recorded round where
+  there is one that is current — `status.signals.lastEvaluated` within three
+  intervals, and a store that answers — and evaluate on request otherwise.
+  The answers carry `source` so a reader can tell which they got. The fallback
+  is not transitional: it is what makes the loop safe to switch off and safe
+  to be behind, since an empty problems list is the strongest claim this
+  platform makes.
+- What is *not* built here is delivery. The inbox, acknowledgement, silences
+  and routing to Slack/email are #471 and #472, and they read this table
+  rather than adding to it — the loop is its only writer.
 
 The catalogue, v1 — each row names what it is computed from. Audience "dev"
 means it also surfaces on the environment's diagnostics strip.
@@ -841,8 +933,11 @@ work packages, not as a multi-quarter roadmap.)
 - **Stage 4 — the operator estate.** Signals package + catalogue v1;
   platform endpoints; Overview, Nodes, Workloads, Edge, Storage, Events
   screens. Ships: goal 2's screens-and-derived-signals scope, complete.
-- **Stage 5 (out of current scope, designed for) — detection and delivery.**
-  Background evaluation loop, `signal_transitions`, inbox, routing.
+- **Stage 5 — detection and delivery.** *Detection is built* (#473): the
+  background evaluation loop, the diff, and `signal_transitions`, with the two
+  signals endpoints reading it where it is current. The inbox,
+  acknowledgement, silences and routing remain — they are readers of that
+  table and of the key it is written under.
 
 Stages 1–4 decompose further along package seams (schema / follower / API /
 UI per stage), which is how the work parallelises across implementers.
@@ -866,7 +961,7 @@ Settled by choosing a side, with the reason:
   the gate-misattribution bug happened.
 - **One retention knob with derived ratios vs. per-kind knobs** — one knob,
   per the schema package's own precedent. *(Revisited by #140: the ratios are
-  still derived, and the one knob became one model of nine classes, because
+  still derived, and the one knob became one model of ten classes, because
   "how long do you keep container logs" is a question asked per class and not
   per table. §5.1.)*
 - **Kubernetes events via the operator vs. a second collector** — operator

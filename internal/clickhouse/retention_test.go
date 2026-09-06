@@ -53,6 +53,8 @@ func kitchenWithRetention(days map[retention.Class]int32) *kitchenv1alpha1.Kitch
 			spec.Requests = &set
 		case retention.ClassClusterEvents:
 			spec.ClusterEvents = &set
+		case retention.ClassSignals:
+			spec.Signals = &set
 		case retention.ClassActivity:
 			spec.Activity = &set
 		case retention.ClassAudit:
@@ -171,7 +173,7 @@ func TestGoingBackToOneDateRestoresThePartDropMode(t *testing.T) {
 }
 
 // TestEveryTelemetryClassReachesItsOwnTable is the enforcement half of the
-// first acceptance criterion: nine numbers configured, and each one applied
+// first acceptance criterion: one number per class configured, and each applied
 // where that class lives.
 func TestEveryTelemetryClassReachesItsOwnTable(t *testing.T) {
 	store := newFakeStore(t)
@@ -183,6 +185,7 @@ func TestEveryTelemetryClassReachesItsOwnTable(t *testing.T) {
 		retention.ClassTraces:        55,
 		retention.ClassRequests:      66,
 		retention.ClassClusterEvents: 77,
+		retention.ClassSignals:       99,
 		retention.ClassActivity:      88,
 	})
 
@@ -201,6 +204,10 @@ func TestEveryTelemetryClassReachesItsOwnTable(t *testing.T) {
 		{retention.ClassTraces, TracesTable, "toIntervalDay(55)"},
 		{retention.ClassRequests, RequestsMinuteTable, "toIntervalDay(66)"},
 		{retention.ClassClusterEvents, K8sEventsTable, "toIntervalDay(77)"},
+		// The one class whose window applies to half its rows: an open
+		// condition is never expired for being old.
+		{retention.ClassSignals, SignalTransitionsTable,
+			"toIntervalDay(99) DELETE WHERE state = 'resolved'"},
 		{retention.ClassActivity, EventsTable, "toIntervalDay(88)"},
 	} {
 		if !store.sentNear(qualified(want.table), want.interval) {
