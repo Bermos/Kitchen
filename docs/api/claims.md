@@ -74,38 +74,59 @@ The binding secret carries `url`, `host`, `port`, `user`, `password`,
 single-string form every driver takes; the rest is the same connection taken
 apart for a client that wants the pieces.
 
-**Every URL asks for TLS, and `ca` is what verifies it.** libpq's default is
-`prefer`, which negotiates TLS and falls back to plaintext without saying so —
-a downgrade and a normal connection look identical — so every binding carries
-`sslmode=require`. CloudNativePG signs each database with a CA it generates for
-that cluster and nothing public vouches for it, so the certificate itself
-travels in the binding, exactly as `objectStore`'s `caCert` does: an
-application pod cannot mount a Secret in the platform's database namespace, and
-no image the platform did not build carries that root. The key is **absent, not
-empty**, for a hosted database whose certificate the host's own roots already
-vouch for.
+**Every URL asks for TLS, and the platform is what verifies it.** libpq's
+default is `prefer`, which negotiates TLS and falls back to plaintext without
+saying so — a downgrade and a normal connection look identical. CloudNativePG
+signs each database with a CA it generates for that cluster and nothing public
+vouches for it, so the certificate itself travels in the binding, exactly as
+`objectStore`'s `caCert` does: an application pod cannot mount a Secret in the
+platform's database namespace, and no image the platform did not build carries
+that root. The key is **absent, not empty**, for a hosted database whose
+certificate the host's own roots already vouch for.
 
-**The two Postgres drivers disagree about what `require` means, and that is
-what `ca` is for.** libpq — and pgx, which keeps its semantics — encrypts and
-verifies nothing. node-postgres promotes `require` to `verify-full` and says so
-on boot, so against a per-cluster CA it fails every connection with
-`SELF_SIGNED_CERT_IN_CHAIN` until it is handed the certificate. Ask for the key
-beside the URL:
+**There is nothing for an application to do about it** (#456). Both Postgres
+drivers read `sslrootcert` as a *file*, so the platform writes the file: every
+workload reading the claim — the web process, its workers, its services, its
+scheduled runs and its deploy-time tasks — mounts that binding's `ca` at
 
-```sh
-curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
-  -d '{"env": [{"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}},
-                {"name": "DATABASE_CA",  "fromClaim": {"name": "shop-db", "key": "ca"}}]}' \
-  https://kitchen.apps.example.com/api/v1/projects/shop
+```
+/var/run/kitchen/claims/<claim>/ca.crt
 ```
 
-and give it to the driver: `new Pool({connectionString: process.env.DATABASE_URL, ssl: {ca:
-process.env.DATABASE_CA}})` for node-postgres. A libpq client wants a **file** —
-`sslrootcert=<path>` in the URL, or `NODE_EXTRA_CA_CERTS=<path>` for a Node
-process with other TLS to do — so an application that needs one writes
-`$DATABASE_CA` to a path when it starts. The platform does not choose that path
-for it: a binding is a Secret in the application's own namespace, and where a
-certificate belongs inside a container is the application's to say.
+read-only, and the URL names it:
+
+```
+postgresql://…/shop?sslmode=verify-full&sslrootcert=/var/run/kitchen/claims/shop-db/ca.crt
+```
+
+So `DATABASE_URL` alone verifies, under `psql`, libpq, pgx, node-postgres,
+Prisma and anything else that takes a connection string. Nothing else is
+injected — no `NODE_EXTRA_CA_CERTS`, no second variable — because the URL
+already carries the whole answer, and a project that wants the certificate as a
+value can still ask for the `ca` key by name.
+
+The path is the platform's and it is constant: it is inside somebody else's
+image, so the only safe answer is a directory nothing else uses, and one that
+varied per installation would be one no binding could name. It carries the
+*claim's* name rather than the resource's, so a preview reading its own branch
+finds its certificate exactly where production's binding says it is.
+
+A binding names that path **exactly when the certificate is mounted there**. A
+claim through a hosted provider hands over no `ca`, so it mounts nothing and
+keeps `sslmode=require` in the URL it always had; nothing about such a claim
+changes. The mount is otherwise unconditional — it happens whether or not the
+project ever selected the `ca` key — because that is what makes the URL's
+promise true.
+
+**Why the two Postgres drivers made this worth doing.** libpq — and pgx, which
+keeps its semantics — treats `require` as encrypt-and-verify-nothing.
+node-postgres promotes `require` to `verify-full`, so against a per-cluster CA
+it failed every connection with `SELF_SIGNED_CERT_IN_CHAIN` unless the
+application passed the certificate itself: `new Pool({connectionString, ssl:
+{ca: process.env.DATABASE_CA}})`, or a start-up script writing the variable to
+a path. That is the plumbing this removes; the driver note is worth keeping
+only as background for anyone who reads `verify-full` in a URL and wonders what
+changed.
 
 **What `deletionPolicy` means for a database with a volume behind it.** For the
 self-hosted provider, `Delete` deletes the database and CloudNativePG collects
@@ -165,7 +186,8 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 ```
 
 The binding secret carries `endpoint`, `bucket`, `region`, `accessKeyId`,
-`secretAccessKey`, `forcePathStyle` and — for the bundled store — `caCert`.
+`secretAccessKey`, `forcePathStyle` and — for the bundled store — `caCert` and
+`caCertFile`.
 `forcePathStyle` is not decoration: MinIO addresses a bucket in the path and
 AWS in the host name, and an application that guesses wrong fails on every
 request — so the Connection says which, once, and every binding carries the
@@ -177,18 +199,40 @@ certificate the platform's own CA signed (#382), and nothing public vouches for
 that authority: an application pod cannot mount the ConfigMap it is published
 in, and no image the platform did not build carries it in a trust store. So the
 CA certificate itself travels in the binding, and an S3 client configured with
-it gets the same `verify-full` the platform's own components do — for example
-`AWS_CA_BUNDLE` pointed at a file written from the key, minio-go's `Transport`
-with the certificate in its root pool, or boto3's `verify=`. The key is
-**absent, not empty**, for a store whose certificate a public root already
-vouches for: present-and-empty would read as an authority that vouches for
-nothing.
+it gets the same `verify-full` the platform's own components do — minio-go's
+`Transport` with the certificate in its root pool, or boto3's `verify=`. The
+key is **absent, not empty**, for a store whose certificate a public root
+already vouches for: present-and-empty would read as an authority that vouches
+for nothing.
+
+**`caCertFile` is the same certificate as a path**, because the way most S3
+clients are pointed at one is a *file*: `AWS_CA_BUNDLE` names a file, and so
+does every SDK's own spelling of it. The platform mounts the `caCert` key at
+
+```
+/var/run/kitchen/claims/<claim>/ca.crt
+```
+
+read-only, in every workload the claim's variables reach, and `caCertFile`
+holds that path — so pointing a client at it is one variable and no start-up
+script:
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"env": [{"name": "AWS_CA_BUNDLE", "fromClaim": {"name": "shop-media", "key": "caCertFile"}}]}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop
+```
+
+It is the same mechanism a `postgres` binding's `ca` rides, and it obeys the
+same rule: a binding names that path exactly when the certificate is mounted
+there, so a store whose certificate a public root vouches for carries neither
+key and needs neither variable (#456).
 
 **Where the store is can change under a binding that is otherwise still
 correct** — the bundled store gaining a certificate is exactly that — so
-`endpoint`, `region`, `forcePathStyle` and `caCert` are rewritten over an
-existing binding each reconcile, and the bucket and its credential are left
-alone. An application reading the changed Secret is rolled by the operator on
+`endpoint`, `region`, `forcePathStyle`, `caCert` and `caCertFile` are rewritten
+over an existing binding each reconcile, and the bucket and its credential are
+left alone. An application reading the changed Secret is rolled by the operator on
 its own, the way a rotated credential reaches it.
 
 **A bucket per claim, with a credential scoped to it.** Never a prefix in a
@@ -1199,7 +1243,7 @@ Three limits on that, all deliberate:
   the database the application is reading, so the binding stands, the claim
   stays `Bound`, and the reconcile is requeued to try again.
 - **An `objectStore` binding is kept in step by its store's half alone** —
-  `endpoint`, `region`, `forcePathStyle` and `caCert` — and never recomposed
+  `endpoint`, `region`, `forcePathStyle`, `caCert` and `caCertFile` — and never recomposed
   whole. A store that mints a credential per bucket mints a *new* one every
   time it is asked, so recomposing would rotate every bucket's key on every
   reconcile and roll every pod reading it, for ever.

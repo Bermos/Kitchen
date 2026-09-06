@@ -163,7 +163,7 @@ func TestProcessPodSpecSendsBuildpacksCommandsThroughTheLauncher(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			spec := processPodSpec("env", tc.release, project, nil, process, nil, podInit{})
+			spec := processPodSpec("env", tc.release, project, nil, nil, process, nil, podInit{})
 			container := spec.Containers[0]
 			if !slices.Equal(container.Command, tc.wantCommand) {
 				t.Errorf("command = %q, want %q", container.Command, tc.wantCommand)

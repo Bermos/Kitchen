@@ -658,12 +658,14 @@ func (c *CNPG) binding(ctx context.Context, cluster *unstructured.Unstructured) 
 	// connection. CloudNativePG serves TLS on every cluster it creates, with
 	// a CA it generates itself, so requiring encryption costs nothing here.
 	//
-	// It is `require` in the URL and not `verify-full` because `sslrootcert`
-	// names a *file*, and the CA this binding carries is a value in a Secret:
-	// an application pod is handed it as a variable, and where it puts it is
-	// the application's to decide. So the URL asks for encryption, the `ca`
-	// key below is what verification is done against, and docs/api/claims.md
-	// says how each client is pointed at it.
+	// It is `require` here and not `verify-full`, because `sslrootcert` names
+	// a *file* and this provisioner cannot know where the file will be: what
+	// the certificate below is mounted as is the platform's decision, made
+	// per claim, and a provisioner is handed a database rather than a claim.
+	// So this asks for encryption and hands over the authority, and the claim
+	// contract — which does know the claim — is what raises the URL to
+	// `verify-full&sslrootcert=…` naming the path it mounts it at (#456).
+	// See internal/provider/contract/ca.go for the two halves of that.
 	//
 	// Note that the two clients disagree about what `require` means, which is
 	// why the CA travels at all: libpq (and pgx) encrypt and verify nothing,

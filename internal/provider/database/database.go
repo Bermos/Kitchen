@@ -143,6 +143,11 @@ type Binding struct {
 	// certificate the host's roots already vouch for, and the binding then
 	// carries no `ca` key at all — a key present and empty would read as an
 	// authority that vouches for nothing.
+	//
+	// Where it *lands* is not the provisioner's to say. A binding that
+	// carries one is mounted as a file in every workload reading the claim,
+	// and the claim contract raises the URL to name that file (#456) — which
+	// is why this is the whole of what a provisioner has to supply.
 	CA string
 }
 

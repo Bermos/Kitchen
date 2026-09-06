@@ -120,7 +120,13 @@ const (
 	BindingKeyAccessKeyID     = "accessKeyId"
 	BindingKeySecretAccessKey = "secretAccessKey"
 	BindingKeyForcePathStyle  = "forcePathStyle"
-	BindingKeyCACert          = "caCert"
+	// The authority half is spelled in internal/provider/contract, because
+	// the Environment reconciler mounts this key and the two have to agree
+	// exactly (#456). `caCertFile` is where it mounts it — written beside
+	// the certificate by the claim contract, which is the only half that
+	// knows the claim's name.
+	BindingKeyCACert     = contract.BindingKeyCACert
+	BindingKeyCACertFile = contract.BindingKeyCACertFile
 )
 
 // Data is the binding as the Secret carries it.

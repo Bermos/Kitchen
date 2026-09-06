@@ -188,6 +188,10 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	// cas are the certificate authorities of the claims this environment
+	// reads. Every workload mounts all of them, for the reason the variables
+	// reach every workload: a claim is the unit's dependency (#456).
+	cas []claimCA,
 	// mounts are the environment's volume claims; each process gets the
 	// ones that name it, and nothing else's.
 	mounts []mountedVolume,
@@ -244,7 +248,7 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 		processMounts := mountsFor(mounts, process.Name)
 		switch process.Type {
 		case kitchenv1alpha1.ProcessCron:
-			if err := r.applyCronJob(ctx, env, release, project, appNS, labels, podEnv, process,
+			if err := r.applyCronJob(ctx, env, release, project, appNS, labels, podEnv, cas, process,
 				processMounts, inits[process.Name]); err != nil {
 				return nil, err
 			}
@@ -252,7 +256,7 @@ func (r *EnvironmentReconciler) reconcileProcesses(
 				return nil, err
 			}
 		default:
-			if err := r.applyWorkerDeployment(ctx, env, release, project, appNS, labels, podEnv, process,
+			if err := r.applyWorkerDeployment(ctx, env, release, project, appNS, labels, podEnv, cas, process,
 				processMounts, inits[process.Name]); err != nil {
 				return nil, err
 			}
@@ -293,6 +297,10 @@ func processPodSpec(
 	release *kitchenv1alpha1.Release,
 	project *kitchenv1alpha1.Project,
 	podEnv []corev1.EnvVar,
+	// cas are the certificate authorities of the claims this environment
+	// reads, mounted here so that every workload of the unit verifies the
+	// same way the web process does (#456).
+	cas []claimCA,
 	process kitchenv1alpha1.ProcessSpec,
 	mounts []mountedVolume,
 	// init is what this workload prepares inside those volumes before its
@@ -370,6 +378,11 @@ func processPodSpec(
 	// service, a scheduled run and a deploy-time task all get them: a unit is
 	// one application, and its configuration file is the application's.
 	configFilesOnPod(&pod, envName, configFilesOf(release, process.Name))
+	// The claims' certificate authorities, at the paths their bindings name.
+	// A worker, a service, a scheduled run and a deploy task read the same
+	// database the web process does, and none of them can be asked to plumb
+	// a certificate the platform can place.
+	claimCAsOnPod(&pod, cas)
 	// The init container that prepares this workload's volumes. A worker, a
 	// scheduled run and a deploy task all take one: a volume claim names one
 	// process, and the process that mounts an empty filesystem is the one
@@ -395,6 +408,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	cas []claimCA,
 	process kitchenv1alpha1.ProcessSpec,
 	mounts []mountedVolume,
 	init podInit,
@@ -443,7 +457,7 @@ func (r *EnvironmentReconciler) applyWorkerDeployment(
 			}}
 		}
 		deploy.Spec.Template.Labels = podLabels
-		deploy.Spec.Template.Spec = processPodSpec(env.Name, release, project, podEnv, process, mounts, init)
+		deploy.Spec.Template.Spec = processPodSpec(env.Name, release, project, podEnv, cas, process, mounts, init)
 		// The digest of the plain files it reads, for the reason the web
 		// process carries one: a release differing only in a file's content
 		// would otherwise leave a running worker on the old file for ever.
@@ -536,6 +550,7 @@ func (r *EnvironmentReconciler) applyCronJob(
 	appNS string,
 	labels map[string]string,
 	podEnv []corev1.EnvVar,
+	cas []claimCA,
 	process kitchenv1alpha1.ProcessSpec,
 	// mounts are the volume claims naming this process. A scheduled run
 	// mounts them like a worker does; with a volume that attaches once, a
@@ -565,7 +580,7 @@ func (r *EnvironmentReconciler) applyCronJob(
 		cron.Spec.JobTemplate.Spec.BackoffLimit = ptr.To(runBackoffLimit)
 		cron.Spec.JobTemplate.Spec.ActiveDeadlineSeconds = ptr.To(process.TimeoutSeconds())
 		cron.Spec.JobTemplate.Spec.Template.Labels = childLabels
-		podSpec := processPodSpec(env.Name, release, project, podEnv, process, mounts, init)
+		podSpec := processPodSpec(env.Name, release, project, podEnv, cas, process, mounts, init)
 		// A scheduled run needs no digest of anything: its next run is a new
 		// pod, which reads whatever the file holds when it starts.
 		//

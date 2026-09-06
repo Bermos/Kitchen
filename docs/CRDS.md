@@ -1990,7 +1990,9 @@ spec:
 status:
   phase: Bound                          # Pending | Bound | Failed
   secretName: shop-db-binding           # binding keys: url, host, port, user, password, database,
-                                        # and ca where the platform runs the database itself
+                                        # and ca where the platform runs the database itself —
+                                        # mounted at /var/run/kitchen/claims/<claim>/ca.crt, which
+                                        # the url names as sslrootcert
   instanceID: proj-abc123               # provider-side ID, opaque; what deprovisioning addresses
   instanceName: kitchen-my-shop-shop-db # what the provider calls it: kitchen-<project>-<claim>
   dataProvenance: production            # the provider's declaration: production | masked | synthetic;
@@ -2070,8 +2072,21 @@ event rather than whenever the claim is next reconciled. The `ca` key carries
 the certificate of the authority that signed the server's, for a database this
 platform runs itself: CloudNativePG generates one per cluster, nothing public
 vouches for it, and an application pod can neither mount it nor be expected to
-carry it in an image the platform did not build. What each driver does with it
-is in [docs/api/claims.md](api/claims.md#creating-a-claim).
+carry it in an image the platform did not build.
+
+**A binding that carries an authority is mounted, and names where** (#456).
+Every workload an environment materializes from a Release that reads the claim
+— the web process, its workers, its services, its scheduled runs and its
+deploy-time tasks — mounts that binding's `ca` (or an `objectStore` binding's
+`caCert`) read-only at `/var/run/kitchen/claims/<claim>/ca.crt`, and the
+binding names that path back: a database URL becomes
+`sslmode=verify-full&sslrootcert=<path>`, and a bucket binding gains a
+`caCertFile` key holding it. The path carries the *claim's* name rather than
+the resource's, so a preview reading its own branch finds its certificate where
+production's binding says it is. A binding that hands over no authority mounts
+nothing and keeps the URL it had — the mount and the path are one decision, so
+a binding can never name a file that is not there. What each driver does with
+it is in [docs/api/claims.md](api/claims.md#creating-a-claim).
 
 **A preview that idles takes its own infrastructure down with it**, where the
 provider can (#294). The signal is the Environment's `status.idle` — allowed
