@@ -167,10 +167,18 @@ func (redisContract) finalize(
 	return nil
 }
 
-// provisionCache creates the instance and the shared binding Secret when
-// either is missing. done=true means the caller returns result and err as
-// they are — provisioning failed, or has not finished, and the status
-// already says which.
+// provisionCache creates the instance, recomposes the shared binding, and
+// writes it whenever it differs from the one that is there — a binding is
+// reconciled and not written once, for the reasons provision() carries in
+// full (#398). done=true means the caller returns result and err as they are
+// — provisioning failed, or has not finished, and the status already says
+// which.
+//
+// Recomposing costs nothing here and reissues nothing: an instance the
+// platform runs mints its password once and reads it back on every pass
+// after that, and a logical database of a server it does not run is held in
+// the Connection's own ledger, which answers the holder the number it
+// already has.
 func (r *ResourceClaimReconciler) provisionCache(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,
@@ -178,19 +186,20 @@ func (r *ResourceClaimReconciler) provisionCache(
 	appNS string,
 ) (ctrl.Result, bool, error) {
 	secretName := claimSecretName(claim.Name)
-	if claim.Status.InstanceID != "" {
-		err := r.Get(ctx, types.NamespacedName{Namespace: appNS, Name: secretName}, &corev1.Secret{})
-		if err == nil {
-			return ctrl.Result{}, false, nil
-		}
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, true, err
-		}
-		// The instance exists and its Secret went missing: fall through and
-		// provision again, which finds it by name and recovers the binding.
+	bound, err := r.hasBinding(ctx, claim, appNS, secretName)
+	if err != nil {
+		return ctrl.Result{}, true, err
 	}
 
 	instance, err := provisionCacheInstance(ctx, claim, provisioner)
+	if err != nil && bound {
+		// A claim already bound never loses its binding to a recomposition
+		// that failed: the instance the application is reading is still
+		// there, and the requeue is what tries again.
+		logf.FromContext(ctx).Info("keeping the binding this claim already has",
+			"claim", claim.Name, "reason", err.Error())
+		return ctrl.Result{RequeueAfter: claimRequeueDelay}, true, nil
+	}
 	switch {
 	case errors.Is(err, cache.ErrNotReady):
 		result, err := r.pending(ctx, claim, "Provisioning", err)

@@ -164,7 +164,17 @@ func (objectStoreContract) finalize(
 }
 
 // provisionBucket creates the bucket and the shared binding Secret when
-// either is missing, on the same terms as provision does for a database.
+// either is missing.
+//
+// This is deliberately *not* the recomposition a database's binding gets
+// (#398), and the difference is the credential: a store that mints one per
+// bucket mints a **new** secret key every time it is asked, so asking on
+// every pass would rotate the bucket's credential on every reconcile and roll
+// every pod reading it, for ever. What can change under a bucket's binding
+// without reissuing anything is the store's own half — where it answers, and
+// what its certificate is verified against — and refreshBindingAddresses
+// below writes exactly that over the binding each pass. So this binding is
+// kept in step too; it is kept in step by the half that is safe to write.
 func (r *ResourceClaimReconciler) provisionBucket(
 	ctx context.Context,
 	claim *kitchenv1alpha1.ResourceClaim,

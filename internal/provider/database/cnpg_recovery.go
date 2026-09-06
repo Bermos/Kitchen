@@ -200,7 +200,7 @@ func (c *CNPG) recoveredBranch(
 	if err := c.inheritBackupSchedule(ctx, source, recovered); err != nil {
 		return Branch{}, err
 	}
-	binding, err := c.binding(ctx, recovered.GetName())
+	binding, err := c.binding(ctx, recovered)
 	if err != nil {
 		return Branch{}, err
 	}
