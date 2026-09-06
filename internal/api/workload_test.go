@@ -51,16 +51,16 @@ func TestPodMessagePicksTheFailure(t *testing.T) {
 			pod: corev1.Pod{Status: corev1.PodStatus{
 				Phase:                 corev1.PodFailed,
 				InitContainerStatuses: []corev1.ContainerStatus{terminatedStatus("clone", 0, "Completed")},
-				ContainerStatuses:     []corev1.ContainerStatus{terminatedStatus("creator", 51, "Error")},
+				ContainerStatuses:     []corev1.ContainerStatus{terminatedStatus("exporter", 51, "Error")},
 			}},
-			want: "creator: Error: exit code 51",
+			want: "exporter: Error: exit code 51",
 		},
 		{
 			name: "an init container that failed, ahead of a container still waiting on it",
 			pod: corev1.Pod{Status: corev1.PodStatus{
 				Phase:                 corev1.PodFailed,
 				InitContainerStatuses: []corev1.ContainerStatus{terminatedStatus("clone", 128, "Error")},
-				ContainerStatuses:     []corev1.ContainerStatus{waitingStatus("creator", "PodInitializing", "")},
+				ContainerStatuses:     []corev1.ContainerStatus{waitingStatus("exporter", "PodInitializing", "")},
 			}},
 			want: "clone: Error: exit code 128",
 		},
@@ -70,7 +70,7 @@ func TestPodMessagePicksTheFailure(t *testing.T) {
 				Phase:             corev1.PodFailed,
 				Reason:            "Evicted",
 				Message:           "the node was low on ephemeral-storage",
-				ContainerStatuses: []corev1.ContainerStatus{terminatedStatus("creator", 0, "Completed")},
+				ContainerStatuses: []corev1.ContainerStatus{terminatedStatus("exporter", 0, "Completed")},
 			}},
 			want: "Evicted: the node was low on ephemeral-storage",
 		},
@@ -82,7 +82,7 @@ func TestPodMessagePicksTheFailure(t *testing.T) {
 					Type: corev1.PodScheduled, Status: corev1.ConditionFalse,
 					Reason: "Unschedulable", Message: "0/3 nodes are available",
 				}},
-				ContainerStatuses: []corev1.ContainerStatus{waitingStatus("creator", "PodInitializing", "")},
+				ContainerStatuses: []corev1.ContainerStatus{waitingStatus("exporter", "PodInitializing", "")},
 			}},
 			want: "Unschedulable: 0/3 nodes are available",
 		},
@@ -124,7 +124,7 @@ func TestPodViewCountsEveryContainersRestarts(t *testing.T) {
 			Name: "clone", RestartCount: 2,
 			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"}},
 		}},
-		ContainerStatuses: []corev1.ContainerStatus{{Name: "creator", RestartCount: 3}},
+		ContainerStatuses: []corev1.ContainerStatus{{Name: "exporter", RestartCount: 3}},
 	}}
 	if got := newPodView(&pod).Restarts; got != 5 {
 		t.Errorf("restarts = %d, want 5", got)
