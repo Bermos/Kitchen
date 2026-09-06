@@ -17,6 +17,7 @@ limitations under the License.
 package audit
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -251,5 +252,113 @@ func TestTransitionEncodesDetailsDeterministically(t *testing.T) {
 	}
 	if ChainHash(Seal(first, clickhouse.AuditRecord{})) != ChainHash(Seal(second, clickhouse.AuditRecord{})) {
 		t.Error("the same details produced two hashes, so a record could not be re-derived")
+	}
+}
+
+// The break the records cannot show on their own. A tail cut off the end
+// rehashes perfectly — every remaining record links to the one before it — so
+// the only thing that shows it is the anchor kept outside the table, and a
+// verification that does not consult one answers `intact: true` to the edit
+// the anchor exists to catch (#428).
+func TestAVerifiedRunIsCheckedAgainstTheAnchor(t *testing.T) {
+	records := chain(t, 6)
+	sound := Verify(records, clickhouse.AuditRecord{})
+	if !sound.Intact {
+		t.Fatalf("the fixture does not verify: %+v", sound.Findings)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		anchor  Anchor
+		partial bool
+		intact  bool
+		breaks  []Break
+	}{
+		{
+			name:   "the anchor agrees",
+			anchor: Anchor{Present: true, Sequence: 6, Origin: OriginGenesis},
+			intact: true,
+		},
+		{
+			// The reported fault: four records cut off the end of a log
+			// whose remaining six hash perfectly.
+			name:   "the log stops short of the anchor",
+			anchor: Anchor{Present: true, Sequence: 10, Origin: OriginGenesis},
+			breaks: []Break{BreakTruncated},
+		},
+		{
+			// One page of a longer log. The anchor is ahead of it by
+			// construction, and reporting that would make every first page
+			// of every chain a truncation.
+			name:    "one page of a longer log",
+			anchor:  Anchor{Present: true, Sequence: 10, Origin: OriginGenesis},
+			partial: true,
+			intact:  true,
+		},
+		{
+			name:   "the log runs past the anchor",
+			anchor: Anchor{Present: true, Sequence: 4, Origin: OriginGenesis},
+			breaks: []Break{BreakUnclaimed},
+		},
+		{
+			// The other half of #428: `intact` must not be true for a run
+			// nothing anchors, however well the records hash.
+			name:   "there is no anchor",
+			anchor: Anchor{},
+			breaks: []Break{BreakUnanchored},
+		},
+		{
+			name:   "the anchor could not be read",
+			anchor: Anchor{Unreadable: "the cluster did not answer"},
+			breaks: []Break{BreakUnanchored},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := Verify(records, clickhouse.AuditRecord{}).AgainstAnchor(tc.anchor, tc.partial)
+			if result.Intact != tc.intact {
+				t.Fatalf("intact is %v, want %v: %+v", result.Intact, tc.intact, result.Findings)
+			}
+			if len(result.Findings) != len(tc.breaks) {
+				t.Fatalf("%d finding(s), want %d: %+v", len(result.Findings), len(tc.breaks), result.Findings)
+			}
+			for i, want := range tc.breaks {
+				if result.Findings[i].Break != want {
+					t.Errorf("finding %d is %q, want %q", i, result.Findings[i].Break, want)
+				}
+				if result.Findings[i].Detail == "" {
+					t.Errorf("finding %d says nothing about what was expected", i)
+				}
+			}
+		})
+	}
+
+	// An unreadable anchor and a deleted one are the same gap and different
+	// events, and the finding has to be able to tell them apart.
+	unreadable := Verify(records, clickhouse.AuditRecord{}).
+		AgainstAnchor(Anchor{Unreadable: "the cluster did not answer"}, false)
+	if !strings.Contains(unreadable.Findings[0].Detail, "the cluster did not answer") {
+		t.Errorf("the finding does not say why there was no anchor: %s", unreadable.Findings[0].Detail)
+	}
+}
+
+// A table emptied of every record, with the anchor left alone, is the same
+// break as a truncated tail and has to read as one: the run verifies
+// vacuously, and only the anchor says the log ever held anything.
+func TestAnEmptiedTableIsATruncatedChain(t *testing.T) {
+	result := Verify(nil, clickhouse.AuditRecord{}).
+		AgainstAnchor(Anchor{Present: true, Sequence: 412, Origin: OriginGenesis}, false)
+	if result.Intact {
+		t.Fatal("an emptied table verified as intact")
+	}
+	if result.Findings[0].Break != BreakTruncated {
+		t.Errorf("an emptied table reads as %q, want %q", result.Findings[0].Break, BreakTruncated)
+	}
+
+	// And an installation that has genuinely never recorded anything is not
+	// a break: its anchor is there, and it agrees.
+	fresh := Verify(nil, clickhouse.AuditRecord{}).
+		AgainstAnchor(Anchor{Present: true, Sequence: 0, Origin: OriginGenesis}, false)
+	if !fresh.Intact {
+		t.Errorf("an installation that has recorded nothing reads as broken: %+v", fresh.Findings)
 	}
 }

@@ -136,21 +136,74 @@ same words as the dashboard.
 GET /audit/verify?from=1
 ```
 
-answers `{from, to, checked, intact, findings, anchor, truncated}`. Each
-finding is `{sequence, break, detail}` with `break` one of `mutated`
-(a record no longer hashes to the hash stored beside it), `missing` (a gap) or
-`unlinked` (a record whose `prevHash` is not its predecessor's hash). A run
-that starts partway through is linked to the record before it, so a tail
+answers `{from, to, checked, intact, findings, anchorPresent, anchor,
+anchorOrigin, anchorAdoptedFrom, anchorMessage, truncated}`. Each finding is
+`{sequence, break, detail}` with `break` one of:
+
+| `break` | What it is |
+|---|---|
+| `mutated` | A record no longer hashes to the hash stored beside it |
+| `missing` | A gap in the sequence: records were deleted |
+| `unlinked` | A record whose `prevHash` is not its predecessor's hash |
+| `truncated` | The log stops short of where the anchor says the chain ends: records were cut off the end |
+| `unclaimed` | The log runs *past* the anchor: rows that claimed no sequence number, or an anchor wound back |
+| `unanchored` | There is no anchor to check this run against at all |
+
+A run that starts partway through is linked to the record before it, so a tail
 lifted out of another chain does not verify; asking for a `from` whose
-predecessor is not in the log answers `400`. `anchor` is where the platform
-believes the chain ends, held outside the table — a run that is `intact` but
-ends below the anchor is a log cut short from the end.
+predecessor is not in the log answers `400`.
+
+### The anchor, and why `intact` depends on it
+
+The hash chain can only ever say the records agree with each other. A log cut
+short from the end agrees with itself perfectly — recomputing every hash from
+the edit onwards is exactly as cheap for whoever did it as it was for the
+platform — so the only thing that shows it is the **anchor**: the head object
+`kitchen-audit-head`, which sequence numbers are claimed through and which
+lives outside the table the log is in.
+
+`intact` is the whole answer and consults the anchor. It is `false` for a run
+that ends below the anchor and for a run with **no** anchor to check against,
+so `kitchen api GET /audit/verify`, a script, and the dashboard all read the
+same verdict; the comparison used to be the dashboard's alone, done
+client-side (#428).
+
+| Field | What it is |
+|---|---|
+| `anchorPresent` | Whether there is an anchor at all. `false` on an installation that is recording means the object was removed |
+| `anchor` | Where the chain ends according to it — `null`, never `0`, when there is none. `0` is a real answer, about a chain nothing has been appended to yet |
+| `anchorOrigin` | `genesis` (the anchor predates the first record), `adopted` (it was seeded from the log's own last record) or `unknown` (a head written before the platform recorded this) |
+| `anchorAdoptedFrom` | For an adopted anchor, the sequence it was taken from. Records at or below it are bounded by the hash chain alone |
+| `anchorMessage` | Why there is no anchor: an object somebody deleted and a cluster that did not answer are the same gap and very different events |
+
+The platform creates the anchor as soon as it keeps a log at all — the
+compliance reconcile does it, not the first append — so "no anchor and no
+records" is never a fresh installation, and *empty because nothing was
+written* and *empty because somebody emptied it* are different answers.
+
+**An anchor adopted from the table is adopted once, and says so in the log.**
+An installation upgrading from before the head object existed has its anchor
+only in the table, and the platform seeds one from the log's own last record.
+That is a privileged act and it is recorded as one: an `AuditAnchor` record,
+classified `integrity`, naming the sequence the numbering was taken from. It
+is *inside* the chain, so it cannot be removed without the verifier reporting
+the removal — which is what makes a second adoption, from an anchor somebody
+deleted and a tail somebody cut, impossible to tidy away. `GET
+/audit?kind=AuditAnchor` is the query.
+
+Under a running platform the head never moves backwards. An append against one
+that has is refused, and the write that caused it fails with it, on the same
+principle as everywhere else here: an unrecorded change is not one the platform
+makes.
 
 `GET /compliance` answers whether any of this is actually happening:
 
 ```json
 {
-  "audit": {"enabled": true, "recording": true, "retentionDays": 365, "sequence": 1428},
+  "audit": {
+    "enabled": true, "recording": true, "retentionDays": 365,
+    "sequence": 1428, "anchored": true
+  },
   "attestation": {
     "enabled": true,
     "signing": true,
@@ -160,6 +213,12 @@ ends below the anchor is a log cut short from the end.
   "policy": {"storing": true}
 }
 ```
+
+`anchored` is whether the chain has an anchor at all. `sequence` is a
+statement about the log only when it is `true`: a missing anchor used to
+answer `0`, which is also what a chain nothing has been appended to answers,
+and telling the two apart is the whole of #428. `anchorMessage` says why there
+is none, or where an adopted one was taken from.
 
 The public key is handed out deliberately. It is not a credential — evidence
 signed under a key nobody can obtain is evidence nobody can check — and it is

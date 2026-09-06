@@ -23,21 +23,25 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
@@ -898,7 +902,19 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	// TestTheAuditLogSaysSoWhenTheInstallationKeepsNone.
 	kitchen.Spec.Compliance.Audit.Enabled = true
 
-	objects := append([]runtime.Object{kitchen}, objs...)
+	// The chain's anchor, as an installation that keeps a log has one from
+	// the moment it keeps one. Its absence is a finding now (#428), so a
+	// harness without it would describe a platform whose anchor somebody had
+	// deleted — see TestVerifyAuditChainReportsAChainWithNoAnchor, which
+	// removes it deliberately.
+	head := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: audit.HeadName, Namespace: testNamespace},
+		Data: map[string]string{
+			"sequence": "0", "hash": "", "origin": string(audit.OriginGenesis),
+		},
+	}
+
+	objects := append([]runtime.Object{kitchen, head}, objs...)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(objects...).
 		WithStatusSubresource(&kitchenv1alpha1.Build{}, &kitchenv1alpha1.Environment{},
@@ -913,8 +929,52 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	logs := &stubLogs{}
 	server := &Server{Client: c, Namespace: testNamespace, DashboardClientID: testDashboardClient}
 	server.logStore = func(context.Context) (logReader, error) { return logs, nil }
+	// A recorder over the same fake client, so the anchor the verifier and
+	// the pack read is the head object above rather than nothing at all. It
+	// records nothing — this singleton names no telemetry store, so Record
+	// resolves to "there is no log to append to" and answers nil, which is
+	// what the harness wanted from a nil recorder before it had to be able to
+	// answer where the chain ends.
+	server.Audit = &audit.Recorder{
+		Client: c, Namespace: testNamespace, Singleton: controller.KitchenSingletonName,
+	}
 
 	return &harness{server: server, handler: server.Handler(), issuer: iss, logs: logs}
+}
+
+// anchorAt moves the chain's anchor — the head object outside the table — to
+// where a test's fixture log ends.
+//
+// The verifier compares the two now (#428), so a test that installs records
+// and leaves the anchor at zero is describing a log with records nothing ever
+// claimed a number for, which is a break and correctly reported as one.
+func (h *harness) anchorAt(t *testing.T, sequence int64, options ...func(map[string]string)) {
+	t.Helper()
+	head := &corev1.ConfigMap{}
+	key := types.NamespacedName{Namespace: testNamespace, Name: audit.HeadName}
+	if err := h.server.Client.Get(context.Background(), key, head); err != nil {
+		t.Fatalf("reading the chain's anchor: %v", err)
+	}
+	head.Data["sequence"] = strconv.FormatInt(sequence, 10)
+	for _, option := range options {
+		option(head.Data)
+	}
+	if err := h.server.Client.Update(context.Background(), head); err != nil {
+		t.Fatalf("moving the chain's anchor: %v", err)
+	}
+}
+
+// unanchor deletes the head object, which is half of the act #428 is about:
+// remove the anchor, cut the tail, and the records left agree with each other
+// perfectly.
+func (h *harness) unanchor(t *testing.T) {
+	t.Helper()
+	head := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: audit.HeadName, Namespace: testNamespace},
+	}
+	if err := h.server.Client.Delete(context.Background(), head); err != nil {
+		t.Fatalf("deleting the chain's anchor: %v", err)
+	}
 }
 
 // routes is every endpoint the API serves, derived from the enforcement table

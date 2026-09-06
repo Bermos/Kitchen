@@ -37,6 +37,12 @@ limitations under the License.
 // operator-signed checkpoint — is the natural next step and is deliberately
 // not in this first cut.
 //
+// The anchor is only worth that if a verification consults it, and if its
+// absence is an answer rather than a zero. Verify walks the records;
+// Verification.AgainstAnchor is the second half and the one that decides
+// `intact`, because a run that ends below the anchor and a run with no anchor
+// to check against are both logs nobody has bounded (#428).
+//
 // # One appender at a time
 //
 // A chain needs its appends serialized, because the next hash is a function of
@@ -150,6 +156,25 @@ const (
 	// BreakUnlinked is a record whose prev_hash is not its predecessor's
 	// hash: a record was inserted, replaced, or reordered.
 	BreakUnlinked Break = "unlinked"
+
+	// BreakTruncated is a log that stops short of where the anchor outside
+	// the table says the chain ends: records were cut off the end. It is the
+	// one break the records alone cannot show, because a rewritten tail
+	// rehashes perfectly.
+	BreakTruncated Break = "truncated"
+
+	// BreakUnclaimed is the opposite disagreement: records in the log past
+	// where the anchor says the chain ends. Every append moves the anchor
+	// before it writes the row, so the log can never legitimately run ahead
+	// of it — this is an anchor wound back, or rows written by something
+	// that never claimed a number.
+	BreakUnclaimed Break = "unclaimed"
+
+	// BreakUnanchored is a run checked against no anchor at all. It is a
+	// break rather than a missing field: the anchor is the only thing that
+	// bounds a rewritten tail, so a run nothing anchors has not been
+	// verified in the sense a reader takes `intact` to mean.
+	BreakUnanchored Break = "unanchored"
 )
 
 // Finding is one break, at one point in the chain.
@@ -238,6 +263,54 @@ func Verify(records []clickhouse.AuditRecord, previous clickhouse.AuditRecord) V
 
 	result.Intact = len(result.Findings) == 0
 	return result
+}
+
+// AgainstAnchor checks a verified run against the anchor kept outside the
+// table, and is what makes `intact` mean what a reader takes it to mean.
+//
+// Verify walks the records and can only ever say the records agree with each
+// other. A log cut short from the end agrees with itself perfectly — that is
+// the whole reason there is an anchor — so a verification that never consults
+// one is a verification that answers `intact: true` to the edit it exists to
+// catch (#428). The comparison was the dashboard's, done client-side and only
+// when the anchor was non-zero; it belongs here, where every client inherits
+// it.
+//
+// `partial` says the run is one page of a longer log rather than its end. An
+// anchor ahead of a page is where the next page starts and says nothing about
+// truncation, so the comparison is only made for a run that reached the end of
+// what the store holds.
+func (v Verification) AgainstAnchor(anchor Anchor, partial bool) Verification {
+	findings := v.Findings
+	switch {
+	case !anchor.Present:
+		detail := fmt.Sprintf("there is no anchor to check this run against: the head object outside "+
+			"the table is not there, so a log cut short from the end would rehash perfectly and "+
+			"nothing here would show it (%s)", anchor.Absence())
+		findings = append(findings, Finding{Sequence: v.To, Break: BreakUnanchored, Detail: detail})
+	case partial:
+		// One page of a longer log. The anchor is ahead of it by
+		// construction and there is nothing to compare.
+	case anchor.Sequence > v.To:
+		findings = append(findings, Finding{
+			Sequence: v.To + 1,
+			Break:    BreakTruncated,
+			Detail: fmt.Sprintf("the anchor outside the table says the chain ends at %d and the log "+
+				"stops at %d: %d record(s) have been cut off the end",
+				anchor.Sequence, v.To, anchor.Sequence-v.To),
+		})
+	case anchor.Sequence < v.To:
+		findings = append(findings, Finding{
+			Sequence: anchor.Sequence + 1,
+			Break:    BreakUnclaimed,
+			Detail: fmt.Sprintf("the log runs to %d and the anchor outside the table says the chain "+
+				"ends at %d: %d record(s) claimed no sequence number, or the anchor has been wound back",
+				v.To, anchor.Sequence, v.To-anchor.Sequence),
+		})
+	}
+	v.Findings = findings
+	v.Intact = len(findings) == 0
+	return v
 }
 
 // shortHash keeps a finding readable. The full hash is in the record; what a

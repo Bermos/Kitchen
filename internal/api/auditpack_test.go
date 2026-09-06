@@ -901,6 +901,44 @@ func TestTheHumanRenderingIsDeterministicAndNamesTheDigest(t *testing.T) {
 	}
 }
 
+// A pack whose slice of the log is bounded by nothing says so, in both
+// renderings. It used to state the absence as a fact about the chain — "the
+// chain ends at sequence 0 according to an object outside the table" — which
+// is the sentence an emptied table wants written down for it (#428).
+func TestAPackSaysWhenThereIsNoAnchorRatherThanRenderingSequenceZero(t *testing.T) {
+	h := packHarness(t)
+	h.anchorAt(t, 13)
+
+	pack := fetchPack(t, h)
+	if !pack.AuditLog.AnchorPresent || pack.AuditLog.Anchor == nil || *pack.AuditLog.Anchor != 13 {
+		t.Fatalf("the pack's anchor is present=%v at %v, want a present anchor at 13",
+			pack.AuditLog.AnchorPresent, pack.AuditLog.Anchor)
+	}
+
+	h.unanchor(t)
+	pack = fetchPack(t, h)
+	if pack.AuditLog.AnchorPresent {
+		t.Error("a deleted anchor came back present")
+	}
+	if pack.AuditLog.Anchor != nil {
+		t.Errorf("a missing anchor is spelled %d, want null", *pack.AuditLog.Anchor)
+	}
+	if pack.AuditLog.AnchorMessage == "" {
+		t.Error("the pack does not say why there is no anchor")
+	}
+
+	page := h.do(t, http.MethodGet, packPath+"&format=html", "")
+	if page.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", page.Code, page.Body.String())
+	}
+	if !strings.Contains(page.Body.String(), "There is no anchor outside the table") {
+		t.Error("the rendering does not tell a reader the log is bounded by nothing")
+	}
+	if strings.Contains(page.Body.String(), "chain ends at sequence 0") {
+		t.Error("the rendering states a missing anchor as sequence 0")
+	}
+}
+
 func TestAnUnknownFormatIsRefusedWithTheThreeThatExist(t *testing.T) {
 	h := packHarness(t)
 	recorder := h.do(t, http.MethodGet, packPath+"&format=pdf", "")

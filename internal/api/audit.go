@@ -281,14 +281,33 @@ type auditVerificationBody struct {
 	// were sound.
 	Checked int  `json:"checked"`
 	Intact  bool `json:"intact"`
-	// Findings are the breaks, in sequence order.
+	// Findings are the breaks, in sequence order. The anchor's own two —
+	// `truncated` and `unanchored` — are in here with the rest, because a
+	// consumer that reads `intact` and the findings must not have to know
+	// there is a second place to look.
 	Findings []audit.Finding `json:"findings"`
-	// Anchor is the sequence number the platform published on the Kitchen
-	// object, outside the table. A run that verifies as intact but ends
-	// below the anchor is a log cut short from the end — the one edit the
-	// chain cannot see on its own, because a rewritten tail rehashes
-	// perfectly.
-	Anchor int64 `json:"anchor"`
+	// AnchorPresent says whether there is an anchor at all: the head object
+	// outside the table, which is the only thing that bounds a rewritten
+	// tail. False is a finding, not an empty field.
+	AnchorPresent bool `json:"anchorPresent"`
+	// Anchor is where the chain ends according to that object. It is null
+	// rather than 0 when there is no anchor — 0 is a real answer, meaning a
+	// chain nothing has been appended to yet, and folding the two together
+	// is what let a deleted anchor read as a sound log (#428).
+	Anchor *int64 `json:"anchor"`
+	// AnchorOrigin is how the anchor came to exist: `genesis` (it has been
+	// there since before the first record), `adopted` (it was seeded from
+	// the log's own last record, and `anchorAdoptedFrom` says where), or
+	// `unknown` (a head written before the platform recorded this).
+	AnchorOrigin string `json:"anchorOrigin,omitempty"`
+	// AnchorAdoptedFrom is the sequence an adopted anchor was taken from.
+	// Records at or below it are bounded by the hash chain alone.
+	AnchorAdoptedFrom int64 `json:"anchorAdoptedFrom,omitempty"`
+	// AnchorMessage explains an anchor that is not there, in the terms
+	// somebody deciding whether to page an operator needs: an object that
+	// was deleted and a cluster that did not answer are the same gap and
+	// very different events.
+	AnchorMessage string `json:"anchorMessage,omitempty"`
 	// Truncated says the run asked for was longer than one read returns, so
 	// `to` is where to continue from rather than the end of the chain.
 	Truncated bool `json:"truncated"`
@@ -346,16 +365,32 @@ func (s *Server) verifyAuditChain(w http.ResponseWriter, req *http.Request) {
 		s.writeAuditReadError(w, err, "the audit chain verification")
 		return
 	}
-	result := audit.Verify(records, previous)
+	// The run is one page of a longer log when it came back full: the anchor
+	// is ahead of it by construction there, and saying so would report every
+	// first page of every chain as truncated.
+	partial := len(records) >= limit
+	anchor := s.auditAnchor(ctx)
+	result := audit.Verify(records, previous).AgainstAnchor(anchor, partial)
 
 	body := auditVerificationBody{
-		From:      result.From,
-		To:        result.To,
-		Checked:   result.Checked,
-		Intact:    result.Intact,
-		Findings:  result.Findings,
-		Anchor:    s.auditAnchor(ctx),
-		Truncated: len(records) >= limit,
+		From:          result.From,
+		To:            result.To,
+		Checked:       result.Checked,
+		Intact:        result.Intact,
+		Findings:      result.Findings,
+		AnchorPresent: anchor.Present,
+		AnchorOrigin:  string(anchor.Origin),
+		Truncated:     partial,
+	}
+	if anchor.Present {
+		sequence := anchor.Sequence
+		body.Anchor = &sequence
+		body.AnchorAdoptedFrom = anchor.AdoptedFrom
+	} else {
+		// Always worded, never left to the reader to word: an object
+		// somebody deleted and a cluster that did not answer are the same
+		// gap and very different events.
+		body.AnchorMessage = anchor.Absence()
 	}
 	writeJSON(w, http.StatusOK, body)
 }
@@ -364,12 +399,20 @@ func (s *Server) verifyAuditChain(w http.ResponseWriter, req *http.Request) {
 //
 // Reading it from the cluster rather than from the table is the whole point: a
 // tail cut off the log rehashes perfectly, so the only way to notice is to
-// compare against something the log did not produce. A head that cannot be
-// read answers 0, which claims nothing rather than claiming soundness.
-func (s *Server) auditAnchor(ctx context.Context) int64 {
-	sequence, err := s.Audit.Head(ctx)
+// compare against something the log did not produce.
+//
+// Every failure used to fold into 0, and 0 is a claim: it is the answer for a
+// chain nothing has been appended to, and it reads downstream as "no gap".
+// A read that did not happen answers an absent anchor carrying the reason
+// instead, and an absent anchor is a break (#428).
+func (s *Server) auditAnchor(ctx context.Context) audit.Anchor {
+	anchor, err := s.Audit.Head(ctx)
 	if err != nil {
-		return 0
+		s.log().Error(err, "the audit chain's anchor could not be read")
+		if anchor.Unreadable == "" {
+			anchor.Unreadable = "the anchor could not be read from the cluster"
+		}
+		return audit.Anchor{Unreadable: anchor.Unreadable}
 	}
-	return sequence
+	return anchor
 }
