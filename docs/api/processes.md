@@ -190,11 +190,17 @@ A task is a `batch/v1` Job that the environment's reconcile waits for:
 - **Nothing of that release starts until it succeeds.** Not the web
   Deployment, not the workers, not the services, not the route. A unit deploys
   as one, so "takes traffic" means all of it.
-- **A failure fails the deploy, visibly, with the output.** The environment
-  goes `Degraded`, carries the run's own message on its `DeployTasksComplete`
-  condition, reports a failed deployment status to the commit, and the release
-  does not land — **whatever was serving keeps serving**. It is not a warning
-  and it does not decay into one.
+- **A failure fails the deploy, visibly, with the output — and where there is
+  no output, with the reason instead.** The environment goes `Degraded`,
+  carries the run's own message on its `DeployTasksComplete` condition,
+  reports a failed deployment status to the commit, and the release does not
+  land — **whatever was serving keeps serving**. It is not a warning and it
+  does not decay into one. A run whose container **never started** printed
+  nothing, so there is no output to show: what it carries instead is the
+  reason it could not start — `StartError`, `ImagePullBackOff`,
+  `CreateContainerConfigError` — with the platform's own sentence about it,
+  and it says in as many words that this run has no logs. See
+  [Failures are visible without `kubectl`](#failures-are-visible-without-kubectl).
 - **It is the environment's own run.** The same image, variables, claim
   bindings, volumes, pull secret and security posture the environment's other
   workloads get, so a preview's run touches the preview's own branch of the
@@ -633,7 +639,9 @@ joined to what the reconciler last saw of each.
         "startedAt": "2026-08-24T03:00:04Z",
         "finishedAt": "2026-08-24T03:00:37Z",
         "durationSeconds": 33,
-        "message": "BackoffLimitExceeded: Job has reached the specified backoff limit"
+        "reason": "Error",
+        "exitCode": 1,
+        "message": "Error (exit code 1)"
       },
       "lastFailure": {
         "name": "shop-production-nightly-report-29387520",
@@ -723,7 +731,10 @@ Each one is the Job that was the run:
       "startedAt": "2026-08-24T03:00:04Z",
       "finishedAt": "2026-08-24T03:00:37Z",
       "durationSeconds": 33,
-      "message": "BackoffLimitExceeded: Job has reached the specified backoff limit"
+      "reason": "StartError",
+      "exitCode": 128,
+      "refused": true,
+      "message": "StartError: exec: \"node\": executable file not found in $PATH (exit code 128)"
     }
   ]
 }
@@ -732,6 +743,40 @@ Each one is the Job that was the run:
 Phase is `Running`, `Succeeded` or `Failed`, read off the Job's **conditions**
 rather than its failed-pod count: a run that hit its timeout was killed rather
 than observed failing, and has no failed pod to count.
+
+### Why a run failed
+
+`reason` is the field to switch on, and it is why `phase` is not enough. The
+platform runs every task and every scheduled job with a backoff limit of
+**zero**, deliberately — a run that failed is a failed run rather than a burst
+of pods — so the Job's own summary of a failure is `BackoffLimitExceeded` for
+*every* failure there can be, whatever caused it. A message that said only
+that distinguished nothing (#442).
+
+So the run is asked what actually happened, and answers with the most specific
+reason available:
+
+| `reason` | What it means | Where the fix is |
+| --- | --- | --- |
+| `Error` | The program ran and exited non-zero. `exitCode` is what it exited with. | In the program. Its output is in the logs under this run. |
+| `OOMKilled` | The kernel stopped it for its memory. | In the workload's `resources`, or in what it loads. |
+| `StartError`, `ContainerCannotRun` | The image was there and its command could not be run — a missing binary, a command the image has no shell for. | In the workload's `command`, or in the image. |
+| `ImagePullBackOff`, `ErrImagePull` | The image could not be pulled. | In the registry connection, or in the image reference. |
+| `CreateContainerConfigError`, `CreateContainerError` | The container could not be configured — a security posture the image cannot satisfy is the usual one. | In the workload's `security`, or in the image's user. |
+| `InvalidImageName`, `ErrImageNeverPull` | The reference does not parse, or the node was told never to pull it. | In the image reference. |
+| `DeadlineExceeded` | It hit its own `timeout` and was killed. | In the work, or in the timeout. |
+| `BackoffLimitExceeded` | The run ended and its pod is no longer there to be asked. | Whatever the logs under this run say. |
+
+`refused` is `true` for every one of them where **the container never ran**:
+the four rows in the middle of that table. It is the field to read before
+looking for output, because there is none — nothing printed anything, and
+`kitchen logs --run <name>` correctly answers with nothing. There is also
+nothing half-applied to undo, which is the other half of why it is worth
+telling apart from a program that ran and failed.
+
+`exitCode` is present where the pod was still there to be asked. A run whose
+pod the cluster has collected keeps whatever the Job said about it, which is
+the best account that still exists.
 
 A run is not retried. `backoffLimit` is zero and the restart policy is `Never`,
 so a scheduled run that failed is a failed run — the schedule is what tries
@@ -807,8 +852,9 @@ prevent. The wait is bounded by the task's own `timeout`.
 Every run that reaches a terminal state lands in the activity feed as
 `run.succeeded` or `run.failed`, naming the project, the environment, the
 process and the run, with the run's duration as its value; a run started by
-hand also announces itself as `run.started`. The feed entry is what makes the
-*absence* of an entry mean something.
+hand also announces itself as `run.started`, and so does a deploy task's run —
+**once**, on the pass that created it, however many passes see it start. The
+feed entry is what makes the *absence* of an entry mean something.
 
 The most recent failure additionally stays on the environment's status until a
 later failure replaces it, which is what the environment screen reads. Between
@@ -821,21 +867,38 @@ carries the run's own message, the commit's deployment status reports a
 failure, and the workloads panel says so in a banner above the list with the
 button that runs it again beside it.
 
-A run whose pod the kubelet **refuses** is failed too, rather than waited for
-(#391). `CreateContainerConfigError` and its siblings are not Job failures —
-the kubelet retries the same doomed spec, `backoffLimit` is never approached,
-and the Job reports one active pod indefinitely — so a task like that used to
-say "is running" for ever while nothing ran and nothing was going to. Such a
-run:
+A run that **never started** is reported as that rather than as a failure with
+missing output, and there are two ways for it to happen.
 
-- is failed with **the kubelet's own sentence**, which names the field and the
-  image, and carries `"refused": true` on the run so that "it never started" is
-  not confused with "it ran and failed" — there is nothing half-applied to undo,
-  and the fix is in the spec rather than in the program;
+The first is a pod the kubelet **refuses**, which is failed rather than waited
+for (#391). `CreateContainerConfigError` and its siblings are not Job failures
+— the kubelet retries the same doomed spec, `backoffLimit` is never
+approached, and the Job reports one active pod indefinitely — so a task like
+that used to say "is running" for ever while nothing ran and nothing was going
+to.
+
+The second is a container the kubelet **created and could not start** (#442):
+`StartError` — `exec: "node": executable file not found in $PATH` — which
+*does* fail the Job, and so read as an ordinary failed run under
+`BackoffLimitExceeded`, with logs that were empty and correct and nothing
+anywhere to say why. It is now read off the pod the run left behind and
+reported the same way, because it is the same fact: nothing of the program
+ran.
+
+Either way, such a run:
+
+- is failed with **the reason and the sentence behind it**, which name the
+  field, the image or the command that could not be run, and carries
+  `"refused": true` so that "it never started" is not confused with "it ran and
+  failed" — there is nothing half-applied to undo, the fix is in the spec or
+  the image rather than in the program, and **there is no output to go and
+  read**;
 - lands in the activity feed as `run.failed`, saying it *could not be started*;
-- takes its Job with it, which is what lets the next release run its own task.
-  Deleting it is safe here and nowhere else: a refused container never ran, so
-  there is no output to lose;
+- takes its Job with it **where the Job is still holding the pod**, which is
+  what lets the next release run its own task. Deleting it is safe there and
+  nowhere else: a refused container never ran, so there is no output to lose. A
+  run that failed on a start error needs none of this — its Job is already
+  over, and the pod it left behind is what was read;
 - and for a deploy task, puts `DeployTasksComplete=False` with the terminal
   reason **`TaskRefused`** beside `TaskRunning`, so the screen stops saying
   running. The previous release keeps serving, exactly as for any other failed
@@ -853,8 +916,11 @@ kitchen processes                                  # what production runs beside
 kitchen processes --environment shop-pr-42         # a preview's, including what it will not run
 kitchen processes runs nightly-report              # that job's recent runs
 kitchen processes run nightly-report               # run it now
-kitchen processes runs migrate                     # what the migration did on the last few deploys
+kitchen processes runs migrate                     # what the migration did on the last few deploys, and why each failed
 kitchen processes run migrate                      # try it again, which resumes the deploy
+
+# the runs that never started, which are the ones with no logs to read
+kitchen processes runs migrate --json | jq '.items[] | select(.refused) | {name, reason, message}'
 kitchen logs --run shop-production-nightly-report-29387520 --follow
 
 # where one workload's siblings reach it

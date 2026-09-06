@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -1233,6 +1234,32 @@ type processRun struct {
 	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
 	DurationSeconds *float64   `json:"durationSeconds,omitempty"`
 	Message         string     `json:"message,omitempty"`
+	// Reason is what ended the run in one word — `StartError`,
+	// `ImagePullBackOff`, `OOMKilled`, `Error`, `DeadlineExceeded`,
+	// `BackoffLimitExceeded`. It is what separates four failures that read
+	// identically without it, and it is a column of its own for that reason.
+	Reason string `json:"reason,omitempty"`
+	// ExitCode is what the container exited with, where that could be read.
+	ExitCode *int32 `json:"exitCode,omitempty"`
+	// Refused is a run that never started at all, which is the one fact a
+	// reader has to have before `kitchen logs --run` returns nothing: there
+	// is no output, because nothing printed any.
+	Refused bool `json:"refused,omitempty"`
+}
+
+// failure is what a run has to say for itself, as one line: its reason and
+// the sentence behind it, or the exit status where there was no sentence.
+func (r processRun) failure() string {
+	if r.Message != "" {
+		return r.Message
+	}
+	if r.Reason == "" {
+		return ""
+	}
+	if r.ExitCode == nil {
+		return r.Reason
+	}
+	return r.Reason + " (exit code " + strconv.FormatInt(int64(*r.ExitCode), 10) + ")"
 }
 
 // logLine is one line out of the telemetry store, from a build or from

@@ -35,6 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/activity"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 )
 
 // Work that runs once per deploy and finishes before the release takes
@@ -60,6 +62,9 @@ var _ = Describe("A deploy-time task", func() {
 
 	var reconciler *EnvironmentReconciler
 	var releases int
+	// What the deploy announced, which is the only place a run being started
+	// twice for one deploy is visible.
+	var announced *recordedEvents
 
 	task := func() kitchenv1alpha1.ProcessSpec {
 		return kitchenv1alpha1.ProcessSpec{
@@ -218,12 +223,54 @@ var _ = Describe("A deploy-time task", func() {
 		})
 	}
 
+	// startFailedPod plays the other kubelet part, and the one #442 is about:
+	// a pod that *was* created, whose container the runtime accepted and could
+	// not start. Unlike a refusal this really does fail the Job — which is
+	// why it reads as an ordinary failed run everywhere, under the Job
+	// controller's own summary and with no output to go with it.
+	startFailedPod := func(runName, message string) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      runName + "-fghij",
+				Namespace: appNS,
+				Labels: map[string]string{
+					labelJobName: runName, labelEnvironment: prodName, labelProcess: migrate,
+				},
+			},
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever,
+				Containers:    []corev1.Container{{Name: AppContainerName, Image: firstImage}},
+			},
+		}
+		ExpectWithOffset(1, k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status = corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: AppContainerName,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason: "StartError", Message: message, ExitCode: 128,
+				}},
+			}},
+		}
+		ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
+		DeferCleanup(func() {
+			ExpectWithOffset(1, client.IgnoreNotFound(
+				k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))).To(Succeed())
+		})
+	}
+
 	condition := func(env *kitchenv1alpha1.Environment, name string) *metav1.Condition {
 		return meta.FindStatusCondition(env.Status.Conditions, name)
 	}
 
 	BeforeEach(func() {
-		reconciler = &EnvironmentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		announced = &recordedEvents{}
+		reconciler = &EnvironmentReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(),
+			Activity: &activity.Recorder{
+				Client: k8sClient, Namespace: PlatformNamespace, Sink: announced,
+			},
+		}
 		releases = 0
 
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
@@ -569,4 +616,82 @@ var _ = Describe("A deploy-time task", func() {
 			"a condition every environment carries and that always says the same thing is noise")
 		Expect(get(prodName, &appsv1.Deployment{})).To(BeTrue())
 	})
+
+	// #442, first half. `backoffLimit` is zero on purpose, so every failed run
+	// there can be fails under `BackoffLimitExceeded` — the Job controller's
+	// word for "this is over". A container that could not be started produces
+	// no output either, so the logs are empty and correct, and before this
+	// there was nowhere at all to read what happened.
+	It("says what the container said when a run failed before it could print anything", func() {
+		const notFound = `exec: "node": executable file not found in $PATH`
+
+		first := release(firstImage, []kitchenv1alpha1.ProcessSpec{task()})
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction, first)
+		started := runs(migrate)[0].Name
+
+		By("failing the run the way a container that cannot start fails it")
+		startFailedPod(started, notFound)
+		finish(started, batchv1.JobFailed)
+		reconcileOnce(prodName)
+
+		By("putting the container's own sentence where the job controller's summary was")
+		env := environmentStatus(ctx, prodName)
+		row := env.FindProcessStatus(migrate)
+		Expect(row.LastRun.Reason).To(Equal("StartError"),
+			"the reason is the failure's own name, not the fact that the run ended")
+		Expect(row.LastRun.ExitCode).NotTo(BeNil())
+		Expect(*row.LastRun.ExitCode).To(BeEquivalentTo(128))
+		Expect(row.LastRun.Message).To(ContainSubstring(notFound))
+		Expect(row.LastRun.Message).NotTo(ContainSubstring("BackoffLimitExceeded"))
+		Expect(row.LastRun.Refused).To(BeTrue(),
+			"nothing ran, which is what makes the empty logs an answer rather than a second mystery")
+		Expect(row.LastFailure.Message).To(ContainSubstring(notFound))
+
+		By("carrying it into both conditions, which is where a person meets it first")
+		Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDegraded))
+		blocked := condition(env, condDeployTasks)
+		Expect(blocked.Reason).To(Equal(reasonTaskRefused),
+			"a run that never started is not a run that failed: there is nothing half-applied to undo")
+		Expect(blocked.Message).To(ContainSubstring(notFound))
+		Expect(blocked.Message).To(ContainSubstring("no output"),
+			"the reader has to be told the logs are empty before they go looking through them")
+		Expect(condition(env, condReady).Message).To(ContainSubstring(notFound))
+
+		By("saying it in the feed too, in the words of something that never started")
+		Eventually(func() []clickhouse.Event {
+			return announced.ofType(clickhouse.EventRunFailed)
+		}).Should(HaveLen(1))
+		Expect(announced.ofType(clickhouse.EventRunFailed)[0].Message).To(ContainSubstring(notFound))
+		Expect(announced.ofType(clickhouse.EventRunFailed)[0].Message).To(ContainSubstring("could not be started"))
+	})
+
+	// #442, the minor half: one deploy announced its migration twice, a
+	// second apart, for one run. The second pass is the Job's own watch event
+	// arriving before the status write that recorded the run is visible —
+	// which is harmless for the Job, since the name is derived, and was not
+	// for the feed.
+	It("announces one run once, however many passes arrive before the record catches up", func() {
+		first := release(firstImage, []kitchenv1alpha1.ProcessSpec{task()})
+		environment(prodName, kitchenv1alpha1.EnvironmentProduction, first)
+		Expect(runs(migrate)).To(HaveLen(1))
+
+		By("losing the record of the run, which is what a pass on a stale read sees")
+		env := &kitchenv1alpha1.Environment{}
+		key := types.NamespacedName{Name: prodName, Namespace: namespace}
+		Expect(k8sClient.Get(ctx, key, env)).To(Succeed())
+		env.Status.Processes = nil
+		Expect(k8sClient.Status().Update(ctx, env)).To(Succeed())
+
+		reconcileOnce(prodName)
+
+		By("finding its own run rather than starting a second one, and saying nothing new")
+		Expect(runs(migrate)).To(HaveLen(1))
+		Eventually(func() []clickhouse.Event {
+			return announced.ofType(clickhouse.EventRunStarted)
+		}).Should(HaveLen(1))
+		Consistently(func() []clickhouse.Event {
+			return announced.ofType(clickhouse.EventRunStarted)
+		}).Should(HaveLen(1), "one run is one thing that started, however many passes saw it start")
+	})
+
 })

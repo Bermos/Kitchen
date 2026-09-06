@@ -271,3 +271,199 @@ func refusalReconciler(t *testing.T, objects ...client.Object) *EnvironmentRecon
 		Scheme: scheme,
 	}
 }
+
+// The other half of a container that never ran, and the whole of #442.
+//
+// A refusal is a pod the kubelet holds for ever; a *start failure* is one it
+// creates, fails to start and ends immediately. The Job then fails under
+// `BackoffLimitExceeded` — its word for "this run is over", which with a
+// backoff limit of zero is on every failed run the platform can produce — and
+// the one sentence that says what actually happened is on the container the
+// pod left behind.
+
+// What a finished run's pod has to say, per cause. The reasons are apart
+// because the fixes are: a command the image cannot run, an image that could
+// not be pulled, and a program that ran and exited are three different days'
+// work and read identically without this.
+func TestWhatAFinishedRunsPodSaysForItself(t *testing.T) {
+	const notFound = `exec: "node": executable file not found in $PATH`
+
+	for name, tc := range map[string]struct {
+		status      corev1.ContainerStatus
+		wantReason  string
+		wantExit    int32
+		wantStarted bool
+		wantIn      string
+	}{
+		"a command the image cannot run": {
+			status: corev1.ContainerStatus{Name: AppContainerName, State: corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{
+					Reason: "StartError", Message: notFound, ExitCode: 128,
+				}}},
+			wantReason: "StartError", wantExit: 128, wantStarted: false, wantIn: notFound,
+		},
+		"the other runtime's name for it": {
+			status: corev1.ContainerStatus{Name: AppContainerName, State: corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{
+					Reason: "ContainerCannotRun", Message: notFound, ExitCode: 127,
+				}}},
+			wantReason: "ContainerCannotRun", wantExit: 127, wantStarted: false, wantIn: notFound,
+		},
+		"a program that ran and exited": {
+			status: corev1.ContainerStatus{Name: AppContainerName, State: corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}}},
+			wantReason: "Error", wantExit: 1, wantStarted: true, wantIn: "exit code 1",
+		},
+		"a program the kernel stopped": {
+			status: corev1.ContainerStatus{Name: AppContainerName, State: corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}},
+			wantReason: "OOMKilled", wantExit: 137, wantStarted: true, wantIn: "OOMKilled",
+		},
+		"a container that died and is backing off": {
+			status: corev1.ContainerStatus{
+				Name:  AppContainerName,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reasonCrashLoop}},
+				LastTerminationState: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 2}},
+			},
+			wantReason: "Error", wantExit: 2, wantStarted: true, wantIn: "exit code 2",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "shop-production-migrate-1-abc"},
+				Status:     corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{tc.status}},
+			}
+			failure, found := failureOf(pod)
+			if !found {
+				t.Fatal("a failed run's pod said nothing at all, which is the whole complaint")
+			}
+			if failure.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", failure.Reason, tc.wantReason)
+			}
+			if failure.ExitCode == nil || *failure.ExitCode != tc.wantExit {
+				t.Fatalf("exit code = %v, want %d", failure.ExitCode, tc.wantExit)
+			}
+			if failure.Started() != tc.wantStarted {
+				t.Fatalf("Started() = %v, want %v — whether there is output to read turns on it",
+					failure.Started(), tc.wantStarted)
+			}
+			if !strings.Contains(failure.Sentence(), tc.wantIn) {
+				t.Fatalf("the sentence does not carry %q: %q", tc.wantIn, failure.Sentence())
+			}
+		})
+	}
+}
+
+// A pod that succeeded has nothing to explain, and neither has an init
+// container that did its job — the container that failed is the one read.
+func TestOnlyTheContainerThatFailedIsRead(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-production-migrate-1-abc"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			InitContainerStatuses: []corev1.ContainerStatus{{
+				Name:  "clone",
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"}},
+			}},
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: AppContainerName,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason: "StartError", ExitCode: 128, Message: "not found",
+				}},
+			}},
+		},
+	}
+	failure, found := failureOf(pod)
+	if !found || failure.Container != AppContainerName {
+		t.Fatalf("want the container that failed, got %+v (found %v)", failure, found)
+	}
+
+	done := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded,
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  AppContainerName,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"}},
+		}}}}
+	if _, found := failureOf(done); found {
+		t.Fatal("a run that worked was given something to explain")
+	}
+}
+
+// #442 as it was reported: the run says `BackoffLimitExceeded` and nothing
+// else, the logs are empty and correct, and the one sentence that ends the
+// investigation is on the pod. After this it is on the run.
+func TestAStartFailureReplacesTheJobControllersSummary(t *testing.T) {
+	const notFound = `exec: "node": executable file not found in $PATH`
+
+	run := kitchenv1alpha1.ProcessRun{
+		Name:    "zaeme-production-migrate-1",
+		Phase:   kitchenv1alpha1.RunFailed,
+		Reason:  "BackoffLimitExceeded",
+		Message: "BackoffLimitExceeded: Job has reached the specified backoff limit",
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "zaeme-production-migrate-1-qx7",
+			Labels: map[string]string{labelJobName: run.Name},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: AppContainerName,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "StartError", Message: notFound, ExitCode: 128,
+			}},
+		}}},
+	}
+
+	DiagnoseRun(&run, []corev1.Pod{*pod})
+
+	if run.Reason != "StartError" {
+		t.Fatalf("the job controller's summary is still the reason: %q", run.Reason)
+	}
+	if !strings.Contains(run.Message, notFound) {
+		t.Fatalf("the sentence that ends the investigation is not on the run: %q", run.Message)
+	}
+	if strings.Contains(run.Message, "BackoffLimitExceeded") {
+		t.Fatalf("the headline is still the one that is on every failure there can be: %q", run.Message)
+	}
+	if !run.Refused {
+		t.Fatal("a container that never started must say so: it is what makes the empty logs an answer")
+	}
+	if run.ExitCode == nil || *run.ExitCode != 128 {
+		t.Fatalf("exit code = %v, want 128", run.ExitCode)
+	}
+}
+
+// A run belongs to its own pods and no others. One list serves a whole
+// process's history, so attributing a neighbour's failure would be worse than
+// saying nothing.
+func TestARunTakesOnlyItsOwnPods(t *testing.T) {
+	run := kitchenv1alpha1.ProcessRun{
+		Name: "shop-production-migrate-2", Phase: kitchenv1alpha1.RunFailed,
+		Reason: "BackoffLimitExceeded", Message: "BackoffLimitExceeded: Job has reached the specified backoff limit",
+	}
+	other := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "shop-production-migrate-1-abc",
+			Labels: map[string]string{labelJobName: "shop-production-migrate-1"},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: AppContainerName,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+				Reason: "StartError", ExitCode: 128,
+			}},
+		}}},
+	}
+
+	DiagnoseRun(&run, []corev1.Pod{other})
+
+	if run.Reason != "BackoffLimitExceeded" || run.Refused {
+		t.Fatalf("a run was diagnosed from another run's pod: %+v", run)
+	}
+
+	// And a run that succeeded is never given a failure to carry.
+	succeeded := kitchenv1alpha1.ProcessRun{Name: "shop-production-migrate-1", Phase: kitchenv1alpha1.RunSucceeded}
+	DiagnoseRun(&succeeded, []corev1.Pod{other})
+	if succeeded.Reason != "" || succeeded.Message != "" {
+		t.Fatalf("a run that worked was given something to answer for: %+v", succeeded)
+	}
+}

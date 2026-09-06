@@ -886,3 +886,80 @@ func TestListingADeployTasksRuns(t *testing.T) {
 		t.Fatalf("a task's runs are read the way every other run is: %+v", body.Items)
 	}
 }
+
+// #442: `backoffLimit` is zero on purpose, so `BackoffLimitExceeded` is the
+// Job's answer for every failed run there can be — and a container that could
+// not be started printed nothing, so the logs are empty and correct. The run
+// listing reads the pod the run left behind, exactly the way the reconciler
+// writes the row on the environment: one reading, so the two cannot disagree.
+func TestARunSaysWhyItFailedRatherThanThatItEnded(t *testing.T) {
+	const notFound = `exec: "node": executable file not found in $PATH`
+	started := metav1.NewTime(time.Now().Add(-time.Minute))
+	appNS := controller.AppNamespace("shop")
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shop-production-nightly-1",
+			Namespace: appNS,
+			Labels: map[string]string{
+				controller.LabelEnvironment: testEnvironment,
+				controller.LabelProcess:     "nightly",
+			},
+		},
+		Status: batchv1.JobStatus{
+			StartTime: &started,
+			Conditions: []batchv1.JobCondition{{
+				Type:               batchv1.JobFailed,
+				Status:             corev1.ConditionTrue,
+				Reason:             "BackoffLimitExceeded",
+				Message:            "Job has reached the specified backoff limit",
+				LastTransitionTime: metav1.NewTime(started.Add(14 * time.Second)),
+			}},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shop-production-nightly-1-qx7",
+			Namespace: appNS,
+			Labels: map[string]string{
+				"job-name":                  job.Name,
+				controller.LabelEnvironment: testEnvironment,
+				controller.LabelProcess:     "nightly",
+			},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: controller.AppContainerName,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason: "StartError", Message: notFound, ExitCode: 128,
+				}},
+			}},
+		},
+	}
+	h := newHarness(t, nil, withProcesses(job, pod)...)
+
+	recorder := h.do(t, http.MethodGet, processesPath+"/nightly/runs", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := decode[struct {
+		Items []processRunView `json:"items"`
+	}](t, recorder)
+	if len(body.Items) != 1 {
+		t.Fatalf("the run did not come back: %+v", body.Items)
+	}
+	run := body.Items[0]
+	if run.Reason != "StartError" {
+		t.Fatalf("the reason is the job's summary rather than the failure's own name: %+v", run)
+	}
+	if run.ExitCode == nil || *run.ExitCode != 128 {
+		t.Fatalf("the exit status is missing: %+v", run)
+	}
+	if !strings.Contains(run.Message, notFound) || strings.Contains(run.Message, "backoff limit") {
+		t.Fatalf("the sentence that ends the investigation is not the headline: %q", run.Message)
+	}
+	if !run.Refused {
+		t.Fatal("a run whose container never started must say so: it is why there are no logs")
+	}
+}

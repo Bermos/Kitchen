@@ -262,3 +262,51 @@ func TestProcessesSetKeepsAWorkloadsVolumePreparation(t *testing.T) {
 		t.Fatalf("the seed did not survive: %+v", sent.Init[0])
 	}
 }
+
+// #442: every task and scheduled job runs with a backoff limit of zero, so
+// the Job's own account of a failure is the same sentence whatever caused it.
+// What the row has to carry is the failure's own name and the sentence behind
+// it — and, for a run that never started, the fact that `kitchen logs --run`
+// has nothing to show because nothing printed anything.
+func TestARunsRowSaysWhyItFailedAndWhetherThereIsAnythingToRead(t *testing.T) {
+	notStarted := processRun{
+		Name:     "shop-production-migrate-1",
+		Phase:    "Failed",
+		Reason:   "StartError",
+		ExitCode: ptr.To(int32(128)),
+		Message:  `StartError: exec: "node": executable file not found in $PATH (exit code 128)`,
+		Refused:  true,
+	}
+	if got := runReason(notStarted); got != "StartError (128)" {
+		t.Fatalf("the reason column = %q", got)
+	}
+	detail := runDetail(notStarted)
+	if !strings.Contains(detail, "executable file not found") {
+		t.Fatalf("the sentence that ends the investigation is missing: %q", detail)
+	}
+	if strings.Contains(detail, "StartError") || strings.Contains(detail, "exit code 128") {
+		t.Fatalf("the message column repeats what the reason column already says: %q", detail)
+	}
+	if !strings.Contains(detail, "no output") {
+		t.Fatalf("a run that never started must say there is nothing to read: %q", detail)
+	}
+
+	ran := processRun{
+		Name: "shop-production-migrate-2", Phase: "Failed",
+		Reason: "Error", ExitCode: ptr.To(int32(1)), Message: "Error (exit code 1)",
+	}
+	if got := runDetail(ran); got != "" {
+		t.Fatalf("a run whose whole account is its reason and exit code repeats itself: %q", got)
+	}
+	if got := runWhy(ran); got != "Error (exit code 1)" {
+		t.Fatalf("the one-line form lost the exit status: %q", got)
+	}
+
+	// A run the cluster has collected keeps whatever the Job said, which is
+	// the best account that still exists.
+	collected := processRun{Name: "shop-production-migrate-3", Phase: "Failed",
+		Reason: "BackoffLimitExceeded", Message: "BackoffLimitExceeded: Job has reached the specified backoff limit"}
+	if got := runDetail(collected); got != "Job has reached the specified backoff limit" {
+		t.Fatalf("the message column = %q", got)
+	}
+}

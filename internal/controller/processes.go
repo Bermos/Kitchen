@@ -647,6 +647,14 @@ func (r *EnvironmentReconciler) observeCronJob(
 			r.deleteRefusedJob(ctx, appNS, runs[i].Name)
 		}
 	}
+	// What each failed run's own container had to say, read once for the
+	// whole process rather than per run: a scheduled job that has been
+	// failing every night fails for one reason, and the row a person reads
+	// has to carry it rather than the Job controller's `BackoffLimitExceeded`
+	// (#442).
+	if err := r.diagnoseRuns(ctx, appNS, env.Name, process.Name, runs); err != nil {
+		return err
+	}
 	if len(runs) > 0 {
 		status.LastRun = &runs[0]
 	}
@@ -656,6 +664,34 @@ func (r *EnvironmentReconciler) observeCronJob(
 			break
 		}
 	}
+	return nil
+}
+
+// diagnoseRuns puts the pods' account onto every failed run of one process.
+//
+// The pods are listed by the workload's own labels rather than a run at a
+// time: one list answers every run, and the pods of a run the cluster has
+// collected are simply not in it — which is the same as having nothing to add.
+func (r *EnvironmentReconciler) diagnoseRuns(
+	ctx context.Context,
+	appNS, envName, processName string,
+	runs []kitchenv1alpha1.ProcessRun,
+) error {
+	failed := false
+	for i := range runs {
+		failed = failed || runs[i].Phase == kitchenv1alpha1.RunFailed
+	}
+	if !failed {
+		return nil
+	}
+	pods := &corev1.PodList{}
+	if err := r.List(ctx, pods, client.InNamespace(appNS), client.MatchingLabels{
+		labelEnvironment: envName,
+		labelProcess:     processName,
+	}); err != nil {
+		return err
+	}
+	DiagnoseRuns(runs, pods.Items)
 	return nil
 }
 
@@ -727,6 +763,12 @@ func RunOf(job *batchv1.Job) kitchenv1alpha1.ProcessRun {
 			run.FinishedAt = job.Status.CompletionTime
 		case batchv1.JobFailed:
 			run.Phase = kitchenv1alpha1.RunFailed
+			// The Job controller's own word for it, which is the reason
+			// until the pod is asked for a better one: `DeadlineExceeded`
+			// for a run that hit its timeout, and `BackoffLimitExceeded` for
+			// literally every other failure, since `backoffLimit` is zero
+			// (#442). DiagnoseRun replaces it where the pod still exists.
+			run.Reason = condition.Reason
 			run.Message = strings.TrimSpace(condition.Reason + ": " + condition.Message)
 			run.Message = strings.TrimSuffix(run.Message, ":")
 			if run.FinishedAt == nil {

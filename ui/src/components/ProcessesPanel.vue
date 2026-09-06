@@ -35,9 +35,16 @@ const props = defineProps<{ environment: string; role?: string }>();
 const toast = useToast();
 
 const caller = computed(() => callerFor(props.role));
-const mayRun = computed(() => may("POST /api/v1/environments/{name}/processes/{process}/runs", caller.value));
+const mayRun = computed(() =>
+  may(
+    "POST /api/v1/environments/{name}/processes/{process}/runs",
+    caller.value,
+  ),
+);
 
-const { data, error, refresh } = useAsync(() => api.environmentProcesses(props.environment));
+const { data, error, refresh } = useAsync(() =>
+  api.environmentProcesses(props.environment),
+);
 watch(
   () => props.environment,
   () => void refresh(),
@@ -53,18 +60,28 @@ const moving = computed(() =>
       ((p.active ?? 0) > 0 ||
         p.deploy === "running" ||
         p.deploy === "pending" ||
-        (p.type !== "cron" && p.type !== "task" && (p.readyReplicas ?? 0) < (p.replicas ?? 0))),
+        (p.type !== "cron" &&
+          p.type !== "task" &&
+          (p.readyReplicas ?? 0) < (p.replicas ?? 0))),
   ),
 );
 
 // The tasks holding this deploy up, and the ones that failed it. A failed task
 // is a release that never landed, which is a different sentence from "a
 // workload is unwell" and is worth saying at the top of the panel.
-const blockedBy = computed(() => processes.value.filter((p) => p.deploy === "failed"));
-const waitingOn = computed(() =>
-  processes.value.filter((p) => p.deploy === "running" || p.deploy === "pending"),
+const blockedBy = computed(() =>
+  processes.value.filter((p) => p.deploy === "failed"),
 );
-usePoll(() => void refresh(), 5000, () => moving.value);
+const waitingOn = computed(() =>
+  processes.value.filter(
+    (p) => p.deploy === "running" || p.deploy === "pending",
+  ),
+);
+usePoll(
+  () => void refresh(),
+  5000,
+  () => moving.value,
+);
 
 const expanded = ref<string | null>(null);
 const runs = ref<Record<string, ProcessRun[]>>({});
@@ -81,11 +98,17 @@ async function toggle(process: Process) {
 
 async function loadRuns(name: string) {
   try {
-    runs.value = { ...runs.value, [name]: await api.processRuns(props.environment, name) };
+    runs.value = {
+      ...runs.value,
+      [name]: await api.processRuns(props.environment, name),
+    };
     const { [name]: _dropped, ...rest } = runsError.value;
     runsError.value = rest;
   } catch (err) {
-    runsError.value = { ...runsError.value, [name]: err instanceof Error ? err.message : String(err) };
+    runsError.value = {
+      ...runsError.value,
+      [name]: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -126,7 +149,12 @@ function hasRuns(process: Process): boolean {
 // is the run the deploy is waiting for, and the API refuses a second one — so
 // the button is not there to be pressed rather than there to be refused.
 function mayRunNow(process: Process): boolean {
-  return mayRun.value && hasRuns(process) && !process.suspended && process.deploy !== "running";
+  return (
+    mayRun.value &&
+    hasRuns(process) &&
+    !process.suspended &&
+    process.deploy !== "running"
+  );
 }
 
 function tone(process: Process) {
@@ -139,7 +167,8 @@ function tone(process: Process) {
 function state(process: Process): string {
   if (process.suspended) return "not run here";
   if (process.type === "task") {
-    if (process.deploy === "failed") return "failed — this release did not deploy";
+    if (process.deploy === "failed")
+      return "failed — this release did not deploy";
     if (process.deploy === "running") return "running — the deploy is waiting";
     if (process.deploy === "complete") return "ran for this release";
     return "not run for this release yet";
@@ -164,6 +193,49 @@ function runTone(run: ProcessRun) {
   return run.phase === "Running" ? ("warning" as const) : ("success" as const);
 }
 
+// What a failed run has to say for itself, as one line.
+//
+// The reason leads it, because the reason is the difference between four
+// failures that read identically without it: a command the image cannot run,
+// an image that could not be pulled, one the platform could not configure,
+// and a program that ran and exited non-zero. The message behind it is the
+// platform's own sentence about that reason and is usually the whole fix.
+function runFailure(run?: ProcessRun): string {
+  if (!run) return "";
+  // Already led by its reason: the message is built as "Reason: sentence"
+  // wherever there is one, and repeating it would read as a stutter.
+  if (run.message) return run.message;
+  if (run.reason)
+    return run.exitCode === undefined
+      ? run.reason
+      : `${run.reason} (exit code ${run.exitCode})`;
+  return "";
+}
+
+// Where the rest of it is, which is the half #442 turned on. A run that ran
+// has its output in the logs under its own name; a run that never started
+// printed nothing, and sending somebody to read logs that cannot exist is
+// what cost that investigation its afternoon.
+function runOutputNote(run?: ProcessRun): string {
+  if (!run || run.phase !== "Failed") return "";
+  return run.refused
+    ? "It never started, so this run has no output — the fix is in the command, the image or the settings above."
+    : "Its output is in this environment's logs, under this run.";
+}
+
+// The same line with what the row already says taken out of it. The runs
+// table carries the reason and the exit status in their own column, and a
+// message that repeated both would be three-quarters redundant across the
+// widest part of the table.
+function runDetail(run: ProcessRun): string {
+  let line = runFailure(run);
+  if (run.reason && line.startsWith(`${run.reason}: `))
+    line = line.slice(run.reason.length + 2);
+  if (run.exitCode !== undefined)
+    line = line.replace(` (exit code ${run.exitCode})`, "");
+  return line === run.reason ? "" : line;
+}
+
 function took(run: ProcessRun): string {
   if (run.durationSeconds === undefined) return "still running";
   if (run.durationSeconds < 60) return `${run.durationSeconds.toFixed(1)}s`;
@@ -181,7 +253,9 @@ function commandOf(process: Process): string {
 function healthOf(process: Process): string {
   const health = process.health;
   if (!health) return "";
-  const target = health.path ? `GET ${health.path} on :${health.port}` : `TCP :${health.port}`;
+  const target = health.path
+    ? `GET ${health.path} on :${health.port}`
+    : `TCP :${health.port}`;
   return `${target} every ${health.periodSeconds}s, ${health.failureThreshold} failures out`;
 }
 
@@ -197,16 +271,30 @@ function healthOf(process: Process): string {
 // runs under the runtime's own seccomp profile and denies privilege
 // escalation, so listing those on every workload would bury the two or three
 // lines that are this workload's own.
-function postureOf(process: Process): { field: SecurityField; text: string; own: boolean }[] {
+function postureOf(
+  process: Process,
+): { field: SecurityField; text: string; own: boolean }[] {
   const security = process.effectiveSecurity;
   if (!security) return [];
   const own = new Set(security.overrides ?? []);
   const lines: { field: SecurityField; text: string }[] = [];
-  if (security.runAsNonRoot) lines.push({ field: "runAsNonRoot", text: "never runs as root" });
-  if (security.runAsUser) lines.push({ field: "runAsUser", text: `runs as uid ${security.runAsUser}` });
-  if (security.runAsGroup) lines.push({ field: "runAsGroup", text: `runs as gid ${security.runAsGroup}` });
+  if (security.runAsNonRoot)
+    lines.push({ field: "runAsNonRoot", text: "never runs as root" });
+  if (security.runAsUser)
+    lines.push({
+      field: "runAsUser",
+      text: `runs as uid ${security.runAsUser}`,
+    });
+  if (security.runAsGroup)
+    lines.push({
+      field: "runAsGroup",
+      text: `runs as gid ${security.runAsGroup}`,
+    });
   if (security.fsGroup) {
-    lines.push({ field: "fsGroup", text: `its volumes are owned by gid ${security.fsGroup}` });
+    lines.push({
+      field: "fsGroup",
+      text: `its volumes are owned by gid ${security.fsGroup}`,
+    });
     if (security.fsGroupChangePolicy === "OnRootMismatch") {
       lines.push({
         field: "fsGroupChangePolicy",
@@ -215,10 +303,16 @@ function postureOf(process: Process): { field: SecurityField; text: string; own:
     }
   }
   if (security.readOnlyRootFilesystem) {
-    lines.push({ field: "readOnlyRootFilesystem", text: "its root filesystem is read only" });
+    lines.push({
+      field: "readOnlyRootFilesystem",
+      text: "its root filesystem is read only",
+    });
   }
   if (security.dropCapabilities?.length) {
-    lines.push({ field: "dropCapabilities", text: `drops ${security.dropCapabilities.join(", ")}` });
+    lines.push({
+      field: "dropCapabilities",
+      text: `drops ${security.dropCapabilities.join(", ")}`,
+    });
   }
   if (security.allowPrivilegeEscalation) {
     lines.push({
@@ -257,7 +351,10 @@ function buildOf(process: Process): string {
   }
   const build = process.build;
   if (!build) return "the project's own image, started differently";
-  const where = build.rootDirectory && build.rootDirectory !== "." ? build.rootDirectory : "the repository root";
+  const where =
+    build.rootDirectory && build.rootDirectory !== "."
+      ? build.rootDirectory
+      : "the repository root";
   if (build.strategy === "auto") {
     // The strategy is a read of that directory at the commit, so nothing here
     // can say which of the two it will be. What each build settled on is on
@@ -268,7 +365,9 @@ function buildOf(process: Process): string {
     // Which stage of that file, when this workload names one. A workload that
     // names none is built to the project's stage, which the build's own page
     // reports per image — saying "the last stage" here would be a guess.
-    const stage = build.dockerfileTarget ? `, stage ${build.dockerfileTarget}` : "";
+    const stage = build.dockerfileTarget
+      ? `, stage ${build.dockerfileTarget}`
+      : "";
     return `${build.dockerfilePath ?? "Dockerfile"} in ${where}${stage}`;
   }
   return `buildpacks, from ${where}`;
@@ -279,12 +378,15 @@ function buildOf(process: Process): string {
   <div id="section-processes">
     <h2 class="text-sm font-medium text-highlighted mb-2">Workloads</h2>
     <p class="text-xs text-muted mb-3">
-      What this environment runs besides its web process. A worker runs continuously and is never addressed; a
-      service runs continuously and is reachable from the rest of this environment, and is never published; a
-      scheduled job runs on its cron expression, in UTC, and every firing is a run with its own logs; a task runs
-      once per deploy and has to finish before any of the release takes traffic, which is where a schema migration
-      goes. The list is the release's, so an environment that was rolled back runs what that release declared — the
-      same workloads, built to the same images.
+      What this environment runs besides its web process. A worker runs
+      continuously and is never addressed; a service runs continuously and is
+      reachable from the rest of this environment, and is never published; a
+      scheduled job runs on its cron expression, in UTC, and every firing is a
+      run with its own logs; a task runs once per deploy and has to finish
+      before any of the release takes traffic, which is where a schema migration
+      goes. The list is the release's, so an environment that was rolled back
+      runs what that release declared — the same workloads, built to the same
+      images.
     </p>
 
     <!-- A failed deploy task is not a workload being unwell: it is a release
@@ -299,8 +401,14 @@ function buildOf(process: Process): string {
       :title="`${task.name} failed, so this release was not deployed`"
       :description="
         `${task.lastFailure?.name ?? task.lastRun?.name ?? 'The run'} did not succeed` +
-        (task.lastFailure?.message ? ` — ${task.lastFailure.message}` : '') +
-        `. Nothing of this release is serving; what was running before it still is. Fix it and deploy again, or run ${task.name} again once the cause is gone.`
+        (runFailure(task.lastFailure ?? task.lastRun)
+          ? ` — ${runFailure(task.lastFailure ?? task.lastRun)}`
+          : '') +
+        `. ` +
+        (runOutputNote(task.lastFailure ?? task.lastRun)
+          ? `${runOutputNote(task.lastFailure ?? task.lastRun)} `
+          : '') +
+        `Nothing of this release is serving; what was running before it still is. Fix it and deploy again, or run ${task.name} again once the cause is gone.`
       "
     />
     <UAlert
@@ -314,8 +422,17 @@ function buildOf(process: Process): string {
       :description="`It runs once for this deploy. Until it succeeds nothing of this release is serving, and what was running before it still is.`"
     />
 
-    <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
-    <div v-else class="rounded-md border border-default divide-y divide-default overflow-hidden">
+    <UAlert
+      v-if="error"
+      color="error"
+      variant="soft"
+      icon="i-lucide-triangle-alert"
+      :title="error"
+    />
+    <div
+      v-else
+      class="rounded-md border border-default divide-y divide-default overflow-hidden"
+    >
       <p v-if="!processes.length" class="px-4 py-3 text-sm text-muted">
         No other workloads — this project deploys its web process alone.
       </p>
@@ -326,16 +443,34 @@ function buildOf(process: Process): string {
         >
           <StatusDot :tone="tone(process)" :pulse="(process.active ?? 0) > 0" />
           <span class="font-mono text-highlighted">{{ process.name }}</span>
-          <UBadge color="neutral" variant="subtle" size="sm">{{ process.type }}</UBadge>
+          <UBadge color="neutral" variant="subtle" size="sm">{{
+            process.type
+          }}</UBadge>
           <!-- A worker that must never run twice deploys differently from
                every other row here, and the replica count does not say so:
                1/1 ready reads the same either way. -->
-          <UBadge v-if="process.singleton" color="neutral" variant="outline" size="sm">one at a time</UBadge>
-          <span v-if="process.schedule" class="font-mono text-xs text-muted">{{ process.schedule }}</span>
-          <span class="text-xs" :class="process.healthy || process.suspended ? 'text-muted' : 'text-error'">
+          <UBadge
+            v-if="process.singleton"
+            color="neutral"
+            variant="outline"
+            size="sm"
+            >one at a time</UBadge
+          >
+          <span v-if="process.schedule" class="font-mono text-xs text-muted">{{
+            process.schedule
+          }}</span>
+          <span
+            class="text-xs"
+            :class="
+              process.healthy || process.suspended ? 'text-muted' : 'text-error'
+            "
+          >
             {{ state(process) }}
           </span>
-          <span v-if="process.lastRun?.startedAt" class="ml-auto text-xs text-dimmed whitespace-nowrap">
+          <span
+            v-if="process.lastRun?.startedAt"
+            class="ml-auto text-xs text-dimmed whitespace-nowrap"
+          >
             {{ timeAgo(process.lastRun.startedAt) }}
           </span>
           <UButton
@@ -346,7 +481,9 @@ function buildOf(process: Process): string {
             icon="i-lucide-play"
             :loading="starting === process.name"
             :class="process.lastRun?.startedAt ? '' : 'ml-auto'"
-            :aria-label="process.type === 'task' ? 'Run this task again' : 'Run now'"
+            :aria-label="
+              process.type === 'task' ? 'Run this task again' : 'Run now'
+            "
             @click.stop="runNow(process)"
           />
         </div>
@@ -358,25 +495,43 @@ function buildOf(process: Process): string {
           v-if="!process.suspended && process.lastFailure && !process.healthy"
           class="px-4 py-2 bg-error/5 border-t border-muted text-xs text-error"
         >
-          {{ process.lastFailure.name }} failed {{ timeAgo(process.lastFailure.startedAt ?? "") }}
-          <span v-if="process.lastFailure.message">— {{ process.lastFailure.message }}</span>
+          {{ process.lastFailure.name }} failed
+          {{ timeAgo(process.lastFailure.startedAt ?? "") }}
+          <span v-if="runFailure(process.lastFailure)"
+            >— {{ runFailure(process.lastFailure) }}</span
+          >
+          <span class="block text-dimmed mt-0.5">{{
+            runOutputNote(process.lastFailure)
+          }}</span>
         </div>
 
-        <div v-if="expanded === process.name" class="px-4 py-3 bg-muted space-y-3 border-t border-muted text-xs">
-          <p v-if="process.suspended" class="text-muted">{{ process.reason }}</p>
+        <div
+          v-if="expanded === process.name"
+          class="px-4 py-3 bg-muted space-y-3 border-t border-muted text-xs"
+        >
+          <p v-if="process.suspended" class="text-muted">
+            {{ process.reason }}
+          </p>
           <dl class="grid grid-cols-[8rem_1fr] gap-x-4 gap-y-1">
             <dt class="text-dimmed">Command</dt>
-            <dd class="font-mono text-toned break-all">{{ commandOf(process) }}</dd>
-            <dt class="text-dimmed">{{ process.imageSource ? "Image source" : "Built from" }}</dt>
+            <dd class="font-mono text-toned break-all">
+              {{ commandOf(process) }}
+            </dd>
+            <dt class="text-dimmed">
+              {{ process.imageSource ? "Image source" : "Built from" }}
+            </dt>
             <dd class="text-toned break-all">{{ buildOf(process) }}</dd>
             <template v-if="process.address">
               <dt class="text-dimmed">Address</dt>
               <dd class="text-toned break-all">
                 <span class="font-mono">{{ process.address }}</span>
                 <span class="block text-dimmed mt-0.5">
-                  This environment's other workloads reach it here, reading it as
-                  <span class="font-mono">{{ serviceVariable(process) }}</span> with the host and the port beside it
-                  under the same name. Nothing else can: a service is never published, and has no URL.
+                  This environment's other workloads reach it here, reading it
+                  as
+                  <span class="font-mono">{{ serviceVariable(process) }}</span>
+                  with the host and the port beside it under the same name.
+                  Nothing else can: a service is never published, and has no
+                  URL.
                 </span>
               </dd>
             </template>
@@ -387,9 +542,10 @@ function buildOf(process: Process): string {
             <template v-if="process.singleton">
               <dt class="text-dimmed">Deploys</dt>
               <dd class="text-toned">
-                One copy at a time — the old copy stops before the new one starts, so a deploy never overlaps two of
-                it. That is a few seconds of this worker not consuming, which is the trade a poller or an ingest
-                loop asked for.
+                One copy at a time — the old copy stops before the new one
+                starts, so a deploy never overlaps two of it. That is a few
+                seconds of this worker not consuming, which is the trade a
+                poller or an ingest loop asked for.
               </dd>
             </template>
             <template v-if="process.type === 'cron'">
@@ -401,47 +557,67 @@ function buildOf(process: Process): string {
             <template v-if="process.type === 'task'">
               <dt class="text-dimmed">Runs</dt>
               <dd class="text-toned">
-                Once per deploy, before anything of the release takes traffic — however many copies of the other
-                workloads there are. A run that fails stops the deploy where it stands, and a rollback runs the task
-                the release it goes back to declared. Undoing a schema change is the application's, not the
-                platform's.
+                Once per deploy, before anything of the release takes traffic —
+                however many copies of the other workloads there are. A run that
+                fails stops the deploy where it stands, and a rollback runs the
+                task the release it goes back to declared. Undoing a schema
+                change is the application's, not the platform's.
               </dd>
               <dt class="text-dimmed">Timeout</dt>
-              <dd class="text-toned">{{ process.timeout }} — how long the deploy waits for it</dd>
+              <dd class="text-toned">
+                {{ process.timeout }} — how long the deploy waits for it
+              </dd>
             </template>
             <template v-if="process.cpu || process.memory">
               <dt class="text-dimmed">Resources</dt>
-              <dd class="text-toned">{{ [process.cpu, process.memory].filter(Boolean).join(" / ") }}</dd>
+              <dd class="text-toned">
+                {{ [process.cpu, process.memory].filter(Boolean).join(" / ") }}
+              </dd>
             </template>
             <template v-if="process.health">
               <dt class="text-dimmed">Health</dt>
-              <dd class="text-toned font-mono break-all">{{ healthOf(process) }}</dd>
+              <dd class="text-toned font-mono break-all">
+                {{ healthOf(process) }}
+              </dd>
             </template>
-            <template v-if="postureOf(process).length || hasOwnPosture(process)">
+            <template
+              v-if="postureOf(process).length || hasOwnPosture(process)"
+            >
               <dt class="text-dimmed">Runs under</dt>
               <dd class="text-toned">
                 <ul class="space-y-0.5">
                   <li v-for="line in postureOf(process)" :key="line.field">
                     {{ line.text }}
-                    <UBadge v-if="line.own" color="neutral" variant="subtle" size="sm" class="ml-1">
+                    <UBadge
+                      v-if="line.own"
+                      color="neutral"
+                      variant="subtle"
+                      size="sm"
+                      class="ml-1"
+                    >
                       this workload's own
                     </UBadge>
                   </li>
                 </ul>
                 <p class="text-dimmed mt-1">
                   <template v-if="hasOwnPosture(process)">
-                    Marked lines are this workload's own declaration; the rest are the project's, inherited. A unit's
-                    images do not share a base, so the user one of them declares is not the user another does.
+                    Marked lines are this workload's own declaration; the rest
+                    are the project's, inherited. A unit's images do not share a
+                    base, so the user one of them declares is not the user
+                    another does.
                   </template>
                   <template v-else>
-                    All of it is the project's, inherited: this workload declares no posture of its own.
+                    All of it is the project's, inherited: this workload
+                    declares no posture of its own.
                   </template>
                 </p>
               </dd>
             </template>
             <template v-if="process.image">
               <dt class="text-dimmed">Image</dt>
-              <dd class="font-mono text-toned break-all">{{ process.image }}</dd>
+              <dd class="font-mono text-toned break-all">
+                {{ process.image }}
+              </dd>
             </template>
             <template v-if="process.workload">
               <dt class="text-dimmed">Workload</dt>
@@ -459,8 +635,8 @@ function buildOf(process: Process): string {
               :title="runsError[process.name]"
             />
             <p v-else-if="!runs[process.name]?.length" class="text-muted">
-              No runs the platform still holds. The output of one it has collected is still in the logs, under its
-              run.
+              No runs the platform still holds. The output of one it has
+              collected is still in the logs, under its run.
             </p>
             <table v-else class="w-full text-left">
               <thead class="text-dimmed">
@@ -469,21 +645,40 @@ function buildOf(process: Process): string {
                   <th class="py-1 pr-3 font-normal">Phase</th>
                   <th class="py-1 pr-3 font-normal">Started</th>
                   <th class="py-1 pr-3 font-normal">Took</th>
+                  <th class="py-1 pr-3 font-normal">Why</th>
                   <th class="py-1 font-normal">Message</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-default">
                 <tr v-for="run in runs[process.name]" :key="run.name">
-                  <td class="py-1 pr-3 font-mono text-toned break-all">{{ run.name }}</td>
+                  <td class="py-1 pr-3 font-mono text-toned break-all">
+                    {{ run.name }}
+                  </td>
                   <td class="py-1 pr-3">
                     <span class="inline-flex items-center gap-1.5">
-                      <StatusDot :tone="runTone(run)" :pulse="run.phase === 'Running'" />
+                      <StatusDot
+                        :tone="runTone(run)"
+                        :pulse="run.phase === 'Running'"
+                      />
                       {{ run.phase }}
                     </span>
                   </td>
-                  <td class="py-1 pr-3 text-muted">{{ run.startedAt ? timeAgo(run.startedAt) : "—" }}</td>
+                  <td class="py-1 pr-3 text-muted">
+                    {{ run.startedAt ? timeAgo(run.startedAt) : "—" }}
+                  </td>
                   <td class="py-1 pr-3 text-muted">{{ took(run) }}</td>
-                  <td class="py-1 text-error">{{ run.message }}</td>
+                  <td class="py-1 pr-3 text-error whitespace-nowrap">
+                    {{ run.reason }}
+                    <span v-if="run.exitCode !== undefined" class="text-dimmed"
+                      >exit {{ run.exitCode }}</span
+                    >
+                  </td>
+                  <td class="py-1 text-error">
+                    {{ runDetail(run) }}
+                    <span v-if="run.refused" class="block text-dimmed">
+                      It never started, so this run has no output.
+                    </span>
+                  </td>
                 </tr>
               </tbody>
             </table>

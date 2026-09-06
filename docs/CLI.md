@@ -685,6 +685,24 @@ it still is; the run's own message is on the row. Running it again is how a
 deploy stopped by a failed migration is picked back up once the cause is gone,
 and the platform carries on by itself if it succeeds.
 
+**A failed run says why in one word before it says it in a sentence.**
+`kitchen processes runs` has a `REASON` column and `--json` carries it as
+`reason`: `Error` with the `exitCode` beside it for a program that ran and
+exited, `OOMKilled`, `StartError` for a command the image cannot run,
+`ImagePullBackOff`, `CreateContainerConfigError`, `DeadlineExceeded` for one
+that hit its timeout. Every task and scheduled job runs with a backoff limit of
+zero, so the job's own summary of a failure is the same sentence whatever
+caused it — which is why the reason is read off the run's pod instead (#442).
+
+A run carrying `"refused": true` **never started**, so it has no output at all
+and `kitchen logs --run` correctly answers with nothing. The row says so in
+those words; the reason and its sentence are the whole account there is, and
+they name the command, the image or the setting that has to change:
+
+```sh
+kitchen processes runs migrate --json | jq '.items[] | select(.refused) | {name, reason, message}'
+```
+
 A service's address is on its row and in `--json` as `address`, which is what
 somebody wiring two workloads together is after — it is the same value the
 environment's other workloads read as `KITCHEN_SERVICE_<NAME>`, with `_HOST`
