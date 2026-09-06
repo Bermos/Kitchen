@@ -26,9 +26,67 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The store the job below runs against is pinned in exactly one place — the
+  # chart's `clickhouse.image` — so that bumping the platform's ClickHouse
+  # moves CI with it. A service container cannot read that: its `image:` is an
+  # expression resolved before any step of its own job runs, so there is no
+  # checkout yet to read. One tiny job that does nothing but resolve the pin,
+  # handed down through `needs`, is what makes the single source possible.
+  store:
+    name: Resolve the pinned store
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.pin.outputs.image }}
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Read the store's image out of the chart
+        id: pin
+        run: |
+          set -euo pipefail
+          values=charts/kitchen/values.yaml
+          # `yq` is on the runner. The quote stripping is not superstition:
+          # the two programs called `yq` disagree about whether a scalar comes
+          # back quoted, and this reads the same under either.
+          field() { yq ".clickhouse.image.$1" "${values}" | tr -d '"' | tr -d '[:space:]'; }
+          repository=$(field repository)
+          tag=$(field tag)
+          if [ -z "${repository}" ] || [ "${repository}" = "null" ] ||
+             [ -z "${tag}" ] || [ "${tag}" = "null" ]; then
+            echo "::error::clickhouse.image.repository/.tag is not readable from ${values}."
+            echo "::error::The store service container below has nothing to pin to."
+            exit 1
+          fi
+          echo "image=${repository}:${tag}" >> "${GITHUB_OUTPUT}"
+          echo "Store image: ${repository}:${tag}"
+
   test:
     name: Unit and envtest
     runs-on: ubuntu-latest
+    needs: store
+    # `internal/clickhouse`'s integration suite runs here and nowhere else.
+    # Everything else in that package asks "did we build the statement we meant
+    # to" of a fake; only a real server answers "will ClickHouse accept it",
+    # which is where the interesting mistakes are — an aggregate whose type the
+    # conversion around it refuses reads perfectly and fails deterministically
+    # in front of a user (#449). The suite skips itself when
+    # KITCHEN_CLICKHOUSE_URL is unset, so `make test` on a laptop needs no
+    # store; here it is set, so the suite runs.
+    services:
+      clickhouse:
+        image: ${{ needs.store.outputs.image }}
+        env:
+          CLICKHOUSE_USER: kitchen
+          CLICKHOUSE_PASSWORD: hunter2
+          CLICKHOUSE_DB: kitchen
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -64,6 +122,9 @@ jobs:
           }
 
       - name: Running Tests
+        env:
+          # The service container above, as the integration suite reads it.
+          KITCHEN_CLICKHOUSE_URL: http://kitchen:hunter2@127.0.0.1:8123/kitchen
         run: |
           go mod tidy
           make test

@@ -228,6 +228,19 @@ func (c *Client) ResourceSeries(ctx context.Context, query ResourceSeriesQuery) 
 // bucket as a string, and ClickHouse resolves a GROUP BY name against the
 // SELECT aliases before the columns, so the grouping would be by the rendered
 // string rather than by the time.
+//
+// Every aggregate is cast to Float64 before `ifNotFinite`, and that cast is
+// load-bearing rather than tidy. A bucket that saw only one half of a metric
+// yields NaN, so the coercion has to be there — but `ifNotFinite`'s two
+// arguments have to agree on a type, and half of these aggregates are integers
+// on the rollup path: `memPeak` is a `maxMerge` of an `AggregateFunction(max,
+// UInt64)`, `restarts` and `oom` are `sumMerge`s of integer states. Against a
+// `Float64` fallback ClickHouse resolves that pair to `Variant(Float64,
+// UInt64)`, which `toUInt64` refuses outright — `ILLEGAL_TYPE_OF_ARGUMENT`,
+// and the environment page's usage series answers 500 for every window wide
+// enough to read the rollup. Casting first makes both arguments `Float64`, so
+// the result is a `Float64` the conversions take. The raw path never hit it:
+// there every column is an `avgIf`/`maxIf` of a `Float64` already.
 func resourceSeriesStatement(database string, rollup bool) string {
 	inner := rawResourceSelect(database)
 	if rollup {
@@ -236,15 +249,15 @@ func resourceSeriesStatement(database string, rollup bool) string {
 
 	return fmt.Sprintf(`SELECT
     toString(toUnixTimestamp(slot)) AS bucket,
-	    toString(ifNotFinite(sum(cpu), toFloat64(0))) AS cpu,
-	    toString(ifNotFinite(sum(cpuPeak), toFloat64(0))) AS cpuPeak,
-	    toString(toUInt64(ifNotFinite(sum(mem), toFloat64(0)))) AS memory,
-	    toString(toUInt64(ifNotFinite(sum(memPeak), toFloat64(0)))) AS memoryPeak,
+    toString(ifNotFinite(toFloat64(sum(cpu)), toFloat64(0))) AS cpu,
+    toString(ifNotFinite(toFloat64(sum(cpuPeak)), toFloat64(0))) AS cpuPeak,
+    toString(toUInt64(ifNotFinite(toFloat64(sum(mem)), toFloat64(0)))) AS memory,
+    toString(toUInt64(ifNotFinite(toFloat64(sum(memPeak)), toFloat64(0)))) AS memoryPeak,
     toString(uniqExact(pod)) AS replicas,
-	    toString(toUInt64(ifNotFinite(sum(restarts), toFloat64(0)))) AS restarts,
-	    toString(toUInt64(ifNotFinite(sum(oom), toFloat64(0)))) AS oomKills,
+    toString(toUInt64(ifNotFinite(toFloat64(sum(restarts)), toFloat64(0)))) AS restarts,
+    toString(toUInt64(ifNotFinite(toFloat64(sum(oom)), toFloat64(0)))) AS oomKills,
     toString(max(cpuLimit)) AS cpuLimit,
-	    toString(toUInt64(ifNotFinite(max(memLimit), toFloat64(0)))) AS memoryLimit
+    toString(toUInt64(ifNotFinite(toFloat64(max(memLimit)), toFloat64(0)))) AS memoryLimit
 FROM (
     %s
 )
