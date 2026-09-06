@@ -183,6 +183,13 @@ type projectView struct {
 	// existed reads as `none`, which is what the platform actually does with
 	// it, and a security default nobody can see is one nobody checks.
 	PreviewsForks string `json:"previewsForks"`
+	// Exposure is whether this project is on the internet: `public`, every
+	// environment published at a generated hostname, or `internal`, none of
+	// them published at all. It is always one of the two words rather than
+	// absent — a project written before the field existed is public, which
+	// is what the platform does with it, and a screen showing no URL has to
+	// be able to tell "internal" from "not deployed yet".
+	Exposure string `json:"exposure"`
 	// PreviewCapacity is the ceiling as the operator last measured it: how
 	// many previews are live, the ceiling in force, and the pull requests
 	// refused one while the project sat at it. Absent until a reconcile has
@@ -303,6 +310,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole, l
 		ProductionBranch:   project.Spec.Source.GitSource().ProductionBranch,
 		RequirePullRequest: project.Spec.Source.GitSource().RequirePullRequest,
 		Previews:           project.Spec.Previews.IsEnabled(),
+		Exposure:           string(project.Spec.Exposure.Normalized()),
 		PreviewsProtected:  project.Spec.Previews.IsProtected(),
 		PreviewsMax:        project.Spec.Previews.Max,
 		PreviewsForks:      string(project.Spec.Previews.Forks.Normalized()),
@@ -1194,16 +1202,23 @@ type eligibilityEvidenceView struct {
 }
 
 type environmentView struct {
-	Name            string            `json:"name"`
-	Project         string            `json:"project"`
-	Type            string            `json:"type"`
-	Release         string            `json:"release"`
-	ObservedRelease string            `json:"observedRelease,omitempty"`
-	Phase           string            `json:"phase,omitempty"`
-	URL             string            `json:"url,omitempty"`
-	Preview         *previewView      `json:"preview,omitempty"`
-	Owners          []string          `json:"owners,omitempty"`
-	Requirements    *requirementsView `json:"requirements,omitempty"`
+	Name            string `json:"name"`
+	Project         string `json:"project"`
+	Type            string `json:"type"`
+	Release         string `json:"release"`
+	ObservedRelease string `json:"observedRelease,omitempty"`
+	Phase           string `json:"phase,omitempty"`
+	URL             string `json:"url,omitempty"`
+	// Exposure is the project's, mirrored onto every environment of it
+	// because that is where it is read: a row with no `url` is either an
+	// environment of an internal project or one that has not been published
+	// yet, and the difference is not a fault on one side and is on the
+	// other. It is always one of the two words, for the reason the project's
+	// is.
+	Exposure     string            `json:"exposure"`
+	Preview      *previewView      `json:"preview,omitempty"`
+	Owners       []string          `json:"owners,omitempty"`
+	Requirements *requirementsView `json:"requirements,omitempty"`
 	// DataClass is the highest sensitivity class this environment is rated
 	// to hold, declared by its owners; absent means unrated. Residency is
 	// where its data is declared to be — declared, not observed.
@@ -1244,7 +1259,11 @@ type refusalView struct {
 	Message   string `json:"message,omitempty"`
 }
 
-func newEnvironmentView(env *kitchenv1alpha1.Environment, links sourceLinks) environmentView {
+func newEnvironmentView(
+	env *kitchenv1alpha1.Environment,
+	links sourceLinks,
+	exposure kitchenv1alpha1.ProjectExposure,
+) environmentView {
 	view := environmentView{
 		Name:            env.Name,
 		Project:         env.Spec.ProjectRef.Name,
@@ -1253,6 +1272,7 @@ func newEnvironmentView(env *kitchenv1alpha1.Environment, links sourceLinks) env
 		ObservedRelease: env.Status.ObservedRelease,
 		Phase:           string(env.Status.Phase),
 		URL:             env.Status.URL,
+		Exposure:        string(exposure.Normalized()),
 		Owners:          env.Spec.Owners,
 		Requirements:    newRequirementsView(env.Spec.Requirements),
 		DataClass:       string(env.Spec.DataClass),

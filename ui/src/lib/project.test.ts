@@ -25,6 +25,8 @@ import {
   claimUsedBy,
   deployEntries,
   deployedProcesses,
+  EXPOSURE_OPTIONS,
+  exposureNote,
   hasRoute,
   host,
   noRouteReason,
@@ -304,5 +306,33 @@ describe("host", () => {
     expect(host("https://shop.example.com/x")).toBe("shop.example.com");
     expect(host("not a url")).toBe("not a url");
     expect(host()).toBe("");
+  });
+});
+
+describe("what a project's exposure says", () => {
+  it("offers the two words the API takes, public first", () => {
+    expect(EXPOSURE_OPTIONS.map((option) => option.value)).toEqual(["public", "internal"]);
+    // The label has to say what the platform does with the project: "internal"
+    // alone does not tell an admin that every environment loses its address.
+    for (const option of EXPOSURE_OPTIONS) {
+      expect(option.label, `${option.value} says what it does`).toContain("—");
+      expect(option.label.length).toBeGreaterThan(20);
+    }
+  });
+
+  it("names all three things an internal project loses", () => {
+    const note = exposureNote("internal");
+    // The address, the refusals and the idling: each is somewhere somebody
+    // would otherwise go looking for a fault.
+    expect(note).toContain("hostname");
+    expect(note).toContain("platform");
+    expect(note).toContain("idle");
+    expect(note).toContain("domain");
+  });
+
+  it("tells a public project what turning it internal would do", () => {
+    const note = exposureNote("public");
+    expect(note).toContain("published");
+    expect(note).toContain("internal");
   });
 });

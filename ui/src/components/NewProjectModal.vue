@@ -72,6 +72,11 @@ const registry = ref<string>();
 const productionBranch = ref("main");
 const branchEdited = ref(false);
 const previews = ref(true);
+// Whether the project is on the internet. It is asked here rather than left to
+// the settings screen because a project that exists to be called by other
+// applications should never have been published at all — not even for the
+// minute between creating it and remembering to change it.
+const internal = ref(false);
 
 // Every connection is listed, and the ones that cannot back this field say
 // why: a connection providing the wrong capability is refused by the API
@@ -280,12 +285,14 @@ async function create() {
             registry: registry.value!,
             productionBranch: productionBranch.value || undefined,
             previews: previews.value,
+            exposure: internal.value ? "internal" : undefined,
             rootDirectory: rootDirectory.value || undefined,
             dockerfilePath: dockerfilePath.value || undefined,
             dockerfileTarget: dockerfileTarget.value || undefined,
           }
         : {
             name: name.value,
+            exposure: internal.value ? "internal" : undefined,
             image: {
               repository: imageRepository.value.trim(),
               tag: versionIsDigest.value ? undefined : version,
@@ -303,6 +310,7 @@ async function create() {
     imageVersion.value = "";
     imageConnection.value = undefined;
     branchEdited.value = false;
+    internal.value = false;
     rootDirectory.value = "";
     dockerfilePath.value = "";
     dockerfileTarget.value = "";
@@ -517,6 +525,14 @@ async function create() {
           v-model="previews"
           label="Preview environments"
           description="Every pull request gets its own environment, gated behind platform login."
+        />
+        <USwitch
+          v-model="internal"
+          label="Internal — not on the internet"
+          description="For a project the other applications here call rather than people visit. No environment of it
+            is published: no hostname, no certificate and no preview gate, previews included. Each one still runs and
+            is reachable from the other applications on this platform, and none of them can idle. It can be changed
+            afterwards."
         />
       </form>
     </template>

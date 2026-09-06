@@ -690,8 +690,15 @@ func renderDeployResult(s tui.Styles, event deployEvent) string {
 	lines := []string{built}
 	if event.Environment != nil {
 		where := safeText(event.Environment.Name)
-		if event.URL != "" {
+		switch {
+		case event.URL != "":
 			where += " " + s.Accent.Render(safeText(event.URL))
+		// A deploy that finished with no address is not one that half worked
+		// when the project asked for no address: said here, where the URL
+		// would have been, so the last line of a deploy is never a blank
+		// somebody has to go and interpret.
+		case event.Environment.Exposure == exposureInternal:
+			where += " " + s.Subtle.Render(exposureInternal)
 		}
 		mark := s.OK.Render("✓")
 		if event.Environment.Phase == phaseDegraded {

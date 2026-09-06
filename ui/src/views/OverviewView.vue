@@ -201,6 +201,10 @@ interface Row {
   /** Hoisted into the band above: still in the inventory, no longer the thing
    * being asked about here. */
   inBand: boolean;
+  /** This project is published nowhere on purpose. The URL column then says so
+   * rather than showing the dash it shows for a project that has not deployed
+   * yet — the two look identical and only one of them is waiting on something. */
+  internal: boolean;
 }
 
 const rows = computed<Row[]>(() => {
@@ -225,6 +229,7 @@ const rows = computed<Row[]>(() => {
       tone: failing ? "error" : busy ? "warning" : production?.phase === "Live" ? "success" : "neutral",
       detail: statusDetail(project.conditions),
       inBand: inBand.value.has(project.name),
+      internal: project.exposure === "internal",
       lastDeploy: production?.createdAt && latestBuild?.completedAt ? latestBuild.completedAt : latestBuild?.createdAt,
     };
   });
@@ -390,6 +395,7 @@ function host(url?: string): string {
                 class="font-mono text-xs text-primary hover:underline"
                 >{{ host(row.url) }}</a
               >
+              <span v-else-if="row.internal" class="text-muted" title="This project is not published: no hostname, no certificate. Its environments are reachable from the other applications on this platform.">internal</span>
               <span v-else class="text-dimmed">—</span>
             </td>
             <td class="px-3 py-2">

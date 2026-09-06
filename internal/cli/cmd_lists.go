@@ -460,13 +460,24 @@ func status(parent context.Context, r *Runtime, recentBuilds int) error {
 	})
 }
 
+// environmentAddress is the URL column. An environment of an internal project
+// has no URL and never will, so the column says "internal" rather than leaving
+// a blank a reader would take for a route that has not arrived yet — the same
+// distinction the dashboard draws in the same place.
+func environmentAddress(s tui.Styles, e environment) string {
+	if e.URL == "" && e.Exposure == exposureInternal {
+		return s.Subtle.Render(exposureInternal)
+	}
+	return s.Accent.Render(e.URL)
+}
+
 func renderEnvironments(s tui.Styles, environments []environment) string {
 	if len(environments) == 0 {
 		return "No environments yet.\n"
 	}
 	rows := make([][]string, 0, len(environments))
 	for _, e := range environments {
-		rows = append(rows, []string{e.Name, e.Type, s.Phase(e.Phase), e.Release, s.Accent.Render(e.URL)})
+		rows = append(rows, []string{e.Name, e.Type, s.Phase(e.Phase), e.Release, environmentAddress(s, e)})
 	}
 	return s.Table([]string{"NAME", "TYPE", "PHASE", "RELEASE", "URL"}, rows)
 }

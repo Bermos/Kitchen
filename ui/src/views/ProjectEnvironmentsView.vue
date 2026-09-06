@@ -189,6 +189,15 @@ function previewBuilds(pullRequest: number | undefined) {
                     class="font-mono text-xs text-primary hover:underline"
                     >{{ host(environment.url) }}</a
                   >
+                  <!-- "internal" and "not published" are two different states:
+                       one is the project's own setting, the other an
+                       environment still waiting on a route. -->
+                  <span
+                    v-else-if="environment.exposure === 'internal'"
+                    class="text-muted text-xs"
+                    title="This project is internal: no hostname and no certificate. The environment is reachable from the other applications on this platform."
+                    >internal</span
+                  >
                   <span v-else class="text-dimmed text-xs">not published</span>
                 </td>
               </tr>
@@ -261,6 +270,7 @@ function previewBuilds(pullRequest: number | undefined) {
                 class="font-mono text-xs text-primary hover:underline"
                 >{{ host(preview.url) }}</a
               >
+              <span v-else-if="preview.exposure === 'internal'" class="text-muted text-xs">internal</span>
             </div>
             <div
               v-if="previewLayout === 'pr' && previewBuilds(preview.preview?.pullRequest).length"

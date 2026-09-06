@@ -153,7 +153,30 @@ func (r *EnvironmentReconciler) reconcileScaleToZero(
 	policy := project.Spec.ScaleToZero
 
 	switch {
-	case interceptor == nil, !routed:
+	case interceptor == nil:
+		return nil, nil, r.deleteHTTPScaledObject(ctx, appNS, env.Name)
+	// An internal project is answered before every other reason, and with a
+	// condition rather than with silence, because it is the one case where
+	// the environment is running normally and idling is off for good: the
+	// interceptor routes on the visitor's Host header, and only a request
+	// that came through the Gateway carries one. A consumer connecting
+	// straight to the Service never crosses the interceptor, so a parked
+	// internal environment has nothing that could wake it — and an
+	// environment nothing can wake must not be parked. Whether a binding
+	// could be pointed at the interceptor instead is untested and is #489's
+	// open question, not a plan.
+	case project.Spec.Exposure.IsInternal():
+		if err := r.deleteHTTPScaledObject(ctx, appNS, env.Name); err != nil {
+			return nil, nil, err
+		}
+		return nil, &metav1.Condition{
+			Status: metav1.ConditionFalse,
+			Reason: ReasonInternalProject,
+			Message: "this project's spec.exposure is internal, so nothing routes to this environment " +
+				"through the interceptor that cold-starts a parked one — a consumer connects to its " +
+				"Service directly. It keeps its pods rather than parking where nothing could wake it",
+		}, nil
+	case !routed:
 		return nil, nil, r.deleteHTTPScaledObject(ctx, appNS, env.Name)
 	// The Project's live declaration, not the Release's frozen copy of it —
 	// the same reading the policy itself gets, and for the same reason: an

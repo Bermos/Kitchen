@@ -21,8 +21,13 @@ two Connections it builds and stores images with — `connection` needs the
 their defaults:
 
 ```json
-{"productionBranch": "main", "previews": true}
+{"productionBranch": "main", "previews": true, "exposure": "public"}
 ```
+
+`exposure` is on the create as well as on the PATCH below because a project
+that exists to be called by other applications should never have been on the
+internet at all — not even for the minute between creating it and remembering
+to change it. See [An internal project](#an-internal-project).
 
 A project reads back with `repositoryUrl` beside `repo`: where that repository
 is on the provider's own site, composed by the API from the connection because
@@ -247,7 +252,7 @@ optional and absent ones keep their value:
 
 ```json
 {"productionBranch": "trunk", "previews": true, "previewsProtected": false, "previewsMax": 3,
- "previewsForks": "none",
+ "previewsForks": "none", "exposure": "internal",
  "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "dockerfileTarget": "web", "rootDirectory": "apps/shop",
  "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi"}
 ```
@@ -261,6 +266,57 @@ nothing for one more. An empty `dockerfileTarget` clears
 the target, which is the file's last stage again. The
 repository and the two connections are deliberately not editable: rebinding a
 project to another repository is a different project.
+
+### An internal project
+
+`exposure` is whether this project is on the internet at all. It is one of two
+words, and `public` is the default and what every project was before the field
+existed: every environment is published at a generated hostname on the shared
+Gateway, behind the platform's wildcard certificate.
+
+```json
+{"exposure": "internal"}
+```
+
+`internal` publishes none of them. The environments still deploy, still become
+`Live` and still have their in-cluster Service — which is how something else
+in the cluster calls them — but they get no HTTPRoute, no hostname, no
+certificate and no preview gate, previews included. It is the project's rather
+than each environment's because it is a statement about what the software
+*is*, and it is an admin's for the reason `previewsForks` is: a developer
+changing it would be a developer publishing a service somebody deliberately
+kept off the internet.
+
+Turning it internal takes the route away on the next reconcile — an
+environment published before the change loses the address it had — and turning
+it back gives it back, because the address is generated from the project's
+name and nothing about it was stored.
+
+`GET /projects/{name}` and `GET /environments` both echo it as one of the two
+words, never absent: a row with no `url` is either an environment of an
+internal project or one that has not been published yet, and only one of those
+is a fault.
+
+Three things are refused rather than half-done on an internal project, each
+with a `400` that names why:
+
+- An `oidcClient` [claim](claims.md), because it registers redirect URIs built
+  from the addresses the project's environments are published at, and it is
+  published at none.
+- A [`Domain`](domains.md), because a custom hostname rides the environment's
+  own route, and it would be the one route `exposure: internal` exists to
+  prevent.
+- Idling. It is not refused at the API — nothing asks for it per environment —
+  but an internal environment never parks: the KEDA interceptor routes on the
+  visitor's `Host` header and only a request through the Gateway carries one,
+  so a consumer connecting straight to the Service could never wake a parked
+  one. The environment keeps its pods and says so on its `ScaleToZero`
+  condition, with reason `InternalProject`.
+
+The environment's `url` and the `KITCHEN_URL` variable are empty on an
+internal project, for the same reason they are empty on a preview the platform
+will not publish: there is no address the application can send anyone to. What
+a consumer uses instead is the in-cluster Service address.
 
 ### The preview ceiling
 

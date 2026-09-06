@@ -61,9 +61,22 @@ func (oidcClaimShaper) fields() []claimField {
 func (oidcClaimShaper) config(
 	w http.ResponseWriter,
 	body *createClaimRequest,
-	_ *kitchenv1alpha1.Project,
+	project *kitchenv1alpha1.Project,
 	_ string,
 ) (*runtime.RawExtension, bool) {
+	// An internal project has no browser flow to register: the redirect list
+	// is built from the addresses its environments are published at, and it
+	// is published at none. The combination is refused rather than
+	// half-registered — a client whose only redirect URIs are the verbatim
+	// ones would be an OAuth client that works from a developer's laptop and
+	// nowhere the application actually runs, which reads as a claim that
+	// bound and did not (#492).
+	if project.Spec.Exposure.IsInternal() {
+		badRequest(w, "%s", internalProjectRefusal(project,
+			"an oidcClient claim registers redirect URIs at the platform's issuer, and they are built "+
+				"from the addresses this project's environments are published at"))
+		return nil, false
+	}
 	cfg := kitchenv1alpha1.OIDCClientConfig{}
 	for _, path := range body.CallbackPaths {
 		path = strings.TrimSpace(path)

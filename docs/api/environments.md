@@ -7,6 +7,13 @@ that environment is doing and why.
 Part of the [REST API](../API.md), which carries the authentication, the
 authorization model and the full route table these sections belong to.
 
+Every environment carries its project's `exposure` — `public` or `internal`,
+never absent — beside its `url`, because that is the pair a reader has to
+interpret together: an environment with no `url` is either one of an
+[internal project](projects.md#an-internal-project), which is published
+nowhere on purpose, or one still waiting on a route, and only the second is a
+fault.
+
 ## Rolling back
 
 Rollback is not a special operation. A `Release` is an immutable snapshot of an

@@ -126,6 +126,22 @@ func (s *Server) createDomain(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// A custom domain on an internal project would be the one route that
+	// `exposure: internal` exists to prevent — and it would not work either,
+	// since a Domain rides the environment's own route and there is none.
+	// Refused rather than created and left unrouted, which would read as a
+	// verification that never completed.
+	project := &kitchenv1alpha1.Project{}
+	if err := s.get(ctx, env.Spec.ProjectRef.Name, project); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if project.Spec.Exposure.IsInternal() {
+		badRequest(w, "%s", internalProjectRefusal(project,
+			fmt.Sprintf("%s cannot be attached to %s", body.Hostname, env.Name)))
+		return
+	}
+
 	// One hostname, one Domain: a second one would fight the first over the
 	// Gateway listener and the route.
 	existing := &kitchenv1alpha1.DomainList{}
