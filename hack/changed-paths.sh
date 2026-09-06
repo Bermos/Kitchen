@@ -2,7 +2,7 @@
 # Decide whether the kind jobs have anything to check in this pull request, and
 # print `run=true` or `run=false` for a workflow to read.
 #
-# The five kind jobs — Chart install on kind, Chart install on Cilium, E2E on
+# The five kind jobs — Chart install (kind), Chart install (Cilium), E2E on
 # kind, Several workloads on kind, Gateway L7 flows on kind — cost twelve to
 # twenty minutes each and sit on the critical path of every merge. Most pull
 # requests cannot affect all of them: a CLI change reaches no cluster at all,
@@ -17,6 +17,13 @@
 # a workflow filtered out by `paths:` never runs, so a check required on main
 # never reports and the pull request waits on it forever. See CONTRIBUTING.md,
 # "Skipped is not missing".
+#
+# That holds for a plain job and not for a matrix one: GitHub does not expand a
+# matrix it never starts, so a skipped matrix job reports the unexpanded name
+# and the name branch protection requires is simply absent (#476). A required
+# check is therefore owned by a non-matrix job — for the chart install that is
+# `install-result`, which reports "Chart install on kind" whether the matrix
+# behind it ran or was skipped by this script.
 #
 # The lists below are what a profile may *ignore*, never what it needs. A path
 # nobody has classified runs the job, so adding a directory cannot silently

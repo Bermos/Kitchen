@@ -17,7 +17,7 @@
 # repository's pinned version with Gateway API and Hubble, an echo backend
 # behind a Gateway — sends requests through it, and reads the flows back off
 # Hubble Relay with test/hubble. The cluster itself is hack/install-cilium.sh,
-# which is also what the chart's "Chart install on Cilium" job builds, so the
+# which is also what the chart's "Chart install (Cilium)" job builds, so the
 # two Cilium clusters in this repository cannot drift apart. CI runs this as
 # .github/workflows/hubble.yml; a developer runs exactly the same thing with:
 #
@@ -136,7 +136,7 @@ resolve_pins() {
 
 build_cluster() {
   # One implementation of "a kind cluster whose CNI is Cilium", shared with the
-  # chart's "Chart install on Cilium" job: kind without kube-proxy, the Gateway
+  # chart's "Chart install (Cilium)" job: kind without kube-proxy, the Gateway
   # API CRDs the release under test requires, Cilium with Gateway API support,
   # and an LB IPAM pool so a Gateway can be programmed. Hubble is this job's
   # own addition to it.
