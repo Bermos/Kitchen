@@ -471,9 +471,9 @@ func (s *RescanSweeper) start(
 
 	name := rescanJobName(env.Name, release.Name)
 	appNS := appNamespace(project.Name)
-	job := rescanJob(name, appNS, project, env, release, scanner, artifact,
-		pullSecretName(project, release.Spec.ConfigSnapshot.Processes, kitchenv1alpha1.WebProcessName),
-		s.OperatorImage)
+	credentials := resolveRegistryCredentials(ctx, s.Client, appNS,
+		pullSecretName(project, release.Spec.ConfigSnapshot.Processes, kitchenv1alpha1.WebProcessName))
+	job := rescanJob(name, appNS, project, env, release, scanner, artifact, credentials, s.OperatorImage)
 
 	if err := s.Client.Create(ctx, job); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
@@ -1223,7 +1223,9 @@ func rescanJob(
 	env *kitchenv1alpha1.Environment,
 	release *kitchenv1alpha1.Release,
 	scanner kitchenv1alpha1.VulnerabilityScannerSpec,
-	artifactRef, credsSecret, operatorImage string,
+	artifactRef string,
+	credentials registryCredentialsForPod,
+	operatorImage string,
 ) *batchv1.Job {
 	labels := map[string]string{
 		labelProject:      project.Name,
@@ -1243,11 +1245,16 @@ func rescanJob(
 		{Name: "KITCHEN_RELEASE", Value: release.Name},
 		{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
 	}
-	mounts := []corev1.VolumeMount{
-		dockerConfigMount(),
+	scratch := []corev1.VolumeMount{
 		{Name: "sbom", MountPath: rescanSBOMDir},
 		{Name: "findings", MountPath: rescanFindingsDir},
 	}
+	// The scanner is an image an operator chose, and it reads. The two
+	// containers either side of it are the operator's own: the first fetches
+	// the artifact's bill of materials, the last writes the findings back to
+	// its repository, which is the only thing here that needs to write (#424).
+	scanMounts := append([]corev1.VolumeMount{readDockerConfigMount()}, scratch...)
+	platformMounts := append([]corev1.VolumeMount{dockerConfigMount()}, scratch...)
 	unprivileged := &corev1.SecurityContext{
 		RunAsUser:                ptr.To(int64(1000)),
 		RunAsNonRoot:             ptr.To(true),
@@ -1284,7 +1291,7 @@ func rescanJob(
 							Image:           operatorImage,
 							Command:         []string{"/rescan", "fetch"},
 							Env:             environment,
-							VolumeMounts:    mounts,
+							VolumeMounts:    platformMounts,
 							SecurityContext: unprivileged,
 						},
 						{
@@ -1292,7 +1299,7 @@ func rescanJob(
 							Image:           scanner.Image,
 							Args:            scanner.Args,
 							Env:             environment,
-							VolumeMounts:    mounts,
+							VolumeMounts:    scanMounts,
 							SecurityContext: unprivileged,
 						},
 					},
@@ -1301,11 +1308,12 @@ func rescanJob(
 						Image:           operatorImage,
 						Command:         []string{"/rescan", "publish"},
 						Env:             environment,
-						VolumeMounts:    mounts,
+						VolumeMounts:    platformMounts,
 						SecurityContext: unprivileged,
 					}},
 					Volumes: []corev1.Volume{
-						dockerConfigVolume(credsSecret),
+						dockerConfigVolume(credentials.Push),
+						readDockerConfigVolume(credentials.Read),
 						{Name: "sbom", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{Name: "findings", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},

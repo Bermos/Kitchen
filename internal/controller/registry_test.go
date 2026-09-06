@@ -47,6 +47,7 @@ var _ = Describe("The bundled registry", func() {
 	routeKey := types.NamespacedName{Name: RegistryRouteName, Namespace: PlatformNamespace}
 	connectionKey := types.NamespacedName{Name: RegistryConnectionName, Namespace: PlatformNamespace}
 	credentialKey := types.NamespacedName{Name: RegistryCredentialsSecretName, Namespace: PlatformNamespace}
+	readCredentialKey := types.NamespacedName{Name: RegistryReadCredentialsSecretName, Namespace: PlatformNamespace}
 
 	var reconciler *KitchenReconciler
 
@@ -93,7 +94,10 @@ var _ = Describe("The bundled registry", func() {
 
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: registryChartSecretName, Namespace: PlatformNamespace},
-			StringData: map[string]string{"username": "kitchen", "password": "hunter2"},
+			StringData: map[string]string{
+				"username": "kitchen", "password": "hunter2",
+				"readUsername": "kitchen-read", "readPassword": "hunter3",
+			},
 		}))).To(Succeed())
 
 		kitchen := &kitchenv1alpha1.Kitchen{
@@ -112,6 +116,7 @@ var _ = Describe("The bundled registry", func() {
 			&gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: RegistryRouteName, Namespace: PlatformNamespace}},
 			&kitchenv1alpha1.Connection{ObjectMeta: metav1.ObjectMeta{Name: RegistryConnectionName, Namespace: PlatformNamespace}},
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: RegistryCredentialsSecretName, Namespace: PlatformNamespace}},
+			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: RegistryReadCredentialsSecretName, Namespace: PlatformNamespace}},
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: registryChartSecretName, Namespace: PlatformNamespace}},
 			&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: SharedGatewayName, Namespace: PlatformNamespace}},
 			acmeIssuerObject(),
@@ -164,12 +169,40 @@ var _ = Describe("The bundled registry", func() {
 		Expect(secret.Labels).To(HaveKeyWithValue(labelManagedByKey, labelManagedByValue),
 			"deleting the connection from the connections page has to take its credential with it")
 
+		By("writing the read-only account beside it, for everything that only reads")
+		pull := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, readCredentialKey, pull)).To(Succeed())
+		Expect(pull.Type).To(Equal(corev1.SecretTypeDockerConfigJson))
+		Expect(json.Unmarshal(pull.Data[corev1.DockerConfigJsonKey], &cfg)).To(Succeed())
+		Expect(cfg.Auths["registry.apps.example.com"].Username).To(Equal("kitchen-read"))
+		Expect(cfg.Auths["registry.apps.example.com"].Password).To(Equal("hunter3"),
+			"a build's third-party code and every scan read with this one, and it is not the pushing account")
+
 		By("recording what was seeded, so it is seeded once")
 		kitchen := singleton()
 		Expect(kitchen.Status.Registry).NotTo(BeNil())
 		Expect(kitchen.Status.Registry.Host).To(Equal("registry.apps.example.com"))
 		Expect(kitchen.Status.Registry.Connection).To(Equal(RegistryConnectionName))
 		Expect(meta.IsStatusConditionTrue(kitchen.Status.Conditions, condRegistryReady)).To(BeTrue())
+	})
+
+	It("writes no read-only credential when the registry has no read-only account", func() {
+		// An installation whose chart predates the second account. Everything
+		// still works and everything reads with the pushing credential — the
+		// Connection's status is where that is reported, and a Secret naming
+		// the pushing account under the read-only name would be a promise
+		// nothing keeps.
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: registryChartSecretName, Namespace: PlatformNamespace}, secret)).To(Succeed())
+		delete(secret.Data, "readUsername")
+		delete(secret.Data, "readPassword")
+		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
+
+		reconcileOnce()
+
+		Expect(k8sClient.Get(ctx, credentialKey, &corev1.Secret{})).To(Succeed())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, readCredentialKey, &corev1.Secret{}))).To(BeTrue())
 	})
 
 	It("leaves a seeded connection deleted rather than reinstating it", func() {

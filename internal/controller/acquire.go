@@ -359,6 +359,13 @@ func (r *BuildReconciler) acquireImage(
 		if _, err := r.syncRegistrySecret(ctx, conn, build.Namespace, appNS); err != nil {
 			return "", fmt.Errorf("the pull credential could not be put in %s: %w", appNS, err)
 		}
+		// And the read-only credential beside it where this registry issues
+		// one, which is what a gate or a scan over this artifact reads with
+		// (#424). Most vendored images come from a registry that issues
+		// none, and that is not a failure: it syncs nothing.
+		if _, err := r.syncRegistryReadSecret(ctx, conn, build.Namespace, appNS); err != nil {
+			return "", fmt.Errorf("the pull credential could not be put in %s: %w", appNS, err)
+		}
 	}
 	return resolveWith(ctx, r.Resolvers, dockerConfig, image)
 }

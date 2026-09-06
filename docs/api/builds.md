@@ -357,10 +357,10 @@ A build in phase `Failed` carries `failure`:
 
 ```json
 {
-  "container": "creator",
+  "container": "builder",
   "exitCode": 51,
   "reason": "Error",
-  "message": "creator exited 51",
+  "message": "builder exited 51",
   "log": [
     "Paketo Buildpack for Web Servers 0.24.0",
     "ERROR: failed to build: exit status 1"
@@ -374,7 +374,10 @@ is the answer to the question that sentence leaves.
 
 `container` is the one that ended the build, and it is the useful half:
 Kitchen's build pods clone in an init container and build in another, so
-`clone` and `creator` are two different diagnoses. `exitCode` is absent when
+`clone` and `builder` are two different diagnoses. On a buildpacks build the
+lifecycle is five containers of its own — `analyzer`, `detector`, `restorer`,
+`builder`, `exporter` — so the container names the phase: a `builder` that
+exited is the repository's own build, an `exporter` that did is the push. `exitCode` is absent when
 nothing exited — a pod evicted before it ran, or an image that would not pull —
 and `reason` is then the kubelet's or the scheduler's own word for it
 (`Evicted`, `DeadlineExceeded`, `ImagePullBackOff`, `Unschedulable`), kept

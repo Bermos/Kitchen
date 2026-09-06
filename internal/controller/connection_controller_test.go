@@ -291,6 +291,113 @@ var _ = Describe("Connection Controller", func() {
 	})
 })
 
+// What a registry connection reports about the credential a pod that only
+// reads an artifact is given (#424). The registry itself is never reached
+// here: the answer is a Secret's existence, and it is reported whether or not
+// the probe can talk to anything.
+var _ = Describe("Connection Controller registry credential scope", func() {
+	const namespace = "default"
+
+	ctx := context.Background()
+
+	var reconciler *ConnectionReconciler
+
+	BeforeEach(func() {
+		reconciler = &ConnectionReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+	})
+
+	// A registry connection with a credential, and optionally the read-only
+	// one beside it.
+	createRegistry := func(name string, withReadCredential bool) types.NamespacedName {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-creds", Namespace: namespace},
+			Type:       corev1.SecretTypeDockerConfigJson,
+			StringData: map[string]string{
+				corev1.DockerConfigJsonKey: `{"auths":{"registry.example.com":{"username":"u","password":"p"}}}`,
+			},
+		}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, secret)).To(Succeed()) })
+
+		if withReadCredential {
+			pull := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: name + "-creds" + readCredentialSuffix, Namespace: namespace},
+				Type:       corev1.SecretTypeDockerConfigJson,
+				StringData: map[string]string{
+					corev1.DockerConfigJsonKey: `{"auths":{"registry.example.com":{"username":"r","password":"p"}}}`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, pull)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, pull)).To(Succeed()) })
+		}
+
+		conn := &kitchenv1alpha1.Connection{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: kitchenv1alpha1.ConnectionSpec{
+				Provider:             "dockerRegistry",
+				CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: name + "-creds"},
+				Config:               &runtime.RawExtension{Raw: []byte(`{"url": "registry.example.com/kitchen"}`)},
+			},
+		}
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, conn)).To(Succeed()) })
+		return types.NamespacedName{Namespace: namespace, Name: name}
+	}
+
+	reconciled := func(key types.NamespacedName) *kitchenv1alpha1.Connection {
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+		conn := &kitchenv1alpha1.Connection{}
+		ExpectWithOffset(1, k8sClient.Get(ctx, key, conn)).To(Succeed())
+		return conn
+	}
+
+	It("reports the read-only credential where the registry has one", func() {
+		conn := reconciled(createRegistry("scoped-registry", true))
+
+		Expect(conn.Status.Registry).NotTo(BeNil())
+		Expect(conn.Status.Registry.ScopedCredentials).To(BeTrue())
+		Expect(conn.Status.Registry.ReadCredentialSecret).To(Equal("scoped-registry-creds" + readCredentialSuffix))
+		Expect(conn.Status.Registry.Message).To(ContainSubstring("cannot push"))
+	})
+
+	It("says so where it has none, and names the Secret that would narrow it", func() {
+		conn := reconciled(createRegistry("shared-registry", false))
+
+		Expect(conn.Status.Registry).NotTo(BeNil())
+		Expect(conn.Status.Registry.ScopedCredentials).To(BeFalse())
+		Expect(conn.Status.Registry.ReadCredentialSecret).To(BeEmpty())
+		Expect(conn.Status.Registry.Message).To(ContainSubstring("shared-registry-creds" + readCredentialSuffix))
+
+		// A fact, not a fault: nothing about it turns the connection red,
+		// which is why it is a field rather than a condition.
+		for _, condition := range conn.Status.Conditions {
+			Expect(condition.Type).NotTo(ContainSubstring("Scoped"))
+		}
+	})
+
+	It("says nothing at all about a connection that is not a registry", func() {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "gh-scope-creds", Namespace: namespace},
+			StringData: map[string]string{"token": "t"},
+		}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, secret)).To(Succeed()) })
+		conn := &kitchenv1alpha1.Connection{
+			ObjectMeta: metav1.ObjectMeta{Name: "gh-scope", Namespace: namespace},
+			Spec: kitchenv1alpha1.ConnectionSpec{
+				Provider:             "github",
+				CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: "gh-scope-creds"},
+				Config:               &runtime.RawExtension{Raw: []byte(`{"apiUrl": "http://127.0.0.1:1"}`)},
+			},
+		}
+		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, conn)).To(Succeed()) })
+
+		Expect(reconciled(types.NamespacedName{Namespace: namespace, Name: "gh-scope"}).Status.Registry).To(BeNil())
+	})
+})
+
 var _ = Describe("Connection Controller timing", func() {
 	It("rechecks less often than it retries", func() {
 		// The retry interval exists to see an outage end quickly; if it ever

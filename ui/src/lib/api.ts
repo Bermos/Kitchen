@@ -1747,6 +1747,18 @@ export interface Connection {
   /** Operator's shape only — a condition's message is the provider's own
    * words, and those are the operator's business. */
   conditions?: Condition[];
+  /** Operator's shape only, and only for a registry: what a pod that merely
+   * reads an artifact from it is given. */
+  registry?: ConnectionRegistry;
+}
+
+/** Whether this registry can issue a credential narrower than the
+ * connection's own — one a quality gate or a vulnerability scanner can read an
+ * artifact with and still not push. `false` is a fact about the registry, not
+ * a fault, so it is not a condition and never turns the connection red. */
+export interface ConnectionRegistry {
+  scopedCredentials: boolean;
+  message?: string;
 }
 
 /** One account's role on a project, as `GET /projects/{name}/members` lists

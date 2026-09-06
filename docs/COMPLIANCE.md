@@ -574,6 +574,14 @@ namespace. It gets the artifact reference, a credential to pull it with, and a
 directory to write to. It gets no service account token, no cluster access, and
 it runs as an unprivileged user with every capability dropped.
 
+The credential it pulls with is a credential that **cannot push**, wherever the
+registry issues one — the bundled registry's read-only account, or one an
+operator supplied for a registry of their own; the connection's own credential
+is mounted into the publisher beside it, which is the platform's image and the
+thing that writes the findings back (#424). Where the registry issues none, the
+two are the same credential and the connection's `status.registry` says so, in
+[docs/api/connections.md](api/connections.md)'s words.
+
 Kubernetes' own `$(VAR)` expansion is what points it at the artifact, so a gate
 is configured with environment variables rather than with templating of
 Kitchen's:

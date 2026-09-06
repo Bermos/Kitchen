@@ -17,9 +17,16 @@ outright — which is a CrashLoopBackOff, not a warning.
 
 `http.auth` with no `anonymousPolicy` is the second: the registry is published
 on the base domain, which puts it on the internet, so its credential is doing
-real work rather than being a formality. `defaultPolicy` is what an
-authenticated user may do — everything, since the only account is the
-platform's own.
+real work rather than being a formality. `defaultPolicy` is what any
+authenticated account may do, and it is `read` alone: writing is granted to
+the platform's own account by name, and to nothing else.
+
+That is what makes the second account read-only, and the second account is
+what a build pod's third-party code is given (#424) — a buildpack running the
+repository's own `npm install`, a quality gate, a vulnerability scanner. The
+credential such a pod can read off its own filesystem then cannot push over
+another project's tags. Only the phase that pushes holds the account that
+can.
 
 `http.compat` is not optional here either. zot 2.x is OCI-native and answers
 `415 Unsupported Media Type` to a manifest it was not told to accept, and both
@@ -81,7 +88,13 @@ data:
         "accessControl": {
           "repositories": {
             "**": {
-              "defaultPolicy": ["read", "create", "update", "delete"]
+              "policies": [
+                {
+                  "users": [{{ .Values.registry.auth.username | quote }}],
+                  "actions": ["read", "create", "update", "delete"]
+                }
+              ],
+              "defaultPolicy": ["read"]
             }
           }
         },

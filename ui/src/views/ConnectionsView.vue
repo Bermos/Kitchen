@@ -93,6 +93,16 @@ async function deleteConnection() {
           @click="deleteTarget = connection"
         />
       </div>
+      <!-- What a quality gate or a scanner reads this registry with. It is a
+           fact about the registry rather than a fault, so it sits here in
+           words and never touches the dot above. -->
+      <p v-if="connection.registry" class="px-4 pb-3 text-xs text-muted flex items-start gap-2">
+        <UIcon
+          :name="connection.registry.scopedCredentials ? 'i-lucide-shield-check' : 'i-lucide-shield-alert'"
+          class="size-4 shrink-0 mt-px"
+        />
+        <span>{{ connection.registry.message }}</span>
+      </p>
       <!-- Why the dot is not green, in full. Managing a connection is the
            operator's outright — this whole screen is behind that role — so
            the conditions are not gated on the mode a second time. -->

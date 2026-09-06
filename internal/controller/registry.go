@@ -39,6 +39,15 @@ const (
 	// secret with it, exactly as for one someone created by hand.
 	RegistryCredentialsSecretName = "kitchen-connection-" + RegistryConnectionName
 
+	// RegistryReadCredentialsSecretName holds the credential that may pull
+	// from the bundled registry and may not push to it — what a build's
+	// third-party code and every scan of an artifact is given instead of the
+	// Connection's own (#424). The name is the Connection credential's plus
+	// the read suffix, which is the convention readCredentialSecretName
+	// spells: an installation pointing at a registry of its own can put a
+	// read-only credential of its own beside its Connection's the same way.
+	RegistryReadCredentialsSecretName = RegistryCredentialsSecretName + readCredentialSuffix
+
 	// registryProviderName is the Connection provider the seeded connection
 	// uses. It is an ordinary dockerRegistry connection — the platform's own
 	// registry is not a special case anywhere downstream of this.
@@ -63,9 +72,12 @@ const (
 	defaultRegistryPort    = int32(5000)
 	defaultRegistrySecret  = "kitchen-registry"
 
-	// Keys the chart writes the registry's own credential under.
-	registrySecretKeyUsername = "username"
-	registrySecretKeyPassword = "password"
+	// Keys the chart writes the registry's two accounts under: the one that
+	// pushes, and the one that only reads.
+	registrySecretKeyUsername     = "username"
+	registrySecretKeyPassword     = "password"
+	registrySecretKeyReadUsername = "readUsername"
+	registrySecretKeyReadPassword = "readPassword"
 
 	condRegistryReady = "RegistryReady"
 )

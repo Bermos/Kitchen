@@ -113,9 +113,27 @@ git checkout -q FETCH_HEAD`
 // Buildpacks lifecycle: no Dockerfile, no instructions of any kind — the
 // buildpacks in the builder decide what the repository is and how it is run.
 //
-// `creator` is the whole lifecycle in one process (detect, restore, build,
-// export), which is what a build with no cache between phases wants: the
-// alternative is five containers passing volumes between them for no gain.
+// The lifecycle runs as its five phases rather than as `creator`, which is the
+// one process that does all five (#424). The phases are the same work in the
+// same order over the same two volumes; what differs is that each is a
+// container of its own, and a container only holds the credential its phase
+// needs:
+//
+//   - analyze, restore and export talk to the registry. They are the
+//     lifecycle's own binaries out of the pinned builder image, and nothing
+//     from the repository runs in them.
+//   - detect and build run the *buildpacks*, which run the repository's own
+//     build — `npm install` and its lifecycle scripts, `pip install`,
+//     whatever the buildpack invokes. They mount no registry credential at
+//     all, so reading one out of `$DOCKER_CONFIG/config.json` from a
+//     `postinstall` script finds an empty directory.
+//   - only export pushes, so only export holds the credential that can. The
+//     two phases that merely read hold the read-only one where the registry
+//     issues one.
+//
+// `creator` is otherwise identical and was what this ran until the split: at
+// platform API 0.13 it resolves its inputs exactly as the phases do, run
+// image and all, so nothing about what is built or pushed changes.
 //
 // What the lifecycle is told about the repository comes from detection: a
 // framework that starts a server of its own needs nothing, and one that
@@ -127,7 +145,8 @@ func buildpacksPod(
 	plan buildPlan,
 	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
-	credsSecret, gitSecret string,
+	credentials registryCredentialsForPod,
+	gitSecret string,
 ) corev1.PodTemplateSpec {
 	// The clone lands the whole repository and the lifecycle is pointed
 	// inside it: the build root is what is built, exactly as it is for the
@@ -155,7 +174,8 @@ func buildpacksPod(
 	volumes := []corev1.Volume{
 		{Name: volumeWorkspace, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		{Name: volumeLayers, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		dockerConfigVolume(credsSecret),
+		dockerConfigVolume(credentials.Push),
+		readDockerConfigVolume(credentials.Read),
 	}
 	if gitSecret != "" {
 		cloneEnv = append(cloneEnv,
@@ -168,6 +188,45 @@ func buildpacksPod(
 		volumes = append(volumes, gitCredentialVolume(gitSecret))
 	}
 
+	// What every phase is told, whichever credential it holds: the platform
+	// contract it speaks, and what detection made of the repository. The
+	// framework's variables are the buildpacks' own configuration (BP_*) and
+	// are read in both the phases that run them, so they are given to every
+	// phase rather than guessed at one.
+	lifecycleEnv := func(credential string) []corev1.EnvVar {
+		env := []corev1.EnvVar{{Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI}}
+		if credential != "" {
+			env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: dockerConfigDir})
+		}
+		return append(env, frameworkEnv(detected)...)
+	}
+	// The credential-holding phases mount one docker config each; the two
+	// that run the repository's code mount neither.
+	readMounts := []corev1.VolumeMount{workspace, layers, readDockerConfigMount()}
+	pushMounts := []corev1.VolumeMount{workspace, layers, dockerConfigMount()}
+	hermeticMounts := []corev1.VolumeMount{workspace, layers}
+
+	// One phase, as a container. Every phase is told the same two things
+	// about where it works — the layers directory each writes its part of
+	// the build into, and, where it reads the repository, the build root —
+	// and none of them draws colour: the collector ships these logs into
+	// ClickHouse, where a colour escape is a character like any other.
+	//
+	// -no-color leads the arguments because the image reference trails them,
+	// and a flag after a positional argument is a positional argument.
+	phase := func(name string, mounts []corev1.VolumeMount, credential string, args ...string) corev1.Container {
+		return corev1.Container{
+			Name:         name,
+			Image:        BuildpacksBuilderImage,
+			Command:      []string{"/cnb/lifecycle/" + name},
+			Args:         append([]string{"-no-color"}, args...),
+			Env:          lifecycleEnv(credential),
+			VolumeMounts: mounts,
+		}
+	}
+	layersArg := "-layers=" + buildpacksLayersDir
+	appArg := "-app=" + appDir
+
 	return corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
@@ -175,37 +234,40 @@ func buildpacksPod(
 				RunAsUser:  ptr.To(cnbUID),
 				RunAsGroup: ptr.To(cnbGID),
 			},
-			InitContainers: []corev1.Container{{
-				Name:         "clone",
-				Image:        GitCloneImage,
-				Command:      []string{"/bin/sh", "-c", cloneScript},
-				Env:          cloneEnv,
-				VolumeMounts: cloneMounts,
-			}},
-			Containers: []corev1.Container{{
-				Name:    "creator",
-				Image:   BuildpacksBuilderImage,
-				Command: []string{"/cnb/lifecycle/creator"},
-				Args: append(cnbCacheArgs(cache), []string{
-					"-app=" + appDir,
-					"-layers=" + buildpacksLayersDir,
-					// The lifecycle's report carries the digest of what it
-					// pushed. Writing it to the termination log puts it
-					// exactly where the reconciler already reads BuildKit's
-					// metadata from — see digestFromTerminationMessage,
-					// which reads both shapes.
-					"-report=" + terminationLogPath,
-					// The collector ships this log into ClickHouse, where a
-					// colour escape is a character like any other.
-					"-no-color",
-					plan.Tag,
-				}...),
-				Env: append([]corev1.EnvVar{
-					{Name: "DOCKER_CONFIG", Value: dockerConfigDir},
-					{Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI},
-				}, frameworkEnv(detected)...),
-				VolumeMounts: []corev1.VolumeMount{workspace, layers, dockerConfigMount()},
-			}},
+			InitContainers: []corev1.Container{
+				{
+					Name:         "clone",
+					Image:        GitCloneImage,
+					Command:      []string{"/bin/sh", "-c", cloneScript},
+					Env:          cloneEnv,
+					VolumeMounts: cloneMounts,
+				},
+				// What is already in the registry under this tag, and what
+				// the image will be built on. It writes analyzed.toml, which
+				// is where export reads the run image from.
+				phase("analyzer", readMounts, credentials.Read, layersArg, plan.Tag),
+				// Which buildpacks claim the repository. This is the first
+				// phase that runs somebody else's code.
+				phase("detector", hermeticMounts, "", appArg, layersArg),
+				// The layers the cache image still has.
+				phase("restorer", readMounts, credentials.Read,
+					append(cnbCacheArgs(cache), layersArg)...),
+				// The repository's own build.
+				phase("builder", hermeticMounts, "", appArg, layersArg),
+			},
+			Containers: []corev1.Container{
+				// The push, and the only container in the pod that can. Its
+				// report carries the digest of what it pushed; writing it to
+				// the termination log puts it exactly where the reconciler
+				// already reads BuildKit's metadata from — see
+				// digestFromTerminationMessage, which reads both shapes, and
+				// imageWithDigest, which reads the pod's containers rather
+				// than its init containers, so the phase that pushes has to
+				// be the pod's own container.
+				phase("exporter", pushMounts, credentials.Push,
+					append(cnbCacheArgs(cache), appArg, layersArg,
+						"-report="+terminationLogPath, plan.Tag)...),
+			},
 			Volumes: volumes,
 		},
 	}

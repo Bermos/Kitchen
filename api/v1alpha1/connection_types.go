@@ -93,6 +93,40 @@ type ConnectionStatus struct {
 	// down somewhere both a later reconcile and every other claim can read.
 	// +optional
 	Cache *CacheConnectionStatus `json:"cache,omitempty"`
+
+	// Registry is what this registry Connection can do about credentials
+	// narrower than its own. Only the `dockerRegistry` provider writes it.
+	// +optional
+	Registry *RegistryConnectionStatus `json:"registry,omitempty"`
+}
+
+// RegistryConnectionStatus says whether the platform can hand a pod that only
+// reads an artifact something less than the credential a build pushes with
+// (#424).
+//
+// A registry Connection's credential is the whole of what it can do, and on
+// the bundled registry that is push over every tag of every project. A pod
+// that runs somebody else's code — the buildpacks lifecycle running a
+// repository's own build, a quality gate, a vulnerability scanner — has no
+// business holding it. Where a read-only credential exists the platform gives
+// those pods that one instead; where none does, they hold the Connection's
+// own, and this is where that is said rather than left to be discovered.
+type RegistryConnectionStatus struct {
+	// ReadCredentialSecret names the Secret holding a credential for this
+	// registry that can pull and cannot push, empty when there is none. It
+	// is never the credential itself — the API reads no credential back.
+	// +optional
+	ReadCredentialSecret string `json:"readCredentialSecret,omitempty"`
+
+	// ScopedCredentials is whether such a credential exists. False is not a
+	// fault: it is an installation whose registry issues one credential, and
+	// it is what Message explains.
+	// +optional
+	ScopedCredentials bool `json:"scopedCredentials,omitempty"`
+
+	// Message says in words what the two above mean for a scan.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // CacheConnectionStatus is the record of what has been handed out at the
