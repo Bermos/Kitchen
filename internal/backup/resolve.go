@@ -38,6 +38,80 @@ const (
 	CredentialKeySecretAccessKey = "secretAccessKey"
 )
 
+// The Secret the archive's own encryption key lives in, where the singleton
+// names none. It is a default rather than a constant — spec.backup.encryption
+// .keySecretRef can name another — but it is the name the API writes, the
+// name the restore Job looks for, and the name docs/BACKUP.md tells an
+// operator to recreate on the cluster they are restoring into.
+const (
+	EncryptionKeySecretName = "kitchen-backup-encryption-key" //nolint:gosec // a name, not a key
+	EncryptionKeySecretKey  = "key"
+)
+
+// CheckEndpoint refuses a destination that would carry the archive in the
+// clear.
+//
+// It is the reconcile-time and run-time backstop for the CEL rule on
+// S3Destination: admission refuses the write, this refuses the run, and the
+// two exist together because an object written before the rule did — or by
+// something that bypassed admission — must not quietly go on uploading every
+// credential the platform holds over plain HTTP.
+func CheckEndpoint(spec *kitchenv1alpha1.BackupDestination) error {
+	if spec == nil || spec.S3 == nil {
+		return nil
+	}
+	endpoint := strings.TrimSpace(spec.S3.Endpoint)
+	switch {
+	case endpoint == "", spec.S3.AllowInsecureEndpoint:
+		// Empty is the AWS endpoint, which is https either way; and an
+		// installation that said allowInsecureEndpoint has answered this.
+		return nil
+	case strings.HasPrefix(endpoint, "https://"):
+		return nil
+	default:
+		return fmt.Errorf(
+			"the backup destination's endpoint %q is not https://, so the archive — every credential this "+
+				"platform holds — would travel in the clear. Use an https:// endpoint, or set "+
+				"allowInsecureEndpoint on the destination if the store really is reached over a network "+
+				"you trust", endpoint)
+	}
+}
+
+// EncryptionKey is the key an archive is encrypted under, read from the
+// Secret the singleton names.
+//
+// It answers nil, nil for an installation that has opted out of encryption,
+// and an error for one that has not opted out and has no key — which is the
+// whole of "encrypted by default": a run that cannot encrypt does not upload.
+// The message names both ways out, because a scheduled backup that has
+// stopped is a thing somebody has to be able to fix from the sentence.
+func EncryptionKey(
+	ctx context.Context,
+	reader client.Reader,
+	namespace string,
+	spec kitchenv1alpha1.BackupSpec,
+) ([]byte, error) {
+	if !spec.Encryption.Encrypted() {
+		return nil, nil
+	}
+	name := EncryptionKeySecretName
+	if ref := spec.Encryption.KeySecretRef; ref != nil && ref.Name != "" {
+		name = ref.Name
+	}
+	secret := &corev1.Secret{}
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, secret); err != nil {
+		return nil, fmt.Errorf("archives are encrypted and the key %s/%s could not be read: %w. "+
+			"Supply a key on the Backup screen — or in PUT /api/v1/platform/backup/destination as "+
+			"encryption.key — or set encryption.mode to none to write archives in the clear on purpose",
+			namespace, name, err)
+	}
+	key, err := ParseEncryptionKey(string(secret.Data[EncryptionKeySecretKey]))
+	if err != nil {
+		return nil, fmt.Errorf("the backup encryption key %s/%s cannot be used: %w", namespace, name, err)
+	}
+	return key, nil
+}
+
 // InternalCAFile is where every pod the platform writes sees the CA the
 // operator mints for its own stores — the chart's `kitchen.internalCAFile`,
 // mounted from the ConfigMap `kitchen-internal-ca`, in the operator's own pod
@@ -85,6 +159,14 @@ func Open(
 ) (destination.Destination, error) {
 	if spec == nil {
 		return nil, fmt.Errorf("this installation has no backup destination configured")
+	}
+	// Before anything is built, and for every caller: an endpoint that is not
+	// https is refused here rather than uploaded to. Admission refuses the
+	// write, so reaching this means an object written before that rule
+	// existed, and such an installation must find out by being told rather
+	// than by carrying on.
+	if err := CheckEndpoint(spec); err != nil {
+		return nil, err
 	}
 	switch spec.Type {
 	case kitchenv1alpha1.BackupDestinationS3:

@@ -181,6 +181,13 @@ restore:
   # -- Restore the objects and secrets alone, leaving the identity provider's
   # database as it is.
   skipAccounts: false
+  # -- Secret in this namespace holding the key an encrypted archive is opened
+  # with, under `key`. Empty is `kitchen-backup-encryption-key`, which is where
+  # the API writes it. A scheduled archive is encrypted before it is uploaded
+  # and the key is deliberately not inside it, so on a cluster being rebuilt
+  # this Secret is the copy whoever configured the destination kept — create it
+  # before the restore runs. A plain archive needs none of this.
+  encryptionKeySecretName: ""
   # -- How long the Job waits for the identity provider's database to answer.
   # The chart starts both at once and the identity provider is what creates the
   # tables, so a restore that connected immediately would find nothing to fill.

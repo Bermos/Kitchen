@@ -154,6 +154,14 @@ func (r *KitchenReconciler) reconcileBackup(
 	}
 
 	status, ready, reason, message := r.surveyBackup(ctx, kitchen, time.Now().UTC())
+	// The two ways a run cannot even start, checked here rather than
+	// discovered at 02:00 by a Job whose log nobody is reading. They override
+	// the survey's judgement on purpose: a schedule whose next run will refuse
+	// to upload is not "backed up", however recent the last archive is.
+	if problem, problemReason := r.backupProtection(ctx, kitchen); problem != "" {
+		ready, reason, message = false, problemReason, problem
+		status.Message = problem
+	}
 	kitchen.Status.Backup = status
 	if ready {
 		setCond(ConditionBackupReady, metav1.ConditionTrue, reason, message)
@@ -163,6 +171,42 @@ func (r *KitchenReconciler) reconcileBackup(
 	// A late or failed backup is not something a requeue fixes — the next
 	// scheduled run is what fixes it — so this reports rather than retries.
 	return true
+}
+
+// backupProtection is what stops the next run before it starts: an endpoint
+// that would carry the archive in the clear, or an installation that encrypts
+// its archives and has no key to encrypt them with.
+//
+// It is the reconcile-time backstop for two rules that are also enforced where
+// they belong — the endpoint by a CEL rule on the CRD and by backup.Open, the
+// key by the run itself, which refuses to upload the platform's whole
+// credential store unencrypted as a fallback. This is the half that makes
+// either visible *before* a run fails: an object written before those rules
+// existed reconciles here, and the answer to "why is BackupReady false" is
+// then a sentence naming the fix rather than a Job's log.
+//
+// It answers "" when there is nothing wrong.
+func (r *KitchenReconciler) backupProtection(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) (string, string) {
+	spec := kitchen.Spec.Backup
+	if err := backup.CheckEndpoint(spec.Destination); err != nil {
+		return err.Error(), "InsecureDestination"
+	}
+	if !spec.Encryption.Encrypted() {
+		return "", ""
+	}
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		// The uncached reader, for the reason backupRuns uses it: this is one
+		// Secret read on a reconcile, not a reason to keep an informer.
+		reader = r.APIReader
+	}
+	if _, err := backup.EncryptionKey(ctx, reader, PlatformNamespace, spec); err != nil {
+		return err.Error(), "EncryptionKeyMissing"
+	}
+	return "", ""
 }
 
 // backupImage is the image a run executes. It is the operator's own, because
@@ -320,9 +364,14 @@ func (r *KitchenReconciler) surveyBackup(
 ) (*kitchenv1alpha1.BackupStatus, bool, string, string) {
 	spec := kitchen.Spec.Backup
 	status := &kitchenv1alpha1.BackupStatus{
-		Schedule:    spec.Schedule,
-		Suspended:   spec.Suspend,
+		Schedule:  spec.Schedule,
+		Suspended: spec.Suspend,
+		// What is protecting the archives at the destination, reported rather
+		// than left to be read off the spec: "what would it take to read that
+		// bucket" is a question about the platform, and this is where the
+		// platform answers questions about itself.
 		Destination: backup.Describe(spec.Destination),
+		Encryption:  string(spec.Encryption.EffectiveMode()),
 	}
 
 	cron := &batchv1.CronJob{}

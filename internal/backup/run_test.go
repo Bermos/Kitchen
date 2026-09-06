@@ -412,3 +412,106 @@ func TestArchiveNaming(t *testing.T) {
 		}
 	}
 }
+
+// The archive at the destination is the platform's whole credential store, so
+// what is actually in the bucket is the thing worth asserting on: ciphertext
+// that no reader without the key can make an archive of, and that the restore
+// path — sniff, decrypt, read — puts back exactly.
+//
+// There is no MinIO here on purpose. #363 is where a round trip against a real
+// store belongs; this is the property that does not need one.
+func TestAnEncryptedRunUploadsSomethingOnlyTheKeyOpens(t *testing.T) {
+	target := newStore()
+	run := newRun(t, target, RetentionPolicy{})
+	run.Key = NewEncryptionKey()
+
+	result, err := run.Do(context.Background())
+	if err != nil {
+		t.Fatalf("the run failed: %v", err)
+	}
+	if !result.Encrypted {
+		t.Error("an encrypted run does not say so on its own result")
+	}
+	if !result.Verified {
+		t.Error("an encrypted archive was not read back and verified")
+	}
+
+	object := target.objects[result.Archive]
+	if len(object) == 0 {
+		t.Fatalf("nothing was uploaded under %s", result.Archive)
+	}
+	if bytes.Contains(object, []byte("apps.example.com")) {
+		t.Error("the archive's plaintext is in the object at the destination")
+	}
+	if _, err := ReadManifest(bytes.NewReader(object)); err == nil {
+		t.Error("the object at the destination reads as a plain archive, so it is not encrypted")
+	}
+
+	// The restore path: the bytes say for themselves that they are encrypted,
+	// and the key opens them into the archive that was written.
+	encrypted, stream, err := Sniff(bytes.NewReader(object))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !encrypted {
+		t.Fatal("a restore cannot tell this archive is encrypted")
+	}
+	plain, err := Decrypt(stream, run.Key, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := Read(plain)
+	if err != nil {
+		t.Fatalf("the archive did not come back: %v", err)
+	}
+	if len(archive.Resources["projects"]) != 1 {
+		t.Errorf("the restored archive holds %d projects", len(archive.Resources["projects"]))
+	}
+	if archive.Secrets == nil {
+		t.Error("the restored archive holds no secrets, which is the half that matters")
+	}
+
+	// And the wrong key is no better off than no key.
+	_, stream, err = Sniff(bytes.NewReader(object))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong, err := Decrypt(stream, NewEncryptionKey(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Read(wrong); err == nil {
+		t.Error("another key opened the archive")
+	}
+}
+
+// The opt-out, and the archives written before any of this existed: a run
+// with no key uploads the gzip it always did, and that object still restores.
+func TestAnUnencryptedRunIsStillAPlainArchive(t *testing.T) {
+	target := newStore()
+	run := newRun(t, target, RetentionPolicy{})
+
+	result, err := run.Do(context.Background())
+	if err != nil {
+		t.Fatalf("the run failed: %v", err)
+	}
+	if result.Encrypted {
+		t.Error("a run with no key claims to have encrypted the archive")
+	}
+
+	object := target.objects[result.Archive]
+	encrypted, stream, err := Sniff(bytes.NewReader(object))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encrypted {
+		t.Fatal("an archive written with no key was taken for an encrypted one")
+	}
+	archive, err := Read(stream)
+	if err != nil {
+		t.Fatalf("a legacy plaintext archive no longer restores: %v", err)
+	}
+	if len(archive.Resources["projects"]) != 1 {
+		t.Errorf("the restored archive holds %d projects", len(archive.Resources["projects"]))
+	}
+}

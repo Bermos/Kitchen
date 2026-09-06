@@ -935,7 +935,7 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 | `backup.enabled` | on wherever a destination resolves | Whether the platform configures archiving for this database at all |
 | `backup.schedule` | the connection's, then `0 0 3 * * *` | When a base backup is taken |
 | `backup.retentionPolicy` | the connection's, then keep everything | How long the destination keeps this database's backups: `30d`, `4w`, `6m` |
-| `backup.destination` | the platform's own, under a prefix of this database's | A bucket of the claim's own: `bucket`, `prefix`, `region`, `endpoint`, `forcePathStyle`, `serverSideEncryption`, and a `accessKeyId`/`secretAccessKey` pair |
+| `backup.destination` | the platform's own, under a prefix of this database's | A bucket of the claim's own: `bucket`, `prefix`, `region`, `endpoint`, `forcePathStyle`, `serverSideEncryption`, `allowInsecureEndpoint`, and a `accessKeyId`/`secretAccessKey` pair |
 
 Every field inherits when it is absent — the claim's answer, then the
 [connection](connections.md)'s default, then the platform's own destination —
@@ -943,6 +943,14 @@ so an installation that configured a destination once has already said where
 its databases go, and a claim writes down only what it wants differently. An
 empty block is not the same as no block, which is why the dashboard's switch
 has three positions and defaults to the inherited one.
+
+**`endpoint` must be `https://`**, empty being the AWS endpoint, which is
+https either way. Anything else is refused — here with a `400` naming the
+opt-in, and at admission by a CEL rule on the same `S3Destination` the
+platform's own destination uses — because a backup travelling to it travels in
+the clear. `allowInsecureEndpoint` is how a claim whose store really is on a
+network it trusts says so, and it is a sentence in the request rather than a
+silent default. See [docs/BACKUP.md](../BACKUP.md#what-protects-the-archive-at-the-destination).
 
 **`backup.schedule` is CloudNativePG's cron, not Kubernetes'.** Six fields
 with a leading seconds field, and a five-field expression is refused here

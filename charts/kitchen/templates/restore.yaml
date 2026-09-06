@@ -198,6 +198,9 @@ spec:
             {{- if .Values.restore.skipAccounts }}
             - --skip-accounts
             {{- end }}
+            {{- with .Values.restore.encryptionKeySecretName }}
+            - --encryption-key-secret={{ . }}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:

@@ -84,9 +84,27 @@ spec:
                       the API and never read back, exactly as the platform destination's is.
                     properties:
                       s3:
-                        description: S3Destination is a bucket at an S3-compatible
-                          store.
+                        description: |-
+                          S3Destination is a bucket at an S3-compatible store.
+
+                          The endpoint rule is the same rule notification webhooks keep, applied to
+                          the one upload that carries every credential the platform holds: an archive
+                          travelling to `http://minio.internal:9000` travels in the clear, over
+                          whatever is between this cluster and that store. It is refused at admission
+                          rather than reported afterwards, and AllowInsecureEndpoint is how an
+                          installation that means it says so.
                         properties:
+                          allowInsecureEndpoint:
+                            description: |-
+                              AllowInsecureEndpoint permits an endpoint that is not `https://`.
+
+                              It exists because a store on a cluster-internal network is a real
+                              installation and not a mistake, and it is explicit for the reason
+                              every other opt-out here is: an archive going to a plaintext endpoint
+                              is every credential this platform holds on somebody else's wire, and
+                              that should be a sentence in the object rather than a silent default.
+                              The archive's own encryption is a separate decision and still applies.
+                            type: boolean
                           bucket:
                             description: |-
                               Bucket archives are written into. It should be a bucket of its own:
@@ -115,6 +133,9 @@ spec:
                             description: |-
                               Endpoint overrides AWS. This is what makes MinIO, R2, Backblaze,
                               Wasabi, Ceph and Garage the same code path rather than five backends.
+
+                              It must be an `https://` URL. Empty is the AWS endpoint, which is
+                              https either way.
                             type: string
                           forcePathStyle:
                             description: |-
@@ -151,6 +172,15 @@ spec:
                         required:
                         - bucket
                         type: object
+                        x-kubernetes-validations:
+                        - message: 'spec.backup.destination.s3.endpoint must be an
+                            https:// URL: the archive is every credential this platform
+                            holds, and an endpoint that is not https carries it in
+                            the clear. Set allowInsecureEndpoint if the store is genuinely
+                            reached over a network you trust.'
+                          rule: '!has(self.endpoint) || self.endpoint.size() == 0
+                            || self.endpoint.startsWith(''https://'') || (has(self.allowInsecureEndpoint)
+                            && self.allowInsecureEndpoint)'
                       type:
                         description: |-
                           Type is the kind of store. The enum lives on BackupDestinationType

@@ -24,6 +24,16 @@ limitations under the License.
 //
 // Everything above it — the ordering of a run, the retention — is written
 // against the interface, so a second backend inherits the whole of it.
+//
+// Nothing here protects what it writes, and that is deliberate. An archive is
+// every credential the platform holds, so it is encrypted *before* it reaches
+// a Destination — internal/backup/crypt.go, under a key the operator supplied
+// — and what a Put receives is already ciphertext. A destination therefore
+// never has to be trusted with the plaintext, and a second backend inherits
+// that too, without having to remember to. The two things a destination does
+// carry are the store's own at-rest encryption, which it asks for on top
+// (S3Config.ServerSideEncryption), and the requirement that its endpoint be
+// https, which backup.CheckEndpoint refuses a run over.
 package destination
 
 import (

@@ -2009,6 +2009,7 @@ kubectl delete namespace kitchen-system
 | `restore.id` | `"1"` | Changing it runs the restore again: a Job's pod template is immutable, so the id is in its name. |
 | `restore.force` | `false` | Restore an archive written by a different release. The accounts dump carries rows and not a schema. |
 | `restore.skipAccounts` | `false` | Restore the objects and secrets alone. |
+| `restore.encryptionKeySecretName` | `""` | Secret holding the key an encrypted archive is opened with, under `key`. Empty is `kitchen-backup-encryption-key`. The key is deliberately not in the archive, so on a rebuilt cluster this is the copy somebody kept — create it before the restore runs. |
 | `restore.waitForSchema` | `5m` | How long to wait for the identity provider to have migrated its schema. |
 | `restore.serviceAccountName` | `""` | Generated when empty. |
 | `restore.rbac.create` | `true` | Create the restore's ServiceAccount and roles. Not cluster-admin, unlike self-update's. |

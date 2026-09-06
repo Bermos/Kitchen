@@ -19,6 +19,7 @@ package backup
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,6 +67,15 @@ type Run struct {
 	// Retention prunes the destination afterwards, and only afterwards.
 	Retention RetentionPolicy
 
+	// Key encrypts the archive on its way to the destination. Nil writes it
+	// as it is, which is spec.backup.encryption.mode: none — an installation
+	// that said out loud it would rather trust the bucket.
+	//
+	// The archive is encrypted *as it is staged*, so what is measured,
+	// uploaded and read back is the ciphertext and nothing anywhere holds a
+	// plaintext copy of every platform credential on a disk.
+	Key []byte
+
 	// Scratch is the directory the archive is staged in. It has to be a real
 	// directory rather than memory: the archive is uploaded with its exact
 	// length, and it is read back off disk to be verified.
@@ -94,6 +104,12 @@ type Result struct {
 	// StartedAt and FinishedAt bound the run.
 	StartedAt  time.Time `json:"startedAt"`
 	FinishedAt time.Time `json:"finishedAt"`
+
+	// Encrypted is whether the archive was encrypted before it was uploaded.
+	// It is on the run's own report — and so on status.backup — because "what
+	// is in that bucket, and what would it take to read it" is a question
+	// about the object that was written rather than about today's spec.
+	Encrypted bool `json:"encrypted"`
 
 	// Verified is whether the archive was read back off the destination and
 	// parsed as a manifest for this installation. A run that uploaded and
@@ -129,7 +145,7 @@ func (r *Run) Do(ctx context.Context) (Result, error) {
 		now = r.Now
 	}
 	started := now().UTC()
-	result := Result{StartedAt: started, Destination: r.Destination.String()}
+	result := Result{StartedAt: started, Destination: r.Destination.String(), Encrypted: len(r.Key) > 0}
 	finish := func(err error) (Result, error) {
 		result.FinishedAt = now().UTC()
 		if err != nil {
@@ -153,9 +169,31 @@ func (r *Run) Do(ctx context.Context) (Result, error) {
 		_ = os.Remove(staged.Name())
 	}()
 
-	manifest, err := r.Exporter.WriteTo(ctx, staged)
+	// The encryption wraps the staged file rather than the upload, so that the
+	// archive is ciphertext from the moment it exists: the length that is
+	// measured, the bytes that are uploaded and the object that is read back
+	// are all the same encrypted archive, and no plaintext copy of every
+	// platform credential is ever on a disk.
+	var target io.Writer = staged
+	var sealed io.WriteCloser
+	if len(r.Key) > 0 {
+		sealed, err = Encrypt(staged, r.Key)
+		if err != nil {
+			return finish(err)
+		}
+		target = sealed
+	}
+	manifest, err := r.Exporter.WriteTo(ctx, target)
 	if err != nil {
 		return finish(fmt.Errorf("the export failed: %w", err))
+	}
+	if sealed != nil {
+		// The final chunk — the one that says the archive is complete — is
+		// written here, so a failure to close is a failure to have written an
+		// archive at all.
+		if err := sealed.Close(); err != nil {
+			return finish(fmt.Errorf("the archive could not be encrypted: %w", err))
+		}
 	}
 	if err := staged.Sync(); err != nil {
 		return finish(fmt.Errorf("the archive was not written completely: %w", err))
@@ -219,7 +257,19 @@ func (r *Run) verify(ctx context.Context, key string, wrote Manifest) error {
 	}
 	defer func() { _ = body.Close() }()
 
-	read, err := ReadManifest(body)
+	// What came back is a prefix of the object on purpose — one ranged
+	// request, enough for the manifest — so the decryption is told it is
+	// holding one. An encrypted archive is framed in chunks precisely so that
+	// a prefix of it decrypts to a prefix of the archive; without that, the
+	// only way to verify an upload would be to download all of it.
+	var stream io.Reader = body
+	if len(r.Key) > 0 {
+		stream, err = Decrypt(body, r.Key, true)
+		if err != nil {
+			return fmt.Errorf("the object at %s is not the encrypted archive that was just written: %w", key, err)
+		}
+	}
+	read, err := ReadManifest(stream)
 	if err != nil {
 		return fmt.Errorf("the object at %s is not the archive that was just written: %w", key, err)
 	}

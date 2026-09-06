@@ -37,8 +37,29 @@ limitations under the License.
 // attestation signing key and the identity provider's own signing secret
 // brings back a platform that cannot talk to anything, so the Secrets in the
 // platform namespace travel with the objects that reference them. That makes
-// the archive itself a credential: it is written to nowhere, kept nowhere, and
-// only ever streamed to an operator who asked for it.
+// the archive itself a credential, and where one goes decides what protects
+// it:
+//
+//   - **Downloaded** — POST /platform/backup, or `kitchen backup` — it is
+//     streamed over the API's own TLS to an operator who asked for it and is
+//     kept nowhere on the way. What happens to it after that is theirs; the
+//     documentation says to keep it where the cluster's root credentials are
+//     kept.
+//   - **Uploaded**, by a scheduled run (#245), it is written into somebody's
+//     bucket and sits there for as long as the retention keeps it — reachable
+//     by whoever holds that bucket's credential and by whoever its policy has
+//     ever admitted. So it is encrypted before it leaves this cluster, under a
+//     key the operator supplied and this platform never reads back
+//     (crypt.go), and the destination's endpoint has to be https or say out
+//     loud that it is not (resolve.go). Both are defaults rather than options:
+//     an installation that would rather trust the bucket sets
+//     spec.backup.encryption.mode to none, and that is a sentence in the
+//     object rather than an omission in it.
+//
+// The key is deliberately *not* in the archive — an archive carrying the key
+// that opens it is an archive with no encryption — which makes it the one
+// thing a recovery needs that a recovery cannot find in the bucket. See
+// docs/BACKUP.md.
 package backup
 
 import (

@@ -39,6 +39,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -84,6 +85,7 @@ func run() error {
 		skipAccounts  bool
 		restartAuth   bool
 		waitForSchema time.Duration
+		keySecretName string
 	)
 	flag.StringVar(&archivePath, "archive", "",
 		"Path to the backup archive. \"-\" reads it from standard input.")
@@ -97,6 +99,10 @@ func run() error {
 	flag.BoolVar(&restartAuth, "restart-auth", true,
 		"Roll the identity provider after restoring, so that it picks up the signing secret from the archive. "+
 			"Without it every restored session and API key stays unreadable until something else restarts it.")
+	flag.StringVar(&keySecretName, "encryption-key-secret", backup.EncryptionKeySecretName,
+		"Secret in this namespace holding the key an encrypted archive is opened with, under `key`. "+
+			"A plain archive needs none, and one that is encrypted cannot be restored without it: "+
+			"the key is deliberately not in the archive.")
 	flag.DurationVar(&waitForSchema, "wait-for-schema", 5*time.Minute,
 		"How long to wait for the identity provider to have migrated its schema. The accounts dump is data "+
 			"only, so there has to be a schema to put it in.")
@@ -107,21 +113,6 @@ func run() error {
 	}
 
 	ctx := ctrl.SetupSignalHandler()
-
-	source := os.Stdin
-	if archivePath != "-" {
-		file, err := os.Open(archivePath)
-		if err != nil {
-			return fmt.Errorf("cannot read %s: %w", archivePath, err)
-		}
-		defer func() { _ = file.Close() }()
-		source = file
-	}
-	archive, err := backup.Read(source)
-	if err != nil {
-		return err
-	}
-	describe(archive)
 
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -138,6 +129,25 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	source := os.Stdin
+	if archivePath != "-" {
+		file, err := os.Open(archivePath)
+		if err != nil {
+			return fmt.Errorf("cannot read %s: %w", archivePath, err)
+		}
+		defer func() { _ = file.Close() }()
+		source = file
+	}
+	// The cluster is reached before the archive is read because an encrypted
+	// archive is opened with a key that lives in this namespace — see
+	// readArchive, and docs/BACKUP.md on why that key is the one thing a
+	// restore needs that the archive does not carry.
+	archive, err := readArchive(ctx, cluster, namespace, keySecretName, source)
+	if err != nil {
+		return err
+	}
+	describe(archive)
 
 	restorer := &backup.Restorer{
 		Client:    cluster,
@@ -179,6 +189,69 @@ func run() error {
 	}
 	fmt.Println("restore complete")
 	return nil
+}
+
+// readArchive parses the archive, opening it first where it is encrypted.
+//
+// Which of the two it is, is a property of the bytes: an encrypted archive
+// starts with backup.EncryptedMagic and a plain one is a gzip stream. Nothing
+// in the manifest decides it — the manifest is inside the encryption — and
+// nothing in the filename does either, because a filename is whatever
+// somebody renamed the object to on the way here. That is what lets an
+// archive written before any of this existed restore into this release
+// unchanged.
+func readArchive(
+	ctx context.Context,
+	cluster client.Client,
+	namespace string,
+	keySecretName string,
+	source io.Reader,
+) (*backup.Archive, error) {
+	encrypted, stream, err := backup.Sniff(source)
+	if err != nil {
+		return nil, err
+	}
+	if !encrypted {
+		fmt.Println("the archive is not encrypted")
+		return backup.Read(stream)
+	}
+
+	key, err := encryptionKey(ctx, cluster, namespace, keySecretName)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("the archive is encrypted; opening it with the key in %s/%s\n", namespace, keySecretName)
+	plain, err := backup.Decrypt(stream, key, false)
+	if err != nil {
+		return nil, err
+	}
+	return backup.Read(plain)
+}
+
+// encryptionKey reads the key an encrypted archive is opened with.
+//
+// It is not in the archive, deliberately — an archive carrying the key that
+// opens it is an archive with no encryption — so on a cluster that is being
+// rebuilt it is the one thing somebody has to bring with them. A restore that
+// cannot find it says exactly that, and names the value that puts it there.
+func encryptionKey(
+	ctx context.Context,
+	cluster client.Client,
+	namespace string,
+	name string,
+) ([]byte, error) {
+	secret := &corev1.Secret{}
+	if err := cluster.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, secret); err != nil {
+		return nil, fmt.Errorf("this archive is encrypted and the key in %s/%s could not be read: %w. "+
+			"Put the key you kept off the cluster into that Secret under %q — "+
+			"`kubectl -n %s create secret generic %s --from-literal=%s=<key>` — and run the restore again",
+			namespace, name, err, backup.EncryptionKeySecretKey, namespace, name, backup.EncryptionKeySecretKey)
+	}
+	key, err := backup.ParseEncryptionKey(string(secret.Data[backup.EncryptionKeySecretKey]))
+	if err != nil {
+		return nil, fmt.Errorf("the key in %s/%s cannot be used: %w", namespace, name, err)
+	}
+	return key, nil
 }
 
 // describe prints what the archive is, before anything is written. A person
