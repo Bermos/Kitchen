@@ -84,8 +84,8 @@ watch(
 // and a `?cluster=1` that did the same from a pasted link. Both are gone with
 // the mode (#469): this is a project's screen, and what the cluster's own
 // workloads are logging is not a fact about anybody's project. It is the
-// Platform scope's question, and the Platform scope has no log screen yet —
-// see the follow-up on #469.
+// Platform scope's question, and the Platform scope has no log screen yet
+// (#481).
 const clusterClause: Clause = { field: "source", value: "cluster", negated: true };
 
 /** The scope, as a clause. It is applied to the request rather than typed into
