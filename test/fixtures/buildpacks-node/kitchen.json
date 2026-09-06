@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Bermos/Kitchen/main/docs/schemas/kitchen.schema.json",
+  "build": {
+    "strategy": "buildpacks"
+  },
+  "runtime": {
+    "port": 8080
+  }
+}
