@@ -17,12 +17,19 @@ limitations under the License.
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/controller"
 )
 
 // auditChain is a sound run of records, sealed the way the recorder seals
@@ -154,12 +161,92 @@ func TestAuditEndpointsRefuseAnonymousCallers(t *testing.T) {
 	}
 }
 
-func TestListAuditRecordsReportsAStoreFailure(t *testing.T) {
-	h := newHarness(t, nil)
-	h.logs.auditErr = &clickhouse.QueryError{Message: "Code: 60. DB::Exception: Table audit_log does not exist"}
+// A read the store did not complete is answered by what went wrong, not by one
+// word for all three. #441: every failure was a 500 `failed`, so the caller
+// could not tell a platform whose audit log has no table from one whose store
+// was briefly away from one whose query is broken — and the first two clear on
+// their own while the third never will.
+func TestListAuditRecordsClassifiesWhatTheStoreDidNotDo(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+		says   string
+	}{
+		{
+			// The reported fault: the log's table is not in the store,
+			// because this installation has never created one.
+			name: "no table",
+			err: &clickhouse.QueryError{Status: "404 Not Found", Message: "Code: 60. DB::Exception: " +
+				"Unknown table expression identifier 'kitchen.audit_log' in scope SELECT " +
+				"toString(sequence) AS seq. (UNKNOWN_TABLE) (version 26.3.17.110 (official build))"},
+			status: http.StatusServiceUnavailable,
+			says:   "no audit log to read",
+		},
+		{
+			name:   "store away",
+			err:    errors.New("clickhouse at http://kitchen-clickhouse:8123/: dial tcp: connection refused"),
+			status: http.StatusServiceUnavailable,
+			says:   "did not answer",
+		},
+		{
+			// A statement ClickHouse judged and refused is the platform's own
+			// fault and stays a 500: retrying it will fail identically.
+			name: "refused",
+			err: &clickhouse.QueryError{Status: "400 Bad Request", Message: "Code: 47. DB::Exception: " +
+				"Unknown expression identifier 'sequenc'. (UNKNOWN_IDENTIFIER)"},
+			status: http.StatusInternalServerError,
+			says:   "the operator's log has the store's diagnostic",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, nil)
+			h.logs.auditErr = tc.err
 
-	response := h.do(t, http.MethodGet, "/api/v1/audit", "")
-	if response.Code != http.StatusInternalServerError {
-		t.Errorf("status %d, want 500 when the store refuses: %s", response.Code, response.Body.String())
+			response := h.do(t, http.MethodGet, "/api/v1/audit", "")
+			if response.Code != tc.status {
+				t.Fatalf("status %d, want %d: %s", response.Code, tc.status, response.Body.String())
+			}
+			if !strings.Contains(response.Body.String(), tc.says) {
+				t.Errorf("the answer does not say %q: %s", tc.says, response.Body.String())
+			}
+			// Whatever the classification, the store's own diagnostic is not
+			// in it: the caller cannot act on a nested-aggregate complaint.
+			if strings.Contains(response.Body.String(), "DB::Exception") {
+				t.Errorf("the store's diagnostic reached the caller: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+// An installation that keeps no audit log says so, rather than reading a table
+// that was never created and reporting the refusal as a failed query.
+func TestTheAuditLogSaysSoWhenTheInstallationKeepsNone(t *testing.T) {
+	h := newHarness(t, nil)
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	key := types.NamespacedName{Name: controller.KitchenSingletonName}
+	if err := h.server.Client.Get(context.Background(), key, kitchen); err != nil {
+		t.Fatalf("reading the singleton: %v", err)
+	}
+	kitchen.Spec.Compliance.Audit.Enabled = false
+	if err := h.server.Client.Update(context.Background(), kitchen); err != nil {
+		t.Fatalf("turning the audit log off: %v", err)
+	}
+	// The store would answer records if it were asked, which is what makes
+	// this about the configuration rather than about the store.
+	h.logs.auditRecords = auditChain(2)
+
+	for _, path := range []string{"/api/v1/audit", "/api/v1/audit/verify"} {
+		response := h.do(t, http.MethodGet, path, "")
+		if response.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s answered %d, want 503 where no log is kept: %s",
+				path, response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "spec.compliance.audit") {
+			t.Errorf("%s does not name the setting that turned it off: %s", path, response.Body.String())
+		}
+	}
+	if h.logs.lastAudit.Limit != 0 {
+		t.Errorf("the store was read for a log this installation does not keep: %+v", h.logs.lastAudit)
 	}
 }

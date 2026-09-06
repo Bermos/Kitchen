@@ -1524,7 +1524,7 @@ jobs:
           kubectl -n kitchen-system run api-probe \
             --image="${PROBE_IMAGE}" --restart=Never --command -- sh -ec "
               set -eu
-              for path in /api/v1/projects /api/v1/builds /api/v1/environments /api/v1/connections; do
+              for path in /api/v1/projects /api/v1/builds /api/v1/environments /api/v1/connections /api/v1/audit; do
                 status=\$(curl -s -o /dev/null -w '%{http_code}' ${base}\${path})
                 [ \"\${status}\" = 401 ] || { echo \"\${path} answered \${status}\"; exit 1; }
               done
@@ -1603,6 +1603,73 @@ jobs:
             echo "::error::the default ClickHouse user still accepts passwordless logins"
             exit 1
           fi
+
+      - name: Verify the audit log can be read
+        run: |
+          set -euo pipefail
+          # #441. `GET /api/v1/audit` answered 500 to every call on an
+          # installation whose store was otherwise healthy: the route reads a
+          # table the *compliance* reconcile creates — not the telemetry schema
+          # above — and nothing here had ever asked whether it had been. The
+          # API itself is only probed unauthenticated (nothing in this job holds
+          # an account, so nothing can carry a token), so the read behind the
+          # token is exercised where it broke, which is at the store.
+          password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
+            -o jsonpath='{.data.password}' | base64 -d)
+          ch() {
+            kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+              clickhouse-client --secure --accept-invalid-certificate \
+              --user kitchen --password "${password}" "$@"
+          }
+          # The compliance reconcile runs after the telemetry one and both are
+          # in the post-install hook's reconcile, so wait for the table rather
+          # than assume the install left it there.
+          exists=""
+          for _ in $(seq 60); do
+            exists=$(ch --query 'EXISTS TABLE kitchen.audit_log' 2>/dev/null || true)
+            [ "${exists}" = 1 ] && break
+            sleep 5
+          done
+          [ "${exists}" = 1 ] || {
+            kubectl get kitchen default -o jsonpath='{.status.compliance.audit}' || true
+            kubectl get kitchen default \
+              -o jsonpath='{.status.conditions[?(@.type=="ComplianceReady")]}' || true
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100 || true
+            echo "::error::the platform never created the audit log's table, so GET /api/v1/audit" \
+                 "answers every caller with a failure and the log has no reader"
+            exit 1
+          }
+          # The route's own statement, as internal/clickhouse builds it for a
+          # page with no filters: the columns of auditColumns and the order the
+          # chain is read in. A column it names that the DDL does not create
+          # fails here rather than on somebody's platform.
+          #
+          # The one thing not copied is the bound `LIMIT {limit:UInt32}`: the
+          # native client substitutes a parameter as a quoted literal and the
+          # server will not take one there, though the HTTP interface the API
+          # actually uses binds it happily. That half is measured where it can
+          # be — TestIntegrationAuditLog, over the same transport as the route.
+          query=$(cat <<'SQL'
+          SELECT
+              toString(sequence) AS seq,
+              formatDateTime(timestamp, '%Y-%m-%dT%H:%i:%S.%fZ', 'UTC') AS ts,
+              actor, actor_kind, correlation, operation,
+              kind, namespace, name, uid, project,
+              from_state, to_state, reason, details, prev_hash, hash
+          FROM kitchen.audit_log
+          WHERE 1 = 1
+          ORDER BY sequence DESC
+          LIMIT 5
+          FORMAT JSONEachRow
+          SQL
+          )
+          ch --query "${query}" >/dev/null || {
+            echo "::error::the audit log's own read was refused by the store it is kept in"
+            exit 1
+          }
+          # And the platform's own account of the log, which is what a caller
+          # is pointed at when the read has nothing to answer with.
+          kubectl get kitchen default -o jsonpath='{.status.compliance.audit}'
 
       - name: Verify the telemetry store answers nothing in plaintext
         run: |

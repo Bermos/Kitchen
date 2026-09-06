@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -63,8 +64,10 @@ const (
 	integrationDatabase = "kitchen"
 	integrationProject  = "shop"
 	integrationRetained = 30
-	integrationNode     = "node-1"
-	integrationRoute    = "/works/:id"
+	// The audit log answers to its own retention, whose floor is 90 days.
+	integrationAuditRetained = 90
+	integrationNode          = "node-1"
+	integrationRoute         = "/works/:id"
 )
 
 // integrationClient resolves the store under test, or skips.
@@ -152,6 +155,137 @@ func TestIntegrationSchemaApplies(t *testing.T) {
 	}
 	if err := client.EnsureTelemetrySchema(ctx, retention.Uniform(integrationRetained)); err != nil {
 		t.Fatalf("EnsureTelemetrySchema back to %d: %v", integrationRetained, err)
+	}
+}
+
+// TestIntegrationAuditLog runs the audit route's own reads against the table
+// the operator creates, which is the one thing the package's fakes cannot
+// answer: they prove the statement was built as intended and say nothing about
+// whether ClickHouse will take it, or whether the columns it names are the
+// columns the DDL made.
+//
+// It is here because of #441, where `GET /audit` answered 500 to every call on
+// an installation whose store was otherwise healthy. The query was sound and
+// the table was absent — so this pins both halves: every read the route makes
+// works against the schema, and a read of a log with no table is refused in the
+// shape the API classifies on (IsUnknownTable), rather than in one it would
+// report as a broken query.
+func TestIntegrationAuditLog(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+
+	if err := client.EnsureAuditSchema(ctx, integrationAuditRetained); err != nil {
+		t.Fatalf("EnsureAuditSchema: %v", err)
+	}
+	// Applied on every reconcile, so it has to survive being applied again.
+	if err := client.EnsureAuditSchema(ctx, integrationAuditRetained); err != nil {
+		t.Fatalf("EnsureAuditSchema is not idempotent: %v", err)
+	}
+
+	head, err := client.AuditHead(ctx)
+	if err != nil {
+		t.Fatalf("AuditHead: %v", err)
+	}
+	actor := "grace@example.com"
+	written := AuditRecord{
+		Sequence:    head.Sequence + 1,
+		Timestamp:   time.Now().UTC().Truncate(time.Millisecond),
+		Actor:       actor,
+		ActorKind:   ActorUser,
+		Correlation: "c-" + strconv.FormatInt(head.Sequence+1, 10),
+		Operation:   AuditCreate,
+		Kind:        "Project",
+		Namespace:   "kitchen-system",
+		Name:        integrationProject,
+		UID:         "11111111-2222-3333-4444-555555555555",
+		Project:     integrationProject,
+		ToState:     integrationProject,
+		Reason:      "project created\nfrom acme/shop",
+		Details:     `{"privileged":true,"privilegedClass":"access","repo":"acme/shop"}`,
+		PrevHash:    head.Hash,
+		Hash:        strings.Repeat("a", 64),
+	}
+	if err := client.InsertAuditRecord(ctx, written); err != nil {
+		t.Fatalf("InsertAuditRecord: %v", err)
+	}
+
+	// Every read the route offers, including the shape it answers with no
+	// parameters at all — which is the call that failed.
+	for _, read := range []struct {
+		name  string
+		query AuditQuery
+	}{
+		{"the whole page", AuditQuery{}},
+		{"a page of five", AuditQuery{Limit: 5}},
+		{"one object", AuditQuery{Kind: "Project", Namespace: "kitchen-system", Name: integrationProject}},
+		{"one actor", AuditQuery{Actor: actor}},
+		{"one project", AuditQuery{Project: integrationProject}},
+		{"the privileged records", AuditQuery{Privileged: true}},
+		{"one class of them", AuditQuery{PrivilegeClass: "access"}},
+		{"a window", AuditQuery{Since: time.Now().Add(-time.Hour), Until: time.Now().Add(time.Hour)}},
+	} {
+		records, err := client.QueryAuditRecords(ctx, read.query)
+		if err != nil {
+			t.Errorf("%s: %v", read.name, err)
+			continue
+		}
+		if len(records) == 0 {
+			t.Errorf("%s came back empty, so the record just written is not in it", read.name)
+		}
+	}
+
+	// The round trip, column by column: a column the writer and the reader
+	// spell differently reads back empty, and an empty field in a hashed
+	// record is a chain that will not verify.
+	records, err := client.QueryAuditRecords(ctx, AuditQuery{Actor: actor, Limit: 1})
+	if err != nil {
+		t.Fatalf("QueryAuditRecords: %v", err)
+	}
+	read := records[0]
+	if !read.Timestamp.Equal(written.Timestamp) {
+		t.Errorf("timestamp read back as %v, want %v", read.Timestamp, written.Timestamp)
+	}
+	read.Timestamp = written.Timestamp
+	if read != written {
+		t.Errorf("the record read back as %+v, want %+v", read, written)
+	}
+
+	// The verifier's scan and the orphan survey's read, over the same table.
+	scanned, err := client.ScanAuditRecords(ctx, written.Sequence, 10)
+	if err != nil {
+		t.Fatalf("ScanAuditRecords: %v", err)
+	}
+	if len(scanned) == 0 || scanned[0].Sequence != written.Sequence {
+		t.Errorf("the scan from %d answered %d records", written.Sequence, len(scanned))
+	}
+	activity, err := client.ActorActivity(ctx)
+	if err != nil {
+		t.Fatalf("ActorActivity: %v", err)
+	}
+	if activity[actor].IsZero() {
+		t.Errorf("the log's own actor is not in the activity survey: %v", activity)
+	}
+
+	// And the state the installation in #441 was actually in. Dropping the
+	// table is the only way to ask the server what it says about a log that
+	// was never created, and it is what the API's answer is classified on.
+	if err := client.Exec(ctx, fmt.Sprintf("DROP TABLE %s.%s",
+		quoteIdentifier(client.cfg.Database), quoteIdentifier(AuditTable))); err != nil {
+		// A store that has taken DROP TABLE off this credential is the
+		// immutability guarantee working; there is nothing to fix here.
+		t.Skipf("the audit table cannot be dropped by this credential, so the missing-table half is not measurable: %v", err)
+	}
+	_, err = client.QueryAuditRecords(ctx, AuditQuery{})
+	if err == nil {
+		t.Fatal("a read of a dropped audit table answered without an error")
+	}
+	if !IsUnknownTable(err) {
+		t.Errorf("the store's refusal does not read as a missing table, so the API would report it "+
+			"as a broken query: %v", err)
+	}
+	// Leave the store as it was found: the next test in this file may want it.
+	if err := client.EnsureAuditSchema(ctx, integrationAuditRetained); err != nil {
+		t.Fatalf("EnsureAuditSchema after the drop: %v", err)
 	}
 }
 
