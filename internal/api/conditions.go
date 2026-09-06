@@ -86,6 +86,12 @@ var conditionSeverities = map[conditionStatement]conditionSeverity{
 	// A self-hosted Inngest publishes no app inventory, and the condition
 	// says so. Unknown here is an answer, not an unfinished check.
 	{controller.ConditionAppConnected, controller.ReasonNotReported}: severityInfo,
+	// A serve binding registers the web process and nothing else, and the
+	// unit runs more than that. It is a limit of the mode somebody chose
+	// rather than a broken claim — the claim is bound and everything it
+	// promised is there — but it is the reason functions nobody can find are
+	// missing, so it is a caution rather than a fact filed away.
+	{controller.ConditionServeCoverage, controller.ReasonServeCoversWebOnly}: severityWarning,
 	// A preview nobody asked to gate is open on purpose.
 	{controller.ConditionPreviewProtected, controller.ReasonPreviewPublic}: severityInfo,
 	// A store left unencrypted is a choice this platform reports. The

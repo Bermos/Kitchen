@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  claimCautions,
   deletionGatedByName,
   destroysData,
   destroysDataRefusal,
@@ -93,5 +94,82 @@ describe("who may promote a recovery", () => {
 
   it("says nothing to somebody who may", () => {
     expect(promoteRefusal(admin)).toBeUndefined();
+  });
+});
+
+// A bound claim that covers less than it looks like it does (#405). The
+// screen has one place for "this is wrong" already — the refusal a Failed
+// claim carries — and this is the other half: bound, correct, and still worth
+// reading.
+describe("the cautions a bound claim carries", () => {
+  const serveCoverage = {
+    type: "ServeCoverage",
+    status: "False",
+    severity: "warning" as const,
+    reason: "ServeCoversWebOnly",
+    message: "serve mode syncs one URL per environment — agent-worker, transit-worker",
+    lastTransitionTime: "2026-09-05T00:00:00Z",
+  };
+
+  it("carries the claim's name and the condition's own words", () => {
+    const cautions = claimCautions([{ name: "shop-inngest", conditions: [serveCoverage] }]);
+    expect(cautions).toHaveLength(1);
+    expect(cautions[0].claim).toBe("shop-inngest");
+    expect(cautions[0].message).toContain("transit-worker");
+    expect(cautions[0].key).toBe("shop-inngest-ServeCoverage");
+  });
+
+  // The severity is the API's call, not the status's: this is the whole of
+  // why the field exists (#436).
+  it("leaves a setting somebody chose and a satisfied condition alone", () => {
+    expect(
+      claimCautions([
+        {
+          name: "shop-inngest",
+          conditions: [
+            {
+              type: "AppConnected",
+              status: "Unknown",
+              severity: "info",
+              reason: "NotReported",
+              message: "this Inngest publishes no app inventory",
+              lastTransitionTime: "2026-09-05T00:00:00Z",
+            },
+            {
+              type: "Ready",
+              status: "True",
+              severity: "none",
+              reason: "Bound",
+              message: "claim shop-inngest bound",
+              lastTransitionTime: "2026-09-05T00:00:00Z",
+            },
+          ],
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("leaves a fault to the refusal the screen already prints", () => {
+    expect(
+      claimCautions([
+        {
+          name: "shop-db",
+          conditions: [
+            {
+              type: "Ready",
+              status: "False",
+              severity: "error",
+              reason: "RequirementsUnsatisfiable",
+              message: "no connection offers postgres 17",
+              lastTransitionTime: "2026-09-05T00:00:00Z",
+            },
+          ],
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("says nothing about a claim with no conditions at all", () => {
+    expect(claimCautions([{ name: "shop-cache" }])).toEqual([]);
   });
 });

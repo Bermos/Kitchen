@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, CRITICALITIES, DATA_CLASSES, type Claim, type ForkPolicy, type Project, type Release } from "../lib/api";
 import { buildFailureLine } from "../lib/builds";
-import { deletionGatedByName, destroysData, destroysDataRefusal, mayDestroyData } from "../lib/claims";
+import { claimCautions, deletionGatedByName, destroysData, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { duration, exactTime, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
@@ -794,6 +794,12 @@ function claimRefusal(claim: Claim): string {
 
 const refusedClaims = computed(() => (data.value?.claims ?? []).filter((claim) => claim.phase === "Failed"));
 
+// The cautions a bound claim carries — lib/claims.ts says what counts as one
+// and why. They are drawn next to the rows they are about, on the same
+// footing as a refusal, and a claim that failed is left to the refusal above
+// rather than said twice.
+const cautions = computed(() => claimCautions((data.value?.claims ?? []).filter((c) => c.phase !== "Failed")));
+
 // Deleting a claim is honest about its blast radius: what happens to the
 // data is the deletionPolicy's call, and the confirmation says which it is
 // before asking for the click. An OAuth client is not data and has no policy
@@ -1562,6 +1568,16 @@ function host(url?: string): string {
               <tr v-for="claim in refusedClaims" :key="`${claim.name}-why`" class="border-b border-muted last:border-0">
                 <td colspan="9" class="px-3 py-2 text-xs text-error">
                   <span class="font-mono">{{ claim.name }}</span> — {{ claimRefusal(claim) }}
+                </td>
+              </tr>
+              <!-- And what a bound claim is quietly not doing. An inngest
+                   claim in serve mode registers the web process and nothing
+                   else, which every other surface reads as a healthy deploy;
+                   the claim counts what it synced against what the unit runs
+                   and the sentence is here, where the mode was chosen. -->
+              <tr v-for="caution in cautions" :key="caution.key" class="border-b border-muted last:border-0">
+                <td colspan="9" class="px-3 py-2 text-xs text-warning">
+                  <span class="font-mono">{{ caution.claim }}</span> — {{ caution.message }}
                 </td>
               </tr>
             </tbody>

@@ -1,4 +1,6 @@
+import type { Condition } from "./api";
 import { effectiveProjectRole, projectAtLeast, type Caller } from "./policy";
+import { conditionSeverity } from "./status";
 
 /**
  * The one thing about a claim that is not the developer's (#320).
@@ -99,4 +101,35 @@ export function promoteRefusal(caller: Caller): string | undefined {
   const on = caller.projectName ? ` on ${caller.projectName}` : "";
   const have = held ? `you have ${held}${on}` : `you have no role${on}`;
   return `${have}; promoting a recovery needs admin: it replaces the database every environment of this project reads, and the one it displaces is kept but no longer bound`;
+}
+
+/**
+ * What a bound claim is quietly not doing (#405).
+ *
+ * A claim can be `Bound`, correct, and still cover less than the person who
+ * asked for it thinks: an `inngest` claim in serve mode syncs one URL, so a
+ * project that runs `service` workloads of its own has its web process
+ * registered and the rest registered nowhere — with the environment `Live`,
+ * the workloads running, and every other surface reading green. The claim is
+ * the only thing that can count what it handed over against what the unit
+ * runs, and it writes the answer on a condition.
+ *
+ * The filter is the severity the API attached rather than the status, which is
+ * the whole point of that field (#436): a `False` that is a setting somebody
+ * chose is `info` and says nothing here, a fault belongs to the refusal the
+ * screen already prints for a `Failed` claim, and `warning` is exactly the
+ * middle case — bound, and worth reading.
+ */
+export function claimCautions(
+  claims: { name: string; conditions?: Condition[] }[],
+): { key: string; claim: string; message: string }[] {
+  return claims.flatMap((claim) =>
+    (claim.conditions ?? [])
+      .filter((condition) => conditionSeverity(condition) === "warning" && condition.message)
+      .map((condition) => ({
+        key: `${claim.name}-${condition.type}`,
+        claim: claim.name,
+        message: condition.message ?? "",
+      })),
+  );
 }

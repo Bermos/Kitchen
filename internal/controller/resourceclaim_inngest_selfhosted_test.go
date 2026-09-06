@@ -223,6 +223,28 @@ var _ = Describe("A self-hosted inngest claim", func() {
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, env)).To(Succeed())
 	}
 
+	// The unit as #270's monorepo has it: a web process and service
+	// workloads of its own, each serving on a port its siblings address it
+	// by. Called with nothing, it is a project that is only its web process.
+	runsServices := func(names ...string) {
+		project := &kitchenv1alpha1.Project{}
+		key := types.NamespacedName{Name: projectName, Namespace: namespace}
+		ExpectWithOffset(1, k8sClient.Get(ctx, key, project)).To(Succeed())
+		project.Spec.Processes = nil
+		for i, name := range names {
+			project.Spec.Processes = append(project.Spec.Processes, kitchenv1alpha1.ProcessSpec{
+				Name: name,
+				Type: kitchenv1alpha1.ProcessService,
+				Port: int32(3030 + i),
+			})
+		}
+		ExpectWithOffset(1, k8sClient.Update(ctx, project)).To(Succeed())
+	}
+
+	serveCoverage := func() *metav1.Condition {
+		return meta.FindStatusCondition(getClaim().Status.Conditions, condServeCoverage)
+	}
+
 	setIdle := func(name string, idle bool) {
 		env := &kitchenv1alpha1.Environment{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, env)).To(Succeed())
@@ -344,6 +366,51 @@ var _ = Describe("A self-hosted inngest claim", func() {
 		workers := meta.FindStatusCondition(claim.Status.Conditions, condConnectWorkers)
 		Expect(workers.Reason).To(Equal("NotConnectMode"))
 		Expect(workers.Message).To(ContainSubstring("protected preview"))
+
+		Expect(serveCoverage()).To(BeNil(),
+			"a project that is only its web process has every workload it serves registered")
+	})
+
+	// The silence #405 is about: one URL is synced, the unit runs three
+	// serving workloads, and every other surface reads green. The claim is
+	// the one thing that can count what it handed over against what the
+	// project runs, so it says so where the mode was chosen.
+	It("names the serving workloads a serve binding does not register", func() {
+		createEnvironment(projectName, kitchenv1alpha1.EnvironmentProduction, "https://shjobs.apps.example.com")
+		runsServices("agent-worker", "transit-worker")
+		createClaim(`{"inngest":{"mode":"serve","servePath":"/jobs/inngest"}}`)
+		reconcileOnce()
+
+		Expect(getClaim().Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound),
+			"the binding is correct; what it covers is a caution, not a refusal")
+		coverage := serveCoverage()
+		Expect(coverage).NotTo(BeNil())
+		Expect(coverage.Status).To(Equal(metav1.ConditionFalse))
+		Expect(coverage.Reason).To(Equal(ReasonServeCoversWebOnly))
+		Expect(coverage.Message).To(ContainSubstring("agent-worker"))
+		Expect(coverage.Message).To(ContainSubstring("transit-worker"))
+		Expect(coverage.Message).To(ContainSubstring("/jobs/inngest"))
+		Expect(coverage.Message).To(ContainSubstring("Connect mode"),
+			"the way out is named where the limit is")
+
+		// The workers are folded back into the web process: there is nothing
+		// left unregistered, and the claim stops saying there is.
+		runsServices()
+		reconcileOnce()
+		Expect(serveCoverage()).To(BeNil())
+	})
+
+	// Connect mode registers every workload that starts with the binding, so
+	// the same unit has nothing to be told — which is what makes the
+	// condition a statement about serve mode rather than about the project.
+	It("says nothing about coverage in connect mode", func() {
+		createEnvironment(projectName, kitchenv1alpha1.EnvironmentProduction, "https://shjobs.apps.example.com")
+		runsServices("agent-worker", "transit-worker")
+		createClaim("")
+		reconcileOnce()
+
+		Expect(getClaim().Status.KeepsPodsRunning).To(BeTrue())
+		Expect(serveCoverage()).To(BeNil())
 	})
 
 	// The tenancy answer, end to end: the preview's binding is a different
