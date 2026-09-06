@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.34.0](https://github.com/Bermos/Kitchen/compare/v0.33.4...v0.34.0) (2026-09-06)
+
+
+### Features
+
+* **api:** link a build, a release and a preview back to the source ([#460](https://github.com/Bermos/Kitchen/issues/460)) ([82be150](https://github.com/Bermos/Kitchen/commit/82be150268b77609159e9db809287ae2157f7ec7))
+* **claims:** mount a binding's CA, so verify-full is the platform's plumbing ([#461](https://github.com/Bermos/Kitchen/issues/461)) ([7cf8a0e](https://github.com/Bermos/Kitchen/commit/7cf8a0e6a63feb03f3f3643711020a537c2d5f33)), closes [#456](https://github.com/Bermos/Kitchen/issues/456)
+
+
+### Bug fixes
+
+* **claims:** reconcile a binding, and hand a CloudNativePG one its CA ([#458](https://github.com/Bermos/Kitchen/issues/458)) ([24eca0d](https://github.com/Bermos/Kitchen/commit/24eca0d6396df3d4f327b44bdf9ae1bc8226383d)), closes [#398](https://github.com/Bermos/Kitchen/issues/398)
+* **security:** clone the commit so a Dockerfile cannot read the git token ([#459](https://github.com/Bermos/Kitchen/issues/459)) ([7c1ccf6](https://github.com/Bermos/Kitchen/commit/7c1ccf69ced423010fa89f5861e2fc9d03d5e182))
+
 ## [0.33.4](https://github.com/Bermos/Kitchen/compare/v0.33.3...v0.33.4) (2026-09-06)
 
 
