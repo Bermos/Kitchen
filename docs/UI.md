@@ -231,6 +231,42 @@ The tone (`text-highlighted`, `text-muted`, `text-error`) is free — a danger
 zone's heading is red and still a section heading. The size and the weight are
 not.
 
+### A screen with more sections than a scroll can hold
+
+**Past about six sections, a screen gets a left rail and shows one pane at a
+time.** Below that, sections on one scroll are how a page is read; above it they
+are how a page becomes unreadable.
+
+A project's Settings is the case that established the shape: fourteen panes —
+source, processes, attached resources, variables, files, secrets, domains,
+members, keys, notifications, runtime, security, continuity, danger zone — which
+on one scroll were more lines of form than the whole of the page that held them
+(#470). The Platform scope answers the same problem one level up, with a scope
+and one screen at a time.
+
+Four rules, and each of them is why this is written down rather than left to the
+next screen to guess at:
+
+- **The pane is in the address**, as `?section=`. A pane that is not addressable
+  is a thing somebody has to describe over chat instead of linking to — and it
+  is the same spelling a finding's evidence link already uses, so there is one
+  vocabulary rather than two.
+- **The rail is data, not markup.** The list of panes lives beside the screen
+  (`SETTINGS_SECTIONS` in `ui/src/lib/project.ts`), because the redirects that
+  land old addresses on the right pane read the same ids. Two spellings of one
+  vocabulary is how a redirect quietly stops landing.
+- **Each pane is `max-w-3xl`, declared once by the pane rather than by every
+  panel inside it.** This is the "one page, one form width" rule above, honoured
+  rather than asserted: the width is a property of the column, and a panel
+  dropped into it inherits it.
+- **A pane nobody may open is not in the rail**, and an address naming one falls
+  back to the first pane this account has — the same rule every affordance here
+  follows, asked of the same table the route guard asks.
+
+A screen with a rail still has exactly one `PageHeader`: the rail is navigation
+*within* a screen, not a second screen. `design.test.ts` checks that as it
+checks every other page.
+
 ## The attention band
 
 The overview's band is not part of the frame — it is one screen's answer to

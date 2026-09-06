@@ -76,7 +76,7 @@ like a failure: a file that builds a test image or a toolchain after the
 runtime ends on one of those, and the build succeeds, pushes it and deploys it.
 When the preflight finds a Dockerfile with named stages the dialog offers them,
 and the choice is stored as the project's Dockerfile stage — settable
-afterwards on the project's Settings tab, and overridable per commit with
+afterwards on the project's Settings screen, under Source, and overridable per commit with
 `build.dockerfileTarget` in [`kitchen.json`](CONFIG.md). A stage the file does
 not declare fails the build naming the ones it has, and naming a stage on a
 project built with buildpacks fails it too: that lifecycle has no stages.
@@ -341,9 +341,9 @@ kitchen logs --follow
 kitchen status                       # what is running, and what has been built
 ```
 
-The key comes from a project's People tab in the dashboard — a key is a
+The key comes from the Keys pane of a project's Settings screen — a key is a
 non-human member of exactly one project, which is why it is issued beside the
-people rather than somewhere of its own. There is no browser
+members rather than somewhere of its own. There is no browser
 sign-in: the identity provider's OAuth plugin implements no device grant, so
 there is nothing for a CLI to poll — [the CLI](CLI.md#why-there-is-no-browser-sign-in)
 has the whole argument, and it is a decision rather than a gap.

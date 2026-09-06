@@ -14,7 +14,7 @@
 
 import { createMemoryHistory, createRouter } from "vue-router";
 import { describe, expect, it } from "vitest";
-import { completedBy, routes, SCOPES } from "./routes";
+import { completedBy, movedProjectSection, routes, SCOPES } from "./routes";
 
 // `resolve` matches without loading the lazy component, which is what keeps
 // this a test of the table rather than of every screen in the dashboard.
@@ -136,6 +136,104 @@ describe("the two addresses that name an object", () => {
     expect(scoped.name).toBe("project-environment");
     expect(scoped.params).toEqual({ name: "shop", env: "shop-production" });
     expect(scoped.query).toEqual({ section: "requests" });
+  });
+});
+
+describe("the six project screens", () => {
+  // `/projects/:name` was one file and nine tabs, and the tab was never in the
+  // address — so every part of it was reachable by scrolling and by nothing
+  // else. Each is a screen now (#470).
+  const screens: { path: string; name: string }[] = [
+    { path: "/projects/shop", name: "project" },
+    { path: "/projects/shop/deploys", name: "project-deploys" },
+    { path: "/projects/shop/environments", name: "project-environments" },
+    { path: "/projects/shop/observability", name: "project-observability" },
+    { path: "/projects/shop/alerts", name: "project-alerts" },
+    { path: "/projects/shop/settings", name: "project-settings" },
+  ];
+
+  it.each(screens)("$path opens $name", ({ path, name }) => {
+    expect(lands(path)).toBe(name);
+    expect(router.resolve(path).params.name).toBe("shop");
+  });
+
+  it("puts all six in the Project scope", () => {
+    for (const screen of screens) {
+      expect(router.resolve(screen.path).meta.scope, `${screen.path} is the developer's`).toBe("project");
+    }
+  });
+
+  it("keeps the two objects addressable under their project", () => {
+    // These are the screens the six link *into*, and both were already
+    // project-scoped before this split.
+    expect(lands("/projects/shop/deploys/shop-42")).toBe("project-build");
+    expect(lands("/projects/shop/environments/shop-production")).toBe("project-environment");
+  });
+
+  it("gives Settings a pane in the address", () => {
+    expect(router.resolve("/projects/shop/settings?section=domains").query).toEqual({ section: "domains" });
+  });
+});
+
+describe("the sections of the project page that moved", () => {
+  // The old page's tabs and cards were only ever linked at with `?section=`,
+  // which is the spelling the environment screen already uses and the API
+  // already emits. Six screens later they still have to land somewhere
+  // sensible: on the right screen, keeping the rest of the question.
+  function section(path: string): string {
+    const asked = router.resolve(path);
+    const moved = movedProjectSection(asked);
+    return moved ? router.resolve(moved).fullPath : asked.fullPath;
+  }
+
+  const table: { from: string; to: string; why: string }[] = [
+    { from: "?section=deployments", to: "/projects/shop/deploys", why: "the release history" },
+    { from: "?section=builds", to: "/projects/shop/deploys", why: "builds and promotions are one timeline now" },
+    { from: "?section=previews", to: "/projects/shop/environments", why: "previews were a tab over the same list" },
+    { from: "?section=environments", to: "/projects/shop/environments", why: "the environments tab" },
+    { from: "?section=resources", to: "/projects/shop/settings?section=resources", why: "asking for a claim is a write" },
+    { from: "?section=variables", to: "/projects/shop/settings?section=variables", why: "the variables tab" },
+    { from: "?section=people", to: "/projects/shop/settings?section=members", why: "People became Members" },
+    { from: "?section=keys", to: "/projects/shop/settings?section=keys", why: "the CI keys under it" },
+    { from: "?section=domains", to: "/projects/shop/settings?section=domains", why: "the domains tab" },
+    { from: "?section=git", to: "/projects/shop/settings?section=source", why: "the Git card" },
+    { from: "?section=image", to: "/projects/shop/settings?section=source", why: "the Image card" },
+    { from: "?section=build", to: "/projects/shop/settings?section=source", why: "the Build card" },
+    { from: "?section=runtime", to: "/projects/shop/settings?section=runtime", why: "the Runtime card" },
+    { from: "?section=health", to: "/projects/shop/settings?section=runtime", why: "Health is part of Runtime now" },
+    { from: "?section=security", to: "/projects/shop/settings?section=security", why: "the Security card" },
+    { from: "?section=data", to: "/projects/shop/settings?section=continuity", why: "Data joined Continuity" },
+    { from: "?section=continuity", to: "/projects/shop/settings?section=continuity", why: "the Continuity card" },
+    { from: "?section=processes", to: "/projects/shop/settings?section=processes", why: "the workloads panel" },
+    { from: "?section=files", to: "/projects/shop/settings?section=files", why: "the files panel" },
+    { from: "?section=secrets", to: "/projects/shop/settings?section=secrets", why: "the secrets panel" },
+    { from: "?section=notifications", to: "/projects/shop/settings?section=notifications", why: "the subscriptions" },
+    { from: "?section=settings", to: "/projects/shop/settings", why: "the settings tab itself" },
+    { from: "?section=danger", to: "/projects/shop/settings?section=danger", why: "the danger zone" },
+  ];
+
+  it.each(table)("/projects/shop$from → $to ($why)", ({ from, to }) => {
+    expect(section(`/projects/shop${from}`)).toBe(to);
+  });
+
+  it("keeps the rest of the question", () => {
+    expect(section("/projects/shop?section=builds&q=failed")).toBe("/projects/shop/deploys?q=failed");
+  });
+
+  it("leaves the Overview alone for a section it never had", () => {
+    // The honest answer for a name that means nothing here: the project's own
+    // screen, with the query untouched rather than half-interpreted.
+    expect(section("/projects/shop?section=nonsense")).toBe("/projects/shop?section=nonsense");
+    expect(section("/projects/shop")).toBe("/projects/shop");
+  });
+
+  it("is only ever about the project page", () => {
+    // The environment screen's own `?section=` is emitted by the API as
+    // evidence and must not be touched by this.
+    expect(movedProjectSection(router.resolve("/projects/shop/environments/shop-production?section=requests"))).toBe(
+      null,
+    );
+    expect(movedProjectSection(router.resolve("/platform/events?kind=Pod"))).toBe(null);
   });
 });
 

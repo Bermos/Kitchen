@@ -188,10 +188,28 @@ const nav = computed<NavItem[]>(() => {
           name: "project-deploys",
         },
         {
+          label: "Environments",
+          icon: "i-lucide-layers",
+          to: { name: "project-environments", params: { name: project } },
+          name: "project-environments",
+        },
+        {
           label: "Observability",
           icon: "i-lucide-activity",
           to: { name: "project-observability", params: { name: project } },
           name: "project-observability",
+        },
+        {
+          label: "Alerts",
+          icon: "i-lucide-bell",
+          to: { name: "project-alerts", params: { name: project } },
+          name: "project-alerts",
+        },
+        {
+          label: "Settings",
+          icon: "i-lucide-settings-2",
+          to: { name: "project-settings", params: { name: project } },
+          name: "project-settings",
         },
       ];
     case "platform":
@@ -224,6 +242,11 @@ function navActive(item: NavItem): boolean {
   // the sidebar is concerned; so is an environment opened from a project.
   if (item.name === "deploys") return route.name === "deploys" || route.name === "build";
   if (item.name === "project-deploys") return route.name === "project-deploys" || route.name === "project-build";
+  // An environment opened from the list — or from the rail below it — is still
+  // the Environments screen as far as the navigation is concerned.
+  if (item.name === "project-environments") {
+    return route.name === "project-environments" || route.name === "project-environment";
+  }
   return route.name === item.name;
 }
 

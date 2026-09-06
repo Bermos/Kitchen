@@ -14,6 +14,7 @@ import {
 import { compactCount, formatBytes, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { clausesOf, hasClause, isEditable, removeClause, toggleClause, type Clause } from "../lib/logquery";
+import { hasRoute, noRouteReason, WEB_PROCESS } from "../lib/project";
 import { useAsync, usePoll } from "../lib/useAsync";
 import LogHistogram from "../components/LogHistogram.vue";
 import PageHeader from "../components/PageHeader.vue";
@@ -94,6 +95,39 @@ const clusterClause: Clause = { field: "source", value: "cluster", negated: true
  * around it either way. */
 const projectClause = computed<Clause>(() => ({ field: "project", value: project.value, negated: false }));
 
+// ── The process filter ──────────────────────────────────────────────────────
+//
+// A project is more than its web process, and every one of the four questions
+// on this screen is asked of one of them at a time (#470). The list is what the
+// project declares; `web` is not in that list, because the published process is
+// `spec.runtime` and is deliberately singular — so it is prepended here, as the
+// name every other surface already uses for it.
+//
+// The store's `process` column is empty for the web process's lines: an empty
+// process is not "unknown", it is what an environment's logs meant before the
+// column existed. So narrowing to `web` is the *absence* of a process, which
+// the query language spells `-process:*` and which `renderClause` cannot build
+// — a `*` in a value is quoted into a literal. It is appended as a term.
+const declared = useAsync(() => api.project(project.value));
+watch(project, () => void declared.refresh());
+const processes = computed(() => [WEB_PROCESS, ...(declared.data.value?.processes ?? []).map((p) => p.name)]);
+const processFilter = ref<string>((route.query.process as string) ?? "");
+/** What kind of workload the filter is on, which is what decides whether the
+ * traffic and trace tabs have anything to answer with. */
+const processType = computed(() => {
+  if (!processFilter.value || processFilter.value === WEB_PROCESS) return WEB_PROCESS;
+  return (declared.data.value?.processes ?? []).find((p) => p.name === processFilter.value)?.type ?? "worker";
+});
+/** Whether the process being read is addressed at all. A `service` is reachable
+ * from the rest of the project and published nowhere, and a worker is addressed
+ * by nothing — so neither has requests, latency or spans of its own, and four
+ * charts of zeroes would be a lie rather than an empty answer. */
+const filteredHasRoute = computed(() => hasRoute(processType.value));
+function chooseProcess(candidate: string) {
+  processFilter.value = candidate;
+  void run();
+}
+
 const ranges = [
   { label: "Last 15 minutes", value: 15 },
   { label: "Last hour", value: 60 },
@@ -127,6 +161,7 @@ function selection(): LogSelection {
   if (project.value && !hasClause(scoped, projectClause.value)) {
     scoped = toggleClause(scoped, projectClause.value);
   }
+  scoped = withProcess(scoped);
   const window = pinned.value ?? {
     since: rangeMinutes.value > 0 ? new Date(Date.now() - rangeMinutes.value * 60000).toISOString() : undefined,
     until: undefined,
@@ -140,6 +175,18 @@ function selection(): LogSelection {
 
 function withoutClusterLines(): string {
   return hasClause(query.value, clusterClause) ? query.value : toggleClause(query.value, clusterClause);
+}
+
+/** The process filter, as the request carries it. It is applied to the request
+ * rather than typed into the bar for the same reason the project scope is: it
+ * is what the screen is about, not something somebody typed. */
+function withProcess(scoped: string): string {
+  if (!processFilter.value) return scoped;
+  if (processFilter.value === WEB_PROCESS) {
+    return scoped.includes("-process:*") ? scoped : `${scoped} -process:*`.trim();
+  }
+  const clause: Clause = { field: "process", value: processFilter.value, negated: false };
+  return hasClause(scoped, clause) ? scoped : toggleClause(scoped, clause);
 }
 
 // The headline numbers over the same store: what the platform served, erred,
@@ -231,6 +278,7 @@ function syncURL() {
   if (query.value.trim()) params.q = query.value.trim();
   if (limit.value !== 200) params.limit = String(limit.value);
   if (tab.value !== "lines") params.view = tab.value;
+  if (processFilter.value) params.process = processFilter.value;
   if (pinned.value) {
     params.since = pinned.value.since;
     params.until = pinned.value.until;
@@ -614,7 +662,46 @@ const placeholder = `level:error service:shop`;
       </button>
     </div>
 
-    <TrafficPanel v-if="tab === 'traffic'" :project="project" />
+    <!-- Which process is being read. It is beside the tabs rather than in the
+         query bar because it is what the screen is about, the way the project
+         is — and it applies to all four tabs. -->
+    <div v-if="processes.length > 1" class="flex items-center gap-1.5 flex-wrap -mt-2">
+      <span class="text-[11px] text-dimmed mr-0.5">Process:</span>
+      <UButton
+        size="xs"
+        :color="processFilter === '' ? 'primary' : 'neutral'"
+        :variant="processFilter === '' ? 'soft' : 'subtle'"
+        @click="chooseProcess('')"
+        >All</UButton
+      >
+      <UButton
+        v-for="candidate in processes"
+        :key="candidate"
+        size="xs"
+        class="font-mono"
+        :color="processFilter === candidate ? 'primary' : 'neutral'"
+        :variant="processFilter === candidate ? 'soft' : 'subtle'"
+        @click="chooseProcess(candidate)"
+        >{{ candidate }}</UButton
+      >
+    </div>
+
+    <!-- A process nothing addresses has no requests, no latency and no spans.
+         Four charts of zeroes would read as an application nobody is using;
+         this says which it is, in the words docs/OBSERVABILITY.md §3.4 uses. -->
+    <div
+      v-if="(tab === 'traffic' || tab === 'traces') && !filteredHasRoute"
+      class="rounded-md border border-default px-4 py-8 text-center space-y-1"
+    >
+      <p class="text-sm text-toned">
+        <span class="font-mono">{{ processFilter }}</span> — {{ noRouteReason(processType) }}
+      </p>
+      <p class="text-xs text-muted">
+        Nothing measures what is not addressed. Its logs are on the first two tabs, and what it is doing is on the
+        environment that runs it.
+      </p>
+    </div>
+    <TrafficPanel v-else-if="tab === 'traffic'" :project="project" />
     <TracesPanel v-else-if="tab === 'traces'" :project="project" />
 
     <template v-else>
@@ -755,6 +842,13 @@ const placeholder = `level:error service:shop`;
                   >
                     {{ line.environment || line.build || line.source }}
                   </td>
+                  <!-- Which process printed it. Empty is the web process's —
+                       the column is what makes a unit of five workloads
+                       readable as five things rather than one interleaved
+                       stream. -->
+                  <td class="px-3 py-0.5 whitespace-nowrap text-dimmed select-none">
+                    {{ line.process || WEB_PROCESS }}
+                  </td>
                   <td
                     class="px-3 py-0.5 whitespace-nowrap select-none"
                     :class="levelClass(line.level, line.stream)"
@@ -780,7 +874,7 @@ const placeholder = `level:error service:shop`;
                 <!-- A JSON line's own fields, and each of them a filter — plus
                      the way out to the request the line belongs to. -->
                 <tr v-if="expanded === i && (fieldsOf(line).length || line.traceId)" class="bg-elevated/30">
-                  <td colspan="4" class="px-3 py-2 space-y-2">
+                  <td colspan="5" class="px-3 py-2 space-y-2">
                     <div v-if="line.traceId" class="flex items-center gap-2">
                       <RouterLink
                         :to="{ name: 'traces', query: { trace: line.traceId, range: '1440' } }"

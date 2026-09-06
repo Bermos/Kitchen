@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { computed, ref } from "vue";
+import { useRouter } from "vue-router";
 import { api, type Build } from "../lib/api";
 import { buildFailureLine, buildStallLine } from "../lib/builds";
 import { buildLink } from "../lib/links";
@@ -13,19 +13,16 @@ import SourceLink from "../components/SourceLink.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 
-const route = useRoute();
 const router = useRouter();
 
-// One screen at two addresses, and the address is the difference.
+// The Fleet scope's deploy list: every build across every project the caller
+// can see, with the project a column and a filter.
 //
-// `/deploys` is the Fleet scope's: every build across every project the caller
-// can see, with the project a column and a filter. `/projects/:name/deploys`
-// is the Project scope's: the same list with the question already answered, so
-// the filter and the column are not on it — a screen that has been told which
-// project it is about does not ask again, and does not spend a column saying
-// the same word on every row (#469).
-const project = computed(() => (route.params.name as string | undefined) ?? "");
-const scoped = computed(() => Boolean(project.value));
+// A project's own deploys are `ProjectDeploysView.vue`, which is a different
+// screen rather than this one with a column removed: it puts builds and
+// promotions on one timeline, filters them by process, and hangs the rollback
+// off a release row (#470). What the two have in common is a list of builds,
+// which is not enough to be one component wearing two shapes.
 
 /** Opening a build from anywhere on its row, without stealing the clicks that
  *  already mean something: a link the row contains, and the modifier clicks a
@@ -33,7 +30,7 @@ const scoped = computed(() => Boolean(project.value));
 function open(name: string, event: MouseEvent) {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
   if ((event.target as HTMLElement | null)?.closest("a")) return;
-  void router.push(buildLink(name, project.value));
+  void router.push(buildLink(name, projectOf(name)));
 }
 
 const failureOf = (build: Build) => buildFailureLine(build);
@@ -41,10 +38,13 @@ const failureOf = (build: Build) => buildFailureLine(build);
 // purpose — it is one, it just has not been called one yet.
 const stallOf = (build: Build) => buildStallLine(build);
 
-const { data, error, loading, refresh } = useAsync(() =>
-  scoped.value ? api.projectBuilds(project.value) : api.builds(),
-);
-watch(project, () => void refresh());
+const { data, error, loading, refresh } = useAsync(() => api.builds());
+
+/** Which project a build is in, for the link out. The list carries it, so this
+ * never has to guess. */
+function projectOf(build: string): string | undefined {
+  return (data.value ?? []).find((candidate) => candidate.name === build)?.project;
+}
 // How old this screen is, and the reader's hold on it: every fetch above
 // reports into it and the header renders it.
 const freshness = useFreshness();
@@ -67,13 +67,11 @@ function toggleMessage(name: string) {
   expanded.value = expanded.value === name ? null : name;
 }
 
-/** In the Fleet scope, the projects that have builds — the filter's own
- * items. In the Project scope there is nothing to filter. */
+/** The projects that have builds — the filter's own items. */
 const filter = ref<string>("");
 const projects = computed(() => [...new Set((data.value ?? []).map((b) => b.project))].sort());
 const visible = computed(() => {
   const builds = data.value ?? [];
-  if (scoped.value) return builds.filter((b) => b.project === project.value);
   return filter.value ? builds.filter((b) => b.project === filter.value) : builds;
 });
 </script>
@@ -83,17 +81,10 @@ const visible = computed(() => {
     <PageHeader
       :freshness="freshness"
       title="Deploys"
-      :breadcrumb="scoped ? [{ label: 'Projects', to: '/projects' }, { label: project, mono: true }, { label: 'Deploys' }] : []"
     >
       <template #description>
-        <template v-if="scoped">
-          Every build of this project, newest first — what is running now, what is waiting for a slot, and what the last
-          commit did.
-        </template>
-        <template v-else>
-          Every build across the projects you can see, newest first — what is running now, what is waiting for a slot,
-          and what the last commit did.
-        </template>
+        Every build across the projects you can see, newest first — what is running now, what is waiting for a slot, and
+        what the last commit did.
       </template>
       <template #actions>
         <UButton
@@ -115,7 +106,7 @@ const visible = computed(() => {
     <!-- The gate's own state, which is the platform's rather than a
          project's: how many slots there are and what is behind them is the
          same answer whichever project asked. It stays on the fleet screen. -->
-    <div v-if="queue && !scoped" class="flex items-center gap-x-4 gap-y-1 flex-wrap text-sm">
+    <div v-if="queue" class="flex items-center gap-x-4 gap-y-1 flex-wrap text-sm">
       <span class="text-muted">
         <span class="text-highlighted font-medium">{{ queue.running }}</span>
         of {{ queue.capacity }} building
@@ -128,7 +119,7 @@ const visible = computed(() => {
       <span v-else class="text-dimmed">nothing waiting</span>
     </div>
 
-    <div v-if="waiting.length && !scoped" class="rounded border border-default divide-y divide-default text-sm">
+    <div v-if="waiting.length" class="rounded border border-default divide-y divide-default text-sm">
       <div
         v-for="build in waiting"
         :key="build.name"
@@ -141,7 +132,7 @@ const visible = computed(() => {
       </div>
     </div>
 
-    <div v-if="!scoped" class="flex items-center gap-2 flex-wrap">
+    <div class="flex items-center gap-2 flex-wrap">
       <UButton
         size="xs"
         :color="filter === '' ? 'primary' : 'neutral'"
@@ -165,7 +156,7 @@ const visible = computed(() => {
         <thead>
           <tr class="text-left text-xs text-muted border-b border-default bg-muted">
             <th class="px-3 py-2 font-medium">Commit</th>
-            <th v-if="!scoped" class="px-3 py-2 font-medium">Project</th>
+            <th class="px-3 py-2 font-medium">Project</th>
             <th class="px-3 py-2 font-medium">Status</th>
             <th class="px-3 py-2 font-medium">Duration</th>
             <th class="px-3 py-2 font-medium text-right">Created</th>
@@ -173,7 +164,7 @@ const visible = computed(() => {
         </thead>
         <tbody>
           <tr v-if="!visible.length">
-            <td :colspan="scoped ? 4 : 5" class="px-3 py-8 text-center text-muted">
+            <td colspan="5" class="px-3 py-8 text-center text-muted">
               {{ loading ? "Loading…" : "No builds yet." }}
             </td>
           </tr>
@@ -229,7 +220,7 @@ const visible = computed(() => {
                   {{ stallOf(build) }}
                 </span>
               </td>
-              <td v-if="!scoped" class="px-3 py-2">
+              <td class="px-3 py-2">
                 <RouterLink
                   :to="{ name: 'project', params: { name: build.project } }"
                   class="text-toned hover:underline"
@@ -242,7 +233,7 @@ const visible = computed(() => {
               <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">{{ timeAgo(build.createdAt) }}</td>
             </tr>
             <tr v-if="expanded === build.name" class="border-b border-muted last:border-0">
-              <td :colspan="scoped ? 4 : 5" class="px-3 py-2 bg-elevated/30">
+              <td colspan="5" class="px-3 py-2 bg-elevated/30">
                 <CommitBody :body="build.git.body" />
               </td>
             </tr>
