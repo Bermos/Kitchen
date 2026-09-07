@@ -2010,7 +2010,7 @@ func (r *BuildReconciler) ensureEnvironment(
 				// environments are never touched.
 				DataClass:  project.Spec.DataClass,
 				Preview:    preview,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 			},
 		}
 		details := map[string]any{"type": string(envType), "release": releaseName, "build": buildName}
@@ -2072,7 +2072,7 @@ func (r *BuildReconciler) ensureEnvironment(
 	}); err != nil {
 		return err
 	}
-	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
+	env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: releaseName}
 	if err := r.Update(ctx, env); err != nil {
 		return err
 	}

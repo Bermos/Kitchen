@@ -136,7 +136,7 @@ var _ = Describe("A claim's certificate authority", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentProduction,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 			},
 		}
 		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, env))).To(Succeed())

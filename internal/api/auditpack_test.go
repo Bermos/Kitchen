@@ -562,7 +562,7 @@ func TestATypicalProjectsPackIsWellInsideAMinute(t *testing.T) {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: shopProject},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "shop-rel-pack"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "shop-rel-pack"},
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: int32(i + 1)},
 			},
 		})

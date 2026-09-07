@@ -399,7 +399,7 @@ func (r *PromotionReconciler) apply(
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
-		env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: release.Name}
+		env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: release.Name}
 		if err := r.Update(ctx, env); err != nil {
 			return ctrl.Result{}, err
 		}

@@ -101,6 +101,12 @@ var conditionSeverities = map[conditionStatement]conditionSeverity{
 	// about, one setting further along.
 	{controller.ConditionRouteProgrammed, controller.ReasonInternalProject}: severityInfo,
 	{controller.ConditionScaleToZero, controller.ReasonInternalProject}:     severityInfo,
+	// An environment declared before anything deployed into it is waiting for
+	// its first release, which is what declaring one ahead of time means
+	// (#491). Nothing is wrong with it and nothing is late — the bar it sets
+	// is already in force, and the first build to arrive is judged against
+	// it.
+	{controller.ConditionReady, controller.ReasonAwaitingDeployment}: severityInfo,
 	// A store left unencrypted is a choice this platform reports. The
 	// component survey already reads it that way (internalTLSComponent).
 	{controller.ConditionInternalCAReady, controller.ReasonStoreInTheClear}: severityInfo,

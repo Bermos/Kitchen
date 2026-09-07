@@ -337,3 +337,23 @@ func TestTheURLColumnTellsInternalFromNotYetPublished(t *testing.T) {
 		t.Fatalf("only the internal environment says internal:\n%s", table)
 	}
 }
+
+// An environment declared before anything deployed into it has no release,
+// and the column says so rather than leaving a blank that reads as a fetch
+// the CLI got wrong (#491).
+func TestTheReleaseColumnSaysWhenNothingIsDeployed(t *testing.T) {
+	styles := tui.New(false)
+
+	table := renderEnvironments(styles, []environment{
+		{Name: "shop-staging", Type: "stage", Phase: "Pending", Exposure: "public"},
+		{Name: "shop-production", Type: "production", Phase: "Live", Release: "rel-1",
+			URL: "https://shop.apps.example.com", Exposure: "public"},
+	})
+
+	if !strings.Contains(table, "nothing deployed yet") {
+		t.Fatalf("a declared environment does not say it is empty:\n%s", table)
+	}
+	if strings.Count(table, "nothing deployed yet") != 1 {
+		t.Fatalf("only the declared environment says it:\n%s", table)
+	}
+}

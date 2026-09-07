@@ -4663,6 +4663,15 @@ export const api = {
     list<Release>(`/projects/${name}/releases`)(),
   projectEnvironments: (name: string) =>
     list<Environment>(`/projects/${name}/environments`)(),
+  // Declaring an environment before anything deploys into it (#491). The type
+  // is derived from the project's promotion pipeline and is deliberately not
+  // sent: what the dashboard would send is what the API would derive, and a
+  // disagreement is a refusal rather than a correction. The owners' half of
+  // the body — the bar, the class, the tolerances — is the operator's and is
+  // set afterwards through the requirements endpoint, which is where changing
+  // it lives too.
+  declareEnvironment: (project: string, name: string) =>
+    request<Environment>("POST", `/projects/${project}/environments`, { name }),
   rebuild: (project: string, revision?: { sha: string; branch?: string }) =>
     request<Build>("POST", `/projects/${project}/builds`, revision ?? {}),
 

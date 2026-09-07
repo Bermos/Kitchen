@@ -456,11 +456,17 @@ func (s *Server) environmentProcesses(w http.ResponseWriter, req *http.Request) 
 // A missing Release is an empty snapshot rather than an error: the
 // environment's own conditions already say the release is gone, and this
 // endpoint answering 500 for it would be a second, less informative way of
-// hearing about it.
+// hearing about it. An environment that names *no* release — one declared
+// before anything deployed into it (#491) — is the same empty answer, and is
+// checked first because a read by empty name is a client error rather than a
+// not-found.
 func (s *Server) declaredProcesses(
 	ctx context.Context,
 	env *kitchenv1alpha1.Environment,
 ) (kitchenv1alpha1.ConfigSnapshot, error) {
+	if env.Spec.ReleaseRef.Name == "" {
+		return kitchenv1alpha1.ConfigSnapshot{}, nil
+	}
 	release := &kitchenv1alpha1.Release{}
 	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ReleaseRef.Name}
 	if err := s.Client.Get(ctx, key, release); err != nil {

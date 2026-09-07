@@ -161,6 +161,18 @@ const (
 	// ReasonInternalProject is a project that asked not to be published.
 	ReasonInternalProject = "InternalProject"
 
+	// ConditionReady and ReasonAwaitingDeployment are exported for the same
+	// reason: an Environment declared through the API before anything
+	// deployed into it (#491) is not running a release, and that is the
+	// declaration working rather than the platform failing to deploy. It
+	// materializes nothing, reports Ready=False with this reason, and waits
+	// for the first build to promote a release here — which the API
+	// classifies as information, and the dashboard draws as "nothing
+	// deployed yet". See internal/api/conditions.go.
+	ConditionReady = condReady
+	// ReasonAwaitingDeployment is an environment nothing has deployed into.
+	ReasonAwaitingDeployment = "AwaitingDeployment"
+
 	// reasonReservedHostname is the name of a project that would publish a
 	// hostname the platform already serves, or one another project's preview
 	// already has (#423). The API refuses such a name outright, so this only
@@ -271,9 +283,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return halt, err
 	}
 
-	release := &kitchenv1alpha1.Release{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ReleaseRef.Name}, release); err != nil {
-		return r.notReady(ctx, env, "ReleaseMissing", err)
+	release, halt, err := r.releaseOf(ctx, env)
+	if release == nil {
+		return halt, err
 	}
 
 	// What the release froze is checked before any of it becomes a pod. The
@@ -1789,6 +1801,57 @@ func (r *EnvironmentReconciler) awaitingDeployTasks(
 	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 }
 
+// releaseOf is the Release this environment runs, and the two ways there is
+// not one. A nil release means the reconcile is over and the returned result
+// and error are its answer.
+//
+// The two are one step because they are one question asked of two different
+// states, and only one of them is a fault. An environment declared before
+// anything deployed into it (#491) *has* no release and is not waiting for a
+// missing object — there is nothing to materialize and nothing is wrong. An
+// environment naming a release that is not there is the fault the second
+// branch has always reported.
+func (r *EnvironmentReconciler) releaseOf(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+) (*kitchenv1alpha1.Release, ctrl.Result, error) {
+	if env.Spec.ReleaseRef.Name == "" {
+		return nil, ctrl.Result{}, r.awaitingDeployment(ctx, env)
+	}
+	release := &kitchenv1alpha1.Release{}
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ReleaseRef.Name}
+	if err := r.Get(ctx, key, release); err != nil {
+		result, err := r.notReady(ctx, env, "ReleaseMissing", err)
+		return nil, result, err
+	}
+	return release, ctrl.Result{}, nil
+}
+
+// awaitingDeployment is the answer for an environment nothing has deployed
+// into: Pending, with a Ready condition saying what it is waiting for.
+//
+// It is deliberately not notReady. That one is for something that went wrong
+// and retries every fifteen seconds; this is a declared environment doing
+// exactly what it should, and the thing it waits for — a build promoting a
+// release here — writes spec.releaseRef, which wakes this reconciler on its
+// own. A requeue would only be a clock ticking against a state that never
+// changes by itself.
+func (r *EnvironmentReconciler) awaitingDeployment(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+) error {
+	env.Status.Phase = kitchenv1alpha1.EnvironmentPending
+	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
+		Type:   condReady,
+		Status: metav1.ConditionFalse,
+		Reason: ReasonAwaitingDeployment,
+		Message: "nothing has been deployed into this environment yet: " +
+			"it holds its declarations until a build promotes a release here",
+		ObservedGeneration: env.Generation,
+	})
+	return r.Status().Update(ctx, env)
+}
+
 // notReady records a Ready=False condition with the given reason and retries.
 func (r *EnvironmentReconciler) notReady(
 	ctx context.Context,
@@ -1949,6 +2012,23 @@ func hostname(projectName string, env *kitchenv1alpha1.Environment, baseDomain s
 // named `shop-staging` is published at `shop-staging`, not at
 // `shop-shop-staging`, which is the conventional name and the one the
 // pipeline's own environments are created with.
+// EnvironmentHostLabel is the label an environment of this project publishes
+// under, in front of the base domain: the project's own name for production,
+// and the stage's name under the project's for a stage.
+//
+// It is exported for the API, which has to know the address a *declared*
+// environment would claim before the environment exists — a name whose
+// generated hostname is one the platform already serves, or one shaped like
+// another project's preview, is refused at the name the way a project's is
+// (#423). A preview is not asked about here: its label is derived from a pull
+// request number nothing declares.
+func EnvironmentHostLabel(projectName, envName string, envType kitchenv1alpha1.EnvironmentType) string {
+	if envType == kitchenv1alpha1.EnvironmentStage {
+		return stageHostLabel(projectName, envName)
+	}
+	return projectName
+}
+
 func stageHostLabel(projectName, envName string) string {
 	if strings.HasPrefix(envName, projectName+"-") {
 		return envName

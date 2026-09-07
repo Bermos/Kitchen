@@ -124,7 +124,7 @@ var _ = Describe("Redeploying the commit an environment is already on", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentProduction,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 			},
 		}))).To(Succeed())
 	})
@@ -182,7 +182,7 @@ var _ = Describe("Redeploying the commit an environment is already on", func() {
 		By("pointing the environment at it, the way any other move does")
 		env := &kitchenv1alpha1.Environment{}
 		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
-		env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: fresh.Name}
+		env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: fresh.Name}
 		Expect(k8sClient.Update(ctx, env)).To(Succeed())
 		reconcileOnce()
 		reconcileOnce()

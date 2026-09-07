@@ -131,7 +131,7 @@ func TestAnEnvironmentRefusesToMaterializeAPlatformSecretReference(t *testing.T)
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 			Type:       kitchenv1alpha1.EnvironmentProduction,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 		},
 	}
 

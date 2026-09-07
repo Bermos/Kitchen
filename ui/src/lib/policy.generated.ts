@@ -70,6 +70,7 @@ export type Route =
   | "POST /api/v1/projects/{name}/acquisitions"
   | "GET /api/v1/projects/{name}/releases"
   | "GET /api/v1/projects/{name}/environments"
+  | "POST /api/v1/projects/{name}/environments"
   | "GET /api/v1/projects/{name}/audit-pack"
   | "GET /api/v1/projects/{name}/members"
   | "POST /api/v1/projects/{name}/members"
@@ -234,6 +235,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/projects/{name}/acquisitions": { kind: "projectRole", role: "admin", doing: "acquiring an image" },
   "GET /api/v1/projects/{name}/releases": { kind: "projectRole", role: "viewer", doing: "reading a project's releases" },
   "GET /api/v1/projects/{name}/environments": { kind: "projectRole", role: "viewer", doing: "reading a project's environments" },
+  "POST /api/v1/projects/{name}/environments": { kind: "projectRole", role: "developer", doing: "declaring an environment" },
   "GET /api/v1/projects/{name}/audit-pack": { kind: "operator", doing: "exporting a project's audit pack" },
   "GET /api/v1/projects/{name}/members": { kind: "projectRole", role: "viewer", doing: "reading a project's members" },
   "POST /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "adding somebody to a project" },

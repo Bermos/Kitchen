@@ -144,14 +144,22 @@ spec:
                 type: object
               releaseRef:
                 description: |-
-                  LocalObjectReference references another Kitchen object by name within the
-                  platform namespace. Cross-namespace references are not supported in v1alpha1.
+                  ReleaseRef names the Release this environment runs, and it is the one
+                  reference on the platform that may be empty: an Environment can now be
+                  declared before anything has deployed into it (#491), and a declared
+                  one has no release until its first build promotes one here. That is
+                  why it is a ReleaseReference rather than the LocalObjectReference
+                  every other reference is — a name that must be there is exactly what
+                  LocalObjectReference means, and this one need not be.
+
+                  Empty is therefore a state and not a fault: the environment reports
+                  AwaitingDeployment and materializes nothing, which is the read the
+                  dashboard's "nothing deployed yet" comes from.
                 properties:
                   name:
-                    minLength: 1
+                    description: Name is the Release, empty on an environment nothing
+                      has deployed into.
                     type: string
-                required:
-                - name
                 type: object
               requirements:
                 description: |-
@@ -221,7 +229,6 @@ spec:
                 type: string
             required:
             - projectRef
-            - releaseRef
             type: object
           status:
             description: EnvironmentStatus defines the observed state of an Environment.

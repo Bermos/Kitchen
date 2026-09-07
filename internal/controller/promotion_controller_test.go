@@ -102,7 +102,7 @@ var _ = Describe("Promotion Controller", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef:   kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:         kitchenv1alpha1.EnvironmentProduction,
-				ReleaseRef:   kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-old"},
+				ReleaseRef:   kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-old"},
 				Requirements: requirements,
 			},
 		}

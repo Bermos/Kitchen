@@ -90,7 +90,7 @@ var _ = Describe("An inngest claim", func() {
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 5, Branch: "feature/jobs"},
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-1"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-1"},
 			},
 		}
 		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, env))).To(Succeed())

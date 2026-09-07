@@ -424,7 +424,7 @@ func TestPullRequestClosedDeletesPreview(t *testing.T) {
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Type:       kitchenv1alpha1.EnvironmentPreview,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "shop-rel-1"},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "shop-rel-1"},
 			Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"},
 		},
 	}
@@ -675,7 +675,7 @@ func TestGitLabMergeRequestMergedDeletesPreview(t *testing.T) {
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Type:       kitchenv1alpha1.EnvironmentPreview,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "shop-rel-1"},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "shop-rel-1"},
 			Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"},
 		},
 	}

@@ -382,7 +382,7 @@ var _ = Describe("A workload that runs an image this platform did not build", fu
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: vendorProject},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: release.Name},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: release.Name},
 				},
 			}
 			create(env)
@@ -493,7 +493,7 @@ var _ = Describe("A workload that runs an image this platform did not build", fu
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: mixedProject},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: newer.Name},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: newer.Name},
 				},
 			}
 			create(env)
@@ -525,7 +525,7 @@ var _ = Describe("A workload that runs an image this platform did not build", fu
 
 			By("rolling the whole unit back")
 			Expect(k8sClient.Get(ctx, key, env)).To(Succeed())
-			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: older.Name}
+			env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: older.Name}
 			Expect(k8sClient.Update(ctx, env)).To(Succeed())
 			reconcileTwice()
 

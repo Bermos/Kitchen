@@ -1545,6 +1545,19 @@ func (c *client) projectEnvironments(ctx context.Context, name string) ([]enviro
 	return answer.Items, err
 }
 
+// declareEnvironment creates an environment of a project before anything has
+// deployed into it. Only the name is sent: the type is derived from the
+// project's promotion pipeline — and refused rather than corrected where a
+// client disagrees with it — and what the environment demands is its owners'
+// declaration, which an environment that does not exist yet has nobody for.
+func (c *client) declareEnvironment(ctx context.Context, project, name string) (*environment, error) {
+	answer := &environment{}
+	err := c.do(ctx, "declaring environment "+name,
+		http.MethodPost, "/projects/"+project+"/environments", nil,
+		map[string]string{"name": name}, answer)
+	return answer, err
+}
+
 func (c *client) environmentProcesses(ctx context.Context, name string) ([]process, error) {
 	answer := &list[process]{}
 	err := c.do(ctx, "listing "+name+"'s processes",

@@ -280,6 +280,24 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofProject, "reading a project's releases")},
 		{"GET /api/v1/projects/{name}/environments", s.listProjectEnvironments,
 			onProject(access.ProjectViewer, ofProject, "reading a project's environments")},
+		// Declaring an environment before anything deploys into it (#491).
+		//
+		// **Developer, like deleting one, and for the same reason.** Which
+		// environments a project has is the deploying team's shape — the
+		// promotion pipeline that produces them is a project setting, and the
+		// first build for a target produces one anyway. This route only moves
+		// that moment earlier.
+		//
+		// What it does *not* admit is the owners' half of the body. The
+		// requirements row below says why the table cannot express "named on
+		// the object", and the same applies here with one extra turn: an
+		// environment that does not exist yet names no owners, so at creation
+		// there is nobody but an operator — and a developer who could name
+		// themselves an owner on the way in would be granting themselves the
+		// say over what the environment demands. The handler refuses that with
+		// a 403 saying who may.
+		{"POST /api/v1/projects/{name}/environments", s.createProjectEnvironment,
+			onProject(access.ProjectDeveloper, ofProject, "declaring an environment")},
 		// The audit pack (#142): one project's whole compliance answer for
 		// one window, as a document that leaves the platform.
 		//

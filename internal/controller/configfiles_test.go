@@ -95,7 +95,7 @@ var _ = Describe("A project's configuration files", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentProduction,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 			},
 		}
 		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, env))).To(Succeed())
@@ -114,7 +114,7 @@ var _ = Describe("A project's configuration files", func() {
 		key := types.NamespacedName{Name: prodName, Namespace: namespace}
 		env := &kitchenv1alpha1.Environment{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, key, env)).To(Succeed())
-		env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
+		env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: releaseName}
 		ExpectWithOffset(1, k8sClient.Update(ctx, env)).To(Succeed())
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())

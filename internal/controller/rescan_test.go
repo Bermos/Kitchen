@@ -225,7 +225,7 @@ func rescanEnvironment(requirements *kitchenv1alpha1.EnvironmentRequirements) *k
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef:   kitchenv1alpha1.LocalObjectReference{Name: rescanProject},
 			Type:         kitchenv1alpha1.EnvironmentProduction,
-			ReleaseRef:   kitchenv1alpha1.LocalObjectReference{Name: rescanRelease},
+			ReleaseRef:   kitchenv1alpha1.ReleaseReference{Name: rescanRelease},
 			Requirements: requirements,
 		},
 		Status: kitchenv1alpha1.EnvironmentStatus{

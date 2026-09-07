@@ -5,8 +5,11 @@ import { api, type Environment } from "../lib/api";
 import { duration, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { buildLink, environmentLink } from "../lib/links";
-import { autoRollbackFor, host } from "../lib/project";
+import { callerFor } from "../lib/me";
+import { may } from "../lib/policy";
+import { autoRollbackFor, awaitingFirstDeployment, host, NOTHING_DEPLOYED } from "../lib/project";
 import { useAsync, usePoll } from "../lib/useAsync";
+import DeclareEnvironmentModal from "../components/DeclareEnvironmentModal.vue";
 import EnvironmentCard from "../components/EnvironmentCard.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PageSection from "../components/PageSection.vue";
@@ -54,6 +57,13 @@ const production = computed(() =>
   environments.value.find((environment) => environment.name === project.value?.productionEnvironment),
 );
 const previews = computed(() => environments.value.filter((environment) => environment.type === "preview"));
+
+// Declaring one (#491): an environment that exists before anything is
+// deployed into it, so the bar its owners set is in force for the first
+// release rather than only for the second. The control is not rendered for
+// somebody the API would refuse, which is the same table the API enforces.
+const caller = computed(() => callerFor(project.value?.role, name.value));
+const mayDeclare = computed(() => may("POST /api/v1/projects/{name}/environments", caller.value));
 
 // The mini-cards, production first: previews and production at a glance, with
 // what each one served, how much of it failed and how slow it was — so nobody
@@ -113,6 +123,7 @@ function previewBuilds(pullRequest: number | undefined) {
           before production, and one per open pull request. Each answers at its own address.
         </template>
         <template #actions>
+          <DeclareEnvironmentModal v-if="mayDeclare" :project="project.name" @declared="refresh" />
           <UButton
             icon="i-lucide-refresh-cw"
             color="neutral"
@@ -150,7 +161,8 @@ function previewBuilds(pullRequest: number | undefined) {
             <tbody>
               <tr v-if="!environments.length">
                 <td colspan="6" class="px-3 py-8 text-center text-muted">
-                  Nothing published yet — the first production build creates an environment.
+                  Nothing published yet — the first production build creates an environment, or declare one
+                  now to set what it demands before the first release lands in it.
                 </td>
               </tr>
               <tr
@@ -169,7 +181,14 @@ function previewBuilds(pullRequest: number | undefined) {
                   <UBadge color="neutral" variant="subtle" size="sm">{{ environment.type }}</UBadge>
                 </td>
                 <td class="px-3 py-2"><PhaseBadge :phase="environment.phase" /></td>
-                <td class="px-3 py-2 font-mono text-xs text-toned">{{ environment.release || "—" }}</td>
+                <!-- An environment declared before anything deployed into it
+                     is not an environment with a missing release: it is one
+                     waiting for its first, with whatever it demands already
+                     in force. -->
+                <td class="px-3 py-2 text-xs">
+                  <span v-if="awaitingFirstDeployment(environment)" class="text-muted">{{ NOTHING_DEPLOYED }}</span>
+                  <span v-else class="font-mono text-toned">{{ environment.release }}</span>
+                </td>
                 <!-- Not "this environment rolls back on a bad deploy": the
                      platform makes no such promise. What the column says is
                      whether an expired grant covering this environment would
@@ -200,6 +219,9 @@ function previewBuilds(pullRequest: number | undefined) {
                     class="text-muted text-xs"
                     title="This project is internal: no hostname and no certificate. The environment is reachable from the other applications on this platform."
                     >internal</span
+                  >
+                  <span v-else-if="awaitingFirstDeployment(environment)" class="text-dimmed text-xs"
+                    >no address until something is deployed</span
                   >
                   <span v-else class="text-dimmed text-xs">not published</span>
                 </td>

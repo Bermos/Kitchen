@@ -165,7 +165,7 @@ var _ = Describe("Scale to zero", func() {
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 7, Branch: "feat/idle"},
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 			},
 		}
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, env))).To(Succeed())

@@ -1061,7 +1061,7 @@ var _ = Describe("Build Controller", func() {
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-previous"},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-previous"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, env)).To(Succeed())
@@ -1088,7 +1088,7 @@ var _ = Describe("Build Controller", func() {
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-previous"},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-previous"},
 					Requirements: &kitchenv1alpha1.EnvironmentRequirements{
 						BundleDigest: "sha256:" + strings.Repeat("ab", 32),
 					},
@@ -1190,7 +1190,7 @@ var _ = Describe("Build Controller", func() {
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
 					DataClass:  kitchenv1alpha1.DataClassInternal,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-previous"},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-previous"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, env)).To(Succeed())

@@ -42,7 +42,7 @@ var _ = Describe("Environment requirements validation", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef:   kitchenv1alpha1.LocalObjectReference{Name: "reqshop"},
 				Type:         kitchenv1alpha1.EnvironmentProduction,
-				ReleaseRef:   kitchenv1alpha1.LocalObjectReference{Name: "reqshop-rel-1"},
+				ReleaseRef:   kitchenv1alpha1.ReleaseReference{Name: "reqshop-rel-1"},
 				Owners:       []string{"user_owner", "owner@example.com"},
 				Requirements: requirements,
 			},

@@ -309,6 +309,32 @@ function names(exceptions: Exception[]): string {
   return exceptions.map((exception) => exception.name).join(", ");
 }
 
+// ── An environment nothing has deployed into ────────────────────────────────
+
+/**
+ * Whether this environment is one that was declared and never deployed into
+ * (#491).
+ *
+ * An environment used to exist only because a build put a release in it, so
+ * "no release" could only mean something had gone wrong. It can now be
+ * declared first — with its owners, its bar and its classification set before
+ * the artifact they judge exists — and until the first build arrives it runs
+ * nothing at all. That is a state to draw, not a fault: the API says the same
+ * thing on the object, as `Ready=False` with reason `AwaitingDeployment` and
+ * an `info` severity.
+ *
+ * Read off the release rather than off the condition on purpose. A row in a
+ * list carries no conditions, and "is anything running here" is a question
+ * about the release either way.
+ */
+export function awaitingFirstDeployment(environment: Environment): boolean {
+  return !environment.release && !environment.observedRelease;
+}
+
+/** What such an environment says where the release, the address and the
+ *  phase would be. One sentence, in the place a reader is already looking. */
+export const NOTHING_DEPLOYED = "nothing deployed yet";
+
 // ── The Attached resources table ────────────────────────────────────────────
 
 /**

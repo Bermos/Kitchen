@@ -355,6 +355,7 @@ give.
 | `kitchen audit-pack` † | Export one project's whole compliance answer for a window, signed, as files on disk | `GET /projects/{name}/audit-pack` |
 | `kitchen releases` | The project's releases — what there is to roll back to | `GET /projects/{name}/releases` |
 | `kitchen environments` | The project's environments and where they answer | `GET /projects/{name}/environments` |
+| `kitchen environments create` | Declare one before anything deploys into it | `POST /projects/{name}/environments` |
 | `kitchen api` | Any endpoint of the API, authenticated | anything |
 | `kitchen schema` | The whole CLI as JSON | — |
 | `kitchen version` | Which release of the CLI this is | — |
@@ -1013,6 +1014,43 @@ kitchen api GET /projects/shop                        # previewsForks
 kitchen api PATCH /projects/shop --data '{"previewsForks":"build"}'
 kitchen api PATCH /settings --data '{"previewsForksMax":"build"}'
 ```
+
+### Declaring an environment
+
+An environment is otherwise created by the first build for it, which means the
+bar its owners set could only ever be raised *after* a release had already
+landed there. Declaring one first is the other order.
+
+```sh
+kitchen environments                       # what there is
+kitchen environments create shop-staging   # one more, with nothing in it yet
+```
+
+The name becomes the address the environment answers at, so it is a DNS label
+and unique across the platform; a name the platform already serves, or one
+shaped like a pull request's preview, is refused saying which. Which rung it is
+— `production`, or a `stage` on the way to it — follows the project's promotion
+pipeline and is not asked for: the operator derives it and re-derives it on
+every pass, so a type sent by a client would be a correction waiting to happen.
+
+Nothing is deployed by it. `kitchen environments` shows the new row with no
+release, and the environment says it is waiting for its first one until a build
+for it lands.
+
+**What it demands is a separate act, and a platform operator's.** The owners,
+the policy bundle, the classification and the tolerances are the environment
+owners' declaration — and an environment that does not exist yet names no
+owners, so at creation there is nobody but an operator. They are set on the
+environment once it exists, through the endpoint that changes them afterwards
+anyway:
+
+```sh
+kitchen api PATCH /environments/shop-staging/requirements \
+  --data '{"owners": ["risk@example.com"], "bundleDigest": "sha256:4f6c..."}'
+```
+
+That is the whole reason to declare one: the first release into it is judged
+against a bar that was already there.
 
 ### Rolling back
 

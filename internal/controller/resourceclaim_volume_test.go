@@ -305,7 +305,7 @@ var _ = Describe("ResourceClaim of type volume", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "volshop-rel-1"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "volshop-rel-1"},
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 4, Branch: "feature"},
 			},
 		}

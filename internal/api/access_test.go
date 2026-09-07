@@ -125,7 +125,7 @@ func blogFixtures() []runtime.Object {
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: otherProject},
 			Type:       kitchenv1alpha1.EnvironmentProduction,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "blog-rel-0"},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "blog-rel-0"},
 		},
 	}
 	return []runtime.Object{project, build, environment}

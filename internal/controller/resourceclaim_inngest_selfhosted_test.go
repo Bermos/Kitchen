@@ -211,7 +211,7 @@ var _ = Describe("A self-hosted inngest claim", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       envType,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-1"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-1"},
 			},
 		}
 		if envType == kitchenv1alpha1.EnvironmentPreview {

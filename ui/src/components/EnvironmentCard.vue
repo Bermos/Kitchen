@@ -3,6 +3,7 @@ import { environmentLink } from "../lib/links";
 import { computed, watch } from "vue";
 import { api, type Environment } from "../lib/api";
 import { compactCount } from "../lib/format";
+import { awaitingFirstDeployment } from "../lib/project";
 import { edgeState, formatLatency, formatPercent } from "../lib/requests";
 import { phaseTone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -23,6 +24,13 @@ const props = defineProps<{ environment: Environment }>();
 const DAY_MINUTES = 24 * 60;
 const since = () => new Date(Date.now() - DAY_MINUTES * 60_000).toISOString();
 
+// An environment declared before anything deployed into it (#491) has served
+// nothing, and four zeroes about it would read as a workload that is failing
+// to be asked for rather than one that does not exist yet. So the card says
+// what it is, and the rollups are not asked for at all until there is
+// something to have served traffic.
+const awaiting = computed(() => awaitingFirstDeployment(props.environment));
+
 const traffic = useAsync(async () => {
   const window = { since: since() };
   const [summary, series] = await Promise.all([
@@ -32,11 +40,16 @@ const traffic = useAsync(async () => {
     api.requestSeries(props.environment.name, { ...window, buckets: 24 }),
   ]);
   return { summary, series };
-});
-watch(() => props.environment.name, () => void traffic.refresh());
+}, { immediate: !awaitingFirstDeployment(props.environment) });
+watch(
+  () => [props.environment.name, awaiting.value],
+  () => {
+    if (!awaiting.value) void traffic.refresh();
+  },
+);
 // Slower than the project page's own poll: these are day-wide aggregates, and
 // re-asking them every ten seconds would be a cost with nothing to show for it.
-usePoll(() => void traffic.refresh(), 60_000, () => true);
+usePoll(() => void traffic.refresh(), 60_000, () => !awaiting.value);
 
 const summary = computed(() => traffic.data.value?.summary ?? null);
 /** An installation with no telemetry store measures nothing, and a card of
@@ -73,9 +86,15 @@ const tone = computed(() => {
       <template v-if="environment.preview"> · {{ environment.preview.branch }}</template>
     </p>
 
+    <!-- Declared and never deployed into: there is no workload to report on,
+         and the bar it sets is already in force for whatever lands first. -->
+    <p v-if="awaiting" class="text-[11px] text-dimmed mt-3">
+      Nothing deployed yet — this environment was declared, and the first build for it deploys here.
+    </p>
+
     <!-- Off the edge: the numbers below would be four zeroes about a workload
          that is not broken for having no HTTP traffic. -->
-    <p v-if="measured && state.kind === 'off-edge'" class="text-[11px] text-dimmed mt-3">
+    <p v-else-if="measured && state.kind === 'off-edge'" class="text-[11px] text-dimmed mt-3">
       Not on the platform's edge — nothing publishes it on the shared Gateway, so there is no traffic to show. Its logs,
       its usage and its restarts are on its own page.
     </p>

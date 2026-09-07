@@ -152,7 +152,7 @@ var _ = Describe("ResourceClaim of type oidcClient", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: name + "-release"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: name + "-release"},
 				Type:       envType,
 			},
 		}
