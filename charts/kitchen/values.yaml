@@ -786,7 +786,7 @@ kitchen:
         # platform's own judgement and is the compiled-in numbers exactly, so
         # an installation that leaves this alone behaves as it always did;
         # `homelab` is one host and a handful of projects, where two projects
-        # failing together is a correlation and paging is off by default.
+        # failing together is a correlation and nothing pages at all.
         #
         # It is a seed rather than the source of truth: the preset and the six
         # numbers underneath it are edited afterwards on `/platform/policy` and

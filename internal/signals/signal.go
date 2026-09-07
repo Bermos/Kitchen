@@ -93,6 +93,10 @@ const (
 	// timeline: a settings change at 04:03 is a platform change like a
 	// release is.
 	InputAudit Input = "audit_records"
+	// InputHistory is the catalogue's own recorded output — when each open
+	// condition was first seen. It is what lets the correlation ladder say
+	// two failures began together rather than that one round noticed both.
+	InputHistory Input = "signal_transitions"
 
 	// Derived by the operator itself.
 	InputDNS    Input = "dns"

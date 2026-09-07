@@ -186,7 +186,11 @@ func correlated(snapshot *Snapshot, rule correlationRule) []Finding {
 	// mean.
 	since := snapshot.Now.Add(-RecentWindow)
 	rung := snapshot.Ladder(names, since)
-	return []Finding{rung.fire(rule.id, scope, since, rule.covers,
+	// Critical, unlike the widened detector's answer: these two do not stand
+	// in front of other rows, they *are* the measurement, and p95 or 5xx up
+	// against baseline across the estate is the condition the platform exists
+	// to notice.
+	return []Finding{rung.fire(rule.id, SeverityCritical, scope, since, rule.covers,
 		fmt.Sprintf("%s degraded across %d projects", rule.scope, len(affected)),
 		sentence(
 			strings.Join(numbers, ", "),

@@ -208,11 +208,28 @@ func stamped(findings []Finding, signal Signal, snapshot *Snapshot) []Finding {
 			findings[i].Since = snapshot.Now
 		}
 		findings[i].Audience = signal.Audience
-		tier, _ := signal.Tiers.For(signal.Audience)
-		findings[i].Tier = snapshot.Policy.Deliver(tier)
+		declared, _ := signal.Tiers.For(signal.Audience)
+		findings[i].Tier = snapshot.Policy.Deliver(lowered(declared, findings[i].Tier))
 		findings[i].Policy = provenance
 	}
 	return findings
+}
+
+// lowered is the declaration with a rule's own answer applied, and it can only
+// go down.
+//
+// The declared tier is what kind of thing the rule is (#471, decision 4) and
+// stays catalogue knowledge. What a rule may do is be *less* urgent about one
+// finding than about the kind in general, which is exactly what a correlation
+// of warnings is: `platform.correlated` declares a page because it can fold
+// three crash loops, and folds three filling volumes into a ticket. A rule
+// that could raise its own tier would be the configurable-catalogue door this
+// package keeps shut, so this never raises.
+func lowered(declared, own Tier) Tier {
+	if own.Valid() && own.Rank() < declared.Rank() {
+		return own
+	}
+	return declared
 }
 
 // unevaluable decides whether a rule can run, and what to say when it cannot.

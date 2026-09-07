@@ -52,6 +52,13 @@ type Store interface {
 	// one purpose: the privileged records are the fourth leg of the
 	// correlation ladder's timeline. See gatherAuditChanges.
 	QueryAuditRecords(ctx context.Context, query clickhouse.AuditQuery) ([]clickhouse.AuditRecord, error)
+	// OpenSignalTransitions is the history's answer to "when did this
+	// platform first see each of these", which is the correlation ladder's
+	// clock. It is a read of the catalogue's *own* output, which is unusual
+	// enough to be worth saying: the ladder is the one rule whose subject is
+	// the history, because "did these begin together" is a question no
+	// snapshot of the estate can answer. See [Snapshot.OpenedAt].
+	OpenSignalTransitions(ctx context.Context) ([]clickhouse.SignalTransition, error)
 	// TelemetryFreshness is when each node's collector last shipped anything.
 	// A node absent from the answer reported nothing within the lookback,
 	// which is node.silent's whole subject.

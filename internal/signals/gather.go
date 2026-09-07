@@ -127,6 +127,7 @@ func Gather(ctx context.Context, sources Sources, options Options) *Snapshot {
 		Resources: map[EnvKey]clickhouse.ResourceSeries{},
 		Freshness: map[string]time.Time{},
 		NodeUsage: map[string]NodeUsage{},
+		OpenedAt:  map[string]time.Time{},
 	}
 
 	gatherCluster(ctx, sources, snapshot)
@@ -216,6 +217,7 @@ func gatherKitchen(ctx context.Context, reader client.Client, snapshot *Snapshot
 		GatewayAddress:     kitchen.Status.GatewayAddress,
 		PublicAddresses:    kitchen.Spec.Ingress.PublicAddresses,
 		CloudflaredEnabled: kitchen.Spec.Ingress.Cloudflared.Enabled,
+		AuditLog:           kitchen.Spec.Compliance.Audit.Enabled,
 		Components:         kitchen.Status.Components,
 		RetentionDays:      retention.Resolve(kitchen).LongestTelemetry(),
 	}
@@ -442,7 +444,7 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 	if sources.Store == nil {
 		for _, input := range []Input{
 			InputRawRequests, InputRequests, InputResources,
-			InputClusterEvents, InputFreshness, InputStore, InputAudit,
+			InputClusterEvents, InputFreshness, InputStore, InputAudit, InputHistory,
 		} {
 			snapshot.MarkNotApplicable(input, "no telemetry store is configured")
 		}
@@ -451,6 +453,7 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 
 	gatherClusterEvents(ctx, sources.Store, snapshot)
 	gatherAuditChanges(ctx, sources.Store, snapshot)
+	gatherHistory(ctx, sources.Store, snapshot)
 	gatherFreshness(ctx, sources.Store, snapshot)
 	gatherStoreHealth(ctx, sources.Store, snapshot)
 	gatherTraffic(ctx, sources.Store, snapshot, options)
@@ -560,6 +563,21 @@ var infrastructureChangeKinds = map[string]string{
 // a correlation across six projects that named it would be naming the loudest
 // row rather than the cause.
 func gatherAuditChanges(ctx context.Context, store Store, snapshot *Snapshot) {
+	// An installation that keeps no audit log has no table to read, because
+	// the table is the compliance reconcile's and it never ran. Asking anyway
+	// answers UNKNOWN_TABLE, which would put `audit_records` on the
+	// singleton's `status.signals.unreadable` and on the operator's screen
+	// every round, for ever, describing a setting as a fault. The API's own
+	// reads ask the same question first — see openAuditLog and #441.
+	//
+	// It is asked only where the singleton was actually read: a platform
+	// whose configuration could not be fetched is one this cannot answer for,
+	// and guessing "off" would silently stop consulting a log that exists.
+	if snapshot.Available(InputKitchen) && !snapshot.Platform.AuditLog {
+		snapshot.MarkNotApplicable(InputAudit,
+			"this installation keeps no audit log, so there is none to correlate against")
+		return
+	}
 	records, err := store.QueryAuditRecords(ctx, clickhouse.AuditQuery{
 		Privileged: true,
 		Since:      snapshot.Now.Add(-ResourceWindow),
@@ -577,6 +595,42 @@ func gatherAuditChanges(ctx context.Context, store Store, snapshot *Snapshot) {
 			Summary: fmt.Sprintf("%s changed %s %s", record.Actor,
 				strings.ToLower(record.Kind), record.Name),
 		})
+	}
+}
+
+// gatherHistory reads when each open condition was first seen, which is the
+// only clock the correlation ladder can honestly use.
+//
+// An installation whose signals schema has never been created has no history
+// rather than an unreadable one — the table arrives with the Kitchen
+// reconcile, and a round on a platform that has not had one yet is not
+// blind, it is early. Anything else is a read that failed, and the ladder
+// says so rather than treating a round's worth of identically stamped
+// findings as simultaneous.
+func gatherHistory(ctx context.Context, store Store, snapshot *Snapshot) {
+	open, err := store.OpenSignalTransitions(ctx)
+	if err != nil {
+		if clickhouse.IsUnknownTable(err) {
+			snapshot.MarkNotApplicable(InputHistory,
+				"nothing has been recorded yet, so no condition has a known start")
+			return
+		}
+		snapshot.MarkUnreadable(InputHistory, err.Error())
+		return
+	}
+	for _, row := range open {
+		opened := row.OpenedAt
+		if opened.IsZero() {
+			opened = row.At
+		}
+		if opened.IsZero() {
+			continue
+		}
+		// One condition is up to two rows and they open together; the
+		// earliest is the condition's own start either way.
+		if was, seen := snapshot.OpenedAt[row.Fingerprint]; !seen || opened.Before(was) {
+			snapshot.OpenedAt[row.Fingerprint] = opened.UTC()
+		}
 	}
 }
 

@@ -93,10 +93,16 @@ func TestAPresetIsABaseAndAFieldOverridesOneNumber(t *testing.T) {
 	}
 }
 
-// Homelab is "paging off by default", not "paging off entirely" — decision 2.
-// The preset lowers the floor and the description says so, because a project
-// turning paging back on for itself is tightening, which is always allowed.
-func TestHomelabTurnsPagingOffAndSaysByDefault(t *testing.T) {
+// Homelab turns paging off for the whole installation, and the description
+// says only that.
+//
+// #472's decision 2 argues it should be "off *by default*", with a project
+// free to turn it back on for its own rows — but that override is #519 and is
+// not built, so a description promising it would send the reader looking for a
+// switch this platform does not have. The test is here to keep the copy honest
+// in that direction: it fails if the served sentence starts offering the
+// project-scoped control again before there is one.
+func TestHomelabTurnsPagingOffForTheWholeInstallation(t *testing.T) {
 	homelab, ok := Preset(PresetHomelab)
 	if !ok {
 		t.Fatal("there is no homelab preset")
@@ -109,8 +115,14 @@ func TestHomelabTurnsPagingOffAndSaysByDefault(t *testing.T) {
 			homelab.CorrelatedProjects)
 	}
 	description := PresetDescriptions[PresetHomelab]
-	if !strings.Contains(description, "by default") {
-		t.Errorf("the homelab description does not say \"by default\": %q", description)
+	for _, promise := range []string{"by default", "turn it back on", "tighten"} {
+		if strings.Contains(description, promise) {
+			t.Errorf("the homelab description offers a per-project override that does not exist "+
+				"(#519): %q", description)
+		}
+	}
+	if !strings.Contains(description, "pages") {
+		t.Errorf("the homelab description does not say what it does to paging: %q", description)
 	}
 }
 

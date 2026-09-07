@@ -84,8 +84,11 @@ type Policy struct {
 
 	// Paging is whether [TierPage] is delivered as a page at all. False holds
 	// every paging condition down to a ticket — the homelab reading, where
-	// nobody is on call — and is a floor rather than an absolute: a project
-	// turning paging back on for its own rows is tightening.
+	// nobody is on call.
+	//
+	// It is installation-wide, like every number here. #472 argues a project
+	// should be able to tighten its own rows back up; #519 is that, and until
+	// it lands this setting is the whole answer for every project.
 	Paging bool
 }
 
@@ -140,18 +143,20 @@ var presets = map[PresetName]Policy{
 // the screen rather than written on it — a dashboard that spelled these out
 // itself would be a second copy of a decision this package owns.
 //
-// The homelab sentence says "by default" on purpose, and it is the one place
-// in this file where the wording is the decision: the preset lowers the floor,
-// and a project asking to be woken more often is tightening, which the tighten
-// rule always allows. A description that said "paging off entirely" would be
-// describing behaviour this platform does not have.
+// The homelab sentence says what the preset does and stops there. #472 argues
+// that a project should be able to tighten what *it* hears — turning paging
+// back on for its own rows costs the operator nothing — and that is true and
+// not built: the policy is installation-wide, and #519 is the project-scoped
+// override. A description promising a control the platform does not have would
+// be the worst kind of copy, since the person reading it is the one who would
+// go looking for the switch.
 var PresetDescriptions = map[PresetName]string{
 	PresetStrict: "Two projects are a correlation, half an hour unmitigated escalates to the operator, " +
 		"and a silence lasts a week.",
 	PresetBalanced: "The platform's own judgement, and what every installation has had until now: three " +
 		"projects correlate, an hour unmitigated escalates, a silence lasts a month.",
 	PresetHomelab: "One host and a handful of projects: two projects are a correlation, nothing escalates " +
-		"before the afternoon, and paging is off by default — a project may still turn it back on for itself.",
+		"before the afternoon, and nothing pages — everything that would say “act now” is a ticket.",
 }
 
 // Presets lists the three in the order the screen offers them: loudest first,

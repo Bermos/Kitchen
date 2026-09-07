@@ -85,8 +85,11 @@ type Store interface {
 	signals.NodeUsageReader
 	signals.VolumeUsageReader
 
+	// OpenSignalTransitions is on signals.Store already — the correlation
+	// ladder reads the history as an input — and this loop wants it for a
+	// different reason: seeding the tracker so a restart does not re-announce
+	// everything the last leader recorded.
 	InsertSignalTransitions(ctx context.Context, transitions []clickhouse.SignalTransition) error
-	OpenSignalTransitions(ctx context.Context) ([]clickhouse.SignalTransition, error)
 }
 
 // The store satisfies it. A signature that moves breaks the build here rather

@@ -81,6 +81,20 @@ type Snapshot struct {
 	// 3 of the correlation ladder and nothing else reads it.
 	PlatformChanges []PlatformChange
 
+	// OpenedAt is when the recorded history says each open condition was
+	// first seen, by fingerprint. It is the correlation ladder's clock and
+	// nothing else reads it.
+	//
+	// It has to come from the history because nothing else on this platform
+	// knows. Most rules leave [Finding.Since] to the registry, which stamps
+	// the round's own instant, so a round's findings share one timestamp and
+	// a correlator trusting them would call every long-standing condition
+	// simultaneous. The recorded transition is the only place "when we first
+	// saw it" exists — which is what #473 built it for. Absent for an
+	// installation that records nothing, and [Snapshot.beganAt] answers "not
+	// known" rather than guessing.
+	OpenedAt map[string]time.Time
+
 	// From the API server.
 	Pods         []corev1.Pod
 	Deployments  []appsv1.Deployment
@@ -186,6 +200,15 @@ type PlatformFacts struct {
 	// it. platform.component-unhealthy folds it into the same feed rather than
 	// re-deriving it.
 	Components []kitchenv1alpha1.ComponentStatus
+	// AuditLog is whether this installation keeps one at all
+	// (`spec.compliance.audit.enabled`). It decides whether the correlation
+	// ladder's fourth leg is a read that failed or a question that does not
+	// arise: the table is created by the compliance reconcile, so an
+	// installation that turned the log off has none and querying it answers
+	// UNKNOWN_TABLE — which is #441 read back to front, a platform reporting
+	// itself broken for doing exactly what it was configured to do.
+	AuditLog bool
+
 	// RetentionDays is the longest telemetry retention in force, which is
 	// what the store's disk usage should be read against.
 	//

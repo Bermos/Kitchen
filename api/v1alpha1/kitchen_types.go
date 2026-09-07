@@ -863,8 +863,10 @@ type SignalsSpec struct {
 // that one number. That shape is what makes "three presets, and the numbers
 // underneath them" one object rather than two ways of saying the same thing.
 //
-// The values here are the installation-wide **floor**: they are what the
-// operator is accountable for, and what the compliance posture reads.
+// The values here are installation-wide and apply to every project: they are
+// what the operator is accountable for, and what the compliance posture reads.
+// Letting a project tighten its own thresholds is the other half of #472's
+// design and is not built — see #519.
 type SignalPolicySpec struct {
 	// Preset is the base every unset number comes from.
 	//
@@ -874,10 +876,8 @@ type SignalPolicySpec struct {
 	//     numbers exactly.
 	//   - `homelab` is one host and a handful of projects: two projects
 	//     correlate — three is a threshold a small estate never reaches —
-	//     nothing escalates before the afternoon, and **paging is off by
-	//     default**. By default, because a project may turn it back on for
-	//     itself: asking to be woken more often is tightening, which is
-	//     always allowed.
+	//     nothing escalates before the afternoon, and **nothing pages**:
+	//     every condition that would say "act now" arrives as a ticket.
 	// +kubebuilder:validation:Enum=strict;balanced;homelab
 	// +kubebuilder:default=balanced
 	// +optional
@@ -924,9 +924,9 @@ type SignalPolicySpec struct {
 	// at all. False holds every paging condition down to a ticket, which is
 	// what the homelab preset wants: nobody is on call for a house.
 	//
-	// It is the floor and not an absolute. A project turning paging back on
-	// for its own rows is tightening, and the tighten rule is the
-	// load-bearing one.
+	// It is installation-wide and applies to every project. Letting a project
+	// tighten its own rows back up is the other half of #472's design and is
+	// not built yet; it is tracked as #519.
 	// +optional
 	Paging *bool `json:"paging,omitempty"`
 }

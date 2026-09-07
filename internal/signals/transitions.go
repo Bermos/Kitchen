@@ -292,6 +292,13 @@ func (t *Tracker) transition(
 	// makes the operator's copy of a developer condition a ticket while the
 	// developer's own copy is a page.
 	tier, _ := t.tiers[finding.Signal].For(key.Audience)
+	// A rule that lowered its own tier for this finding keeps the lower one,
+	// but only on the row it is about: the finding carries one audience's
+	// answer, and applying it to the *other* audience's delivery would be
+	// reinterpreting a decision nobody made about that reader. See [lowered].
+	if key.Audience == finding.Audience {
+		tier = lowered(tier, finding.Tier)
+	}
 	return Transition{
 		At:          now,
 		State:       state,

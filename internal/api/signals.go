@@ -494,6 +494,12 @@ func (u unreachableStore) ResourceSeries(
 	return clickhouse.ResourceSeries{}, u.err
 }
 
+func (u unreachableStore) OpenSignalTransitions(
+	context.Context,
+) ([]clickhouse.SignalTransition, error) {
+	return nil, u.err
+}
+
 func (u unreachableStore) QueryAuditRecords(
 	context.Context, clickhouse.AuditQuery,
 ) ([]clickhouse.AuditRecord, error) {

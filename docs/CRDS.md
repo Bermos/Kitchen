@@ -282,8 +282,8 @@ spec:
         untendedMultiple: 4             # how many of those windows before it becomes a line on the
                                         # compliance posture
         maxSilenceHours: 720            # the longest silence a member may set on their own row
-        paging: true                    # false holds every `page` down to a ticket. A floor, not an
-                                        # absolute: a project may turn it back on for its own rows
+        paging: true                    # false holds every `page` down to a ticket, for every project on
+                                        # the installation. A project tightening its own rows is #519
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,

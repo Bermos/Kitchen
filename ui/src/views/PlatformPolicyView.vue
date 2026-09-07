@@ -13,9 +13,11 @@ import PageSection from "../components/PageSection.vue";
 // It is deliberately not the routing screen. `/alerts → Routing` is *who hears
 // about a condition*, and a project edits its own; this is *what makes
 // something a condition at all*, it is installation-wide, and it is the
-// operator's alone. It is also the floor: a project may tighten what it hears
-// and never loosen it, and the compliance posture reads this rather than any
-// project's override.
+// operator's alone. Every number here applies to every project, and the
+// compliance posture reads it. Letting a project tighten its own thresholds is
+// the other half of #472's design and is not built — #519 — so nothing on this
+// screen offers it, because a screen that promised the switch is where
+// somebody would go looking for it.
 //
 // The screen is a choice of three and then the numbers underneath, in that
 // order, because that is the decision an operator is actually making. Nobody
@@ -154,8 +156,8 @@ const ladder = [
     <PageHeader title="Policy">
       <template #description>
         What this installation counts as worth hearing: how many projects failing together is one problem, how long a
-        failure may run with nobody acting, and how quiet somebody may go. It is installation-wide and it is the floor —
-        a project may ask to hear more, never less.
+        failure may run with nobody acting, and how quiet somebody may go. Every number here applies to every
+        project.
       </template>
       <template #actions>
         <UButton
@@ -247,8 +249,8 @@ const ladder = [
             <div class="min-w-0 flex-1">
               <p class="text-sm text-highlighted">Page for the top tier</p>
               <p class="text-xs text-muted mt-0.5">
-                Off holds everything that would say “act now” down to “needs a fix”. It is a floor, not a rule: a
-                project may turn it back on for its own rows, because asking to be woken more often is tightening.
+                Off holds everything that would say “act now” down to “needs a fix”, for every project on this
+                installation.
               </p>
             </div>
             <USwitch v-model="form.paging" :disabled="!mayWrite || saving" aria-label="Page for the top tier" />

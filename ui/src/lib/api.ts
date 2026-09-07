@@ -4043,7 +4043,8 @@ export interface SignalPolicyValues {
   /** The longest silence a member may set on their own project's row. */
   maxSilenceHours: number;
   /** Whether the `page` tier is delivered as a page at all. False holds every
-   * paging condition down to a ticket — and it is a floor, not an absolute. */
+   * paging condition down to a ticket, for every project on the installation.
+   * A project tightening its own rows back up is #519, and is not built. */
   paging: boolean;
 }
 

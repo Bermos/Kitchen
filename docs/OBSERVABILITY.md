@@ -855,7 +855,7 @@ means it also surfaces on the environment's diagnostics strip.
 |---|---|---|
 | `platform.latency-correlated` | p95 rising in as many projects at once as the policy calls a correlation | `http_requests_1m` across projects — several projects degrading together is a platform problem wearing project costumes |
 | `platform.error-correlated` | 5xx rising in as many projects at once | same |
-| `platform.correlated` | *any other* rule in this catalogue firing across that many projects inside the correlation window | the round itself, evaluated in a second pass — see below |
+| `platform.correlated` | *any other* rule in this catalogue firing across that many projects whose starts are known and inside the correlation window | the round itself plus `signal_transitions`, evaluated in a second pass — see below |
 | `platform.component-unhealthy` | the existing component survey, folded into the same feed | Kitchen status |
 
 #### The confidence ladder
@@ -883,6 +883,36 @@ confidence the snapshot allows, and the finding says which rung that was:
 **A correlation is never withheld for being unexplained.** *Everything blipped
 at 04:05 for two minutes and nothing explains it* is among the most valuable
 lines an operator can be handed, precisely because nobody was awake for it.
+
+Three things bound what it may claim, and each is a way the row would otherwise
+be louder or surer than the evidence:
+
+- **It is never louder than what it folds.** The correlation's severity is the
+  worst of the conditions underneath it and its tier follows — critical pages,
+  anything milder is a ticket. Three volumes past 85% is a warning about three
+  volumes; raising it would page about a condition no part of which was worth
+  paging about, and the project rows fold into it, so the screen would lose
+  three warnings to gain one page. A rule may lower its declared tier for one
+  finding this way and never raise it.
+- **A condition with no known start is not coincident with anything.** Most
+  rules leave `since` to the registry, which stamps the round's own instant, so
+  a round's findings share one timestamp; reading that as evidence would make
+  three volumes that began filling in March, June and September "firing at
+  once". The start comes from the recorded history — when the platform first
+  saw the condition, which is what #473 built — and where there is none, the
+  finding is left out.
+- **Rung 2 says nothing about a cluster of one.** On a single-node cluster
+  every project shares the only node, and on a single-StorageClass cluster
+  every claim is on the only class — the ordinary shape, and the homelab
+  preset's own. Naming either describes the installation rather than the
+  incident, so each is reported only where the cluster has more than one, which
+  is the rule the Gateway leg already followed.
+
+And rung 1's sentence is a claim about what was *checked*: where the reads
+behind rungs 2 and 3 failed, it names them rather than saying nothing explains
+it — the same ethic as a rule that could not be evaluated. An input that does
+not arise is not a blind spot; an installation that keeps no audit log has none
+to correlate against and is not asked.
 
 `platform.correlated` is rung 1 widened past HTTP. It reads the round rather
 than the estate — the one rule in the catalogue whose subject is the
@@ -918,7 +948,12 @@ which signals exist, what they compute and their base tier stay code — and
 **every finding records the thresholds it was evaluated against**, so
 `v1 @ correlatedProjects=2` and `v1 @ correlatedProjects=3` stay
 distinguishable after the fact. That provenance is what makes a compliance
-posture that reads *the floor* able to say what the floor was at the time.
+posture able to say what this installation's numbers were at the time.
+
+The policy is installation-wide and applies to every project. #472 also asks
+that a project be able to *tighten* its own thresholds and never loosen them —
+which would make these values a floor rather than the whole answer — and that
+half is not built; it is #519.
 
 **`env.rto-at-risk` is the other exception, and it is a different kind of
 number entirely.** A recovery time objective is not a
