@@ -20,11 +20,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,6 +40,17 @@ import (
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/repoconfig"
 )
+
+// condConfigHonoured is set on a Build whose commit declared something in
+// kitchen.json that the platform would not take. It is False in exactly that
+// case and absent otherwise, because a build with nothing to say about the
+// file is the ordinary one and a condition on every build would be noise
+// rather than an answer.
+//
+// It is a warning rather than a failure: everything on it is ignored, the
+// build runs, and the deployment goes out under the posture the project
+// declared.
+const condConfigHonoured = "ConfigHonoured"
 
 // errSourceUnreadable is the repository not being readable right now, which
 // is the one detection failure the build reconciler tells apart: it keeps a
@@ -343,10 +358,64 @@ func (r *BuildReconciler) readConfig(
 	build.Status.Config = config
 	logf.FromContext(ctx).Info("build read the commit's own configuration",
 		"build", build.Name, "project", project.Name, "file", config.Path, "declares", config.Declares())
+	noteIgnoredSecurity(ctx, build, project, config)
 	if err := r.Status().Update(ctx, build); err != nil {
 		return &ctrl.Result{}, err
 	}
 	return nil, nil
+}
+
+// noteIgnoredSecurity records what the commit's `runtime.security` asked for
+// that the project's posture does not allow it to change (#431).
+//
+// The project's posture is the ceiling and the file may only tighten below
+// it, because the two are written by different people: a project's settings
+// are somebody with a role on the project, and since #422 a pull request's
+// kitchen.json need not be anybody at all. What the file may not have is
+// dropped rather than fatal — a preview that will not build says nothing
+// about why to anyone who is not reading these logs — so this is where it is
+// said out loud.
+//
+// It is a condition on the Build rather than an event because it has to still
+// be there when somebody looks: a build is read long after it ran, and the
+// answer to "why is this pod still allowed to escalate" is a line on the
+// object rather than something that scrolled past.
+func noteIgnoredSecurity(
+	ctx context.Context,
+	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
+	config *kitchenv1alpha1.RepoConfig,
+) {
+	byProcess := repoconfig.IgnoredProcessSecurity(project.Spec.Runtime, config)
+	asked := make([]string, 0, len(byProcess)+1)
+	if ignored := repoconfig.IgnoredSecurity(project.Spec.Runtime, config); len(ignored) > 0 {
+		asked = append(asked, "runtime.security."+strings.Join(ignored, ", runtime.security."))
+	}
+	// A workload's own block is held to the same ceiling, and named the same
+	// way: the ceiling would not be one if `processes[].security` could ask
+	// for what `runtime.security` may not, and it is written over the unit's
+	// per workload.
+	for _, name := range slices.Sorted(maps.Keys(byProcess)) {
+		asked = append(asked, fmt.Sprintf("the %s workload's security.%s",
+			name, strings.Join(byProcess[name], ", security.")))
+	}
+	if len(asked) == 0 {
+		// Nothing is recorded for the ordinary case: a file that tightens, or
+		// says nothing about the posture at all, is the file working.
+		return
+	}
+	message := fmt.Sprintf(
+		"%s sets %s, which the project's own posture does not allow a repository to change — "+
+			"the project's settings are the ceiling and the file may only tighten below it. "+
+			"The build and the deployment are unaffected; the fields are ignored. "+
+			"Change them in the project's settings, or take the lines out of the file",
+		config.Path, strings.Join(asked, "; "))
+	logf.FromContext(ctx).Info("build ignored part of the commit's security posture",
+		"build", build.Name, "project", project.Name, "file", config.Path, "ignored", asked)
+	meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
+		Type: condConfigHonoured, Status: metav1.ConditionFalse, Reason: reasonSecurityCeiling,
+		Message: message, ObservedGeneration: build.Generation,
+	})
 }
 
 // checkDeclaredVolumes holds the commit's `volumes` against the project's

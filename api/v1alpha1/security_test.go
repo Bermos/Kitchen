@@ -138,3 +138,65 @@ func TestEveryFieldOfThePostureMergesAndIsMarked(t *testing.T) {
 			reflect.TypeFor[SecuritySpec]().NumField(), len(want))
 	}
 }
+
+// The project's posture is a ceiling for a repository's own declaration
+// (#431): kitchen.json may add constraints and may not take one away, and
+// what it may not have is answered rather than applied.
+func TestAPostureIsACeilingARepositoryMayOnlyTightenBelow(t *testing.T) {
+	project := &SecuritySpec{RunAsNonRoot: true, RunAsUser: 1000, DropCapabilities: []string{"NET_RAW"}}
+
+	// Adding is the point of the file. So is leaving the rest alone: a
+	// posture is a value rather than a set of keys, so a block that replaced
+	// the project's took every constraint it did not repeat with it.
+	merged, ignored := project.TightenedBy(&SecuritySpec{ReadOnlyRootFilesystem: true})
+	if ignored != nil {
+		t.Errorf("a declaration that only tightens ignores nothing: %v", ignored)
+	}
+	if !merged.ReadOnlyRootFilesystem || !merged.RunAsNonRoot || merged.RunAsUser != 1000 {
+		t.Errorf("the merge is not the project's posture plus the file's: %+v", merged)
+	}
+
+	// dropCapabilities is a floor: the union, and ALL absorbs the rest
+	// because it is already every capability — and may not be listed beside
+	// one.
+	merged, _ = project.TightenedBy(&SecuritySpec{DropCapabilities: []string{"SYS_ADMIN"}})
+	if !reflect.DeepEqual(merged.DropCapabilities, []string{"NET_RAW", "SYS_ADMIN"}) {
+		t.Errorf("capabilities = %v, want the union", merged.DropCapabilities)
+	}
+	merged, _ = project.TightenedBy(&SecuritySpec{DropCapabilities: []string{CapabilityDropAll}})
+	if !reflect.DeepEqual(merged.DropCapabilities, []string{CapabilityDropAll}) {
+		t.Errorf("capabilities = %v, want ALL alone", merged.DropCapabilities)
+	}
+
+	// Redirecting a field the project pinned is not tightening.
+	merged, ignored = project.TightenedBy(&SecuritySpec{RunAsUser: 65532})
+	if merged.RunAsUser != 1000 || !reflect.DeepEqual(ignored, []string{"runAsUser"}) {
+		t.Errorf("a pinned uid moved: %+v, ignored %v", merged, ignored)
+	}
+	// Repeating it is not a change and is not worth warning about.
+	if _, ignored := project.TightenedBy(&SecuritySpec{RunAsUser: 1000}); ignored != nil {
+		t.Errorf("repeating the project's own answer is not an override: %v", ignored)
+	}
+
+	// And the one relaxation is never a repository's, whatever the project
+	// left unsaid.
+	merged, ignored = (&SecuritySpec{}).TightenedBy(&SecuritySpec{AllowPrivilegeEscalation: true})
+	if merged.AllowPrivilegeEscalation || !reflect.DeepEqual(ignored, []string{"allowPrivilegeEscalation"}) {
+		t.Errorf("escalation reached a container from a repository: %+v, ignored %v", merged, ignored)
+	}
+	// Unless the project already allows it, which is a decision somebody with
+	// a role on the project made.
+	permissive := &SecuritySpec{AllowPrivilegeEscalation: true}
+	if merged, ignored := permissive.TightenedBy(&SecuritySpec{AllowPrivilegeEscalation: true}); ignored != nil ||
+		!merged.AllowPrivilegeEscalation {
+		t.Errorf("the file repeated what the project allows: %+v, ignored %v", merged, ignored)
+	}
+
+	// A project with no posture at all is still a ceiling of nothing rather
+	// than an absent one: the file's declaration is taken whole.
+	var none *SecuritySpec
+	merged, ignored = none.TightenedBy(&SecuritySpec{RunAsNonRoot: true, RunAsUser: 65532})
+	if ignored != nil || !merged.RunAsNonRoot || merged.RunAsUser != 65532 {
+		t.Errorf("a project that declared nothing did not take the file's posture: %+v, ignored %v", merged, ignored)
+	}
+}

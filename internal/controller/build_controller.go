@@ -178,6 +178,15 @@ const (
 	// the case where somebody is watching for it.
 	reasonConfigInvalid = "ConfigInvalid"
 
+	// reasonSecurityCeiling is the commit's own kitchen.json asking for a
+	// `runtime.security` the project's posture does not allow a repository
+	// to change. It is the one thing in that file that is ignored rather
+	// than refused, which is why it needs a reason of its own to be said
+	// under: the project's settings are the ceiling (#431), and a preview
+	// that would not build over a line somebody wrote before the ceiling
+	// existed would be a worse answer than a build that says what it did.
+	reasonSecurityCeiling = "SecurityCeiling"
+
 	// reasonBuildFailed marks the one failure that is the repository's own:
 	// the build ran and the image did not come out. Every other reason is
 	// the platform failing to run it at all, which reports differently on

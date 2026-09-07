@@ -135,7 +135,7 @@ func buildWorkloads(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 ) []kitchenv1alpha1.ProcessSpec {
-	return repoconfig.Processes(project.Spec.Processes, build.Status.Config)
+	return repoconfig.Processes(project.Spec.Processes, project.Spec.Runtime.Security, build.Status.Config)
 }
 
 // buildPlansFor is every image this Build produces, the web process first.

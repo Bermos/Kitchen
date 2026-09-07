@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -604,33 +605,46 @@ var securityFields = []struct {
 	Set func(*SecuritySpec) bool
 	// Apply writes one declaration's answer onto another.
 	Apply func(onto, from *SecuritySpec)
+	// Same reports whether two declarations say the same thing about this
+	// field. It is what lets [SecuritySpec.TightenedBy] tell a file
+	// repeating the project's answer — which changes nothing and is worth
+	// nothing to warn about — from one giving it a different one.
+	Same func(a, b *SecuritySpec) bool
 }{
 	{"runAsNonRoot",
 		func(s *SecuritySpec) bool { return s.RunAsNonRoot },
-		func(onto, from *SecuritySpec) { onto.RunAsNonRoot = from.RunAsNonRoot }},
+		func(onto, from *SecuritySpec) { onto.RunAsNonRoot = from.RunAsNonRoot },
+		func(a, b *SecuritySpec) bool { return a.RunAsNonRoot == b.RunAsNonRoot }},
 	{"runAsUser",
 		func(s *SecuritySpec) bool { return s.RunAsUser > 0 },
-		func(onto, from *SecuritySpec) { onto.RunAsUser = from.RunAsUser }},
+		func(onto, from *SecuritySpec) { onto.RunAsUser = from.RunAsUser },
+		func(a, b *SecuritySpec) bool { return a.RunAsUser == b.RunAsUser }},
 	{"runAsGroup",
 		func(s *SecuritySpec) bool { return s.RunAsGroup > 0 },
-		func(onto, from *SecuritySpec) { onto.RunAsGroup = from.RunAsGroup }},
+		func(onto, from *SecuritySpec) { onto.RunAsGroup = from.RunAsGroup },
+		func(a, b *SecuritySpec) bool { return a.RunAsGroup == b.RunAsGroup }},
 	{"fsGroup",
 		func(s *SecuritySpec) bool { return s.FSGroup > 0 },
-		func(onto, from *SecuritySpec) { onto.FSGroup = from.FSGroup }},
+		func(onto, from *SecuritySpec) { onto.FSGroup = from.FSGroup },
+		func(a, b *SecuritySpec) bool { return a.FSGroup == b.FSGroup }},
 	{"fsGroupChangePolicy",
 		func(s *SecuritySpec) bool { return s.FSGroupChangePolicy != "" },
-		func(onto, from *SecuritySpec) { onto.FSGroupChangePolicy = from.FSGroupChangePolicy }},
+		func(onto, from *SecuritySpec) { onto.FSGroupChangePolicy = from.FSGroupChangePolicy },
+		func(a, b *SecuritySpec) bool { return a.FSGroupChangePolicy == b.FSGroupChangePolicy }},
 	{"readOnlyRootFilesystem",
 		func(s *SecuritySpec) bool { return s.ReadOnlyRootFilesystem },
-		func(onto, from *SecuritySpec) { onto.ReadOnlyRootFilesystem = from.ReadOnlyRootFilesystem }},
+		func(onto, from *SecuritySpec) { onto.ReadOnlyRootFilesystem = from.ReadOnlyRootFilesystem },
+		func(a, b *SecuritySpec) bool { return a.ReadOnlyRootFilesystem == b.ReadOnlyRootFilesystem }},
 	{"allowPrivilegeEscalation",
 		func(s *SecuritySpec) bool { return s.AllowPrivilegeEscalation },
-		func(onto, from *SecuritySpec) { onto.AllowPrivilegeEscalation = from.AllowPrivilegeEscalation }},
+		func(onto, from *SecuritySpec) { onto.AllowPrivilegeEscalation = from.AllowPrivilegeEscalation },
+		func(a, b *SecuritySpec) bool { return a.AllowPrivilegeEscalation == b.AllowPrivilegeEscalation }},
 	{"dropCapabilities",
 		func(s *SecuritySpec) bool { return len(s.DropCapabilities) > 0 },
 		func(onto, from *SecuritySpec) {
 			onto.DropCapabilities = append([]string(nil), from.DropCapabilities...)
-		}},
+		},
+		func(a, b *SecuritySpec) bool { return slices.Equal(a.DropCapabilities, b.DropCapabilities) }},
 }
 
 // ResolveSecurity is the posture one workload of a unit runs under: the
@@ -667,6 +681,155 @@ func ResolveSecurity(unit, workload *SecuritySpec) *SecuritySpec {
 		}
 	}
 	return resolved
+}
+
+// TightenedBy is the posture a repository's own kitchen.json may run under:
+// the project's, with the file's declaration written over it field by field,
+// and only where that field tightens. It answers the merged posture and the
+// names of the fields it would not take, in the order [securityFields] lists
+// them.
+//
+// The project's posture is the ceiling and the API is what sets it, because
+// the two declarations are written by different people. A project's settings
+// are changed by somebody with a role on the project; kitchen.json is a file
+// in the repository, and since #422 the author of a pull request's copy of it
+// need not be anybody with access to the project at all (#431). The file
+// replacing the whole block was therefore a way to *remove* a constraint the
+// project asked for — including by saying nothing about it, since a posture
+// is a value rather than a set of keys — and `allowPrivilegeEscalation` was a
+// way to put back the one default the platform tightens on every container.
+//
+// So the file may add constraints and may not take one away:
+//
+//   - A field the project declared is the project's. A file that repeats it
+//     changes nothing; a file that gives it another value is ignored and
+//     named — a pinned uid is not the file's to move any more than
+//     `runAsNonRoot` is the file's to switch off.
+//   - `allowPrivilegeEscalation` is a relaxation whatever the project said,
+//     so a file may set it only where the project already has.
+//   - `dropCapabilities` is a floor rather than a value: the merged list is
+//     the union, so a file may drop more and cannot drop fewer. `ALL`
+//     absorbs the rest, since it is already every capability.
+//   - Everything else the project left alone is the file's to set, which is
+//     the whole point of the file — a commit that hardens itself does not
+//     need a settings change to do it.
+//
+// A field is ignored rather than fatal. The alternative is a pull request
+// that cannot deploy because of a line somebody wrote before the ceiling
+// existed, and a preview that will not build says nothing about *why* to
+// anyone who is not reading the operator's logs. The build carries the
+// warning instead, naming the fields.
+func (s *SecuritySpec) TightenedBy(declared *SecuritySpec) (*SecuritySpec, []string) {
+	if declared == nil {
+		return s, nil
+	}
+	merged := s.DeepCopy()
+	if merged == nil {
+		merged = &SecuritySpec{}
+	}
+	ignored := s.refuses(declared)
+	for _, field := range securityFields {
+		switch {
+		case !field.Set(declared) || slices.Contains(ignored, field.Name):
+			continue
+		case field.Name == capabilitiesField:
+			merged.DropCapabilities = unionCapabilities(merged.DropCapabilities, declared.DropCapabilities)
+		default:
+			field.Apply(merged, declared)
+		}
+	}
+	return merged, ignored
+}
+
+// TighteningOnly is the same rule for a declaration that has to stay a
+// declaration: it answers the fields of `declared` this ceiling allows, and
+// the names of the ones it does not.
+//
+// A workload's `processes[].security` is stored as the workload's own
+// override and resolved against the unit's later ([ResolveSecurity]), and the
+// API reports which half of the resolved posture the workload asked for
+// ([SecurityOverrides]) — so a workload's block cannot be answered as a merged
+// posture the way [TightenedBy] answers a unit's without turning every one of
+// the unit's fields into the workload's. What comes back is the workload's
+// declaration with the fields it may not have taken out of it.
+//
+// One field is not merely filtered. `dropCapabilities` *replaces* at the
+// workload level rather than merging, so a workload dropping `NET_RAW` under a
+// unit dropping `ALL` is a weakening expressed entirely in what it left out —
+// which is why what comes back is the union rather than what was written.
+func (s *SecuritySpec) TighteningOnly(declared *SecuritySpec) (*SecuritySpec, []string) {
+	if declared == nil {
+		return nil, nil
+	}
+	ignored := s.refuses(declared)
+	kept := declared.DeepCopy()
+	for _, field := range securityFields {
+		if slices.Contains(ignored, field.Name) {
+			field.Apply(kept, &SecuritySpec{})
+		}
+	}
+	if s != nil && len(s.DropCapabilities) > 0 && len(kept.DropCapabilities) > 0 {
+		kept.DropCapabilities = unionCapabilities(s.DropCapabilities, kept.DropCapabilities)
+	}
+	return kept, ignored
+}
+
+// refuses names the fields of a declaration this ceiling does not allow it to
+// have, in the order [securityFields] lists them. It is the one place the rule
+// is written; both answers above are that rule applied to a different half.
+func (s *SecuritySpec) refuses(declared *SecuritySpec) []string {
+	if declared == nil {
+		return nil
+	}
+	ceiling := s
+	if ceiling == nil {
+		ceiling = &SecuritySpec{}
+	}
+	var ignored []string
+	for _, field := range securityFields {
+		switch {
+		case !field.Set(declared):
+		// A floor is never refused: the merged list is the union, so a
+		// declaration can only ever add to it.
+		case field.Name == capabilitiesField:
+		// The one relaxation in the block, so it is the file's only where
+		// the ceiling already has it.
+		case field.Name == escalationField && !ceiling.AllowPrivilegeEscalation:
+			ignored = append(ignored, field.Name)
+		// Anything the ceiling pinned is the ceiling's; repeating it is not
+		// a change and is not worth naming.
+		case field.Set(ceiling) && !field.Same(ceiling, declared):
+			ignored = append(ignored, field.Name)
+		}
+	}
+	return ignored
+}
+
+// The two fields the ceiling treats specially, named rather than spelled at
+// each of the three places that ask about them.
+const (
+	capabilitiesField = "dropCapabilities"
+	escalationField   = "allowPrivilegeEscalation"
+)
+
+// unionCapabilities is every capability either declaration drops, in the
+// order they were first named. `ALL` is every capability, so a list holding
+// it is the whole answer — which is also what keeps the result valid, since
+// `ALL` may not be listed beside another entry.
+func unionCapabilities(project, declared []string) []string {
+	union := make([]string, 0, len(project)+len(declared))
+	seen := make(map[string]bool, len(project)+len(declared))
+	for _, capability := range append(append([]string(nil), project...), declared...) {
+		if strings.EqualFold(capability, CapabilityDropAll) {
+			return []string{CapabilityDropAll}
+		}
+		if seen[capability] {
+			continue
+		}
+		seen[capability] = true
+		union = append(union, capability)
+	}
+	return union
 }
 
 // SecurityOverrides names the fields of a resolved posture that came from the

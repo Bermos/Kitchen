@@ -20,6 +20,9 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/repoconfig"
 )
@@ -102,5 +105,63 @@ func TestABuildThatReadNoFileBuildsExactlyWhatItDidBefore(t *testing.T) {
 
 	if got := buildDockerfilePath(project, build); got != "Containerfile" {
 		t.Errorf("dockerfile = %q, want the project's", got)
+	}
+}
+
+// The project's posture is the ceiling, and what the file may not change is
+// ignored rather than fatal — so the one thing that has to reach anybody is
+// the Build saying which field it dropped (#431).
+func TestABuildSaysWhichSecurityFieldsTheCeilingWouldNotTake(t *testing.T) {
+	project, build := buildFixtures()
+	project.Spec.Runtime.Security = &kitchenv1alpha1.SecuritySpec{RunAsNonRoot: true, RunAsUser: 1000}
+
+	// A file that only tightens says nothing at all: a build with a condition
+	// on every commit is noise rather than an answer.
+	withConfig(t, build, `{"runtime": {"security": {"readOnlyRootFilesystem": true}}}`)
+	noteIgnoredSecurity(t.Context(), build, project, build.Status.Config)
+	if meta.FindStatusCondition(build.Status.Conditions, condConfigHonoured) != nil {
+		t.Fatalf("a file that only tightens should be unremarkable: %+v", build.Status.Conditions)
+	}
+
+	withConfig(t, build, `{"runtime": {"security": {
+	  "allowPrivilegeEscalation": true, "runAsUser": 65532
+	}}}`)
+	noteIgnoredSecurity(t.Context(), build, project, build.Status.Config)
+	condition := meta.FindStatusCondition(build.Status.Conditions, condConfigHonoured)
+	if condition == nil {
+		t.Fatalf("nothing said the posture was ignored: %+v", build.Status.Conditions)
+	}
+	if condition.Status != metav1.ConditionFalse || condition.Reason != reasonSecurityCeiling {
+		t.Errorf("condition = %s/%s, want False/%s", condition.Status, condition.Reason, reasonSecurityCeiling)
+	}
+	// Naming the fields is the whole of what it is for: "the file was
+	// ignored" sends somebody to read the merge.
+	for _, field := range []string{"allowPrivilegeEscalation", "runAsUser", repoconfig.FileName} {
+		if !strings.Contains(condition.Message, field) {
+			t.Errorf("the message does not name %s: %s", field, condition.Message)
+		}
+	}
+	// And the build is not failed over it.
+	if build.Status.Phase == kitchenv1alpha1.BuildFailed {
+		t.Errorf("a posture the ceiling would not take failed the build")
+	}
+
+	// A workload's own block is named as the workload's, because "the file's
+	// runtime.security" and "the file's worker" are two different lines to go
+	// and look at.
+	build.Status.Conditions = nil
+	withConfig(t, build, `{"processes": [
+	  {"name": "worker", "type": "worker", "command": ["node", "w.js"],
+	   "security": {"allowPrivilegeEscalation": true}}
+	]}`)
+	noteIgnoredSecurity(t.Context(), build, project, build.Status.Config)
+	condition = meta.FindStatusCondition(build.Status.Conditions, condConfigHonoured)
+	if condition == nil {
+		t.Fatalf("a workload's posture was ignored silently: %+v", build.Status.Conditions)
+	}
+	for _, phrase := range []string{"worker", "allowPrivilegeEscalation"} {
+		if !strings.Contains(condition.Message, phrase) {
+			t.Errorf("the message does not name %s: %s", phrase, condition.Message)
+		}
 	}
 }
