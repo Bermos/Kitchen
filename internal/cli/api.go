@@ -201,7 +201,7 @@ const (
 
 // detection is what the platform makes of a repository before a project exists
 // — `POST /connections/{name}/detect`, the same preflight the dashboard's
-// new-project dialog runs.
+// new-project screen runs.
 //
 // It is advice, not admission: `detected` false is a repository the platform
 // has no framework for, which is a fine thing to create a project from if it
@@ -1403,6 +1403,19 @@ type newProject struct {
 	// with the project for the reason the two paths are: creating one starts
 	// a build, and a build that shipped the wrong stage reports success.
 	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+	// What the institution declares about the project: the class of data it
+	// handles, how much its function matters, and the tolerances that go with
+	// a designation.
+	//
+	// They are pointers because the API reads the three states a plain string
+	// cannot carry: absent is the caller saying nothing, the empty string is
+	// "unclassified" and "undesignated" — an answer somebody gave, recorded as
+	// one — and a word is the designation. Kitchen decides none of them and
+	// defaults none of them, which is why the flags have no defaults either.
+	DataClass   *string `json:"dataClass,omitempty"`
+	Criticality *string `json:"criticality,omitempty"`
+	RTO         *string `json:"rto,omitempty"`
+	RPO         *string `json:"rpo,omitempty"`
 }
 
 // envVarWrite is one variable on the way *in*, which is the only direction a

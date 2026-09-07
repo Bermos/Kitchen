@@ -151,12 +151,51 @@ type createProjectRequest struct {
 	// created without the one it meant builds a different stage and reports
 	// success.
 	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+	// DataClass, Criticality, RTO and RPO are the institution's declarations
+	// about what this project handles and how much its function matters. They
+	// are on the create for a reason of a different kind from the fields
+	// above: those are here so a first build works, and these are here so
+	// that a project is never classified by the platform's silence.
+	//
+	// Absent still means what it has always meant — unclassified,
+	// undesignated, no tolerance recorded — and nothing here is defaulted to
+	// a value, because a class the platform picked would be a class nobody
+	// decided. What changes is that the create flow can now *ask*: the
+	// dashboard refuses to send a project whose two classifications nobody
+	// answered, and the answer, including a deliberate "unclassified", is
+	// written at creation rather than discovered in a settings pane weeks
+	// later.
+	//
+	// The vocabulary and the refusals are the settings PATCH's, shared rather
+	// than restated, so the two routes cannot come to mean different things
+	// by the same word.
+	DataClass   *string `json:"dataClass,omitempty"`
+	Criticality *string `json:"criticality,omitempty"`
+	RTO         *string `json:"rto,omitempty"`
+	RPO         *string `json:"rpo,omitempty"`
 }
 
 // defaultProductionBranch is the CRD's own default for
 // spec.source.productionBranch, applied here as well so the response is
 // honest against a client the API server never defaulted for.
 const defaultProductionBranch = "main"
+
+// dashboardReservedNames are the names the dashboard addresses something
+// other than a project at, under its own `/projects/` prefix.
+//
+// There is one, and it is the create screen at `/projects/new`. A project of
+// that name would be perfectly legal everywhere else and unreachable in the
+// one place every project is reached from, which is the same class of
+// collision `platformhost.CheckProjectName` refuses a hostname for — a name
+// that resolves to two things, settled at the name rather than downstream
+// where nothing can tell them apart.
+//
+// It is the API's rather than appconfig's because the rule is about the
+// dashboard's addresses: `appconfig.ValidateProjectName` also names a
+// *process*, and a process called `new` collides with nothing.
+var dashboardReservedNames = map[string]string{
+	"new": "the dashboard's create-a-project screen is at /projects/new",
+}
 
 // validateProjectName checks a name before it becomes namespaces, hostnames
 // and generated object names, which is why plain DNS-1123 is not enough.
@@ -167,6 +206,11 @@ const defaultProductionBranch = "main"
 func validateProjectName(name, baseDomain string) error {
 	if err := appconfig.ValidateProjectName(name); err != nil {
 		return err
+	}
+	if purpose, reserved := dashboardReservedNames[strings.ToLower(strings.TrimSpace(name))]; reserved {
+		return fmt.Errorf(
+			"name %q is reserved: %s, so a project of that name could not be opened. Choose another name",
+			name, purpose)
 	}
 	return platformhost.CheckProjectName(name, baseDomain)
 }
@@ -338,6 +382,54 @@ func repositorySettingRefusal(project *kitchenv1alpha1.Project, settings string)
 		settings, project.Name, project.Spec.Source.ImageSource().Reference())
 }
 
+// projectCreationDetails is the audit record of a create: where the software
+// comes from, what reads and stores it, whether it is on the internet — and
+// whatever the request declared about the project.
+//
+// The declaration half makes the record **privileged**, for the reason the
+// settings route's is: a class and a designation decide what a policy may
+// demand and how loudly an environment alerts, so the moment they were set has
+// to be readable. For a project that declares them at creation, that moment is
+// this one, and it would otherwise have no entry at all.
+//
+// It is written here rather than through `continuityChange.recordInto`, which
+// pairs each value with the one it replaced: a create replaces nothing, and
+// three `previous…` keys holding the empty string would read as a designation
+// that had been taken away. A field the request did not carry is absent, the
+// same way it is there.
+func projectCreationDetails(
+	project *kitchenv1alpha1.Project,
+	body createProjectRequest,
+	branch string,
+	exposure kitchenv1alpha1.ProjectExposure,
+) map[string]any {
+	details := map[string]any{
+		"source":           projectOrigin(project.Spec.Source),
+		"repo":             body.Repo,
+		"productionBranch": branch,
+		"sourceConnection": body.Connection,
+		"registry":         body.Registry,
+		"exposure":         string(exposure.Normalized()),
+	}
+	for _, declared := range []struct {
+		key   string
+		asked *string
+		value string
+	}{
+		{"dataClass", body.DataClass, string(project.Spec.DataClass)},
+		{"criticality", body.Criticality, string(project.Spec.Criticality)},
+		{"rto", body.RTO, string(project.Spec.RTO)},
+		{"rpo", body.RPO, string(project.Spec.RPO)},
+	} {
+		if declared.asked == nil {
+			continue
+		}
+		details["privileged"] = true
+		details[declared.key] = declared.value
+	}
+	return details
+}
+
 func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -415,6 +507,24 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: body.Registry},
 		}
 	}
+	// The institution's declarations, validated before anything is written
+	// and through the settings route's own helpers — the same words, the same
+	// refusals, and the same reading of an empty string as "no designation"
+	// rather than as a value.
+	var dataClass kitchenv1alpha1.DataClass
+	if body.DataClass != nil {
+		classified, err := dataClassFromRequest(*body.DataClass)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		dataClass = classified
+	}
+	continuity, err := continuityFromRequest(body.Criticality, body.RTO, body.RPO)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
+		return
+	}
 
 	caller, _ := CallerFrom(ctx)
 	project := &kitchenv1alpha1.Project{
@@ -433,6 +543,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 				DockerfilePath:   body.DockerfilePath,
 				DockerfileTarget: body.DockerfileTarget,
 			},
+			DataClass: dataClass,
 			// Creating a project is self-service, and the account that creates
 			// one is its admin (docs/AUTH.md, "Who may do what"). The grant is
 			// written here rather than implied, because implying it would mean
@@ -442,6 +553,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			Access: creatorGrant(caller),
 		},
 	}
+	continuity.apply(&project.Spec.Criticality, &project.Spec.RTO, &project.Spec.RPO)
 	if !s.recorded(w, req, audit.Transition{
 		Object:    project,
 		Kind:      audit.KindProject,
@@ -449,14 +561,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		To:        project.Name,
 		Project:   project.Name,
 		Reason:    fmt.Sprintf("project %s created from %s", project.Name, projectOrigin(source)),
-		Details: map[string]any{
-			"source":           projectOrigin(source),
-			"repo":             body.Repo,
-			"productionBranch": branch,
-			"sourceConnection": body.Connection,
-			"registry":         body.Registry,
-			"exposure":         string(exposure.Normalized()),
-		},
+		Details:   projectCreationDetails(project, body, branch, exposure),
 	}) {
 		return
 	}

@@ -139,6 +139,27 @@ describe("the two addresses that name an object", () => {
   });
 });
 
+describe("creating a project", () => {
+  // The create screen was a dialog and is now an address, which puts a static
+  // segment inside `/projects/:name`. Vue Router matches the static one first,
+  // and the API refuses `new` as a project name so that there is no project
+  // this address could be shadowing — the two halves of one rule, and this is
+  // the half that can be checked here.
+  it("opens the create screen at /projects/new", () => {
+    expect(lands("/projects/new")).toBe("project-new");
+    expect(router.resolve("/projects/new").meta.scope).toBe("project");
+  });
+
+  it("does not shadow a project's own screen", () => {
+    expect(lands("/projects/newsletter")).toBe("project");
+    expect(router.resolve("/projects/newsletter").params.name).toBe("newsletter");
+  });
+
+  it("names the route it is for", () => {
+    expect(router.resolve("/projects/new").meta.requires).toBe("POST /api/v1/projects");
+  });
+});
+
 describe("the six project screens", () => {
   // `/projects/:name` was one file and nine tabs, and the tab was never in the
   // address — so every part of it was reachable by scrolling and by nothing

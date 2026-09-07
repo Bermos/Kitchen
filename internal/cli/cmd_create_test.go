@@ -121,6 +121,82 @@ func TestCreateProjectSendsTheBuildContext(t *testing.T) {
 	}
 }
 
+// The institution's declarations travel with the project too, and for the
+// reason none of the fields above do: a project created without them is one
+// classified by nobody having been asked.
+func TestCreateProjectSendsTheDeclaration(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true, Framework: "Go"}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--data-class", "confidential", "--criticality", "important", "--rto", "4h", "--rpo", "30m",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+
+	sent := newProject{}
+	if err := json.Unmarshal([]byte(h.platform.sent("POST", "/projects")[0].Body), &sent); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+	for _, field := range []struct {
+		name string
+		got  *string
+		want string
+	}{
+		{"dataClass", sent.DataClass, "confidential"},
+		{"criticality", sent.Criticality, "important"},
+		{"rto", sent.RTO, "4h"},
+		{"rpo", sent.RPO, "30m"},
+	} {
+		if field.got == nil || *field.got != field.want {
+			t.Errorf("%s did not travel with the project: %v", field.name, field.got)
+		}
+	}
+}
+
+// The three states the API reads, as the command spells them. A flag nobody
+// typed is the caller saying nothing; `--data-class=""` is somebody answering
+// "unclassified", which is a decision and is sent as one.
+func TestCreateProjectDeclaresNothingUnlessAsked(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true, Framework: "Go"}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+	for _, field := range []string{"dataClass", "criticality", "rto", "rpo"} {
+		if body := h.platform.sent("POST", "/projects")[0].Body; strings.Contains(body, field) {
+			t.Errorf("the request decided %s for the institution: %s", field, body)
+		}
+	}
+}
+
+func TestCreateProjectSendsADeliberatelyEmptyDeclaration(t *testing.T) {
+	h := newHarness(t)
+	h.platform.connections = twoConnections()
+	h.platform.detected = &detection{Detected: true, Framework: "Go"}
+
+	if code := h.run("projects", "create", testProject, "--repo", "acme/shop",
+		"--data-class", "", "--criticality", "",
+		"--connection", gitConnection, "--registry", registryConnection, "--json"); code != 0 {
+		t.Fatalf("exit %d: %s", code, h.stderr.String())
+	}
+
+	sent := newProject{}
+	if err := json.Unmarshal([]byte(h.platform.sent("POST", "/projects")[0].Body), &sent); err != nil {
+		t.Fatalf("create body: %v", err)
+	}
+	if sent.DataClass == nil || *sent.DataClass != "" {
+		t.Errorf("declining to classify was not sent as an answer: %v", sent.DataClass)
+	}
+	if sent.Criticality == nil || *sent.Criticality != "" {
+		t.Errorf("declining to designate was not sent as an answer: %v", sent.Criticality)
+	}
+}
+
 // Previews left alone is the platform's default, not off: a pointer that is
 // never set is a field the request does not carry.
 func TestCreateProjectLeavesPreviewsToThePlatform(t *testing.T) {

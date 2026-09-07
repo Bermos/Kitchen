@@ -191,7 +191,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | Method | Path | Does | Requires |
 |---|---|---|---|
 | GET | `/projects` | List projects | any account — filtered |
-| POST | `/projects` | Create a project — from a repository, or from an image somebody else built | any person |
+| POST | `/projects` | Create a project — from a repository, or from an image somebody else built — with what the institution declares about it: `dataClass`, `criticality`, `rto`, `rpo`. None of the four is defaulted; an empty string is the answer "unclassified" or "undesignated", and an absent field says nothing | any person |
 | GET | `/projects/{name}` | One project — its env vars by name, never their values; its configuration files, and a secret one's digest rather than its content | `viewer` |
 | PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime, workloads, configuration files, what it offers other projects. Not its env vars | `admin` |
 | PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |

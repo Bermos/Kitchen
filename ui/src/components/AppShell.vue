@@ -10,7 +10,6 @@ import { completedBy, SCOPES, type Scope } from "../routes";
 import { unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import CommandPalette from "./CommandPalette.vue";
-import NewProjectModal from "./NewProjectModal.vue";
 import StatusDot from "./StatusDot.vue";
 
 const route = useRoute();
@@ -112,6 +111,28 @@ const activeProject = computed<string | null>(() => {
   if (!route.path.startsWith("/projects/")) return null;
   const name = route.params.name;
   return typeof name === "string" && name ? name : null;
+});
+
+// A project the address names and the sidebar has never heard of, fetched
+// rather than waited for.
+//
+// Creating a project used to be a dialog that told the shell it had finished;
+// it is a screen now, and what it does when it succeeds is navigate to the
+// project it made. Without this the new project is missing from the sidebar
+// for up to one poll interval — thirty seconds of a list that does not contain
+// the thing you are looking at — and the same is true of a link somebody
+// pasted for a project created a moment ago.
+//
+// It is **once per name**, which is the whole of the care needed here: a
+// project that is missing because it does not exist, or because this account
+// may not see it, would otherwise have every refresh answer with a list that
+// still lacks it and start the next one.
+const chased = new Set<string>();
+watch([activeProject, projects], ([name, listed]) => {
+  if (!name || !inventory.data.value || chased.has(name)) return;
+  if (listed.some((project) => project.name === name)) return;
+  chased.add(name);
+  void inventory.refresh();
 });
 
 const scopeLabel = computed(() => SCOPES.find((definition) => definition.id === scope.value)?.label ?? "Fleet");
@@ -436,16 +457,15 @@ const userMenu = computed(() => [
            events still gets there from a project name. -->
       <div class="px-4 pt-4 pb-1 flex items-center justify-between">
         <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>
-        <NewProjectModal @created="() => void inventory.refresh()">
-          <UButton
-            icon="i-lucide-plus"
-            color="neutral"
-            variant="ghost"
-            size="xs"
-            aria-label="New project"
-            class="-mr-1.5"
-          />
-        </NewProjectModal>
+        <UButton
+          :to="{ name: 'project-new' }"
+          icon="i-lucide-plus"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          aria-label="New project"
+          class="-mr-1.5"
+        />
       </div>
       <nav class="px-2 space-y-0.5 overflow-y-auto flex-1 min-h-0">
         <RouterLink

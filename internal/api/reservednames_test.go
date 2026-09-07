@@ -72,10 +72,37 @@ func TestCreatingAProjectRefusesAPreviewShapedName(t *testing.T) {
 	}
 }
 
+// The dashboard's own addresses are the other collision, and there is one:
+// its create screen is at /projects/new, so a project of that name would be
+// legal everywhere and unreachable in the one place every project is opened
+// from. Same rule, different namespace — refused at the name, because a name
+// that resolves to two things cannot be told apart downstream.
+func TestCreatingAProjectRefusesANameTheDashboardAddresses(t *testing.T) {
+	for name, purpose := range dashboardReservedNames {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, nil, fixtures()...)
+			body := fmt.Sprintf(
+				`{"name":%q,"repo":"acme/thing","connection":"gh","registry":"registry"}`, name)
+			recorder := h.do(t, http.MethodPost, "/api/v1/projects", body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			// The refusal says which address is taken, so that "choose another
+			// name" is an explanation rather than a rule from nowhere.
+			if !strings.Contains(recorder.Body.String(), purpose) {
+				t.Errorf("the refusal does not say why: %s", recorder.Body.String())
+			}
+			if err := h.server.get(context.Background(), name, &kitchenv1alpha1.Project{}); err == nil {
+				t.Fatal("the project was created anyway")
+			}
+		})
+	}
+}
+
 // And the rule is narrow: a name that only looks like one of the above is
 // still an ordinary name.
 func TestCreatingAProjectStillAcceptsAnOrdinaryName(t *testing.T) {
-	for _, name := range []string{"blog", "kitchen-sink", "auth-service", "pr-7", "shop-pr-preview"} {
+	for _, name := range []string{"blog", "kitchen-sink", "auth-service", "pr-7", "shop-pr-preview", "newsletter"} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, nil, fixtures()...)
 			body := fmt.Sprintf(

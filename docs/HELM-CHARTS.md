@@ -215,7 +215,7 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
   https://kitchen.apps.example.com/api/v1/projects
 ```
 
-The New project dialog offers the same two sources — a repository this platform
+The New project screen offers the same two sources — a repository this platform
 builds, or an image somebody else published — and a public image is pulled
 anonymously, so there is no `connection` to name. Creating the project resolves
 the tag to a digest and produces the first Release; from then on the platform

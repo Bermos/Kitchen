@@ -57,11 +57,23 @@ Sign in at the dashboard, `https://kitchen.apps.example.com`.
 
 ## 2. A project
 
-A project is one repository. Create it **in the dashboard**. The New project
-dialog asks, in order: the repository, a name (derived from the repository
-until you edit it), the git connection and the registry, the production
-branch, and — for a monorepo — the root directory and Dockerfile path. Preview
-environments are on by default, with a switch to turn them off.
+A project is one repository. Create it **in the dashboard**, at
+`/projects/new`. The New project screen asks, in order: the repository, the git
+connection and the registry, the production branch, and — for a monorepo — the
+root directory and Dockerfile path; then the name (derived from the repository
+until you edit it), whether it is on the internet, and whether pull requests
+get preview environments, which they do by default.
+
+Last, and the one section with nothing filled in: **what the institution
+declares about the project** — the classification of the data it will handle,
+and how much it matters that its function keeps working, with the recovery
+tolerances that go with a designation. Both classifications have to be answered
+before the project can be created. Kitchen classifies nothing and designates
+nothing, so "unclassified" and "undesignated" are answers on the list rather
+than what happens if nobody looks; see
+[Creating a project](api/projects.md#what-the-institution-declares-about-it).
+Everything on the screen can be changed afterwards, under the project's
+Settings.
 
 The **root directory is the build root**: the directory that is built, and the
 directory everything else the project declares is relative to — the Dockerfile

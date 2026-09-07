@@ -37,7 +37,7 @@ import (
 // than after its first build has failed.
 //
 // The preflight is the same POST /connections/{name}/detect the dashboard's
-// new-project dialog runs, and it is advice: a repository the platform has no
+// new-project screen runs, and it is advice: a repository the platform has no
 // framework for is still one a project can be created from, so a bare verdict
 // asks rather than refuses — and, since nothing here blocks on a prompt, --yes
 // answers it.
@@ -59,17 +59,21 @@ type projectCreated struct {
 
 func newProjectCreateCommand(r *Runtime) *cobra.Command {
 	var (
-		repo       string
-		connection string
-		registry   string
-		branch     string
-		previews   bool
-		internal   bool
-		root       string
-		dockerfile string
-		target     string
-		link       bool
-		yes        bool
+		repo        string
+		connection  string
+		registry    string
+		branch      string
+		previews    bool
+		internal    bool
+		root        string
+		dockerfile  string
+		target      string
+		dataClass   string
+		criticality string
+		rto         string
+		rpo         string
+		link        bool
+		yes         bool
 	)
 
 	cmd := &cobra.Command{
@@ -93,6 +97,18 @@ Creating a project starts a build of its production branch straight away, so
 than set afterwards: a monorepo corrected by a later change is corrected one
 failed build too late, and a multi-stage Dockerfile whose last stage is not the
 runtime ships the wrong image and reports success.
+
+--data-class and --criticality are the institution's declarations about the
+project: what class of data it handles, and how much it matters that its
+function keeps working. --rto and --rpo are the tolerances that go with a
+designation. Kitchen decides none of them, defaults none of them, and refuses
+nothing on them; what they change is what a claim may hold, what a promotion
+is allowed to do, and how loudly the project's production environments alert.
+They are here rather than only on the settings route because a project created
+without them is one classified by nobody having been asked — the dashboard's
+create screen will not create a project until both classifications have been
+answered, and "unclassified" and "undesignated" are answers, passed as the
+empty string.
 
 --internal creates a project nothing outside the cluster reaches: no
 environment of it is published, and each one is reachable inside the cluster at
@@ -125,6 +141,25 @@ with KITCHEN_API_KEY is refused, and says so.`),
 			if cmd.Flags().Changed("previews") {
 				options.previews = &previews
 			}
+			// Only what was asked for is sent. A flag nobody typed leaves the
+			// field out entirely, which is the caller saying nothing about it
+			// — a different thing from typing an empty string, which is the
+			// answer "unclassified" or "undesignated".
+			for _, declared := range []struct {
+				flag  string
+				value string
+				into  **string
+			}{
+				{"data-class", dataClass, &options.dataClass},
+				{"criticality", criticality, &options.criticality},
+				{"rto", rto, &options.rto},
+				{"rpo", rpo, &options.rpo},
+			} {
+				if cmd.Flags().Changed(declared.flag) {
+					value := declared.value
+					*declared.into = &value
+				}
+			}
 			return createProject(commandContext(cmd), r, options)
 		}),
 	}
@@ -140,6 +175,14 @@ with KITCHEN_API_KEY is refused, and says so.`),
 	cmd.Flags().StringVar(&dockerfile, "dockerfile", "", "a Dockerfile to build with, relative to the root directory")
 	cmd.Flags().StringVar(&target, "dockerfile-target", "",
 		"the stage of that Dockerfile to ship (default: its last stage)")
+	cmd.Flags().StringVar(&dataClass, "data-class", "",
+		"the class of data it handles: public, internal, confidential or strictlyConfidential, "+
+			"or \"\" to declare it unclassified")
+	cmd.Flags().StringVar(&criticality, "criticality", "",
+		"how much its function matters: nonCritical, important or critical, "+
+			"or \"\" to declare it undesignated")
+	cmd.Flags().StringVar(&rto, "rto", "", "how long its function may be unavailable — 4h, 30m, 1h30m")
+	cmd.Flags().StringVar(&rpo, "rpo", "", "how much data its function may lose — same spelling")
 	cmd.Flags().BoolVar(&link, "link", true, "write .kitchen/project.json for the new project")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "answer every question this would otherwise ask")
 
@@ -157,6 +200,9 @@ with KITCHEN_API_KEY is refused, and says so.`),
 				"kitchen projects create shop --connection github --registry kitchen --yes --json"},
 			{"Create one for a repository this machine has no copy of",
 				"kitchen projects create shop --repo acme/shop --connection github --registry kitchen --yes --json"},
+			{"Create one and declare what it handles and how much it matters",
+				"kitchen projects create shop --connection github --registry kitchen " +
+					"--data-class confidential --criticality important --rto 4h --rpo 30m --yes --json"},
 			{"Create one for an application inside a monorepo",
 				"kitchen projects create shop --repo acme/mono --root-directory apps/shop " +
 					"--connection github --registry kitchen --yes --json"},
@@ -181,8 +227,15 @@ type createOptions struct {
 	root       string
 	dockerfile string
 	target     string
-	link       bool
-	yes        bool
+	// The institution's declarations, nil for a flag nobody typed. Kitchen
+	// classifies nothing and designates nothing, so an untyped flag stays
+	// untyped rather than becoming a value the platform chose.
+	dataClass   *string
+	criticality *string
+	rto         *string
+	rpo         *string
+	link        bool
+	yes         bool
 }
 
 // exposureOf is the create request's `exposure`: empty leaves the platform's
@@ -270,6 +323,10 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 		RootDirectory:    options.root,
 		DockerfilePath:   options.dockerfile,
 		DockerfileTarget: options.target,
+		DataClass:        options.dataClass,
+		Criticality:      options.criticality,
+		RTO:              options.rto,
+		RPO:              options.rpo,
 	})
 	if err != nil {
 		return err

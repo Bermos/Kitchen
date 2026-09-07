@@ -13,7 +13,6 @@ import { refusal } from "../lib/policy";
 import { statusDetail, unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
 import AttentionBand from "../components/AttentionBand.vue";
-import NewProjectModal from "../components/NewProjectModal.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import Sparkline from "../components/Sparkline.vue";
@@ -281,7 +280,7 @@ function host(url?: string): string {
           aria-label="Refresh"
           @click="refresh"
         />
-        <NewProjectModal @created="refresh" />
+        <UButton :to="{ name: 'project-new' }" icon="i-lucide-plus" size="sm">New project</UButton>
       </template>
     </PageHeader>
 
