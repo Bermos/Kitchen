@@ -618,6 +618,31 @@ func (s *Server) routes() []route {
 		// else, so it needs nothing but a valid token.
 		{"GET /api/v1/me", s.getMe, anyCaller()},
 
+		// Alerts: one open delivery per row, at the tier its reader reads it
+		// at, with what anybody has done about it.
+		//
+		// The read is filtered rather than refused, because it is the one
+		// screen both audiences have: a member sees their projects' own
+		// deliveries and the symptom rows derived from platform conditions
+		// degrading them, an operator sees every delivery of both audiences.
+		//
+		// The three writes are `acrossProjects` for the reason
+		// `POST /decisions/{id}/replay` is: what may be written is decided by
+		// the *delivery* the body names, which no path parameter can carry —
+		// a fingerprint has slashes in it — so the handler resolves it in the
+		// recorded history and asks internal/access about the project it
+		// turns out to name. The rule it enforces is the audience: a member
+		// acts on their project's row and an operator on the operator's, and
+		// acknowledging one is explicitly not acknowledging the other.
+		{"GET /api/v1/alerts", s.listAlerts, acrossProjects()},
+		{"POST /api/v1/alerts/ack", s.ackAlert, acrossProjects()},
+		{"POST /api/v1/alerts/silence", s.silenceAlert, acrossProjects()},
+		{"POST /api/v1/alerts/unsilence", s.unsilenceAlert, acrossProjects()},
+		// Claiming is the one of the four that is the operators' as a group:
+		// escalation addresses one ticket to all of them and any of them
+		// takes it, which is why there is no rota behind this.
+		{"POST /api/v1/alerts/claim", s.claimAlert, operatorOnly("claiming an escalated alert")},
+
 		// The operator's own screens. Everything platform-scoped lives under
 		// this one prefix and nothing project-scoped does.
 		{"GET /api/v1/platform/signals", s.platformSignals, operatorOnly("reading the platform's signals")},

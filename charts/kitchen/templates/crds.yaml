@@ -7952,6 +7952,7 @@ spec:
                 - preview.destroyed
                 - environment.unhealthy
                 - alert.firing
+                - signal.firing
                 type: string
               eventId:
                 minLength: 1
@@ -8161,6 +8162,7 @@ spec:
                   - preview.destroyed
                   - environment.unhealthy
                   - alert.firing
+                  - signal.firing
                   type: string
                 maxItems: 32
                 minItems: 1
@@ -8173,6 +8175,25 @@ spec:
                 maximum: 10
                 minimum: 1
                 type: integer
+              minTier:
+                description: |-
+                  MinTier is the lowest tier of signal delivery this subscription wants,
+                  and it applies to `signal.firing` alone — every other event in the
+                  vocabulary is a thing that happened rather than a condition somebody
+                  is meant to act on, and has no tier to filter by.
+
+                  Empty is `ticket`, which is the whole of what the tier model says an
+                  outbound subscription should carry: a page and a ticket are both a
+                  claim on somebody's attention, and a log is not.
+
+                  It is a filter here and a *declaration* on the rule (internal/signals),
+                  which is the split #471 settles: the tier is a property of the pair
+                  (condition, audience) and is versioned with the catalogue; what an
+                  installation configures is which of them reach it.
+                enum:
+                - page
+                - ticket
+                type: string
               projectRef:
                 description: |-
                   ProjectRef narrows the subscription to one project. Empty is the

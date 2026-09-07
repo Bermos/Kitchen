@@ -154,6 +154,11 @@ export type Route =
   | "GET /api/v1/traces/{traceId}"
   | "GET /api/v1/status"
   | "GET /api/v1/me"
+  | "GET /api/v1/alerts"
+  | "POST /api/v1/alerts/ack"
+  | "POST /api/v1/alerts/silence"
+  | "POST /api/v1/alerts/unsilence"
+  | "POST /api/v1/alerts/claim"
   | "GET /api/v1/platform/signals"
   | "GET /api/v1/platform/nodes"
   | "GET /api/v1/platform/workloads"
@@ -313,6 +318,11 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/traces/{traceId}": { kind: "visibleProjects" },
   "GET /api/v1/status": { kind: "roleShapedBody", doing: "reading the platform's status" },
   "GET /api/v1/me": { kind: "authenticated" },
+  "GET /api/v1/alerts": { kind: "visibleProjects" },
+  "POST /api/v1/alerts/ack": { kind: "visibleProjects" },
+  "POST /api/v1/alerts/silence": { kind: "visibleProjects" },
+  "POST /api/v1/alerts/unsilence": { kind: "visibleProjects" },
+  "POST /api/v1/alerts/claim": { kind: "operator", doing: "claiming an escalated alert" },
   "GET /api/v1/platform/signals": { kind: "operator", doing: "reading the platform's signals" },
   "GET /api/v1/platform/nodes": { kind: "operator", doing: "reading the platform's nodes" },
   "GET /api/v1/platform/workloads": { kind: "operator", doing: "reading the platform's workloads" },

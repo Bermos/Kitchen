@@ -66,7 +66,7 @@ import (
 // should not have to know that a promotion, an auto-deploy and a rollback are
 // three code paths that all mean a release went live.
 //
-// +kubebuilder:validation:Enum=build.failed;deploy.succeeded;preview.created;preview.destroyed;environment.unhealthy;alert.firing
+// +kubebuilder:validation:Enum=build.failed;deploy.succeeded;preview.created;preview.destroyed;environment.unhealthy;alert.firing;signal.firing
 type NotificationEvent string
 
 const (
@@ -91,6 +91,20 @@ const (
 	// is the second trigger onto this same delivery path, and the reason the
 	// path is generic (see SavedQueryAlert).
 	NotifyAlertFiring NotificationEvent = "alert.firing"
+	// NotifySignalFiring is a delivery of the signal catalogue opening or
+	// resolving: the condition, the audience it was delivered to, and the
+	// tier that audience reads it at.
+	//
+	// It is not `alert.firing` under a wider meaning. That one is a saved log
+	// query crossing a threshold somebody wrote — an installation's own
+	// question — and this is the catalogue, which is versioned code with a
+	// tier per audience. A relay that had to tell them apart by reading the
+	// payload would be a relay written twice.
+	//
+	// What it carries is filtered by MinTier, and never by anything below a
+	// ticket: `log` is the tier that notifies nobody by definition, and a
+	// subscription offering it would be offering to undo what the tier means.
+	NotifySignalFiring NotificationEvent = "signal.firing"
 )
 
 // AllNotificationEvents is the vocabulary, in the order the dashboard offers
@@ -103,7 +117,27 @@ var AllNotificationEvents = []NotificationEvent{
 	NotifyPreviewCreated,
 	NotifyPreviewDestroyed,
 	NotifyAlertFiring,
+	NotifySignalFiring,
 }
+
+// NotificationTier is how urgently the reader of a signal delivery is meant to
+// act, as a subscription filters on it.
+//
+// Only two of the catalogue's three tiers are here, and the missing one is the
+// point: `log` is the tier that notifies nobody, so a subscription that could
+// ask for it would be a subscription that turns a data point into a message.
+//
+// +kubebuilder:validation:Enum=page;ticket
+type NotificationTier string
+
+const (
+	// TierPage is act now. Nothing in this platform wakes anybody yet — the
+	// dashboard does not use the word — but the vocabulary is the model's
+	// and a relay that does page somebody needs to be able to ask for it.
+	TierPage NotificationTier = "page"
+	// TierTicket is act in hours: a fix is owed and nobody needs waking.
+	TierTicket NotificationTier = "ticket"
+)
 
 // NotificationSubscriptionSpec is where to send what.
 type NotificationSubscriptionSpec struct {
@@ -143,6 +177,22 @@ type NotificationSubscriptionSpec struct {
 	// The Secret is owned by this object, so deleting the subscription
 	// deletes the key with it.
 	SecretRef LocalObjectReference `json:"secretRef"`
+
+	// MinTier is the lowest tier of signal delivery this subscription wants,
+	// and it applies to `signal.firing` alone — every other event in the
+	// vocabulary is a thing that happened rather than a condition somebody
+	// is meant to act on, and has no tier to filter by.
+	//
+	// Empty is `ticket`, which is the whole of what the tier model says an
+	// outbound subscription should carry: a page and a ticket are both a
+	// claim on somebody's attention, and a log is not.
+	//
+	// It is a filter here and a *declaration* on the rule (internal/signals),
+	// which is the split #471 settles: the tier is a property of the pair
+	// (condition, audience) and is versioned with the catalogue; what an
+	// installation configures is which of them reach it.
+	// +optional
+	MinTier NotificationTier `json:"minTier,omitempty"`
 
 	// Description is what this subscription is for, in the words of whoever
 	// made it. A URL alone stops meaning anything about four months after it
@@ -211,6 +261,37 @@ func (s NotificationSubscriptionSpec) Project() string {
 		return ""
 	}
 	return s.ProjectRef.Name
+}
+
+// Tier is the lowest tier of signal delivery this subscription asked for.
+func (s NotificationSubscriptionSpec) Tier() NotificationTier {
+	if s.MinTier == "" {
+		return TierTicket
+	}
+	return s.MinTier
+}
+
+// AdmitsTier reports whether a delivery at this tier clears the subscription's
+// floor.
+//
+// Written out rather than as a comparison of ranks, deliberately. The
+// catalogue's ordering of its three tiers lives in internal/signals, which
+// this package must not depend on and which must not depend on this one; two
+// copies of that ordering is how they come to disagree. There are exactly two
+// floors and two tiers above `log`, so the whole question is one sentence:
+// a subscription that asked for pages gets pages, and one that asked for
+// tickets gets both. Anything else — `log`, or a tier written by a catalogue
+// newer than this build — is admitted by neither, which is the safe direction
+// for a thing that sends messages.
+func (s NotificationSubscriptionSpec) AdmitsTier(tier NotificationTier) bool {
+	switch s.Tier() {
+	case TierPage:
+		return tier == TierPage
+	case TierTicket:
+		return tier == TierPage || tier == TierTicket
+	default:
+		return false
+	}
 }
 
 // Wants reports whether this subscription asked to hear about an event.

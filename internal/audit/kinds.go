@@ -135,6 +135,24 @@ const (
 	// every settings change the platform ever had, which is where nobody
 	// looks.
 	KindAuditAnchor = "AuditAnchor"
+
+	// KindSignalMitigation is the ninth, and it records what somebody did
+	// about a condition the signal catalogue found: acknowledged it,
+	// silenced it with a reason and an expiry, or claimed the escalated
+	// ticket (#471).
+	//
+	// It is its own kind rather than a record on the project, for the reason
+	// the retention sweep's is its own: "who said they had seen this outage,
+	// who decided it should stop being said, and who took it" has to be one
+	// query. Folded into KindProject it would sit among every settings
+	// change the project ever had, which is where nobody looks — and half of
+	// these records are about a platform condition that names no project at
+	// all.
+	//
+	// The record names the delivery rather than the condition, in its
+	// correlation: one fingerprint is two rows, delivered to two audiences,
+	// and acknowledging one is explicitly not acknowledging the other.
+	KindSignalMitigation = "SignalMitigation"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of

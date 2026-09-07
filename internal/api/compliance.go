@@ -114,6 +114,21 @@ type complianceBody struct {
 		Storing bool   `json:"storing"`
 		Message string `json:"message,omitempty"`
 	} `json:"policy"`
+
+	// Incidents is the escalation ladder's last rung, reported here rather
+	// than only on the alerts screen. An outage nobody has looked at for
+	// hours is not a louder alert — nothing is more broken at hour four than
+	// at hour one — it is a fact about the institution, and this is where
+	// facts about the institution are reported, with names on them.
+	Incidents struct {
+		// Untended is every open delivery past the point where it stops
+		// being an alert, worst first.
+		Untended []untendedIncident `json:"untended"`
+		// Message says why the list is empty when emptiness is not the
+		// claim: an installation that records nothing cannot answer how
+		// long anybody has been not looking.
+		Message string `json:"message,omitempty"`
+	} `json:"incidents"`
 }
 
 // getCompliance reports the audit log and the signing identity.
@@ -164,6 +179,11 @@ func (s *Server) getCompliance(w http.ResponseWriter, req *http.Request) {
 			body.Attestation.KeyID = key.KeyID()
 			body.Attestation.Signing = true
 		}
+	}
+
+	body.Incidents.Untended, body.Incidents.Message = s.untendedFromHistory(ctx)
+	if body.Incidents.Untended == nil {
+		body.Incidents.Untended = []untendedIncident{}
 	}
 
 	writeJSON(w, http.StatusOK, body)

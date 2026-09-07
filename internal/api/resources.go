@@ -1673,6 +1673,11 @@ func (s *Server) createBuild(w http.ResponseWriter, req *http.Request) {
 	}
 	s.log().Info("build requested through the api",
 		"project", project.Name, "build", build.Name, "sha", revision.SHA, "caller", callerName(caller))
+	// Starting the build is the resolving action for everything the
+	// catalogue is saying about this project's builds, so it acknowledges
+	// them: a condition somebody is actively fixing must not go on counting
+	// as untended and escalate underneath them. See ackByAction.
+	s.ackByAction(ctx, project.Name, "", "building "+revision.SHA)
 	writeJSON(w, http.StatusCreated, newBuildView(build, s.sourceLinker().forProject(ctx, project)))
 }
 
@@ -2113,6 +2118,10 @@ func (s *Server) patchEnvironment(w http.ResponseWriter, req *http.Request) {
 	if !s.pointEnvironmentAt(w, req, env, release, move) {
 		return
 	}
+	// Rolling back is the resolving action this case exists for, so it
+	// acknowledges what the catalogue is saying about the environment being
+	// moved. See ackByAction.
+	s.ackByAction(ctx, env.Spec.ProjectRef.Name, env.Name, move.verb+" "+release.Name)
 	writeJSON(w, http.StatusOK, s.environmentView(ctx, env))
 }
 

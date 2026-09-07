@@ -217,6 +217,7 @@ func TransitionRows(transitions []Transition) []clickhouse.SignalTransition {
 			Signal:      string(transition.Signal),
 			Fingerprint: transition.Fingerprint,
 			Audience:    string(transition.Audience),
+			Tier:        string(transition.Tier),
 			Version:     transition.Version,
 			Severity:    string(transition.Severity),
 			Scope:       string(transition.Scope.Kind),
@@ -245,6 +246,7 @@ func TransitionsFrom(rows []clickhouse.SignalTransition) []Transition {
 			Signal:      ID(row.Signal),
 			Fingerprint: row.Fingerprint,
 			Audience:    Audience(row.Audience),
+			Tier:        Tier(row.Tier),
 			Version:     row.Version,
 			Severity:    Severity(row.Severity),
 			Scope: Scope{
@@ -263,4 +265,42 @@ func TransitionsFrom(rows []clickhouse.SignalTransition) []Transition {
 		})
 	}
 	return transitions
+}
+
+// The mitigation records' two mappings, for the reason the transitions' are
+// here: the store returns rows and knows nothing about what an acknowledgement
+// does to a tier, and this is the one place that translates.
+
+// MitigationRow is one record in the shape the store writes.
+func MitigationRow(mitigation Mitigation) clickhouse.SignalMitigation {
+	return clickhouse.SignalMitigation{
+		At:          mitigation.At,
+		Kind:        string(mitigation.Kind),
+		Fingerprint: mitigation.Fingerprint,
+		Audience:    string(mitigation.Audience),
+		Project:     mitigation.Project,
+		Actor:       mitigation.Actor,
+		Reason:      mitigation.Reason,
+		Until:       mitigation.Until,
+		Source:      mitigation.Source,
+	}
+}
+
+// MitigationsFrom is recorded rows read back as what they were about.
+func MitigationsFrom(rows []clickhouse.SignalMitigation) []Mitigation {
+	mitigations := make([]Mitigation, 0, len(rows))
+	for _, row := range rows {
+		mitigations = append(mitigations, Mitigation{
+			At:          row.At,
+			Kind:        MitigationKind(row.Kind),
+			Fingerprint: row.Fingerprint,
+			Audience:    Audience(row.Audience),
+			Project:     row.Project,
+			Actor:       row.Actor,
+			Reason:      row.Reason,
+			Until:       row.Until,
+			Source:      row.Source,
+		})
+	}
+	return mitigations
 }

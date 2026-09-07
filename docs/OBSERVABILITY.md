@@ -897,6 +897,90 @@ escalated when somebody designated the environment stays the same condition.
 there would be nothing left at warning, and a list where everything is
 critical is a list nobody reads.
 
+### Tiers, and what each audience is meant to do
+
+The audience says *who sees a finding* and nothing about what either of them is
+meant to do with it, which is not enough: a node going NotReady is the
+operator's to act on now and not even a word a developer has, and a failed
+dependency install is the developer's to fix and a data point about queue load
+for the operator. So every rule declares a **tier per audience** (#471), and
+`Signal.Validate` refuses one that leaves out an audience it is delivered to or
+describes one it never reaches.
+
+- **page** — act now: urgent, actionable *by this reader*, and user-visible.
+- **ticket** — act in hours: a fix is owed and nobody needs waking.
+- **log** — a data point. It appears on the list it belongs to and notifies
+  nobody, which is what makes it a tier rather than an absence: the operator
+  still wants to be able to read that a tenant's build failed, without hearing
+  about it.
+
+The dashboard does not use the word *page*. There is a delivery mechanism and
+nothing in it wakes anybody, so the screens order themselves by the three tiers
+— which is where their value is — and the top one is named **Act now** until
+something behind it actually pages.
+
+The tier is a **classification, not a workflow state**. It stays true whether
+the ticket that comes out of it lives in Kitchen, in GitLab or nowhere, which
+is the constraint that keeps a later hand-off to an external ticket system
+additive rather than a rewrite.
+
+| Signal | Developer | Operator |
+|---|---|---|
+| `build.failing-repeatedly` | ticket | log |
+| `build.pod-pending` | ticket | ticket |
+| `build.queue-backed-up` | ticket | page |
+| `build.stalled` | ticket | ticket |
+| `cert.expiring` | — | ticket |
+| `cluster.overcommitted` | — | ticket |
+| `dns.mismatch` | — | ticket |
+| `edge.unrouted-hosts` | — | log |
+| `env.error-rate` | page | ticket |
+| `env.latency-regressed` | ticket | log |
+| `env.no-backend` | page | ticket |
+| `env.rto-at-risk` | page | ticket |
+| `env.traffic-vanished` | ticket | log |
+| `gateway.unprogrammed` | — | page |
+| `ingest.flows-lost` | — | log |
+| `node.disk-filling` | — | ticket |
+| `node.notready` | — | page |
+| `node.pressure` | — | ticket |
+| `node.saturated` | — | ticket |
+| `node.silent` | — | ticket |
+| `platform.component-unhealthy` | — | page |
+| `platform.error-correlated` | — | page |
+| `platform.latency-correlated` | — | page |
+| `pvc.filling` | ticket | ticket |
+| `pvc.pending` | — | ticket |
+| `route.rejected` | page | ticket |
+| `store.disk` | — | ticket |
+| `store.ingest-stalled` | — | ticket |
+| `tunnel.down` | — | page |
+| `volume.attach-failed` | — | ticket |
+| `workload.admission-refused` | page | ticket |
+| `workload.at-cpu-limit` | ticket | log |
+| `workload.crashloop` | page | ticket |
+| `workload.imagepull` | page | ticket |
+| `workload.near-memory-limit` | ticket | log |
+| `workload.notready` | page | ticket |
+| `workload.oomkilled` | ticket | log |
+| `workload.unschedulable` | page | ticket |
+
+A dash is an audience the rule does not reach, which is not a decision anybody
+declined to make: `AudienceDeveloper` is additive, so an operator-audience rule
+has no developer delivery for a tier to describe.
+
+**What moves a row off its declared tier is what people do and what the clock
+does**, computed rather than stored: mitigation lowers it (a condition somebody
+is acting on is a ticket for its owner and a log for everybody else), a silence
+lowers the delivery it names to a log and never the other audience's, and
+escalation raises the *operator* — an unacknowledged owner-tier condition past
+an hour repeats and adds the operator as a ticket, and past four of them
+becomes an untended-incident line on the compliance posture. Nothing is more
+broken at hour four than at hour one, so escalation changes the audience rather
+than the colour. The base tier is code, versioned with the catalogue; the clock
+is what #472 makes policy. [docs/api/alerts.md](api/alerts.md) is the whole of
+the surface.
+
 ### What an RPO would take
 
 Nothing fires on a declared RPO, and nothing is going to be made to. Measuring
@@ -947,9 +1031,14 @@ work packages, not as a multi-quarter roadmap.)
   screens. Ships: goal 2's screens-and-derived-signals scope, complete.
 - **Stage 5 — detection and delivery.** *Detection is built* (#473): the
   background evaluation loop, the diff, and `signal_transitions`, with the two
-  signals endpoints reading it where it is current. The inbox,
-  acknowledgement, silences and routing remain — they are readers of that
-  table and of the key it is written under.
+  signals endpoints reading it where it is current. *Delivery is built* (#471):
+  a tier per audience on every rule, `signal_mitigations` beside the history,
+  the acknowledgement/silence/claim routes and the two alerts screens, the
+  escalation clock and the untended-incident line, and `signal.firing` on the
+  outbound subscription with a tier filter. Both are readers and writers of
+  that table and of the key it is written under; the model above did not move
+  for either. What remains is #472 — the thresholds and windows as policy —
+  and correlation.
 
 Stages 1–4 decompose further along package seams (schema / follower / API /
 UI per stage), which is how the work parallelises across implementers.

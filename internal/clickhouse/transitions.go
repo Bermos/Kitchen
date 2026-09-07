@@ -46,6 +46,13 @@ type SignalTransition struct {
 	Fingerprint string `json:"fingerprint"`
 	Audience    string `json:"audience"`
 
+	// Tier is what this delivery's audience is meant to do about the
+	// condition — `page`, `ticket` or `log` — as the rule declared it for
+	// that audience when the row was written. It is on the row for the same
+	// reason Version is: a history reinterpreted against a catalogue that
+	// has since moved is a history that changes what it said.
+	Tier string `json:"tier,omitempty"`
+
 	// Version is the rule's own version when the row was written.
 	Version int `json:"version"`
 
@@ -98,6 +105,7 @@ func (c *Client) InsertSignalTransitions(ctx context.Context, transitions []Sign
 			"version":     transition.Version,
 			"fingerprint": transition.Fingerprint,
 			"audience":    transition.Audience,
+			"tier":        transition.Tier,
 			"severity":    transition.Severity,
 			"scope":       transition.Scope,
 			"project":     transition.Project,
@@ -136,6 +144,7 @@ func (c *Client) OpenSignalTransitions(ctx context.Context) ([]SignalTransition,
     formatDateTime(argMax(timestamp, timestamp), '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS %s,
     fingerprint,
     audience,
+    argMax(tier, timestamp) AS tier,
     argMax(signal, timestamp) AS signal,
     argMax(version, timestamp) AS version,
     argMax(severity, timestamp) AS severity,
@@ -172,6 +181,7 @@ type signalTransitionRow struct {
 	At          string `json:"ts"`
 	Fingerprint string `json:"fingerprint"`
 	Audience    string `json:"audience"`
+	Tier        string `json:"tier"`
 	Signal      string `json:"signal"`
 	Version     int    `json:"version"`
 	Severity    string `json:"severity"`
@@ -209,6 +219,7 @@ func parseSignalTransitions(body string) ([]SignalTransition, error) {
 			Signal:      row.Signal,
 			Fingerprint: row.Fingerprint,
 			Audience:    row.Audience,
+			Tier:        row.Tier,
 			Version:     row.Version,
 			Severity:    row.Severity,
 			Scope:       row.Scope,

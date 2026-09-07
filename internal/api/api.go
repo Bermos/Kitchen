@@ -249,6 +249,13 @@ type logReader interface {
 	// recordedSignals.
 	OpenSignalTransitions(ctx context.Context) ([]clickhouse.SignalTransition, error)
 
+	// What people have done about those conditions, and the one write these
+	// endpoints make into the telemetry store rather than into the cluster.
+	// A mitigation is a record about a delivery, so it lives beside the
+	// deliveries; the durable copy of the same decision is the audit log.
+	SignalMitigations(ctx context.Context) ([]clickhouse.SignalMitigation, error)
+	InsertSignalMitigation(ctx context.Context, mitigation clickhouse.SignalMitigation) error
+
 	// Node saturation and per-claim fill. These are here, rather than handed to
 	// the Server once at startup, because they are read from the same store as
 	// everything above and it is resolved per request off the Kitchen singleton:

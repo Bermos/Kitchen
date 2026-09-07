@@ -95,7 +95,12 @@ func (t Tier) AtLeast(floor Tier) Tier {
 // Notifies reports whether a tier is one an outbound subscription may carry.
 // Log does not, by definition: it is the tier that notifies nobody, and a
 // subscription filter offering it would be offering to undo what the tier
-// means. See NotificationSubscriptionSpec.MinTier.
+// means.
+//
+// The delivery filter itself is NotificationSubscriptionSpec.AdmitsTier, which
+// cannot call this — api/v1alpha1 must not depend on this package — and says
+// the same thing by naming the two floors instead of ranking three tiers.
+// This is where the rule is stated; that is where it is applied.
 func (t Tier) Notifies() bool { return t.Rank() >= TierTicket.Rank() }
 
 // Tiers is a rule's declaration: what each of the two audiences is meant to do

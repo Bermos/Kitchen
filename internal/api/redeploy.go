@@ -220,5 +220,8 @@ func (s *Server) redeployEnvironment(w http.ResponseWriter, req *http.Request) {
 	}
 	view.Message = fmt.Sprintf("%s is deploying %s: the same commit as %s, with %s's current settings",
 		env.Name, fresh.Name, current.Name, project.Name)
+	// Redeploying is the resolving action, so it acknowledges what the
+	// catalogue is saying about this environment. See ackByAction.
+	s.ackByAction(ctx, project.Name, env.Name, "redeploying "+env.Name)
 	writeJSON(w, http.StatusAccepted, view)
 }

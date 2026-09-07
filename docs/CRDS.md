@@ -2820,6 +2820,7 @@ spec:
   secretRef: {name: kitchen-notify-shop-relay}   # holds `secret`; written by the API, never read back
   description: into #shop-deploys
   suspended: false
+  minTier: ticket                           # page | ticket; filters signal.firing alone
   maxAttempts: 5                            # 1..10
   timeoutSeconds: 10                        # 1..30
   createdBy: grace@example.com              # a byline
@@ -2837,7 +2838,16 @@ The vocabulary is the platform's rather than the reconcilers': `deploy.succeeded
 promotion, an auto-deploy on a push and a rollback alike, because all three are one fact
 — what is serving changed. A relay somebody wrote in an afternoon should not have to
 learn that they are three code paths. The events are `deploy.succeeded`, `build.failed`,
-`environment.unhealthy`, `preview.created`, `preview.destroyed` and `alert.firing`.
+`environment.unhealthy`, `preview.created`, `preview.destroyed`, `alert.firing` and
+`signal.firing`.
+
+`signal.firing` is the one with a filter. It is a delivery of the signal catalogue
+opening or resolving, and every rule declares a tier per audience — `page`, `ticket` or
+`log` — so `minTier` decides which of them reach this address: `page` for the top tier
+alone, `ticket` (the default) for both. There is no third value, because `log` is the
+tier that notifies nobody by definition. The tier lives on the rule, versioned with the
+catalogue; the filter lives here, because which of them a given relay wants is an
+installation's preference. See [docs/api/alerts.md](api/alerts.md).
 
 An empty `events` is refused at admission rather than read as "everything": a subscription
 that silently widened when the platform learned a new event type is one that starts

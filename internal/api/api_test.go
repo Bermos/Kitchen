@@ -356,6 +356,14 @@ type stubLogs struct {
 	transitionsErr  error
 	transitionReads int
 
+	// What people have done about those deliveries. `mitigations` is what a
+	// read answers with and what a write appends to, so a test can drive the
+	// whole ack-then-read cycle through one stub.
+	mitigations        []clickhouse.SignalMitigation
+	mitigationsErr     error
+	mitigationWritten  []clickhouse.SignalMitigation
+	mitigationWriteErr error
+
 	histogram     clickhouse.LogHistogram
 	lastHistogram clickhouse.LogHistogramQuery
 	facets        []clickhouse.LogFacet
@@ -602,6 +610,23 @@ func (s *stubLogs) OpenSignalTransitions(context.Context) ([]clickhouse.SignalTr
 		return nil, s.transitionsErr
 	}
 	return s.openTransitions, nil
+}
+
+// The mitigation records: what has been done about those deliveries.
+func (s *stubLogs) SignalMitigations(context.Context) ([]clickhouse.SignalMitigation, error) {
+	if s.mitigationsErr != nil {
+		return nil, s.mitigationsErr
+	}
+	return s.mitigations, nil
+}
+
+func (s *stubLogs) InsertSignalMitigation(_ context.Context, mitigation clickhouse.SignalMitigation) error {
+	if s.mitigationWriteErr != nil {
+		return s.mitigationWriteErr
+	}
+	s.mitigationWritten = append(s.mitigationWritten, mitigation)
+	s.mitigations = append(s.mitigations, mitigation)
+	return nil
 }
 
 func (s *stubLogs) QueryK8sEvents(

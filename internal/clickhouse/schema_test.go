@@ -493,7 +493,7 @@ func TestEnsureTelemetrySchemaCreatesEveryTable(t *testing.T) {
 		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
 		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
 		RequestsTable, RequestsMinuteTable, RequestsHourTable, K8sEventsTable,
-		SignalTransitionsTable,
+		SignalTransitionsTable, SignalMitigationsTable,
 	} {
 		want := "CREATE TABLE IF NOT EXISTS " + qualified(table)
 		if !store.sent(want) {
@@ -661,6 +661,33 @@ func TestTheSignalHistoryExpiresResolvedTransitionsOnly(t *testing.T) {
 		"ORDER BY (project, environment, fingerprint, audience, timestamp)",
 		"TTL toDateTime(timestamp) + toIntervalDay(30) DELETE WHERE state = 'resolved'",
 		"ttl_only_drop_parts = 0",
+		// The tier reaches a table an earlier version created, or an
+		// installation that upgrades would read every recorded delivery back
+		// without one.
+		"ADD COLUMN IF NOT EXISTS `tier` LowCardinality(String)",
+	} {
+		if !store.sent(want) {
+			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
+		}
+	}
+}
+
+// The mitigation records sit beside the transitions under the same class, and
+// differ in the two ways they have to: the key leads with the delivery rather
+// than with the project, because a platform condition's records name no
+// project at all, and the TTL is unconditional — a decision has no state to be
+// conditional on, and the durable copy of it is the audit log.
+func TestTheMitigationRecordsAreKeyedOnTheDelivery(t *testing.T) {
+	store := newFakeStore(t)
+	store.engine = ""
+
+	if err := store.client(t).EnsureSignalsSchema(context.Background(), 30); err != nil {
+		t.Fatalf("EnsureSignalsSchema: %v", err)
+	}
+
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS " + qualified(SignalMitigationsTable),
+		"ORDER BY (fingerprint, audience, timestamp)",
 	} {
 		if !store.sent(want) {
 			t.Errorf("expected a statement containing %q, got:\n%s", want, store.transcript())
