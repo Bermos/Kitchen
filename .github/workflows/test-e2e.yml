@@ -1788,7 +1788,7 @@ jobs:
           # kitchen-system. A per-cluster CA would satisfy every assertion
           # above this one.
           for _ in $(seq 30); do
-            reason="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
+            reason="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${NUXT_CLAIM}" \
               -o jsonpath='{.status.conditions[?(@.type=="ServerCertificate")].reason}' \
               2>/dev/null || true)"
             [ "${reason}" = PlatformCA ] && break
@@ -1797,7 +1797,7 @@ jobs:
           echo "the claim reports its server certificate as ${reason:-unreported}"
           [ "${reason}" = PlatformCA ] || {
             echo "::error::the claim's database is not on the platform's CA (${reason:-unreported})"
-            kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" -o yaml
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${NUXT_CLAIM}" -o yaml
             kubectl -n kitchen-databases get certificates,clusters -o wide || true
             kubectl -n kitchen-system get certificates,issuers || true
             kubectl get clusterissuers || true
@@ -1826,7 +1826,7 @@ jobs:
 
           # The Cluster names it under both halves of CloudNativePG's schema,
           # which is what actually puts the certificate in front of Postgres.
-          cluster="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
+          cluster="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${NUXT_CLAIM}" \
             -o jsonpath='{.status.instanceName}')"
           certs="$(kubectl -n kitchen-databases get cluster "${cluster}" \
             -o jsonpath='{.spec.certificates.serverCASecret} {.spec.certificates.serverTLSSecret}')"
