@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.36.0](https://github.com/Bermos/Kitchen/compare/v0.35.0...v0.36.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **environments:** a promotion stage's environment moves from `<project>.<baseDomain>` to `<project>-<stage>.<baseDomain>` on the operator's first pass after upgrade. Installations running a staged pipeline had two environments claiming production's hostname and one of them silently won; after this, each answers at its own. Production's address is unchanged, as are custom Domains, which point where they are pointed. Anything that hard-codes a stage's generated URL — an OIDC redirect URI registered by hand, a webhook receiver, a bookmark — needs the new address; the operator re-registers the redirect URIs an oidcClient claim manages once the stage republishes.
+
+### Features
+
+* **addons:** record every addon upgrade as a durable, timestamped object ([#483](https://github.com/Bermos/Kitchen/issues/483)) ([f6a6861](https://github.com/Bermos/Kitchen/commit/f6a6861e40e4b0e77fbaae0ffe9c7a4fae40ac89))
+* **environments:** an environment can be declared before anything deploys into it ([#509](https://github.com/Bermos/Kitchen/issues/509)) ([25b0a89](https://github.com/Bermos/Kitchen/commit/25b0a89faa4d50c1569e9388b67a8155b9461d67)), closes [#491](https://github.com/Bermos/Kitchen/issues/491)
+* **projects:** an internal project — no route, no public hostname ([#504](https://github.com/Bermos/Kitchen/issues/504)) ([49d067f](https://github.com/Bermos/Kitchen/commit/49d067f81d7473fa3eb12786e61d20093a45009e)), closes [#492](https://github.com/Bermos/Kitchen/issues/492)
+* **signals:** an alert's tier belongs to the pair (condition, audience) ([#507](https://github.com/Bermos/Kitchen/issues/507)) ([d9e116f](https://github.com/Bermos/Kitchen/commit/d9e116f537770708e854527b9854d0a54785ce9a))
+* **signals:** evaluate the catalogue in the background and record transitions ([#484](https://github.com/Bermos/Kitchen/issues/484)) ([4523690](https://github.com/Bermos/Kitchen/commit/4523690565bae18884d7bf11967ae73dbdc8dba4))
+* **ui:** split the project page into six screens ([#486](https://github.com/Bermos/Kitchen/issues/486)) ([651408f](https://github.com/Bermos/Kitchen/commit/651408f1b236bf6a47bb193567efd3a585e9f3ca))
+
+
+### Bug fixes
+
+* **build:** make a stock Nuxt application deploy on the default path ([#485](https://github.com/Bermos/Kitchen/issues/485)) ([2dd2679](https://github.com/Bermos/Kitchen/commit/2dd2679ca6d004d10dafc9cc7e5c61a7a1486d1f))
+* **build:** put Node in the image a stock Nuxt app is started from ([#508](https://github.com/Bermos/Kitchen/issues/508)) ([8ef61ad](https://github.com/Bermos/Kitchen/commit/8ef61ad2ae05f794820ba6e28d135e2cafb1d2cd)), closes [#468](https://github.com/Bermos/Kitchen/issues/468)
+* **environments:** give a promotion stage its own type and its own hostname ([#505](https://github.com/Bermos/Kitchen/issues/505)) ([8f8ed68](https://github.com/Bermos/Kitchen/commit/8f8ed68fbc439801dd6364eff6cc7f90d1adbf5c)), closes [#490](https://github.com/Bermos/Kitchen/issues/490)
+* **security:** the six low-severity findings from the follow-up review ([#506](https://github.com/Bermos/Kitchen/issues/506)) ([9a1c483](https://github.com/Bermos/Kitchen/commit/9a1c48361c44e8e9e0a3c2b926fcc94b3ac6204e))
+
+
+### Documentation
+
+* spike on services consumed across projects, and what it needs ([#488](https://github.com/Bermos/Kitchen/issues/488)) ([2fb709d](https://github.com/Bermos/Kitchen/commit/2fb709db62ba626d07f0e8f4cf732d8063f3efeb))
+
 ## [0.35.0](https://github.com/Bermos/Kitchen/compare/v0.34.1...v0.35.0) (2026-09-06)
 
 
