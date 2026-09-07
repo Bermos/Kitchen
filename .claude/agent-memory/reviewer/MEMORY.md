@@ -26,11 +26,15 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-07: A "what I could not check" list named the inputs behind rungs 2 and 3 and omitted the input the headline's own number is computed from, so an unreadable history turned "firing in 6 projects" into "firing in 3" with no note. Ask: is the input that produces the number in the headline on the list of reads the sentence admits it could not do?
 - 2026-09-07: Operator-facing prose interpolated a raw `time.Duration` (`1h0m0s`) with `%s` while the same package has a `duration()` humaniser every other rule uses. Ask: does new finding copy go through the package's own formatters?
 - 2026-09-07: A per-round store read was added with no time bound and no LIMIT — a full-table `GROUP BY` with twenty `argMax`es, now on a 60s timer — where every other per-round read in the same gatherer is windowed. Ask: is this new read bounded, and does its cost scale with the estate or with all of retention?
+- 2026-09-07: A fix moved a rule's headline number to a new input but left the old one (the database's own size, now only a decorative clause) in `Requires`, so a failure of the read the number no longer depends on darkens the rule into `SeverityUnknown`. Ask: is every entry in `Requires` an input the verdict depends on, or one the sentence merely mentions?
 
 - 2026-09-07: A new per-class refusal re-spelled the platform's one data-class refusal (`DataClassRefusal`) with its own `fmt.Sprintf`, sharing only the `Exceeds` comparison — two wordings of one rule that can now drift, on a criterion that asked for the existing engine. Ask: is the refusal *sentence* shared too, or only the comparison behind it?
 
 - 2026-09-07: A new claim state was given a UI tone of `info` ("nothing is wrong") while the condition it writes stays `Status: False` with an unclassified reason, which `conditionSeverityOf` defaults to `severityError` — so the badge is blue and the condition row red on one object. Ask: is the new reason in `internal/api/conditions.go`'s table, and does `TestEveryExportedReasonIsClassified` even see it (it only covers *exported* `Reason…` constants, and claim/environment reasons are string literals)?
 - 2026-09-07: A "waiting for another team" state was routed into an existing refusal condition whose reason word says something else (`ClaimsBound`/`NotAdmittedHere`, about the provider's *environment owners*), so a request nobody has answered reads as a refusal somebody made. Ask: when a new state reuses an old condition, does the old reason still describe it?
+
+- 2026-09-07: Moving a ConfigMap from a directory mount to per-key `subPath` mounts made a pre-existing weak `checksum/config` (hashed over the raw `.Values`, not the rendered ConfigMap, three lines from a sibling that hashes the rendered template) load-bearing: `tpl`-rendered content that changes because another value changed no longer rolls the pod, and a subPath file never updates in place, so the pod keeps the old file for its whole life. Ask: when a mount stops propagating updates, is the annotation that rolls the pod a hash of the *rendered* object?
+- 2026-09-07: A least-privilege split assigned credentials by what a phase is *called* rather than by the requests it makes: the CNB analyze phase, handed the output tag, does `POST /v2/<name>/blobs/uploads/` to fail fast, so the read-only credential broke every buildpacks build — only on installations that had supplied one. Ask: for each container in a split, which HTTP verbs does its tool actually issue against the target it is given?
 
 ## Chain links that were missed
 
@@ -47,7 +51,13 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-07: One screen gained a new explanatory row for a claim state without excluding it from the existing `phase === "Failed"` refusal row, so a denied claim was drawn twice, in two wordings, in one table — while the sibling screen carried a comment saying exactly this must not happen. Ask: does the new row's filter overlap any filter already rendering the same objects?
 - 2026-09-07: The one act a refused reader has ("ask again") was put on the Overview while the pane where claims are asked for and given up is on Settings, which shows the same refusal with no button. Ask: is the action on the screen where the object is managed, or only where it happens to be listed?
 
+- 2026-09-07: A chart fix whose *recovery* needs a manual `kubectl delete pod` (a StatefulSet with `OrderedReady` will not roll a pod that is not Running-and-Ready, so `helm upgrade --wait` on an already-broken install hangs) landed with no `### Upgrading to ...` section in `charts/kitchen/README.md`, where eight such sections already live. Ask: does the already-broken installation reach the fix by upgrading alone, and if not, is there a README upgrade section?
+- 2026-09-07: A credential-split test and its kind case both passed with one all-powerful account, because the narrower credential is opt-in by naming convention (`<secret>-read`) and `credentialsWithRead` silently falls back to `Read == Push` — so every assertion about "which container holds which" was vacuous. Ask: does the fixture create the narrowing artifact, and does the test assert the predicate (`scoped()`) before asserting anything that depends on it?
+
 ## Decisions that should have been surfaced
+
+- 2026-09-07: A derived input (`store_volume_usage`) made a Critical rule answer "cannot be evaluated" *forever* on any installation that set `collector.metrics.kubelet.enabled: false` — plus a permanent `status.signals.unreadable` line, the same shape as the audit-table one. Ask: which supported chart value makes this new input dark, and does the body name that configuration rather than the abstraction?
+- 2026-09-07: A documented response field (`store.usedFraction`) was removed rather than redefined — every `kitchen api` reader now gets `undefined` instead of a number — under a plain `fix` title with no `!` and no `BREAKING CHANGE:` footer. Ask: does the diff delete or retype a field a `docs/api/*.md` page publishes, and does the subject carry the break?
 
 - 2026-09-07: A stage environment stopped inheriting the project's criticality; a default that changes behaviour for existing installations must be in the PR body and the changelog.
 - 2026-09-07: Backup encryption on by default stopped uploads for installations without a key; carried as `!` with a `BREAKING CHANGE:` footer — that is the right shape, check for it.
@@ -61,6 +71,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-07: A route's role was justified in its own policy comment and docs by "nothing else about the consumer crosses" while the row it answers carries the requesting developer's email address. Ask: does the payload match the sentence that argues for the role, field by field?
 - 2026-09-07: Dropping a create-time refusal turned a claim into a cross-project *write*: any developer on any project can now put a row in another project's queue and an entry in its activity feed. That is the feature, but it is a new unsolicited cross-project surface and belongs in the blast radius. Ask: what can a stranger now write into somebody else's project?
+
+- 2026-09-07: A template comment rewritten to "correct" it dropped the half the old one got right (that the other mount order fails *silently*, not with a crash) while the commit body stated both. Ask: is the corrected comment as true as the commit message that explains it?
+- 2026-09-07: A fix that widens which containers hold the pushing credential (one more lifecycle phase) is a security-posture change even when it restores a broken path; the body must state the new principle, not only the bug. Ask: after this fix, how many containers hold the credential that can push, and does a comment elsewhere still claim there is one?
 
 ## Commit and title
 
