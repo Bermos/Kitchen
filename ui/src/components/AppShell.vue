@@ -5,6 +5,7 @@ import { api, type Condition } from "../lib/api";
 import { user, signOut } from "../lib/auth";
 import { loadConfig, platformVersion } from "../lib/config";
 import { callerFor, forgetMe, meError } from "../lib/me";
+import { forget, placeOf, projectScopeDestination, remember, switched } from "../lib/navigation";
 import { may } from "../lib/policy";
 import { completedBy, SCOPES, type Scope } from "../routes";
 import { unhealthyConditions, type Tone } from "../lib/status";
@@ -135,17 +136,60 @@ watch([activeProject, projects], ([name, listed]) => {
   void inventory.refresh();
 });
 
+/**
+ * Where the reader is, as the switcher and the memory both read it: a project
+ * and which of its six screens (`lib/navigation.ts`).
+ *
+ * It is recorded on every navigation that lands on one, and on no other — so
+ * leaving for the Platform scope keeps whatever the last project screen was
+ * rather than clearing it, which is the whole of what "come back to where I
+ * was" needs.
+ */
+const place = computed(() => placeOf(route));
+watch(place, remember, { immediate: true });
+
 const scopeLabel = computed(() => SCOPES.find((definition) => definition.id === scope.value)?.label ?? "Fleet");
 
 const scopes = computed(() =>
   SCOPES.filter((definition) => !definition.requires || may(definition.requires, callerFor())).map((definition) => ({
     ...definition,
-    // Picking Project with a project already open stays on it rather than
-    // asking again; picking it without one is the picker.
-    to: definition.id === "project" && activeProject.value ? `/projects/${activeProject.value}` : definition.root,
+    // Picking Project goes where you already are, or where you were last, or
+    // — with nothing to go on — to the picker. Memory decides this
+    // *destination*; it never decides what an address renders, which is the
+    // line `lib/navigation.ts` is drawn along and the reason `/projects`
+    // still asks rather than redirecting.
+    to:
+      definition.id === "project"
+        ? projectScopeDestination(place.value, projects.value.map((project) => project.name))
+        : definition.root,
     active: scope.value === definition.id,
   })),
 );
+
+/**
+ * The project switcher: every project this account can see, and what choosing
+ * one does.
+ *
+ * Choosing keeps the screen you are on — `shop/deploys` becomes
+ * `blog/deploys`, and a Settings pane comes with it — which is the half of
+ * this that the sidebar's old flat list could not do: it always landed on the
+ * project's Overview, so moving between two projects' Deploys meant going out
+ * and back down.
+ *
+ * It replaces that list in this scope rather than joining it. Three
+ * navigation controls in one rail is one too many, and the list's own "New
+ * project" button comes with it as the menu's last entry.
+ */
+const projectMenu = computed(() => [
+  projects.value.map((project) => ({
+    label: project.name,
+    // The health dot the flat list carried, kept: it is the one thing the
+    // list said that a name alone does not.
+    icon: projectTone(project.name) === "warning" ? "i-lucide-circle-alert" : "i-lucide-circle",
+    onSelect: () => void router.push(switched(place.value, project.name)),
+  })),
+  [{ label: "New project", icon: "i-lucide-plus", to: { name: "project-new" } }],
+]);
 
 /** The environments of the project in the address, for the Project scope's
  * own navigation: `/projects/:name/environments/:env` is otherwise reachable
@@ -369,8 +413,10 @@ const userMenu = computed(() => [
       onSelect: async () => {
         // Waiting lets the refresh token be revoked at the issuer before the
         // page goes away; a revocation that fails still leaves nothing behind
-        // in this browser.
+        // in this browser — the last project included, since the next person
+        // at this browser has no business being told which one it was.
         forgetMe();
+        forget();
         await signOut();
         window.location.assign("/login");
       },
@@ -414,6 +460,31 @@ const userMenu = computed(() => [
       <div class="px-4 pt-3 pb-1">
         <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">{{ scopeLabel }}</span>
       </div>
+
+      <!-- Which project, and the way to another one *without leaving the
+           screen you are on*. It sits above the scope's own navigation
+           because it is what that navigation is about: every item under it is
+           this project's.
+
+           In this scope it stands in for the flat project list at the foot of
+           the rail, which is why "New project" is the menu's last entry —
+           that button lived in the list's header. -->
+      <div v-if="scope === 'project'" class="px-2 pb-2">
+        <UDropdownMenu :items="projectMenu">
+          <UButton
+            color="neutral"
+            variant="ghost"
+            trailing-icon="i-lucide-chevrons-up-down"
+            class="w-full"
+            :aria-label="activeProject ? `Project: ${activeProject}. Switch project` : 'Choose a project'"
+          >
+            <span class="truncate" :class="activeProject ? 'font-mono text-highlighted' : 'text-muted'">
+              {{ activeProject ?? "Choose a project" }}
+            </span>
+          </UButton>
+        </UDropdownMenu>
+      </div>
+
       <nav class="px-2 pb-2 space-y-0.5">
         <RouterLink
           v-for="item in nav"
@@ -435,7 +506,7 @@ const userMenu = computed(() => [
         <div class="px-4 pt-4 pb-1">
           <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Environments</span>
         </div>
-        <nav class="px-2 space-y-0.5">
+        <nav class="px-2 space-y-0.5 overflow-y-auto flex-1 min-h-0">
           <RouterLink
             v-for="environment in projectEnvironments"
             :key="environment.name"
@@ -452,39 +523,53 @@ const userMenu = computed(() => [
         </nav>
       </template>
 
-      <!-- The projects, which are how the Project scope is entered. They are
-           in the sidebar in every scope: an operator reading the platform's
-           events still gets there from a project name. -->
-      <div class="px-4 pt-4 pb-1 flex items-center justify-between">
-        <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>
-        <UButton
-          :to="{ name: 'project-new' }"
-          icon="i-lucide-plus"
-          color="neutral"
-          variant="ghost"
-          size="xs"
-          aria-label="New project"
-          class="-mr-1.5"
-        />
-      </div>
-      <nav class="px-2 space-y-0.5 overflow-y-auto flex-1 min-h-0">
-        <RouterLink
-          v-for="project in projects"
-          :key="project.name"
-          :to="{ name: 'project', params: { name: project.name } }"
-          class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
-          :class="activeProject === project.name ? 'bg-elevated text-highlighted' : 'text-toned'"
-        >
-          <StatusDot :tone="projectTone(project.name)" />
-          <span class="truncate">{{ project.name }}</span>
-          <span v-if="previewCount(project.name)" class="ml-auto font-mono text-xs text-dimmed">
-            {{ previewCount(project.name) }}
-          </span>
-        </RouterLink>
-        <p v-if="inventory.data.value && !projects.length" class="px-2.5 py-1.5 text-xs text-dimmed">
-          No projects yet — the + above creates one.
-        </p>
-      </nav>
+      <!-- The projects, which are how the Project scope is entered from
+           outside it: an operator reading the platform's events still gets
+           there from a project name.
+
+           Inside that scope the switcher above replaces it. The two say the
+           same thing and only one of them can carry you to the screen you are
+           already on, and a rail with a scope switcher, a project switcher
+           *and* a project list is three navigation controls deep before any
+           of them is about the page. -->
+      <template v-if="scope !== 'project'">
+        <div class="px-4 pt-4 pb-1 flex items-center justify-between">
+          <span class="text-[11px] font-medium tracking-wider text-dimmed uppercase">Projects</span>
+          <UButton
+            :to="{ name: 'project-new' }"
+            icon="i-lucide-plus"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            aria-label="New project"
+            class="-mr-1.5"
+          />
+        </div>
+        <nav class="px-2 space-y-0.5 overflow-y-auto flex-1 min-h-0">
+          <RouterLink
+            v-for="project in projects"
+            :key="project.name"
+            :to="{ name: 'project', params: { name: project.name } }"
+            class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
+            :class="activeProject === project.name ? 'bg-elevated text-highlighted' : 'text-toned'"
+          >
+            <StatusDot :tone="projectTone(project.name)" />
+            <span class="truncate">{{ project.name }}</span>
+            <span v-if="previewCount(project.name)" class="ml-auto font-mono text-xs text-dimmed">
+              {{ previewCount(project.name) }}
+            </span>
+          </RouterLink>
+          <p v-if="inventory.data.value && !projects.length" class="px-2.5 py-1.5 text-xs text-dimmed">
+            No projects yet — the + above creates one.
+          </p>
+        </nav>
+      </template>
+
+      <!-- The rail's slack, so the status below stays at the foot of it. In
+           the other three scopes the project list is what grows; in this one
+           the environments are, and a scope with a switcher and no project
+           chosen yet has neither. -->
+      <div v-if="scope === 'project' && !activeProject" class="flex-1" />
 
       <div class="px-4 py-3 border-t border-default text-xs space-y-1.5">
         <div v-if="cluster" class="flex items-center gap-2" :title="cluster.title">
