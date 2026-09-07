@@ -99,17 +99,31 @@ func buildPlatformEnvName(jobName string) string { return jobName + "-platform" 
 // container of its own, and a container only holds the credential its phase
 // needs:
 //
-//   - analyze, restore and export talk to the registry. They are the
-//     lifecycle's own binaries out of the pinned builder image, and nothing
-//     from the repository runs in them.
 //   - detect and build run the *buildpacks*, which run the repository's own
 //     build — `npm install` and its lifecycle scripts, `pip install`,
 //     whatever the buildpack invokes. They mount no registry credential at
 //     all, so reading one out of `$DOCKER_CONFIG/config.json` from a
 //     `postinstall` script finds an empty directory.
-//   - only export pushes, so only export holds the credential that can. The
-//     two phases that merely read hold the read-only one where the registry
-//     issues one.
+//   - analyze, restore and export talk to the registry. They are the
+//     lifecycle's own binaries out of the pinned builder image, and nothing
+//     from the repository runs in them. Which credential each holds follows
+//     from what its phase does to the registry, not from which of them is
+//     the push.
+//   - restore only reads — the layers the cache image still has — so it
+//     holds the read-only credential where the registry issues one.
+//   - export and analyze both hold the one that can push. export pushes.
+//     analyze is handed the output tag, and the lifecycle verifies read
+//     *and* write access to it before anything else runs, deliberately, so
+//     that a build which cannot publish fails in seconds rather than after
+//     the whole build — so the read-only credential failed every buildpacks
+//     build in its first phase, on exactly the installations that had gone
+//     to the trouble of supplying one (#534).
+//
+// The principle the split is worth anything for is therefore not "only the
+// phase that pushes holds the credential that can" — analyze needs it too —
+// but *no phase that runs the repository's code holds any credential at
+// all*, which is untouched: detect and build are the two that run somebody
+// else's code, and they mount neither.
 //
 // `creator` is otherwise identical and was what this ran until the split: at
 // platform API 0.13 it resolves its inputs exactly as the phases do, run
@@ -190,10 +204,12 @@ func buildpacksPod(
 		}
 		return env
 	}
-	// The credential-holding phases mount one docker config each; the two
-	// that run the repository's code mount neither, and mount the platform
-	// directory instead — they are the two phases that run buildpacks, and
-	// the other three neither read it nor accept the flag naming it.
+	// The credential-holding phases mount one docker config each — two of
+	// them the pushing one, since analyze validates write access to the tag
+	// it is given; the two that run the repository's code mount neither, and
+	// mount the platform directory instead — they are the two phases that
+	// run buildpacks, and the other three neither read it nor accept the
+	// flag naming it.
 	readMounts := []corev1.VolumeMount{workspace, layers, readDockerConfigMount()}
 	pushMounts := []corev1.VolumeMount{workspace, layers, dockerConfigMount()}
 	buildpackMounts := []corev1.VolumeMount{workspace, layers, {
@@ -239,7 +255,12 @@ func buildpacksPod(
 				// What is already in the registry under this tag, and what
 				// the image will be built on. It writes analyzed.toml, which
 				// is where export reads the run image from.
-				phase("analyzer", readMounts, credentials.Read, layersArg, plan.Tag),
+				//
+				// It holds the credential that can push because it is given
+				// the output tag and validates write access to it (#534),
+				// which is the fail-fast the lifecycle offers and the whole
+				// reason the tag is passed here at all.
+				phase("analyzer", pushMounts, credentials.Push, layersArg, plan.Tag),
 				// Which buildpacks claim the repository. This is the first
 				// phase that runs somebody else's code.
 				phase("detector", buildpackMounts, "", appArg, layersArg, platformArg),

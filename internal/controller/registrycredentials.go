@@ -67,7 +67,8 @@ func readCredentialSecretName(credentialsSecret string) string {
 // status is where it is reported (see connection_controller.go).
 type registryCredentialsForPod struct {
 	// Push is the credential the platform's own containers use: the
-	// lifecycle's export phase, a gate's publisher.
+	// lifecycle's export phase, its analyze phase — which validates write
+	// access to the tag it is given (#534) — and a gate's publisher.
 	Push string
 	// Read is what everything else in the pod gets.
 	Read string
