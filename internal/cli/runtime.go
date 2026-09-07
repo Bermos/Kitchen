@@ -64,6 +64,12 @@ type Runtime struct {
 	noInput     bool
 	timeout     time.Duration
 
+	// platformVersion is the release the installation last answered as, off
+	// the header every API response carries. It is what warnIfBehind measures
+	// this binary against, and it is empty until something has actually
+	// talked to a platform.
+	platformVersion string
+
 	// Resolved once, on first use.
 	out       *printer
 	stored    *credentials
@@ -266,9 +272,24 @@ func (r *Runtime) client() (*client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := newClient(base, r)
+	return r.clientFor(base, r), nil
+}
+
+// clientFor is a client for one installation, wired to this Runtime: the
+// process's connection pool, so a command making several requests reuses one
+// connection, and the callback that records which release the platform
+// answered as.
+//
+// Every client in this package is built here rather than from newClient
+// directly, which is what makes "the CLI notices when it is behind" a property
+// of the CLI rather than of the paths somebody remembered — `login` talks to
+// an installation before there is a credential for it, and that is exactly a
+// moment worth being told.
+func (r *Runtime) clientFor(base string, auth authorizer) *client {
+	c := newClient(base, auth)
 	c.http = r.httpClient()
-	return c, nil
+	c.noticed = r.notePlatformVersion
+	return c
 }
 
 // bearer is the token every request carries, resolved in the order that puts
@@ -352,8 +373,7 @@ func (r *Runtime) issuerFor(ctx context.Context, base string, current *installat
 	if current != nil && current.Issuer != "" {
 		return current.Issuer, nil
 	}
-	probe := newClient(base, staticToken(""))
-	probe.http = r.httpClient()
+	probe := r.clientFor(base, staticToken(""))
 	config, err := probe.discover(ctx)
 	if err != nil {
 		return "", err

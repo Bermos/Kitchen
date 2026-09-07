@@ -437,6 +437,24 @@ such changes two changes to two different files.
 | `409` | Someone else changed the object first, it already exists, it already finished, or something still uses it |
 | `503` | A capability this endpoint needs is not installed, or a store it reads did not answer |
 
+## The platform's release, on every response
+
+**Every response under `/api/` carries `X-Kitchen-Version`**, the release the
+operator is running — a bare SemVer with no leading `v`, the same number the
+dashboard's sidebar shows and `/config.json` reports in its body. It goes out
+on answers, on refusals and on 404s alike, since a client too old to
+authenticate is one that most wants telling.
+
+It exists so a client can find out it is behind the installation without asking:
+one tag versions the chart, both images and the CLI, so the two numbers are
+directly comparable, and the header arrives on the back of a call the client was
+making anyway. That is the whole of `kitchen`'s "this binary is older than the
+installation" warning — see [CLI.md](CLI.md#keeping-the-cli-in-step).
+
+A client that does not recognise the header ignores it, and a platform from
+before it existed sends none; neither is an error, and nothing on either side
+may require it.
+
 ## Decisions
 
 | Decision | Choice | Why |
@@ -465,6 +483,7 @@ such changes two changes to two different files.
 | OTLP ingest | The node collector's own unauthenticated in-cluster port, never on the Gateway | Spans come from workloads already inside the cluster; an OTLP endpoint on the public Gateway would be an unauthenticated write surface on the telemetry store |
 | Saved queries | A `SavedQuery` object with no reconciler | The rule that a write waits for its reconciler is about objects that do nothing until something acts on them; a saved query has its whole effect by existing |
 | Webhook receiver | Stays signature-authenticated, not OIDC | A provider proving a payload is genuine is a different question from a caller proving who they are |
+| Telling a client it is out of date | A header on every response, never a route | The comparison is worth making on every request and worth no request of its own; a `GET /version` would be one more call before the real one, and a client that skipped it would learn nothing. The header rides on the answer that was already coming, including the refusal — and a client that ignores it loses nothing |
 | The CLI | A client of this API in the same repository, with no surface of its own | Everything `kitchen` does is a route the dashboard uses too; it ships here so one tag versions it with the chart and both images, and so its tests can check the endpoints it names against the enforcement table |
 
 ## Open

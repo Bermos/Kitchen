@@ -80,6 +80,13 @@ type client struct {
 	base string
 	http *http.Client
 	auth authorizer
+	// noticed is told which release the platform answered as, off the
+	// version.Header every API response carries. It is a callback rather than
+	// a field the caller reads afterwards because a command makes several
+	// requests and the Runtime wants the answer from whichever of them
+	// happened, including the ones that failed. Nil is a client nobody is
+	// watching, which is every one a test builds by hand.
+	noticed func(string)
 }
 
 func newClient(base string, auth authorizer) *client {
@@ -90,6 +97,24 @@ func newClient(base string, auth authorizer) *client {
 		// request carries a context instead, which is what --timeout sets.
 		http: &http.Client{},
 		auth: auth,
+	}
+}
+
+// notice reports the platform's own release to whoever is watching. Every
+// response the API writes carries it (internal/api, versioned), so the CLI
+// learns what it is talking to from the call it was making anyway rather than
+// from a request of its own — including from a refusal, since a 401 carries
+// the header too.
+//
+// A platform too old to send it says nothing, which is the right answer: the
+// comparison cannot be made and inventing one would warn about the wrong
+// thing.
+func (c *client) notice(header http.Header) {
+	if c.noticed == nil {
+		return
+	}
+	if reported := strings.TrimSpace(header.Get(version.Header)); reported != "" {
+		c.noticed(reported)
 	}
 }
 
@@ -144,6 +169,7 @@ func (c *client) do(ctx context.Context, doing, method, path string, query url.V
 		return unreachable(err, c.base).doing(doing)
 	}
 	defer func() { _ = res.Body.Close() }()
+	c.notice(res.Header)
 
 	answer, err := io.ReadAll(io.LimitReader(res.Body, 32<<20))
 	if err != nil {
@@ -205,6 +231,7 @@ func (c *client) downloadWithHeaders(
 		return "", 0, nil, unreachable(err, c.base).doing(doing)
 	}
 	defer func() { _ = res.Body.Close() }()
+	c.notice(res.Header)
 
 	if res.StatusCode >= 400 {
 		answer, readErr := io.ReadAll(io.LimitReader(res.Body, 1<<20))
@@ -283,6 +310,7 @@ func (c *client) raw(
 		return 0, nil, unreachable(err, c.base)
 	}
 	defer func() { _ = res.Body.Close() }()
+	c.notice(res.Header)
 
 	answer, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
 	if err != nil {
@@ -311,6 +339,7 @@ func (c *client) stream(ctx context.Context, doing, path string, query url.Value
 		return unreachable(err, c.base).doing(doing)
 	}
 	defer func() { _ = res.Body.Close() }()
+	c.notice(res.Header)
 
 	if res.StatusCode >= 400 {
 		answer, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
@@ -416,6 +445,12 @@ func (c *client) discover(ctx context.Context) (*platformConfig, error) {
 		return nil, failf(codeFailed, "%s%s did not answer the platform's configuration: %v",
 			c.base, configPath, err).
 			withHint("check --api: it wants the platform's own URL, the one the dashboard is served on")
+	}
+	// This one document is the dashboard's handler rather than the API's, so
+	// it carries the release in its body instead of in version.Header — the
+	// same number, said the way this endpoint has always said it.
+	if c.noticed != nil && strings.TrimSpace(config.Version) != "" {
+		c.noticed(strings.TrimSpace(config.Version))
 	}
 	return config, nil
 }

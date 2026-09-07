@@ -57,6 +57,11 @@ dashboard's sidebar are directly comparable, and a client older than the
 installation it talks to is how a command for a route that does not exist yet
 comes to fail.
 
+You are not left to spot that yourself: every command that talks to a platform
+reads the release off the response it was already getting, and says on stderr
+when this binary is behind it. Set KITCHEN_NO_VERSION_CHECK to stop being
+told.
+
 A binary installed with "go install" reports the module version the toolchain
 recorded in it; one built by the Makefile reports what the linker stamped; a
 plain "go build" in a working directory has neither and says "dev".`),

@@ -106,16 +106,24 @@ func Execute(ctx context.Context, r *Runtime, args []string) int {
 	}
 
 	err := root.ExecuteContext(ctx)
-	if err == nil {
-		return exitOK
-	}
 
 	// A command line cobra could not even parse never reached the code that
 	// reads --json off the flag set, and a caller who asked for JSON must get
 	// JSON for the refusal too — a machine driving this CLI meets an unknown
 	// flag more often than it meets anything else.
-	if !r.jsonOut && (wantsJSON(args) || truthy(r.env("KITCHEN_JSON"))) {
+	if err != nil && !r.jsonOut && (wantsJSON(args) || truthy(r.env("KITCHEN_JSON"))) {
 		r.jsonOut, r.out = true, nil
+	}
+
+	// Whether it worked or not: if this binary is older than the installation
+	// it just talked to, say so before the answer is read. A failing command
+	// is the more useful of the two moments — a route that is not there yet is
+	// what being behind feels like from here — so this sits ahead of the
+	// refusal rather than only on the way out of a success.
+	r.warnIfBehind()
+
+	if err == nil {
+		return exitOK
 	}
 
 	// Every command in this package answers with a *failure. Anything else got
