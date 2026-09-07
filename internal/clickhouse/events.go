@@ -58,6 +58,12 @@ const (
 	EventDomainAttached = "domain.attached"
 	EventDomainRemoved  = "domain.removed"
 
+	// An environment declared before anything deployed into it (#491). It is
+	// in the feed because an environment appearing with no deploy behind it
+	// is otherwise unaccountable: every other environment in the list got
+	// there by somebody's build.
+	EventEnvironmentDeclared = "environment.declared"
+
 	// One run of a scheduled process. Both outcomes are in the feed rather
 	// than only the failure, because "it ran at 03:00 and took nine seconds"
 	// is the entry that makes the absence of an entry mean something.

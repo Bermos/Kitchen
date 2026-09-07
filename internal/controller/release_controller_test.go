@@ -72,7 +72,7 @@ var _ = Describe("Release Controller", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       envType,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 			},
 		}
 		if envType == kitchenv1alpha1.EnvironmentPreview {
@@ -172,7 +172,7 @@ var _ = Describe("Release Controller", func() {
 
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: PlatformNamespace}, env)).To(Succeed())
-			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: name(2)}
+			env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: name(2)}
 			Expect(k8sClient.Update(ctx, env)).To(Succeed())
 
 			// Which is why an environment change requeues every release of

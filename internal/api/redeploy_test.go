@@ -139,7 +139,7 @@ func TestRedeployingTheSameSettingsTwiceIsOneRelease(t *testing.T) {
 	if err := h.server.get(ctx, testEnvironment, env); err != nil {
 		t.Fatal(err)
 	}
-	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: testRelease}
+	env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: testRelease}
 	if err := h.server.Client.Update(ctx, env); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestRedeployRefusesWhenThereIsNothingToRedeploy(t *testing.T) {
 		if err := h.server.get(ctx, testEnvironment, env); err != nil {
 			t.Fatal(err)
 		}
-		env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{}
+		env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{}
 		if err := h.server.Client.Update(ctx, env); err != nil {
 			t.Fatal(err)
 		}

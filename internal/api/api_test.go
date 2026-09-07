@@ -278,7 +278,7 @@ func fixtures() []runtime.Object {
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Type:       kitchenv1alpha1.EnvironmentProduction,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: testRelease},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: testRelease},
 		},
 		Status: kitchenv1alpha1.EnvironmentStatus{
 			Phase: kitchenv1alpha1.EnvironmentLive,

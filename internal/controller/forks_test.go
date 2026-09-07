@@ -339,7 +339,7 @@ var _ = Describe("A pull request from a fork", func() {
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 5, Branch: "feature"},
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "old-rel"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "old-rel"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, existing)).To(Succeed())

@@ -21,6 +21,7 @@ import {
   artifactFor,
   artifactNames,
   autoRollbackFor,
+  awaitingFirstDeployment,
   claimPlan,
   claimUsedBy,
   deployEntries,
@@ -30,6 +31,7 @@ import {
   hasRoute,
   host,
   noRouteReason,
+  NOTHING_DEPLOYED,
   processRows,
   settingsSection,
   SETTINGS_SECTIONS,
@@ -334,5 +336,24 @@ describe("what a project's exposure says", () => {
     const note = exposureNote("public");
     expect(note).toContain("published");
     expect(note).toContain("internal");
+  });
+});
+
+describe("an environment nothing has deployed into", () => {
+  it("is one with no release and nothing observed", () => {
+    expect(awaitingFirstDeployment(environment({ release: "" }))).toBe(true);
+    expect(awaitingFirstDeployment(environment())).toBe(false);
+  });
+
+  // The half that is easy to get wrong: the spec's release moves first and
+  // the observed one catches up, so an environment mid-first-deploy has one
+  // and not the other — and it is not empty, it is deploying.
+  it("is not one that is deploying its first release, either way round", () => {
+    expect(awaitingFirstDeployment(environment({ release: "shop-rel-1", observedRelease: "" }))).toBe(false);
+    expect(awaitingFirstDeployment(environment({ release: "", observedRelease: "shop-rel-1" }))).toBe(false);
+  });
+
+  it("says what it is rather than showing a dash", () => {
+    expect(NOTHING_DEPLOYED).toContain("nothing deployed");
   });
 });

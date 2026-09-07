@@ -9,10 +9,12 @@ authorization model and the full route table these sections belong to.
 
 Every environment carries its project's `exposure` — `public` or `internal`,
 never absent — beside its `url`, because that is the pair a reader has to
-interpret together: an environment with no `url` is either one of an
+interpret together: an environment with no `url` is one of an
 [internal project](projects.md#an-internal-project), which is published
-nowhere on purpose, or one still waiting on a route, and only the second is a
-fault.
+nowhere on purpose; one that
+[nothing has deployed into yet](#declaring-one-before-anything-deploys-into-it),
+which has nothing to publish; or one still waiting on a route, which is the
+only one of the three that is a fault.
 
 ## What an environment is, and where it answers
 
@@ -49,6 +51,68 @@ finds its stage environments re-typed on the operator's next pass and moved to
 their own hostnames; production's address is unchanged. On an internal project
 the re-typing happens just the same and changes no address, because there was
 none.
+
+## Declaring one before anything deploys into it
+
+An environment used to be created by exactly one thing: the first build for
+its target. That made the bar its owners set a thing that could only ever be
+raised *after* a release had already landed there — the one moment a
+requirement matters most was the one moment it could not be expressed.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop-staging",
+       "owners": ["risk-officer@example.com"],
+       "requirements": {"bundleDigest": "sha256:4f6c…"},
+       "dataClass": "confidential", "criticality": "critical", "rto": "15m"}' \
+  https://kitchen.apps.example.com/api/v1/projects/shop/environments
+```
+
+`201` with the environment, which runs nothing: `release` is empty, the phase
+is `Pending`, and its `Ready` condition is `False` with reason
+`AwaitingDeployment` — information rather than a fault, and what the dashboard
+draws as *nothing deployed yet*. **Nothing about the lazy path changes.** An
+environment nobody declared is still created by the first build for its
+target; a declared one is simply already there when that build arrives, with
+its bar already in force.
+
+**Only `name` is required, and the type is derived rather than taken.** Which
+environment is `production` is the last rung of the project's
+`promotion.stages` — every other durable environment of the project is a
+`stage` — and the operator re-derives that on every pass, so a `type` in the
+body is *checked* against the pipeline and refused when it disagrees, naming
+what the pipeline makes of the name. `preview` is refused outright: a preview
+is created from a pull request and deleted with it. The name must work as a
+DNS label and is refused where the address it would publish at is one the
+platform already serves, or has the shape of another project's preview — the
+same two collisions a project's own name is refused for.
+
+**The body is two halves, and they are guarded differently:**
+
+- `name` and `type` say which environment this is, and are the deploying
+  team's: `developer`, the same role that deletes one.
+- `owners`, `requirements`, `dataClass`, `residency`, `criticality`, `rto` and
+  `rpo` are the environment owners' declaration, and are admitted from
+  **platform operators alone**. This is the requirements endpoint's rule met
+  one step earlier: an environment that does not exist yet names no owners, so
+  there is nobody else it could be. A developer sending any of them is
+  answered `403` naming the way forward — create it with a name, and have an
+  operator declare the rest (or name them an owner, after which
+  [the requirements endpoint](#the-bar-an-environment-sets) is theirs).
+
+A declared environment **inherits its project's data class** the way one the
+platform creates does, unless the caller rates it otherwise, so a classified
+project's own environments can hold its data by construction. A name already
+taken — by any project, since environments share one namespace — is a `409`.
+
+**What the first build then does is the promotion path, unchanged.** An
+environment declaring no requirements takes the release the way it always has:
+the build controller points `spec.releaseRef` at it and keeps every
+declaration on the object. An environment that declares requirements is never
+written to by a build at all — a `Promotion` is created and the promotion
+reconciler applies it if and only if the policy allows. That is the whole
+value of declaring one: the first release into it is judged, where before this
+the first release could only ever arrive unjudged.
 
 ## Rolling back
 
@@ -404,13 +468,28 @@ nothing for evidence something else attached), and whether it verified against
 the platform's signing key. A registry that cannot be asked degrades to the
 build's own evidence index, listed unverified, with the message saying so.
 
-## Deleting a stuck preview
+## Deleting an environment
 
-`DELETE /environments/{name}` tears a preview down — its Deployment, Service
-and route go with it, and a new build for the pull request recreates it.
-Previews only: a `production` environment and a `stage` alike are the project,
-torn down with it and never on their own, so asking is a `400` naming which of
-the two it is. Answers `202` while the finalizer works.
+`DELETE /environments/{name}` tears an environment down — its Deployment,
+Service and route go with it — and answers `202` while the finalizer works.
+Two environments may be deleted on their own, for the same reason:
+
+- **A preview.** A new build for the pull request recreates it, which is what
+  makes deleting a stuck one a repair rather than a loss.
+- **A declared environment nothing has ever deployed into** (#491). It holds
+  its own declarations and no running software, so removing it removes a
+  declaration; the next build for that target recreates it lazily, with no bar.
+
+Anything else is refused `400`, naming the release it is running: a
+`production` environment and a `stage` alike are the project, torn down with
+it and never on their own.
+
+**Deleting an environment that declares a bar asks what changing that bar
+asks.** Removing the environment is the other way to remove its requirements —
+the next build would recreate it declaring none — so where it names owners, or
+pins a bundle, or is rated above the class it inherited from its project, the
+caller must be one of those owners or a platform operator. The refusal names
+who may, in the same words the requirements endpoint refuses in.
 
 ## When a workload will not start
 

@@ -373,7 +373,7 @@ var _ = Describe("Deploy status on the commit", func() {
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 					Type:       kitchenv1alpha1.EnvironmentPreview,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 					Preview: &kitchenv1alpha1.PreviewInfo{
 						PullRequest: 7, Branch: "feature/checkout",
 					},

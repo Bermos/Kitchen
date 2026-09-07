@@ -104,7 +104,7 @@ var _ = Describe("A unit of several workloads", func() {
 		spec := kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 			Type:       envType,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 		}
 		if envType == kitchenv1alpha1.EnvironmentPreview {
 			spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 7, Branch: "feat/api"}
@@ -129,7 +129,7 @@ var _ = Describe("A unit of several workloads", func() {
 		key := types.NamespacedName{Name: name, Namespace: namespace}
 		env := &kitchenv1alpha1.Environment{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, key, env)).To(Succeed())
-		env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
+		env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: releaseName}
 		ExpectWithOffset(1, k8sClient.Update(ctx, env)).To(Succeed())
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())

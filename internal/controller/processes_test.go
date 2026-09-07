@@ -109,7 +109,7 @@ var _ = Describe("Workers and scheduled jobs", func() {
 		spec := kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 			Type:       envType,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 		}
 		if envType == kitchenv1alpha1.EnvironmentPreview {
 			spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 3, Branch: "feat/queue"}

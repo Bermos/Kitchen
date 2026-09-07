@@ -205,6 +205,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/projects/{name}/acquisitions` | Take a new digest of the image a project runs — "check now", or `{"digest": "sha256:…"}` for one exactly. `202`, and the Build that carries it. Refused on a project built from a repository, which is moved by a commit | `admin` |
 | GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
 | GET | `/projects/{name}/environments` | That project's environments | `viewer` |
+| POST | `/projects/{name}/environments` | Declare one before anything deploys into it, with its bar already set. The type is derived from the project's promotion pipeline; the owners, requirements, `dataClass`, `residency`, `criticality`, `rto` and `rpo` in the body are the owners' declaration and an environment that does not exist yet has none, so those are the operator's | `developer` to reach; the handler admits the declaration fields from operators alone |
 | GET | `/projects/{name}/audit-pack` | One project's whole compliance answer for one half-open window, signed and byte-reproducible: inventory, change log with author and approver, promotions and their decisions with reproduction inputs, the evidence index per artifact, exceptions, recertification cycles, drift, the audit log's slice and every signed statement carried whole. `?from=` and `?to=` are required; `?format=` is `json`, `dsse` or `html` | `operator` |
 | GET | `/projects/{name}/members` | Who holds a role on it — the readable form of `spec.access` | `viewer` |
 | POST | `/projects/{name}/members` | Give somebody a role. The address is resolved to a `sub` before it is written | `admin` |
@@ -234,7 +235,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/environments` | Every environment. `?project=` filters | any account — filtered |
 | GET | `/environments/{name}` | One environment | `viewer` |
 | PATCH | `/environments/{name}` | Move it to another release — promotion and rollback. An environment with requirements answers `202` with the Promotion the move became | `developer` |
-| DELETE | `/environments/{name}` | Tear down a stuck preview. Previews only | `developer` |
+| DELETE | `/environments/{name}` | Tear down a stuck preview, or a declared environment nothing has ever deployed into. An environment running a release is torn down with its project, never on its own | `developer`; the handler asks the environment's owners or an operator where it declares a bar |
 | POST | `/environments/{name}/redeploy` | Deploy the commit it is already on again, with the project's settings as they stand now. Answers `202` with the Release it made — or with the Promotion it became, where the environment declares requirements | `developer` |
 | GET | `/environments/{name}/logs` | That environment's runtime logs | `viewer` |
 | GET | `/environments/{name}/workload` | What it is running: replicas, restarts, uptime, resources, pods | `viewer` |

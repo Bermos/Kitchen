@@ -330,7 +330,10 @@ the platform built.
 
 Each one carries what it is (TYPE: production, stage or preview), the release
 it is meant to be on, the release it is observed to be on, its phase and its
-URL — and each type answers at its own hostname.`),
+URL — and each type answers at its own hostname.
+
+An environment declared with "kitchen environments create" and never deployed
+into says so where its release would be.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			client, err := r.client()
@@ -354,11 +357,86 @@ URL — and each type answers at its own hostname.`),
 			})
 		}),
 	}
+	// The one write that hangs off this listing, for the same reason
+	// `kitchen projects create` hangs off that one: it is the same noun, and
+	// this is where somebody looks for it.
+	cmd.AddCommand(newEnvironmentCreateCommand(r))
 	return describe(cmd, meta{
 		Calls:    []string{"GET /api/v1/projects/{name}/environments"},
 		Output:   output{Mode: outputDocument, Kind: "environmentList"},
 		Needs:    needs{Auth: true, Project: true},
 		Examples: []example{{"Where everything is running", "kitchen environments --json"}},
+	})
+}
+
+// newEnvironmentCreateCommand declares an environment of the linked project
+// before anything has deployed into it (#491).
+//
+// It takes a name and nothing else, which is the whole of what this command
+// can honestly offer. The type is derived from the project's promotion
+// pipeline — sending one that disagrees is a refusal, not a correction — and
+// the owners, the policy bundle, the classification and the tolerances are the
+// environment owners' declaration, which an environment that does not exist
+// yet has nobody for: at creation they are a platform operator's alone. An
+// operator setting them in one call reaches for `kitchen api`, and everybody
+// sets them afterwards through the requirements endpoint, which is where
+// changing them lives anyway.
+func newEnvironmentCreateCommand(r *Runtime) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create <name>",
+		Short: "Declare an environment before anything deploys into it",
+		Long: strings.TrimSpace(`
+Create an environment of the linked project that nothing has deployed into
+yet.
+
+An environment is otherwise created by the first build for it, which means the
+bar its owners set could only ever be raised after a release had already
+landed there. Declaring it first is the other order: the environment, then
+what it demands, then the first release — judged against it.
+
+The name becomes the address the environment answers at, so it is a DNS label
+and unique across the platform. Which rung it is — production, or a stage on
+the way to it — follows the project's promotion pipeline and is not asked for
+here.
+
+Nothing is deployed by this. The environment reports that it is waiting for
+its first release until a build for it lands.
+
+What it demands is set afterwards, and by a platform operator:
+
+    kitchen api PATCH /environments/<name>/requirements \
+      --data '{"owners": ["risk@example.com"], "bundleDigest": "sha256:..."}'`),
+		Args: cobra.ExactArgs(1),
+		RunE: run(func(cmd *cobra.Command, args []string) error {
+			client, err := r.client()
+			if err != nil {
+				return err
+			}
+			project, err := r.projectName()
+			if err != nil {
+				return err
+			}
+			ctx, cancel := r.context(commandContext(cmd))
+			defer cancel()
+
+			declared, err := client.declareEnvironment(ctx, project, args[0])
+			if err != nil {
+				return err
+			}
+			return r.printer().document(declared, func(s tui.Styles) string {
+				return s.Accent.Render(declared.Name) + " declared as a " + declared.Type +
+					" environment of " + project + ". Nothing is deployed into it yet.\n"
+			})
+		}),
+	}
+
+	return describe(cmd, meta{
+		Calls:  []string{"POST /api/v1/projects/{name}/environments"},
+		Output: output{Mode: outputDocument, Kind: "environment"},
+		Needs:  needs{Auth: true, Project: true},
+		Examples: []example{
+			{"Declare a staging environment", "kitchen environments create shop-staging --json"},
+		},
 	})
 }
 
@@ -473,13 +551,27 @@ func environmentAddress(s tui.Styles, e environment) string {
 	return s.Accent.Render(e.URL)
 }
 
+// environmentRelease is what an environment is running, or what it is
+// waiting for. An environment declared before anything deployed into it
+// (#491) has no release and an empty cell would read as a fact the CLI failed
+// to fetch rather than as the state it is — the same reason the URL column
+// says `internal` instead of nothing.
+func environmentRelease(s tui.Styles, e environment) string {
+	if e.Release == "" && e.ObservedRelease == "" {
+		return s.Subtle.Render("nothing deployed yet")
+	}
+	return e.Release
+}
+
 func renderEnvironments(s tui.Styles, environments []environment) string {
 	if len(environments) == 0 {
 		return "No environments yet.\n"
 	}
 	rows := make([][]string, 0, len(environments))
 	for _, e := range environments {
-		rows = append(rows, []string{e.Name, e.Type, s.Phase(e.Phase), e.Release, environmentAddress(s, e)})
+		rows = append(rows, []string{
+			e.Name, e.Type, s.Phase(e.Phase), environmentRelease(s, e), environmentAddress(s, e),
+		})
 	}
 	return s.Table([]string{"NAME", "TYPE", "PHASE", "RELEASE", "URL"}, rows)
 }

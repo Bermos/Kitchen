@@ -143,7 +143,7 @@ var _ = Describe("The preview ceiling", func() {
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: number, Branch: "feature"},
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "rel"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "rel"},
 			},
 		}
 	}
@@ -243,7 +243,7 @@ var _ = Describe("The preview ceiling", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentProduction,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "rel"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "rel"},
 			},
 		})).To(Succeed())
 		Expect(k8sClient.Create(ctx, &kitchenv1alpha1.Environment{
@@ -251,7 +251,7 @@ var _ = Describe("The preview ceiling", func() {
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentProduction,
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: "rel"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: "rel"},
 			},
 		})).To(Succeed())
 		Expect(k8sClient.Create(ctx, previewNumbered(41))).To(Succeed())

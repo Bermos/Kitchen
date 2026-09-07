@@ -105,7 +105,7 @@ var _ = Describe("A deploy-time task", func() {
 		spec := kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 			Type:       envType,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 		}
 		if envType == kitchenv1alpha1.EnvironmentPreview {
 			spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 3, Branch: "feat/schema"}
@@ -123,7 +123,7 @@ var _ = Describe("A deploy-time task", func() {
 		env := &kitchenv1alpha1.Environment{}
 		key := types.NamespacedName{Name: name, Namespace: namespace}
 		ExpectWithOffset(1, k8sClient.Get(ctx, key, env)).To(Succeed())
-		env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
+		env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: releaseName}
 		ExpectWithOffset(1, k8sClient.Update(ctx, env)).To(Succeed())
 		reconcileOnce(name)
 	}

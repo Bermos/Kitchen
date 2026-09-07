@@ -1839,7 +1839,8 @@ spec:
   projectRef: { name: my-shop }
   type: preview                         # production | stage | preview — derived from the project's
                                         # promotion pipeline; it decides the generated hostname
-  releaseRef: { name: my-shop-rel-000042 }   # rollback = edit this line
+  releaseRef: { name: my-shop-rel-000042 }   # rollback = edit this line. Absent on an environment
+                                        # declared through the API before anything deployed into it
   preview:
     pullRequest: 42
     branch: feat/checkout
@@ -1932,6 +1933,17 @@ status:
                                         # declares one), PreviewProtected (previews only),
                                         # ScaleToZero (where the platform idles anything)
 ```
+
+**An Environment can exist before anything has deployed into it.** `releaseRef` is the
+one reference on the platform that may be empty, because `POST
+/projects/{name}/environments` declares an environment — its owners, its requirements,
+its class and its tolerances — ahead of its first release, which is the only moment a
+bar can be set *before* the artifact it judges arrives. Such an environment
+materializes nothing and reports `Ready=False` with reason `AwaitingDeployment`, which
+the API classifies as information rather than as a fault; the first build for that
+target adopts it, keeping every declaration on it, and goes through the promotion path
+its bar exists for. Every environment the platform creates for itself still names a
+release from the moment it exists.
 
 `history` answers what `releaseRef` alone cannot: **how** the environment moved off each
 release. `promoted` — a fresh build's release was auto-promoted over it; `rolledBack` —

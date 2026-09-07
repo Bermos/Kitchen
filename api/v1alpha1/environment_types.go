@@ -91,6 +91,23 @@ type EnvironmentRequirements struct {
 	Parameters map[string]string `json:"parameters,omitempty"`
 }
 
+// ReleaseReference names the Release an Environment runs.
+//
+// It is LocalObjectReference's shape with one deliberate difference: the name
+// may be empty. An Environment declared through the API before anything
+// deployed into it has no release to name, and a reference type whose name is
+// required cannot say so — every write of it would be refused at admission
+// for a field the object legitimately does not have yet.
+//
+// Every reader asks it the same question it always did, `spec.releaseRef.name`,
+// and the places that can meet an environment running nothing already compare
+// that name against the empty string.
+type ReleaseReference struct {
+	// Name is the Release, empty on an environment nothing has deployed into.
+	// +optional
+	Name string `json:"name,omitempty"`
+}
+
 // EnvironmentSpec defines a running instance of a Release with a URL.
 // Rollback is changing ReleaseRef to an older Release.
 type EnvironmentSpec struct {
@@ -99,7 +116,19 @@ type EnvironmentSpec struct {
 	// +kubebuilder:default=production
 	Type EnvironmentType `json:"type,omitempty"`
 
-	ReleaseRef LocalObjectReference `json:"releaseRef"`
+	// ReleaseRef names the Release this environment runs, and it is the one
+	// reference on the platform that may be empty: an Environment can now be
+	// declared before anything has deployed into it (#491), and a declared
+	// one has no release until its first build promotes one here. That is
+	// why it is a ReleaseReference rather than the LocalObjectReference
+	// every other reference is — a name that must be there is exactly what
+	// LocalObjectReference means, and this one need not be.
+	//
+	// Empty is therefore a state and not a fault: the environment reports
+	// AwaitingDeployment and materializes nothing, which is the read the
+	// dashboard's "nothing deployed yet" comes from.
+	// +optional
+	ReleaseRef ReleaseReference `json:"releaseRef,omitempty"`
 
 	// Required when Type is preview.
 	// +optional

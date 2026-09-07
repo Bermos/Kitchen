@@ -12,6 +12,7 @@ import { exactTime, shortImage, shortSHA, timeAgo, uptime } from "../lib/format"
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
+import { awaitingFirstDeployment } from "../lib/project";
 import { blockedPromotionFor } from "../lib/promotions";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ConditionsTable from "../components/ConditionsTable.vue";
@@ -108,6 +109,11 @@ const mayDeploy = computed(() => may("PATCH /api/v1/environments/{name}", caller
 const mayDeleteEnvironment = computed(() => may("DELETE /api/v1/environments/{name}", caller.value));
 const mayRedeploy = computed(() => may("POST /api/v1/environments/{name}/redeploy", caller.value));
 const moving = computed(() => environment.value?.phase === "Deploying" || environment.value?.phase === "Pending");
+// Declared, and never deployed into (#491). Everything on this screen that
+// asks about a running release has nothing to ask about, and the honest
+// reading of that is a state rather than a page of dashes: what it demands is
+// already in force, and the first build for it lands here.
+const awaiting = computed(() => (environment.value ? awaitingFirstDeployment(environment.value) : false));
 // How old this screen is, and the reader's hold on it: every fetch above
 // reports into it and the header renders it.
 const freshness = useFreshness();
@@ -199,11 +205,18 @@ async function deleteEnvironment() {
   deleting.value = true;
   try {
     await api.deleteEnvironment(env.name);
-    toast.add({ title: `Preview ${env.name} is being torn down`, color: "success", icon: "i-lucide-trash-2" });
+    toast.add({
+      title:
+        env.type === "preview"
+          ? `Preview ${env.name} is being torn down`
+          : `Environment ${env.name} is being removed`,
+      color: "success",
+      icon: "i-lucide-trash-2",
+    });
     void router.push({ name: "project", params: { name: env.project } });
   } catch (err) {
     toast.add({
-      title: "Deleting the preview failed",
+      title: `Deleting ${env.name} failed`,
       description: err instanceof Error ? err.message : String(err),
       color: "error",
     });
@@ -278,6 +291,19 @@ function historyBy(entry: { reason: string; by?: string }): string {
   <div class="space-y-6">
     <UAlert v-if="error" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="error" />
     <template v-else-if="environment">
+      <!-- An environment declared before anything deployed into it. It is not
+           a fault and is not drawn as one — the API says the same thing on the
+           object, as Ready=False with reason AwaitingDeployment classified as
+           information — and it is at the top because it explains every empty
+           panel below it at once. -->
+      <UAlert
+        v-if="awaiting"
+        color="neutral"
+        variant="subtle"
+        icon="i-lucide-hourglass"
+        title="Nothing deployed here yet"
+        description="This environment was declared before anything was deployed into it. What it demands is already in force: the first release to arrive is judged against it, and a build that lands here is what fills in everything below."
+      />
       <!-- The newest promotion into this environment stands blocked: the
            release somebody expects here is not here, and these rules are
            why. -->
@@ -361,15 +387,19 @@ function historyBy(entry: { reason: string; by?: string }): string {
           <span>created {{ timeAgo(environment.createdAt) }}</span>
         </template>
         <template #actions>
+          <!-- Deleting one is defined by what is running in it: a preview,
+               which a build recreates, and a declared environment nothing has
+               deployed into, which holds a declaration and no software.
+               Anything else is the project, and goes with it. -->
           <UButton
-            v-if="mayDeleteEnvironment && environment.type === 'preview'"
+            v-if="mayDeleteEnvironment && (environment.type === 'preview' || awaiting)"
             color="neutral"
             variant="subtle"
             size="sm"
             icon="i-lucide-trash-2"
             @click="confirmingDelete = true"
           >
-            Delete preview
+            {{ environment.type === "preview" ? "Delete preview" : "Delete environment" }}
           </UButton>
           <UButton
             v-if="mayRedeploy && environment.release"
@@ -438,7 +468,11 @@ function historyBy(entry: { reason: string; by?: string }): string {
       <UModal
         :open="confirmingDelete"
         :title="`Delete ${environment.name}?`"
-        description="The preview's workload and route are torn down. A new build for its pull request recreates it."
+        :description="
+          environment.type === 'preview'
+            ? 'The preview\'s workload and route are torn down. A new build for its pull request recreates it.'
+            : 'Nothing is deployed here, so nothing is torn down — what goes is what this environment declares: its owners, the bar it sets, its classification and its tolerances. A later build for it creates it again, declaring none of them.'
+        "
         @update:open="(open: boolean) => { confirmingDelete = open; }"
       >
         <template #footer>
@@ -454,8 +488,9 @@ function historyBy(entry: { reason: string; by?: string }): string {
       <div class="rounded-md border border-default bg-muted px-5 py-4 grid gap-6 sm:grid-cols-3">
         <div>
           <p class="text-xs text-muted mb-1">Release</p>
-          <p class="font-mono text-sm text-highlighted">{{ environment.release }}</p>
-          <p class="text-xs text-dimmed mt-0.5">
+          <p v-if="awaiting" class="text-sm text-muted">nothing deployed yet</p>
+          <p v-else class="font-mono text-sm text-highlighted">{{ environment.release }}</p>
+          <p v-if="!awaiting" class="text-xs text-dimmed mt-0.5">
             observed {{ environment.observedRelease || "—"
             }}<template v-if="environment.observedRelease && environment.observedRelease !== environment.release">
               — still rolling</template

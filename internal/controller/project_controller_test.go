@@ -240,7 +240,7 @@ var _ = Describe("Project Controller", func() {
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: release.Name},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: release.Name},
 				},
 			}
 			domain := &kitchenv1alpha1.Domain{
@@ -329,7 +329,7 @@ var _ = Describe("Project Controller", func() {
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-aaaaaaaaaaaa"},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-aaaaaaaaaaaa"},
 				},
 			}
 			for _, obj := range []client.Object{build, environment} {

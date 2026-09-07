@@ -1055,7 +1055,7 @@ func (s *RescanSweeper) rollBack(
 			"environment", env.Name, "exception", exception.Name)
 		return nil
 	}
-	current.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: target}
+	current.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: target}
 	if err := s.Client.Update(ctx, current); err != nil {
 		return err
 	}

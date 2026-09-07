@@ -307,7 +307,7 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 9, Branch: "feature/maps"},
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-1"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-1"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, env)).To(Succeed())
@@ -339,7 +339,7 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 				Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 9, Branch: "feature/maps"},
-				ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: projectName + "-rel-1"},
+				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: projectName + "-rel-1"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, env)).To(Succeed())

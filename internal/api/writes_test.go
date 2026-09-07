@@ -769,7 +769,7 @@ func previewEnvironment() *kitchenv1alpha1.Environment {
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Type:       kitchenv1alpha1.EnvironmentPreview,
 			Preview:    &kitchenv1alpha1.PreviewInfo{PullRequest: 7, Branch: "feature"},
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: testRelease},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: testRelease},
 		},
 	}
 }
@@ -782,7 +782,7 @@ func stageEnvironment() *kitchenv1alpha1.Environment {
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
 			Type:       kitchenv1alpha1.EnvironmentStage,
-			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: testRelease},
+			ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: testRelease},
 		},
 		Status: kitchenv1alpha1.EnvironmentStatus{
 			Phase: kitchenv1alpha1.EnvironmentLive,

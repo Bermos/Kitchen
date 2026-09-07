@@ -130,7 +130,7 @@ var _ = Describe("Environment Controller", func() {
 				Spec: kitchenv1alpha1.EnvironmentSpec{
 					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
 					Type:       kitchenv1alpha1.EnvironmentProduction,
-					ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: releaseName},
+					ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 				},
 			}
 			Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, env))).To(Succeed())
@@ -248,7 +248,7 @@ var _ = Describe("Environment Controller", func() {
 			})
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
-			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: second.Name}
+			env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: second.Name}
 			Expect(k8sClient.Update(ctx, env)).To(Succeed())
 
 			reconcileOnce()
@@ -299,7 +299,7 @@ var _ = Describe("Environment Controller", func() {
 			})
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
-			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: buildpacks.Name}
+			env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: buildpacks.Name}
 			Expect(k8sClient.Update(ctx, env)).To(Succeed())
 
 			reconcileOnce()
@@ -573,7 +573,7 @@ var _ = Describe("Environment Controller", func() {
 
 			env := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
-			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: singleton.Name}
+			env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: singleton.Name}
 			Expect(k8sClient.Update(ctx, env)).To(Succeed())
 
 			reconcileOnce()
@@ -581,7 +581,7 @@ var _ = Describe("Environment Controller", func() {
 			Expect(deploy.Spec.Strategy.Type).To(Equal(appsv1.RecreateDeploymentStrategyType))
 
 			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
-			env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: releaseName}
+			env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: releaseName}
 			Expect(k8sClient.Update(ctx, env)).To(Succeed())
 
 			reconcileOnce()

@@ -2173,7 +2173,7 @@ func (s *Server) pointEnvironmentAt(
 	}
 
 	patch := client.MergeFrom(env.DeepCopy())
-	env.Spec.ReleaseRef = kitchenv1alpha1.LocalObjectReference{Name: release.Name}
+	env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: release.Name}
 	if err := s.Client.Patch(ctx, env, patch); err != nil {
 		s.writeError(w, err)
 		return false
@@ -2272,6 +2272,31 @@ func (s *Server) cancelBuild(w http.ResponseWriter, req *http.Request) {
 // environment and a promotion stage's alike are the project — they go down
 // when it does, and a stray DELETE must not be able to take a live site or
 // the stage four teams integrate against with it.
+// runningRelease is what an environment has running: the release it is
+// pointed at, or the one the reconciler last observed where the two disagree.
+// Empty means nothing has ever been deployed into it, which is the whole of
+// what makes a declared environment deletable.
+func runningRelease(env *kitchenv1alpha1.Environment) string {
+	if name := env.Spec.ReleaseRef.Name; name != "" {
+		return name
+	}
+	return env.Status.ObservedRelease
+}
+
+// declaresABar reports whether this environment carries an owners'
+// declaration — a bar, owners to change it, or a rating of its own. Any of
+// the three makes deleting it a segregation-of-duties question rather than a
+// tidy-up.
+//
+// The rating is compared against the project's rather than merely being
+// present, because every environment *inherits* its project's class at
+// creation (#137) and an inherited value is nobody's declaration. A class
+// somebody narrowed to is one, and that is the case this protects.
+func declaresABar(env *kitchenv1alpha1.Environment, inherited kitchenv1alpha1.DataClass) bool {
+	return env.Spec.Requirements != nil || len(env.Spec.Owners) > 0 ||
+		(env.Spec.DataClass != "" && env.Spec.DataClass != inherited)
+}
+
 func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -2280,10 +2305,38 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	// A durable environment is the project, and goes with it — except while
+	// nothing has ever been deployed into it. A declared environment (#491)
+	// that never received a release holds nothing but its own declarations,
+	// so removing it removes a declaration and no running software; one that
+	// is running a release is refused exactly as before, naming what it is
+	// running so the refusal is about this environment rather than about the
+	// rule.
 	if env.Spec.Type != kitchenv1alpha1.EnvironmentPreview {
-		badRequest(w, "environment %q is a %s environment: it is torn down with its project, not on its own",
-			env.Name, env.Spec.Type)
-		return
+		if running := runningRelease(env); running != "" {
+			badRequest(w, "environment %q is a %s environment running release %s: it is torn down with "+
+				"its project, not on its own",
+				env.Name, env.Spec.Type, running)
+			return
+		}
+		// Deleting an environment that declares a bar is the other way to
+		// remove that bar — the next build would recreate it with none — so
+		// it asks what changing the bar asks: its owners, or an operator.
+		caller, _ := CallerFrom(ctx)
+		// The project is read only for the class it lends its environments; a
+		// project that cannot be read lends nothing, which makes any rating a
+		// declaration and the refusal the safe way round.
+		project := &kitchenv1alpha1.Project{}
+		if err := s.get(ctx, env.Spec.ProjectRef.Name, project); err != nil {
+			project = &kitchenv1alpha1.Project{}
+		}
+		if declaresABar(env, project.Spec.DataClass) &&
+			!platformRoleFrom(ctx).AtLeast(access.PlatformOperator) &&
+			!environmentOwner(env, caller) {
+			forbidden(w, fmt.Sprintf("environment %s declares what it demands, and deleting it would "+
+				"remove that: %s", env.Name, requirementsRefusal(env)))
+			return
+		}
 	}
 	if !s.recorded(w, req, audit.Transition{
 		Object:    env,
@@ -2291,7 +2344,7 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 		Operation: clickhouse.AuditDelete,
 		From:      env.Spec.ReleaseRef.Name,
 		Project:   env.Spec.ProjectRef.Name,
-		Reason:    fmt.Sprintf("preview environment %s was removed", env.Name),
+		Reason:    fmt.Sprintf("%s environment %s was removed", env.Spec.Type, env.Name),
 		Details:   map[string]any{"type": string(env.Spec.Type)},
 	}) {
 		return
