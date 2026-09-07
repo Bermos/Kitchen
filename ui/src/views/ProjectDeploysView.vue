@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api, type Build, type Release } from "../lib/api";
-import { buildFailureLine, buildStallLine } from "../lib/builds";
+import { buildFailureLine, buildSkipLine, buildStallLine } from "../lib/builds";
 import { duration, exactTime, shortImage, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { buildLink, environmentLink } from "../lib/links";
@@ -367,6 +367,13 @@ function toggleMessage(build: string) {
                     </p>
                     <p v-else-if="buildStallLine(entry.build)" class="text-xs text-warning mt-1 break-words">
                       {{ buildStallLine(entry.build) }}
+                    </p>
+                    <!-- A commit that changed nothing under this project's
+                         build root: no image, no release, and nothing wrong.
+                         The timeline says so rather than showing a row that
+                         shipped nothing and does not say why. -->
+                    <p v-else-if="buildSkipLine(entry.build)" class="text-xs text-muted mt-1 break-words">
+                      {{ buildSkipLine(entry.build) }}
                     </p>
                   </td>
                   <td class="px-3 py-2 align-top"><PhaseBadge :phase="entry.build.phase" /></td>

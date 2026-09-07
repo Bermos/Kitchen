@@ -33,6 +33,69 @@ push is: the first line becomes the commit's **subject** and the rest its
 **body**. Whatever a caller sends — a whole `git log` entry, trailers included
 — reaches the `Build` as that pair.
 
+**A build asked for here is never skipped.** A project with
+[`skipUnchanged`](projects.md#skipping-a-push-that-changed-nothing) does not
+build a push whose source did not change; a rebuild is what somebody reaches
+for when that derivation is wrong, so it is not answered by the derivation. The
+platform records who asked on the `Build` and builds it whatever the tree
+objects say.
+
+## A build that was skipped
+
+A project that asked for
+[`skipUnchanged`](projects.md#skipping-a-push-that-changed-nothing) answers a
+push whose source did not change with a build in the `Skipped` phase:
+
+```json
+{
+  "name": "shop-bld-abc123def456",
+  "phase": "Skipped",
+  "sourceTree": {
+    "object": "6f3c1a9d0b7e4f52a8c1d3e5b7092f4a6c8d1e30",
+    "path": "services/api",
+    "matchedBuild": "shop-bld-99887766aabb"
+  },
+  "conditions": [
+    {
+      "type": "Ready",
+      "status": "False",
+      "reason": "SourceUnchanged",
+      "severity": "info",
+      "message": "nothing was built: this commit's source at services/api is byte-identical to the source shop-bld-99887766aabb built, so there is no new artifact to make"
+    }
+  ]
+}
+```
+
+`sourceTree.object` is the git tree object at `<commit>:<path>` — the identity
+of the source this project builds. It is recorded on **every** build of a
+repository, not only a skipped one, because it is what the next push is
+compared against; it is absent where the provider could not name it, and such a
+build always runs.
+
+`matchedBuild` is present exactly on a skipped build, and it is the whole of
+what the skip asserts: *this commit changed nothing here since that build*.
+Nothing else happened — no build job, no artifact, no release and no promotion
+— and it is neither a failure nor a deployment. The `Ready` condition carries
+`"severity": "info"` ([Conditions](../API.md#conditions)) so that a client
+colours it from the API's own judgement rather than from a `False` it would
+read as broken.
+
+**It is over.** `POST /builds/{name}/cancel` answers `409` the way it does for
+any finished build.
+
+### What a skipped build means for evidence
+
+A skipped build produces no artifact, so it invalidates none. **The evidence on
+the artifact the last build produced stays exactly as current as it was**, and
+the continuous re-evaluation sweep is not disturbed by one: the sweep walks the
+release each environment is running, and a skipped build cuts no release and
+moves no environment, so the pair's rescan clock keeps running from its own last
+scan rather than restarting. That is the point rather than a side effect — the
+artifact that is deployed is the artifact that was scanned, and rebuilding
+byte-identical source would have produced a *different* digest with no evidence
+on it at all. [COMPLIANCE.md §9.10](../COMPLIANCE.md) is the reasoning.
+
 ## A build that acquired an image
 
 Not every build built something. A project whose software this platform did
@@ -334,7 +397,8 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 The build job is deleted, pod and all; the `Build` itself stays, phase
 `Cancelled`, with who cancelled it in its condition — Builds are the history of
 who asked for what, so cancellation never removes one. A build that already
-finished answers `409`.
+finished answers `409`, and so does one that was
+[skipped](#a-build-that-was-skipped), which never started.
 
 ## Which pull request a build belongs to
 

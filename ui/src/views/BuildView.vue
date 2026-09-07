@@ -10,7 +10,8 @@ import {
   type QualityGate,
   type UpstreamArtifact,
 } from "../lib/api";
-import { buildStallLine } from "../lib/builds";
+import { buildSkipLine, buildStallLine } from "../lib/builds";
+import { buildLink } from "../lib/links";
 import { duration, exactTime, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { callerFor } from "../lib/me";
@@ -315,6 +316,13 @@ const failureDetail = computed(() => {
  *  sits in the same place for the same reason: it is why the page was opened. */
 const stall = computed(() => (build.value ? buildStallLine(build.value) : ""));
 
+/** A build the platform had nothing to build for. It gets the same place on
+ *  the page as the two panels above and none of their colour: nothing failed
+ *  and nothing shipped, and the sentence is about the *commit* — it changed
+ *  nothing under this project's build root — which is why the build it matched
+ *  is a link rather than a name to copy. */
+const skipped = computed(() => (build.value ? buildSkipLine(build.value) : ""));
+
 /** The condition the reconciler left, for a build that failed before it ever
  *  had a pod: a strategy the platform does not support, a commit that was
  *  refused for want of review. There is no container to name in either case. */
@@ -582,6 +590,33 @@ const logRunLabels = computed<Record<string, string>>(() => {
           <div class="min-w-0 space-y-1">
             <p class="text-sm font-medium text-highlighted">The build has not started</p>
             <p class="text-xs text-toned font-mono break-words">{{ stall }}</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Why nothing was built. Neither the warning panel above nor the
+           failure panel below: this commit changed nothing here, which is a
+           statement about the source rather than about the platform. -->
+      <div v-if="skipped" class="rounded-md border border-default bg-elevated/40 px-5 py-4">
+        <div class="flex items-start gap-2">
+          <UIcon name="i-lucide-skip-forward" class="size-4 text-muted mt-0.5 shrink-0" />
+          <div class="min-w-0 space-y-1">
+            <p class="text-sm font-medium text-highlighted">Nothing to build</p>
+            <p class="text-xs text-toned break-words">{{ skipped }}</p>
+            <p v-if="build.sourceTree?.object" class="text-xs text-muted break-words">
+              Tree object
+              <span class="font-mono text-toned">{{ shortSHA(build.sourceTree.object) }}</span>
+              at
+              <span class="font-mono text-toned">{{ build.sourceTree.path || "the repository root" }}</span>
+              <template v-if="build.sourceTree.matchedBuild">
+                ·
+                <RouterLink
+                  :to="buildLink(build.sourceTree.matchedBuild, build.project)"
+                  class="font-mono text-toned hover:text-highlighted hover:underline"
+                  >{{ build.sourceTree.matchedBuild }}</RouterLink
+                >
+              </template>
+            </p>
           </div>
         </div>
       </div>

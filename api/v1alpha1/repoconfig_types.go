@@ -179,6 +179,22 @@ type RepoBuildConfig struct {
 	// +kubebuilder:validation:MaxLength=128
 	// +optional
 	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+
+	// SkipUnchanged is the commit's own answer to whether a push that
+	// changed nothing under the build root should be built (#500).
+	//
+	// It is a pointer because the project's setting is what it overrides and
+	// `false` has to be expressible: a repository that has just moved a
+	// shared library into a place the tree object cannot see turns the skip
+	// off in the same change, and a plain bool would be indistinguishable
+	// from the file saying nothing.
+	//
+	// The file is read at the commit under build, so the setting that decides
+	// whether *this* commit is skipped is this commit's own — which is the
+	// only reading that lets the repository turn it off in the commit that
+	// needs it off.
+	// +optional
+	SkipUnchanged *bool `json:"skipUnchanged,omitempty"`
 }
 
 // RepoRuntimeConfig is the runtime half of kitchen.json: the subset of
@@ -273,6 +289,9 @@ func (c *RepoConfig) Declares() []string {
 		}
 		if b.DockerfileTarget != "" {
 			fields = append(fields, "build.dockerfileTarget")
+		}
+		if b.SkipUnchanged != nil {
+			fields = append(fields, "build.skipUnchanged")
 		}
 	}
 	if r := c.Runtime; r != nil {

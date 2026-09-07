@@ -45,6 +45,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/framework"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
@@ -1910,6 +1911,239 @@ var _ = Describe("Build Controller", func() {
 
 			err := k8sClient.Get(ctx, jobKey, &batchv1.Job{})
 			Expect(err).To(HaveOccurred(), "no job should be created while queued")
+		})
+
+		// Skipping a build whose source tree did not change (#500). The
+		// fixtures are the same ones every spec above uses; what these add is
+		// a previous build that recorded a tree object, and a provider that
+		// can name one.
+		Context("when the source tree has not changed", func() {
+			// The tree object at the project's build root, and a different
+			// one. Two constants rather than two literals, because what every
+			// spec here turns on is whether two strings are equal.
+			const (
+				unchangedTree = "6f3c1a9d0b7e4f52a8c1d3e5b7092f4a6c8d1e30"
+				changedTree   = "0102030405060708090a0b0c0d0e0f1011121314"
+				previousSHA   = "1111222233334444aaaa"
+				previousBuild = "other-build"
+			)
+
+			// askForTheSkip turns the project's setting on. It is off by
+			// default and stays off for every other spec in this file, which
+			// is the behaviour a project that never heard of this has.
+			askForTheSkip := func() {
+				GinkgoHelper()
+				project := &kitchenv1alpha1.Project{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName, Namespace: namespace}, project)).To(Succeed())
+				project.Spec.Build.SkipUnchanged = true
+				Expect(k8sClient.Update(ctx, project)).To(Succeed())
+			}
+
+			// recordAPreviousBuild is the succeeded build the push under test
+			// is compared against: the branch it was of, and the tree object
+			// it built. The branch is a parameter because a Build's spec is
+			// immutable — the specs that need one of another branch have to
+			// create it that way rather than move it afterwards.
+			recordAPreviousBuild := func(branch, tree string) {
+				GinkgoHelper()
+				previous := &kitchenv1alpha1.Build{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      previousBuild,
+						Namespace: namespace,
+						Labels:    map[string]string{kitchenv1alpha1.ProjectLabel: projectName},
+					},
+					Spec: kitchenv1alpha1.BuildSpec{
+						ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+						Git:        kitchenv1alpha1.GitRevision{SHA: previousSHA, Branch: branch},
+					},
+				}
+				Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, previous))).To(Succeed())
+				previous.Status.Phase = kitchenv1alpha1.BuildSucceeded
+				previous.Status.SourceTree = &kitchenv1alpha1.SourceTreeStatus{Object: tree}
+				Expect(k8sClient.Status().Update(ctx, previous)).To(Succeed())
+			}
+
+			// The provider's answer for the commit under build.
+			serveTree := func(tree string) {
+				source.trees = map[string]string{sha + ":": tree}
+			}
+
+			It("records the tree object on a build that runs, so the next push has something to compare", func() {
+				serveTree(unchangedTree)
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+				Expect(build.Status.SourceTree).NotTo(BeNil())
+				Expect(build.Status.SourceTree.Object).To(Equal(unchangedTree))
+				// Recorded even though the project never asked for the skip:
+				// turning the setting on later has to have something to
+				// compare against, and the object is a fact about the commit
+				// either way.
+				Expect(build.Status.SourceTree.MatchedBuild).To(BeEmpty())
+			})
+
+			It("skips a push whose tree matches, and creates no job, no release and no promotion", func() {
+				askForTheSkip()
+				recordAPreviousBuild("main", unchangedTree)
+				serveTree(unchangedTree)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildSkipped))
+				Expect(build.Status.SourceTree.Object).To(Equal(unchangedTree))
+				Expect(build.Status.SourceTree.MatchedBuild).To(Equal(previousBuild))
+				Expect(build.Status.CompletedAt).NotTo(BeNil())
+
+				ready := meta.FindStatusCondition(build.Status.Conditions, "Ready")
+				Expect(ready).NotTo(BeNil())
+				Expect(ready.Reason).To(Equal(ReasonSourceUnchanged))
+
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, jobKey, &batchv1.Job{}))).To(BeTrue(),
+					"a skipped build runs nothing")
+				release := &kitchenv1alpha1.Release{}
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{
+					Name: releaseName(projectName, sha), Namespace: namespace,
+				}, release))).To(BeTrue(), "a skipped build produces no artifact to release")
+				promotions := &kitchenv1alpha1.PromotionList{}
+				Expect(k8sClient.List(ctx, promotions, client.InNamespace(namespace))).To(Succeed())
+				for _, promotion := range promotions.Items {
+					Expect(promotion.Spec.ReleaseRef.Name).NotTo(Equal(releaseName(projectName, sha)))
+				}
+			})
+
+			It("is over, so the stall diagnosis is never asked about it", func() {
+				askForTheSkip()
+				recordAPreviousBuild("main", unchangedTree)
+				serveTree(unchangedTree)
+				reconcileOnce()
+
+				// A second pass over a skipped build takes the finished path,
+				// which looks at no Job at all — the reason `JobHasNoPod`
+				// cannot reach a build that never had one.
+				reconcileOnce()
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildSkipped))
+				Expect(meta.FindStatusCondition(build.Status.Conditions, condStalled)).To(BeNil())
+				Expect(isTerminal(kitchenv1alpha1.BuildSkipped)).To(BeTrue())
+			})
+
+			It("builds a push whose tree differs", func() {
+				askForTheSkip()
+				recordAPreviousBuild("main", changedTree)
+				serveTree(unchangedTree)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+				Expect(k8sClient.Get(ctx, jobKey, &batchv1.Job{})).To(Succeed())
+			})
+
+			It("builds when there is no previous tree object to compare", func() {
+				askForTheSkip()
+				serveTree(unchangedTree)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+				Expect(build.Status.SourceTree.Object).To(Equal(unchangedTree))
+			})
+
+			It("builds when the provider cannot name the tree at all", func() {
+				askForTheSkip()
+				recordAPreviousBuild("main", unchangedTree)
+				// source.trees is left nil: a provider that resolves no tree,
+				// which is what a GitLab project whose build root is the whole
+				// repository meets.
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+				Expect(build.Status.SourceTree).To(BeNil())
+			})
+
+			It("builds a commit somebody asked for by hand, whatever the tree says", func() {
+				askForTheSkip()
+				recordAPreviousBuild("main", unchangedTree)
+				serveTree(unchangedTree)
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				build.Annotations = map[string]string{audit.RequestedByAnnotation: "ada@example.com"}
+				Expect(k8sClient.Update(ctx, build)).To(Succeed())
+
+				reconcileOnce()
+
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+				Expect(k8sClient.Get(ctx, jobKey, &batchv1.Job{})).To(Succeed())
+			})
+
+			It("does not skip against a build of another branch", func() {
+				askForTheSkip()
+				// A pull request whose changes are all outside this build root
+				// still needs an environment to be reviewed in, and its first
+				// build is what creates one.
+				recordAPreviousBuild("feat/x", unchangedTree)
+				serveTree(unchangedTree)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+			})
+
+			It("does not skip against a build that failed", func() {
+				askForTheSkip()
+				recordAPreviousBuild("main", unchangedTree)
+				previous := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: previousBuild, Namespace: namespace}, previous)).To(Succeed())
+				previous.Status.Phase = kitchenv1alpha1.BuildFailed
+				Expect(k8sClient.Status().Update(ctx, previous)).To(Succeed())
+				serveTree(unchangedTree)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+			})
+
+			It("builds every push for a project that never asked for the skip", func() {
+				recordAPreviousBuild("main", unchangedTree)
+				serveTree(unchangedTree)
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
+			})
+
+			It("takes the commit's own kitchen.json over the project's setting", func() {
+				askForTheSkip()
+				recordAPreviousBuild("main", unchangedTree)
+				serveTree(unchangedTree)
+				source.files[kitchenv1alpha1.RepoConfigFileName] = `{"build": {"skipUnchanged": false}}`
+
+				reconcileOnce()
+
+				build := &kitchenv1alpha1.Build{}
+				Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+				Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning),
+					"the commit that moves shared code out of the build root turns the skip off in the same change")
+			})
 		})
 	})
 })

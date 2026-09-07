@@ -26,6 +26,25 @@ export function buildFailureLine(build: Build): string {
 }
 
 /**
+ * A build the platform had nothing to build for, in one line.
+ *
+ * The commit's source under the project's root directory was byte-identical to
+ * the one the build it names used, so no image was produced, no release was
+ * cut and nothing was deployed. The line is what keeps that readable as a
+ * statement about the *commit* — this changed nothing here — rather than as a
+ * build that mysteriously did nothing, which is the whole reason the skip is
+ * recorded instead of being silent (#500).
+ */
+export function buildSkipLine(build: Build): string {
+  if (build.phase !== "Skipped") return "";
+  const where = build.sourceTree?.path || "the repository";
+  const matched = build.sourceTree?.matchedBuild;
+  return matched
+    ? `Nothing to build — ${where} is unchanged since ${matched}.`
+    : `Nothing to build — ${where} is unchanged.`;
+}
+
+/**
  * A running build that is not moving, in one line.
  *
  * A build whose Job has never created a pod reports Running for as long as

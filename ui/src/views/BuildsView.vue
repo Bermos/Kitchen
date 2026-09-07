@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api, type Build } from "../lib/api";
-import { buildFailureLine, buildStallLine } from "../lib/builds";
+import { buildFailureLine, buildSkipLine, buildStallLine } from "../lib/builds";
 import { buildLink } from "../lib/links";
 import { duration, exactTime, formatDurationSeconds, shortSHA, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
@@ -37,6 +37,10 @@ const failureOf = (build: Build) => buildFailureLine(build);
 // A running build that is not moving. It reads as a failure on the row on
 // purpose — it is one, it just has not been called one yet.
 const stallOf = (build: Build) => buildStallLine(build);
+// A build the platform had nothing to build for. It reads as neither of the
+// two above: no colour of its own, because nothing is wrong and nothing
+// shipped.
+const skipOf = (build: Build) => buildSkipLine(build);
 
 const { data, error, loading, refresh } = useAsync(() => api.builds());
 
@@ -218,6 +222,11 @@ const visible = computed(() => {
                      this is only on a warning event on the Job. -->
                 <span v-else-if="stallOf(build)" class="block text-xs text-warning mt-1 break-words">
                   {{ stallOf(build) }}
+                </span>
+                <!-- And why one that shipped nothing is not a failure: the
+                     commit changed nothing under this project's build root. -->
+                <span v-else-if="skipOf(build)" class="block text-xs text-muted mt-1 break-words">
+                  {{ skipOf(build) }}
                 </span>
               </td>
               <td class="px-3 py-2">

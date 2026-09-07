@@ -198,24 +198,47 @@ func (r *BuildReconciler) sourceReaderFor(
 	ctx context.Context,
 	project *kitchenv1alpha1.Project,
 ) (gitprovider.SourceReader, error) {
+	provider, conn, err := r.gitProviderFor(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	reader, ok := gitprovider.Source(provider)
+	if !ok {
+		return nil, fmt.Errorf("%w: the %s provider cannot read a repository's contents",
+			errSourceUnreadable, conn.Spec.Provider)
+	}
+	return reader, nil
+}
+
+// gitProviderFor is the Project's git provider, built from its Connection and
+// that Connection's credential — the half of sourceReaderFor that has nothing
+// to do with reading files, and which the tree resolver needs too.
+//
+// Every failure is wrapped in errSourceUnreadable for the reason
+// sourceReaderFor's are: it is the platform being unable to look, rather than
+// the repository being wrong.
+func (r *BuildReconciler) gitProviderFor(
+	ctx context.Context,
+	project *kitchenv1alpha1.Project,
+) (gitprovider.Provider, *kitchenv1alpha1.Connection, error) {
 	conn := &kitchenv1alpha1.Connection{}
 	key := types.NamespacedName{Namespace: project.Namespace, Name: project.Spec.Source.GitSource().ConnectionRef.Name}
 	if err := r.Get(ctx, key, conn); err != nil {
-		return nil, fmt.Errorf("%w: %w", errSourceUnreadable, err)
+		return nil, nil, fmt.Errorf("%w: %w", errSourceUnreadable, err)
 	}
 	if !connectionProvides(conn, kitchenv1alpha1.CapabilityGitSource) {
-		return nil, fmt.Errorf("%w: connection %q does not provide %s yet",
+		return nil, nil, fmt.Errorf("%w: connection %q does not provide %s yet",
 			errSourceUnreadable, conn.Name, kitchenv1alpha1.CapabilityGitSource)
 	}
 
 	creds := &corev1.Secret{}
 	credsKey := types.NamespacedName{Namespace: conn.Namespace, Name: conn.Spec.CredentialsSecretRef.Name}
 	if err := r.Get(ctx, credsKey, creds); err != nil {
-		return nil, fmt.Errorf("%w: %w", errSourceUnreadable, err)
+		return nil, nil, fmt.Errorf("%w: %w", errSourceUnreadable, err)
 	}
 	token := string(creds.Data[gitCredentialsTokenKey])
 	if token == "" {
-		return nil, fmt.Errorf("%w: connection %q has no credential to read with",
+		return nil, nil, fmt.Errorf("%w: connection %q has no credential to read with",
 			errSourceUnreadable, conn.Name)
 	}
 
@@ -225,14 +248,9 @@ func (r *BuildReconciler) sourceReaderFor(
 	}
 	provider, err := factory(conn, token)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", errSourceUnreadable, err)
+		return nil, nil, fmt.Errorf("%w: %w", errSourceUnreadable, err)
 	}
-	reader, ok := gitprovider.Source(provider)
-	if !ok {
-		return nil, fmt.Errorf("%w: the %s provider cannot read a repository's contents",
-			errSourceUnreadable, conn.Spec.Provider)
-	}
-	return reader, nil
+	return provider, conn, nil
 }
 
 // buildDockerfilePath is the Dockerfile this build uses, relative to the

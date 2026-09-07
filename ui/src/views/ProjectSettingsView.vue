@@ -213,6 +213,10 @@ const settings = reactive({
   dockerfilePath: "",
   dockerfileTarget: "",
   rootDirectory: "",
+  // Off by default, and deliberately so: a repository whose services share
+  // code outside their root directories wants every push built, and the
+  // platform cannot tell that kind from a clean monorepo (#500).
+  skipUnchanged: false,
   // 0 is "let the platform decide": the port then comes from the framework each
   // build detects, and the field shows what that would be.
   port: 0,
@@ -293,6 +297,7 @@ function loadSettings(from: Project) {
   settings.dockerfilePath = from.dockerfilePath ?? "";
   settings.dockerfileTarget = from.dockerfileTarget ?? "";
   settings.rootDirectory = from.rootDirectory ?? "";
+  settings.skipUnchanged = from.skipUnchanged ?? false;
   settings.port = from.port ?? 0;
   settings.replicas = from.replicas ?? 1;
   settings.cpu = from.cpu ?? "";
@@ -470,6 +475,7 @@ async function saveSettings() {
             dockerfilePath: settings.dockerfilePath,
             dockerfileTarget: settings.dockerfileTarget,
             rootDirectory: settings.rootDirectory,
+            skipUnchanged: settings.skipUnchanged,
           }
         : {}),
       port: settings.port,
@@ -813,6 +819,16 @@ async function deleteProject() {
                     <UInput v-model="settings.rootDirectory" placeholder="." class="w-full font-mono" />
                   </UFormField>
                 </div>
+                <!-- The other half of the monorepo answer, next to the
+                     directory it is about. The caveat is in the description
+                     rather than in a document nobody opens: this is the one
+                     setting whose wrong answer is a deploy that silently did
+                     not happen. -->
+                <USwitch
+                  v-model="settings.skipUnchanged"
+                  label="Skip a push that changed nothing here"
+                  description="Compare the git tree object at the root directory with the last build's. When they match, record a skipped build instead of rebuilding and redeploying the same source. Leave it off if this project uses code from outside its root directory — a change there would be skipped."
+                />
               </div>
 
               <div class="flex justify-end">

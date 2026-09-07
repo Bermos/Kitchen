@@ -199,13 +199,18 @@ type projectView struct {
 	DockerfilePath  string               `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile this project
 	// ships. Absent is the file's last stage.
-	DockerfileTarget string       `json:"dockerfileTarget,omitempty"`
-	RootDirectory    string       `json:"rootDirectory,omitempty"`
-	Env              []envVarView `json:"env,omitempty"`
-	Port             int32        `json:"port,omitempty"`
-	Replicas         *int32       `json:"replicas,omitempty"`
-	CPU              string       `json:"cpu,omitempty"`
-	Memory           string       `json:"memory,omitempty"`
+	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+	RootDirectory    string `json:"rootDirectory,omitempty"`
+	// SkipUnchanged is whether a push whose source under `rootDirectory` is
+	// byte-identical to the last build's is skipped rather than rebuilt
+	// (#500). Always present, because `false` is the default and a client
+	// that could not tell it from "not set" would draw the switch wrong.
+	SkipUnchanged bool         `json:"skipUnchanged"`
+	Env           []envVarView `json:"env,omitempty"`
+	Port          int32        `json:"port,omitempty"`
+	Replicas      *int32       `json:"replicas,omitempty"`
+	CPU           string       `json:"cpu,omitempty"`
+	Memory        string       `json:"memory,omitempty"`
 	// Health is what the platform checks the application with, timings
 	// resolved. It is always present, because every environment is probed:
 	// a project that declared nothing is reported with the default check
@@ -319,6 +324,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole, l
 		DockerfilePath:     project.Spec.Build.DockerfilePath,
 		DockerfileTarget:   project.Spec.Build.DockerfileTarget,
 		RootDirectory:      project.Spec.Build.RootDirectory,
+		SkipUnchanged:      project.Spec.Build.SkipUnchanged,
 		Env:                envVarViews(project.Spec.Env),
 		Port:               project.Spec.Runtime.Port,
 		Replicas:           project.Spec.Runtime.Replicas,
@@ -579,6 +585,12 @@ type buildView struct {
 
 	// Source is how the commit reached the branch: through review, or not.
 	Source *sourceView `json:"source,omitempty"`
+
+	// SourceTree is the identity of the source this build was made from —
+	// the git tree object at `<commit>:<path>` — and, on a build in the
+	// `Skipped` phase, the build it matched (#500). Absent on an acquisition
+	// and on any build whose provider could not name the tree.
+	SourceTree *sourceTreeView `json:"sourceTree,omitempty"`
 
 	// Failure is why this build failed, when it did: the container that
 	// stopped it, how it exited, and the last of what it printed. Absent on
@@ -1015,6 +1027,27 @@ func newArtifactView(artifact *kitchenv1alpha1.ArtifactStatus) *artifactView {
 	return view
 }
 
+// sourceTreeView is what a build's source was, and what it matched.
+type sourceTreeView struct {
+	// Object is the git tree object at the commit and the build root below.
+	Object string `json:"object"`
+	// Path is the build root it was resolved at, absent for the repository
+	// itself.
+	Path string `json:"path,omitempty"`
+	// MatchedBuild names the build this one's source is byte-identical to.
+	// It is present exactly on a build in the `Skipped` phase, which is what
+	// makes the skip readable as a statement about the source rather than as
+	// a build that did nothing.
+	MatchedBuild string `json:"matchedBuild,omitempty"`
+}
+
+func newSourceTreeView(tree *kitchenv1alpha1.SourceTreeStatus) *sourceTreeView {
+	if tree == nil {
+		return nil
+	}
+	return &sourceTreeView{Object: tree.Object, Path: tree.Path, MatchedBuild: tree.MatchedBuild}
+}
+
 func newBuildView(build *kitchenv1alpha1.Build, links sourceLinks) buildView {
 	view := buildView{
 		Name:              build.Name,
@@ -1029,6 +1062,7 @@ func newBuildView(build *kitchenv1alpha1.Build, links sourceLinks) buildView {
 		Cache:             newBuildCacheView(build.Status.Cache),
 		Gates:             gateViews(build.Status.Gates),
 		Source:            newSourceView(build.Status.Source),
+		SourceTree:        newSourceTreeView(build.Status.SourceTree),
 		Failure:           newBuildFailureView(build.Status.Failure),
 		Workloads:         buildWorkloadViews(build.Status.Workloads),
 		Acquisition:       newAcquisitionView(build.Status.Acquisition),

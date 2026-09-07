@@ -1118,6 +1118,56 @@ is the history; the drift view is only its newest row.
   evidence belongs at promotion, and yanking production because a database
   updated overnight is how a compliance control gets switched off.
 
+### 9.10 A build that was skipped changes nothing, evidence included
+
+A project may ask the platform not to build a push whose source at its build
+root is byte-identical to the one the last build used — `build.skipUnchanged`,
+off by default, and issue #500 is the whole of why. The comparison is the git
+tree object at `<commit>:<rootDirectory>`; a push that matches produces a
+`Build` in the `Skipped` phase naming the commit, the tree object and the build
+it matched, and creates no job, no artifact, no release and no promotion.
+
+The compliance question that raises is whether such a build counts for rescans
+and evidence freshness, and it is **decided rather than left to fall out**:
+
+> A skipped build changes no artifact, so the previous build's evidence stays
+> current. It does not restart a rescan clock, it does not make anything stale,
+> and it is not a gap in the record.
+
+That is the correct answer rather than a convenient one, and the reason is the
+same one §5 is built on: **evidence keys on a digest**. Nothing about the
+artifact that is deployed changed, so every statement attached to that digest
+still describes exactly what is running. The alternative — rebuilding
+byte-identical source — would have produced a *different* digest with no
+evidence on it at all until the platform re-attested it, which is a worse
+position to be in, not a better one.
+
+It falls out of the machinery rather than being special-cased, which is what
+makes it hard to get wrong later. §9.3's sweep walks the release each
+environment is *running*: a skipped build cuts no release and moves no
+environment, so the pair is neither re-armed nor re-scanned, and its interval
+keeps running from its own last scan. `env.status.rescan.release` is unchanged,
+which is the field that decides whether a pair's state is thrown away and
+started again (§9.3). Nothing in the drift join (§9.8) moves either, because a
+join over environments and their releases has nothing to say about a build that
+produced neither.
+
+What the skip *does* add to the record is a positive statement the old
+behaviour could not make: **this commit changed nothing here**. That is
+stronger than the rebuild it replaces, which asserts only that an image came
+out — a release history where seven rows in eight are no-ops makes "when did
+this service last change" unanswerable by looking, which is a worse audit trail
+however diligently it was produced. The `Build` object, its audit transition
+and its `build.skipped` activity entry are all there; a `Skipped` build is a
+record, not a silence.
+
+Two things it deliberately does not do. It does not skip a build somebody asked
+for — a rebuild through the API is the escape hatch for the derivation being
+wrong, and answering it with the derivation would take the hatch away. And it
+never matches against a build that did not succeed: "there is nothing to build"
+is only true where the artifact the last build produced exists to be pointed
+at.
+
 ---
 
 ## 10. Exploitability (issue #135)

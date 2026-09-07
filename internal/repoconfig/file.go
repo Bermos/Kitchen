@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/appconfig"
@@ -100,6 +101,13 @@ type FileBuild struct {
 	Strategy         string `json:"strategy,omitempty"`
 	DockerfilePath   string `json:"dockerfilePath,omitempty"`
 	DockerfileTarget string `json:"dockerfileTarget,omitempty"`
+
+	// SkipUnchanged is the commit's own answer to whether a push that changed
+	// nothing under the project's root directory should be built (#500). It
+	// is a pointer because it overrides the project's setting and `false` has
+	// to be expressible — the commit that moves shared code out of the build
+	// root is exactly the commit that has to turn the skip off.
+	SkipUnchanged *bool `json:"skipUnchanged,omitempty"`
 
 	// RootDirectory is here only so that it can be refused by name. It is
 	// the first thing somebody arriving from vercel.json will reach for, and
@@ -385,6 +393,9 @@ func (f File) buildConfig() (*kitchenv1alpha1.RepoBuildConfig, error) {
 				ErrInvalid, detect.StageNameRule, f.Build.DockerfileTarget)
 		}
 		build.DockerfileTarget = target
+	}
+	if f.Build.SkipUnchanged != nil {
+		build.SkipUnchanged = ptr.To(*f.Build.SkipUnchanged)
 	}
 	if *build == (kitchenv1alpha1.RepoBuildConfig{}) {
 		return nil, nil

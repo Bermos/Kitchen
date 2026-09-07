@@ -173,6 +173,29 @@ spec:
                       this directory as the whole of it, while the buildpacks lifecycle is
                       pointed at it inside a clone of the repository.
                     type: string
+                  skipUnchanged:
+                    description: |-
+                      SkipUnchanged asks the platform not to build a commit whose source at
+                      RootDirectory is byte-identical to the one the last build used (#500).
+
+                      The comparison is the git tree object at `<commit>:<rootDirectory>`,
+                      which is exact, costs one request to the git provider and cannot drift
+                      because it is derived rather than declared. A push that matches
+                      produces a Build in the `Skipped` phase naming the commit, the tree
+                      object and the build it matched — a record, not a silence — and no
+                      Job, no Release and no promotion.
+
+                      **It is off by default and should stay off for a repository whose
+                      services share code outside their root directories.** A change to a
+                      library one directory up is a change to what this project builds and
+                      leaves this tree object untouched, so the platform would skip a build
+                      that mattered. It cannot tell the two kinds of repository apart, which
+                      is why this is the project's answer rather than the platform's.
+
+                      A manual rebuild ignores it entirely — that is what somebody reaches
+                      for when the derivation is wrong — and so does the first build of a
+                      project, and any build with no previous tree object to compare.
+                    type: boolean
                   strategy:
                     default: auto
                     description: BuildStrategy selects how an image is produced from

@@ -29,8 +29,15 @@ import (
 // activity feed's: what a person scanning "what happened recently" wants to
 // read, not the reconcilers' internal state machine.
 const (
-	EventBuildSucceeded    = "build.succeeded"
-	EventBuildFailed       = "build.failed"
+	EventBuildSucceeded = "build.succeeded"
+	EventBuildFailed    = "build.failed"
+	// A commit the platform read and had nothing to build for: its source at
+	// the project's build root is byte-identical to the one the last build
+	// used (#500). It is in the feed for the reason `preview.refused` is —
+	// the absence of a deploy is otherwise invisible — and it is its own type
+	// rather than a quiet success because it is neither a failure nor a
+	// deployment, and the feed's reader must not read it as either.
+	EventBuildSkipped      = "build.skipped"
 	EventReleasePromoted   = "release.promoted"
 	EventReleaseRolledBack = "release.rolledBack"
 	EventReleasePruned     = "release.pruned"

@@ -131,6 +131,10 @@ function eventTarget(event: PlatformEvent): RouteLocationRaw | null {
 function eventIcon(event: PlatformEvent): string {
   if (event.type === "build.failed") return "i-lucide-x-circle";
   if (event.type === "build.succeeded") return "i-lucide-hammer";
+  // A commit that changed nothing under a project's build root. Its own icon
+  // rather than the hammer or the cross: the feed's reader must be able to
+  // tell at a glance that nothing was built and nothing broke (#500).
+  if (event.type === "build.skipped") return "i-lucide-skip-forward";
   if (event.type.startsWith("release.")) return "i-lucide-rocket";
   if (event.type.startsWith("preview.")) return "i-lucide-git-pull-request";
   if (event.type.startsWith("claim.")) return "i-lucide-database";

@@ -134,18 +134,19 @@ func TestAProjectWithNoRepositoryCanDeclareNoWorkloadBuiltFromOne(t *testing.T) 
 	}
 }
 
-// The four settings that say how a commit becomes an image are the
-// repository's, and a project that builds nothing is refused them rather than
-// storing a setting that reads back and does nothing.
+// The settings that say how a commit becomes an image are the repository's,
+// and a project that builds nothing is refused them rather than storing a
+// setting that reads back and does nothing.
 func TestSettingsThatDescribeABuildAreRefusedOnAProjectThatBuildsNothing(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 	vendoredProject(t, h)
 
 	for name, body := range map[string]string{
-		"a build strategy":   `{"buildStrategy":"dockerfile"}`,
-		"a Dockerfile":       `{"dockerfilePath":"build/Dockerfile"}`,
-		"a Dockerfile stage": `{"dockerfileTarget":"web"}`,
-		"a root directory":   `{"rootDirectory":"apps/shop"}`,
+		"a build strategy":                  `{"buildStrategy":"dockerfile"}`,
+		"a Dockerfile":                      `{"dockerfilePath":"build/Dockerfile"}`,
+		"a Dockerfile stage":                `{"dockerfileTarget":"web"}`,
+		"a root directory":                  `{"rootDirectory":"apps/shop"}`,
+		"skipping an unchanged source tree": `{"skipUnchanged":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := h.do(t, http.MethodPatch, "/api/v1/projects/"+otherProject, body)
@@ -158,7 +159,7 @@ func TestSettingsThatDescribeABuildAreRefusedOnAProjectThatBuildsNothing(t *test
 		})
 	}
 
-	// The same four are ordinary on a project that does build.
+	// The same settings are ordinary on a project that does build.
 	if recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
 		`{"buildStrategy":"dockerfile","rootDirectory":"apps/shop"}`); recorder.Code != http.StatusOK {
 		t.Fatalf("want 200 on the project with a repository, got %d: %s", recorder.Code, recorder.Body.String())

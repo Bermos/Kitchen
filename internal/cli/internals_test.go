@@ -357,3 +357,38 @@ func TestTheReleaseColumnSaysWhenNothingIsDeployed(t *testing.T) {
 		t.Fatalf("only the declared environment says it:\n%s", table)
 	}
 }
+
+// The WHY column on `kitchen builds`, for the one phase that is neither a
+// failure nor a deploy: a commit whose source under the project's build root
+// did not change, so nothing was built (#500). Without the line a skipped
+// build reads as a build that mysteriously did nothing, which is exactly the
+// unreadable record the skip exists to avoid.
+func TestWhyExplainsASkippedBuild(t *testing.T) {
+	skipped := build{
+		Phase:      "Skipped",
+		SourceTree: &sourceTree{Object: "6f3c1a9d0b7e", Path: "services/api", MatchedBuild: "shop-bld-aaaa"},
+	}
+	if got, want := skipped.why(), "services/api is unchanged since shop-bld-aaaa"; got != want {
+		t.Errorf("why() = %q, want %q", got, want)
+	}
+
+	whole := build{Phase: "Skipped", SourceTree: &sourceTree{Object: "6f3c1a9d0b7e"}}
+	if got, want := whole.why(), "the repository is unchanged since the last build"; got != want {
+		t.Errorf("why() = %q, want %q", got, want)
+	}
+
+	// A build that is not skipped says nothing about a tree it happens to
+	// have recorded: every build records one, and only a skipped build is
+	// about it.
+	running := build{Phase: "Running", SourceTree: &sourceTree{Object: "6f3c1a9d0b7e", Path: "services/api"}}
+	if got := running.why(); got != "" {
+		t.Errorf("why() on a running build = %q, want nothing", got)
+	}
+
+	// And it has stopped moving. A phase the CLI does not know is terminal is
+	// a poll that never ends and a build `kitchen cancel` would pick as the
+	// one that is still building.
+	if !skipped.terminal() {
+		t.Error("a skipped build is over: nothing was built and nothing is going to be")
+	}
+}

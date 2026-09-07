@@ -112,6 +112,14 @@ var conditionSeverities = map[conditionStatement]conditionSeverity{
 	{controller.ConditionInternalCAReady, controller.ReasonStoreInTheClear}: severityInfo,
 	// A dependency this installation did not ask for is not a failed install.
 	{kitchenv1alpha1.AddonReady, controller.ReasonAddonNotInstalled}: severityInfo,
+	// A build the platform had nothing to build for: the commit's source at
+	// the project's build root is byte-identical to the last build's, and
+	// `spec.build.skipUnchanged` asked for exactly this (#500). A skipped
+	// build is neither a failure nor a deployment, and the whole point of
+	// recording it is that a release history of no-ops is a worse record than
+	// one that says which commits changed this service — so it must not be
+	// drawn as a broken build.
+	{controller.ConditionReady, controller.ReasonSourceUnchanged}: severityInfo,
 
 	// And the counter-case, spelled out rather than left to the default: an
 	// installation with no scheduled backup is unprotected, which is worth

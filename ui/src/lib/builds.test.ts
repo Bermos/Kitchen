@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Build } from "./api";
-import { buildFailureLine, buildStallLine } from "./builds";
+import { buildFailureLine, buildSkipLine, buildStallLine } from "./builds";
 
 const build = (over: Partial<Build> = {}): Build => ({
   name: "shop-bld-0f8ed150b919",
@@ -88,5 +88,41 @@ describe("buildStallLine", () => {
       ],
     });
     expect(buildStallLine(stalled)).toBe('the build job has created no pod: Error creating: pods "x" is forbidden');
+  });
+});
+
+describe("buildSkipLine", () => {
+  it("says nothing about a build that was not skipped", () => {
+    expect(buildSkipLine(build({ phase: "Succeeded" }))).toBe("");
+    expect(buildSkipLine(build({ phase: "Failed" }))).toBe("");
+    expect(
+      buildSkipLine(build({ phase: "Running", sourceTree: { object: "a1b2c3", path: "services/api" } })),
+    ).toBe("");
+  });
+
+  it("names the directory that did not change and the build it matched", () => {
+    const skipped = build({
+      phase: "Skipped",
+      sourceTree: { object: "a1b2c3", path: "services/api", matchedBuild: "shop-bld-aaaaaaaaaaaa" },
+    });
+    expect(buildSkipLine(skipped)).toBe(
+      "Nothing to build — services/api is unchanged since shop-bld-aaaaaaaaaaaa.",
+    );
+  });
+
+  it("says the repository for a project whose build root is the whole of it", () => {
+    const skipped = build({
+      phase: "Skipped",
+      sourceTree: { object: "a1b2c3", matchedBuild: "shop-bld-aaaaaaaaaaaa" },
+    });
+    expect(buildSkipLine(skipped)).toBe(
+      "Nothing to build — the repository is unchanged since shop-bld-aaaaaaaaaaaa.",
+    );
+  });
+
+  it("still reads as a sentence with no matched build recorded", () => {
+    expect(buildSkipLine(build({ phase: "Skipped", sourceTree: { object: "a1b2c3", path: "apps/web" } }))).toBe(
+      "Nothing to build — apps/web is unchanged.",
+    );
   });
 });

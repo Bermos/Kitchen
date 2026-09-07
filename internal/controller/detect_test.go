@@ -39,6 +39,11 @@ type fakeSource struct {
 	// same 404 a path that is not there gets, so it is a listing that finds
 	// nothing plus a repository that cannot be asked about.
 	unreadable bool
+	// trees is the tree object at one revision and one directory, keyed
+	// "<ref>:<dir>". A fake with none of them is a provider that cannot name
+	// a tree, which is what most of the suite wants: nothing is compared and
+	// every commit is built, exactly as it was before #500.
+	trees map[string]string
 }
 
 // repoWithDockerfile is what most of the suite's projects are: a repository
@@ -93,6 +98,22 @@ func (f *fakeSource) Repository(context.Context, string) (gitprovider.Repository
 		return gitprovider.Repository{}, f.err
 	}
 	return gitprovider.Repository{FullName: "acme/shop", DefaultBranch: "main"}, nil
+}
+
+// TreeAt implements the tree resolver over the fake's recorded objects.
+func (f *fakeSource) TreeAt(_ context.Context, _, ref, dir string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	if f.trees == nil {
+		return "", fmt.Errorf("%w: this repository was given no tree objects", gitprovider.ErrTreeUnavailable)
+	}
+	key := ref + ":" + strings.Trim(dir, "/")
+	object, ok := f.trees[key]
+	if !ok {
+		return "", fmt.Errorf("%w: %s", gitprovider.ErrFileNotFound, key)
+	}
+	return object, nil
 }
 
 func (f *fakeSource) ReadFile(_ context.Context, _, _, filePath string) ([]byte, error) {
