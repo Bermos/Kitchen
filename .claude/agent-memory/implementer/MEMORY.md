@@ -33,6 +33,7 @@ lesson, dated, under the heading it belongs to. Merge duplicates; do not drop.
 
 - 2026-09-07: Re-running a workflow run reuses the merge snapshot it was created from; after `main` moves, only a new head gives a fresh run. Re-run only for a setup-step rate limit, a Docker Hub 5xx, or a runner lost before any test body ran, and at most once.
 - 2026-09-07: `enable_pr_auto_merge` is refused while any check is failing, required or not ("unstable"). Kind jobs take 15–25 minutes; wait with one bounded loop, not three-minute polls.
+- 2026-09-07: A background wait is resumed by its completion notification, never issued and read past: an implementer read the checks six minutes into a normal kind run, took it for an hour-long stall, and cancelled three healthy runs. Wait with one foreground bounded loop, then read; never cancel a run you did not prove hung.
 - 2026-09-07: The required checks are: Build/typecheck/unit tests, Chart lint and render, E2E on kind, Image build, Typecheck and integration tests, Chart install on kind (the aggregate over the kind and Cilium legs), golangci-lint, Unit and envtest, Conventional Commits, Several workloads on kind. Two PRs merged with the last one red before it was required; do not assume a merged PR's e2e passed.
 
 ## Design rules that bit
