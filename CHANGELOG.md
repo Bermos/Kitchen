@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.38.0](https://github.com/Bermos/Kitchen/compare/v0.37.0...v0.38.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **environments:** an Environment serves no consumer until its owners say so, so every existing `service` claim stops resolving on upgrade — the claim goes Failed with the sentence that fixes it, and the consumers' workloads deploy without the binding's variables rather than failing. After upgrading, declare who may bind on each environment an offering is served from: `kitchen api PATCH /environments/<name>/requirements --data '{"serves":["production"]}'`, adding "preview" and "stage" for the classes of consumer that environment is meant to answer. `status.secretName` on a service claim now names the first class that resolved rather than "the binding", and the claim's audit detail `environment` (a string) is now `environments` (a class-to-environment map).
+
+### Features
+
+* **environments:** an environment declares who may bind, and service bindings stop until it does ([#517](https://github.com/Bermos/Kitchen/issues/517)) ([b2c78c9](https://github.com/Bermos/Kitchen/commit/b2c78c9bb5bec8ff31a38a84f27314d46770977b)), closes [#494](https://github.com/Bermos/Kitchen/issues/494)
+* **signals:** correlation is a confidence ladder, and the thresholds are the operator's ([#520](https://github.com/Bermos/Kitchen/issues/520)) ([92f5a3c](https://github.com/Bermos/Kitchen/commit/92f5a3c37685c60fdabe40b6fd72ba40f23ec7db))
+
+
+### Documentation
+
+* **agents:** stop dispatching at 75% usage and checkpoint instead ([#515](https://github.com/Bermos/Kitchen/issues/515)) ([d36857a](https://github.com/Bermos/Kitchen/commit/d36857aadb20a354b95f42ffac32deab66b11b6d))
+
 ## [0.37.0](https://github.com/Bermos/Kitchen/compare/v0.36.0...v0.37.0) (2026-09-07)
 
 
