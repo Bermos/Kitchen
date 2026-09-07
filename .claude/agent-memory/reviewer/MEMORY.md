@@ -26,6 +26,7 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-07: A "what I could not check" list named the inputs behind rungs 2 and 3 and omitted the input the headline's own number is computed from, so an unreadable history turned "firing in 6 projects" into "firing in 3" with no note. Ask: is the input that produces the number in the headline on the list of reads the sentence admits it could not do?
 - 2026-09-07: Operator-facing prose interpolated a raw `time.Duration` (`1h0m0s`) with `%s` while the same package has a `duration()` humaniser every other rule uses. Ask: does new finding copy go through the package's own formatters?
 - 2026-09-07: A per-round store read was added with no time bound and no LIMIT — a full-table `GROUP BY` with twenty `argMax`es, now on a 60s timer — where every other per-round read in the same gatherer is windowed. Ask: is this new read bounded, and does its cost scale with the estate or with all of retention?
+- 2026-09-07: A fix moved a rule's headline number to a new input but left the old one (the database's own size, now only a decorative clause) in `Requires`, so a failure of the read the number no longer depends on darkens the rule into `SeverityUnknown`. Ask: is every entry in `Requires` an input the verdict depends on, or one the sentence merely mentions?
 
 - 2026-09-07: A new per-class refusal re-spelled the platform's one data-class refusal (`DataClassRefusal`) with its own `fmt.Sprintf`, sharing only the `Exceeds` comparison — two wordings of one rule that can now drift, on a criterion that asked for the existing engine. Ask: is the refusal *sentence* shared too, or only the comparison behind it?
 
@@ -54,6 +55,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-07: A credential-split test and its kind case both passed with one all-powerful account, because the narrower credential is opt-in by naming convention (`<secret>-read`) and `credentialsWithRead` silently falls back to `Read == Push` — so every assertion about "which container holds which" was vacuous. Ask: does the fixture create the narrowing artifact, and does the test assert the predicate (`scoped()`) before asserting anything that depends on it?
 
 ## Decisions that should have been surfaced
+
+- 2026-09-07: A derived input (`store_volume_usage`) made a Critical rule answer "cannot be evaluated" *forever* on any installation that set `collector.metrics.kubelet.enabled: false` — plus a permanent `status.signals.unreadable` line, the same shape as the audit-table one. Ask: which supported chart value makes this new input dark, and does the body name that configuration rather than the abstraction?
+- 2026-09-07: A documented response field (`store.usedFraction`) was removed rather than redefined — every `kitchen api` reader now gets `undefined` instead of a number — under a plain `fix` title with no `!` and no `BREAKING CHANGE:` footer. Ask: does the diff delete or retype a field a `docs/api/*.md` page publishes, and does the subject carry the break?
 
 - 2026-09-07: A stage environment stopped inheriting the project's criticality; a default that changes behaviour for existing installations must be in the PR body and the changelog.
 - 2026-09-07: Backup encryption on by default stopped uploads for installations without a key; carried as `!` with a `BREAKING CHANGE:` footer — that is the right shape, check for it.
