@@ -117,6 +117,47 @@ the sentence and carries the query the link was asking with. The alternative —
 guessing a project from a dropdown's last value — is what made a pasted
 developer link mean something different for every reader.
 
+### What the shell may remember
+
+**Memory may decide a destination; it may never decide a rendering.**
+
+The scope rule above turns on the address meaning one thing for every reader,
+and the reason there is no project dropdown deciding what you see is written
+into `routes.ts`: guessing a project from a dropdown's last value is what made
+a pasted developer link mean something different for each person who opened it.
+
+That rule is about what an address *renders*, and it is absolute. Where a
+**control** points when nobody has named a project is a different question, and
+answering it from memory costs the rule nothing: the address the control
+produces is still explicit, still shareable, and still means exactly one thing.
+So the shell remembers the last project screen somebody was on
+([`lib/navigation.ts`](../ui/src/lib/navigation.ts)) and the scope switcher's
+Project entry goes there, rather than asking again every time somebody comes
+back from the Platform scope.
+
+Three consequences, and each is the rule rather than a detail of it:
+
+- **`/projects` still asks.** It is not redirected to the remembered project,
+  because a redirect is the address meaning two things — precisely what the
+  scope rule forbids. It keeps the picker, and the memory only stops you
+  arriving there by accident.
+- **What is remembered is a place, not a path**: a project and one of the six
+  section screens. A screen naming an *object* — a build, an environment —
+  degrades to the list it came from, since that object belongs to the project
+  being left and would be a 404 or a stale row on return. The one query that
+  survives is `?section=`, which names a pane of the destination screen; a log
+  filter or a time range is a question about the project being left.
+- **A remembered project that has gone is forgotten, not navigated to.** It is
+  checked against the projects the account can currently see, so a deleted
+  project — or one whose role was taken away — falls back to the picker.
+
+It lives in `localStorage`, which is where anything of this kind belongs: a
+per-viewer convenience that never reaches the API and never reaches another
+reader. Both halves are wrapped, because a private window and a browser set to
+block site data throw on the accessor itself rather than answering nothing —
+so it falls back to an in-memory copy. The worst case is a switcher that has
+forgotten, which is where the feature started.
+
 ## The page
 
 The shell owns the page. `AppShell.vue` caps the content column at `110rem`,
