@@ -311,6 +311,7 @@ func (r *BuildReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 
 // projectFor is the project this Build belongs to, and which of the two kinds
 // of Build it is (#307).
@@ -975,13 +976,15 @@ func (r *BuildReconciler) createJob(
 	credentials registryCredentialsForPod,
 	gitSecret string,
 ) error {
+	// The ceiling twice, for the two things it decides: what the pod may
+	// take, and — for a Node build, which sizes its heap from the machine and
+	// not from the cgroup — how much of that the heap may be. The second is
+	// not on the pod at all: it is a buildpack's input, and goes where the
+	// rest of them go.
+	heapMiB := buildHeapMiB(ctx, builds.Resources)
 	template := dockerfilePod(project, build, plan, cache, credentials.Push, gitSecret, r.platformAttestation(ctx))
 	if plan.Strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		// The ceiling twice, for the two things it decides: what the pod may
-		// take, and — for a Node build, which sizes its heap from the machine
-		// and not from the cgroup — how much of that the heap may be.
-		template = buildpacksPod(project, build, plan, detected, cache, credentials, gitSecret,
-			buildHeapMiB(ctx, builds.Resources))
+		template = buildpacksPod(project, build, plan, cache, credentials, gitSecret)
 	}
 	// What a build may take, from the platform object rather than from
 	// anything the commit or the project can say. It is applied here rather
@@ -1028,7 +1031,58 @@ func (r *BuildReconciler) createJob(
 			Template:              template,
 		},
 	}
-	return r.Create(ctx, job)
+	if err := r.Create(ctx, job); err != nil {
+		// A build now writes two objects rather than one, and the second
+		// cannot be written until the first has a UID to be owned by. So a
+		// Job that is already there is read back rather than refused: the
+		// pass that failed between the two is retried and converges, instead
+		// of failing on the Job for as long as the Job exists.
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(job), job); err != nil {
+			return err
+		}
+	}
+	if plan.Strategy != kitchenv1alpha1.BuildStrategyBuildpacks {
+		return nil
+	}
+	return r.applyBuildPlatformEnv(ctx, job, detected, heapMiB, labels)
+}
+
+// applyBuildPlatformEnv writes the platform directory the build's buildpacks
+// are configured out of: one ConfigMap key per variable, mounted at
+// `<platform>/env` in the two phases that run buildpacks.
+//
+// It has to be a directory of files. The lifecycle rebuilds the environment
+// it runs a buildpack in from a fixed include list and drops everything else
+// it inherited, so a BP_* variable set on the phase container is read by the
+// lifecycle binary and by nothing that the lifecycle runs — see
+// buildpacksPlatformDir. This is the same thing `pack build --env` writes.
+//
+// It is written after the Job so that the Job can own it: the pod cannot
+// start before the object it mounts exists, and this is the same pass that
+// created the Job, so what that costs is a mount retry rather than a build.
+// What it buys is that the build's TTL takes the ConfigMap with it.
+func (r *BuildReconciler) applyBuildPlatformEnv(
+	ctx context.Context,
+	job *batchv1.Job,
+	detected framework.Framework,
+	heapMiB int64,
+	labels map[string]string,
+) error {
+	files := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name:      buildPlatformEnvName(job.Name),
+		Namespace: job.Namespace,
+	}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, files, func() error {
+		files.Labels = labels
+		// Written whole: the object is the directory, and a variable that is
+		// no longer set is a file that is no longer there.
+		files.Data = buildPlatformEnv(detected, heapMiB)
+		return controllerutil.SetControllerReference(job, files, r.Scheme)
+	})
+	return err
 }
 
 // dockerfilePod is a build that runs the repository's own Dockerfile through

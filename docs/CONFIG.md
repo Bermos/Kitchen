@@ -224,17 +224,31 @@ command is required` — and it is not always obvious which builds those are: a
 Node application whose buildpacks stopped at `node-run-script` is one. Where
 that happens and nothing supplies a `command`, the build fails saying so
 rather than shipping a release that crash-loops. Give the workload a `command`
-or add a buildpack that declares a process; a `Procfile` in the repository is
-the shortest way to the second.
+or add a buildpack that declares a process.
+
+A missing process type is also rarely the only thing missing. The Node runtime
+is a buildpack layer rather than part of the base image, and it is kept for
+*launch* only where a start buildpack asked for Node at launch — so the same
+build that declares no process usually also ships no `node` and no runtime
+`node_modules`, and a `command` supplied over the top of it answers
+`node: command not found`. A `Procfile` does not fix that half: it contributes
+process types and requires nothing of the runtime. What does is a `start`
+script in `package.json`, which is what the `npm-start` buildpack reads.
 
 For the frameworks that end up there by construction, the platform supplies
-one already. A Nuxt, SvelteKit, NestJS or Astro-with-adapter repository writes
-its server into a directory that does not exist while the buildpacks are
-deciding what to run, so none of the three start buildpacks fires — and the
-detected framework's own documented start command fills `runtime.command` in
-the Release, under the same precedence `port` has: what this file says wins,
-then the project's setting, then the framework's. Setting `command` yourself
-is how a project overrules it.
+both halves already, and no repository changes. A Nuxt, SvelteKit, NestJS or
+Astro-with-adapter repository writes its server into a directory that does not
+exist while the buildpacks are deciding what to run, so none of the start
+buildpacks fires on its own. The detected framework's own documented start
+command fills `runtime.command` in the Release, under the same precedence
+`port` has: what this file says wins, then the project's setting, then the
+framework's. And the file that command runs is named to the builder as
+`BP_LAUNCHPOINT`, with `BP_VERIFY_LAUNCHPOINT=false` beside it so the
+buildpack does not look for a file the build has not written yet — which is
+what puts `node` and the launch `node_modules` in the image, and gives it a
+default process type as well. Setting `command` yourself is how a project
+overrules the first; the second follows the framework, because it is a fact
+about the image rather than about the workload.
 
 #### `runtime.init` — a volume the process cannot start on
 

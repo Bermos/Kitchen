@@ -57,9 +57,37 @@ const (
 	buildpacksSourceDir    = buildpacksWorkspaceDir + "/source"
 	buildpacksLayersDir    = "/layers"
 
-	volumeWorkspace = "workspace"
-	volumeLayers    = "layers"
+	// buildpacksPlatformDir is the platform directory, which is the *only*
+	// way a platform configures a buildpack. The lifecycle builds the
+	// environment it runs a buildpack in with `env.NewBuildEnv(os.Environ())`
+	// and that keeps a fixed list — CNB_STACK_ID, HOSTNAME, HOME, the proxy
+	// variables and PATH's siblings — and discards everything else it
+	// inherited; what it then adds back is one file per variable out of
+	// `<platform>/env`, named for the variable and containing its value.
+	// A BP_* variable on the container therefore reaches the lifecycle binary
+	// and no buildpack, which is what `pack build --env` writes files for.
+	//
+	// It is Kitchen's own directory rather than the lifecycle's default
+	// `/platform`, so that whatever the builder image has there is left
+	// alone; the two phases that run buildpacks are pointed at it with
+	// `-platform`, which only they accept.
+	buildpacksPlatformDir = "/kitchen/platform"
+
+	volumeWorkspace   = "workspace"
+	volumeLayers      = "layers"
+	volumePlatformEnv = "platform-env"
 )
+
+// buildPlatformEnvName is the ConfigMap one build Job's platform directory is
+// mounted from: one key per variable, named exactly as the variable, which is
+// what makes it a directory of env files. A ConfigMap key admits
+// `[-._a-zA-Z0-9]+` and every name the platform sets is a BP_ or NODE_ one,
+// so no name has to be escaped on the way in or read back out on the way out.
+//
+// It is named after the Job and owned by it, so the build's TTL collects it
+// rather than leaving one object per build behind in the application
+// namespace.
+func buildPlatformEnvName(jobName string) string { return jobName + "-platform" }
 
 // buildpacksPod is a build that hands the repository to the Cloud Native
 // Buildpacks lifecycle: no Dockerfile, no instructions of any kind — the
@@ -90,20 +118,17 @@ const (
 // What the lifecycle is told about the repository comes from detection: a
 // framework that starts a server of its own needs nothing, and one that
 // builds into a directory of files needs the web-server buildpack pointed at
-// that directory — there is no other way to say "serve this with NGINX".
+// that directory — there is no other way to say "serve this with NGINX". None
+// of it is in this spec, though the pod is where it is read: it reaches the
+// buildpacks as a directory of files, which is the only channel they have,
+// and the pod names the object it is mounted from. See buildPlatformEnvName.
 func buildpacksPod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 	plan buildPlan,
-	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	credentials registryCredentialsForPod,
 	gitSecret string,
-	// heapMiB is the platform's build ceiling as a Node heap; zero where
-	// there is no ceiling to take a share of. It is passed in rather than
-	// read here because the ceiling belongs to the Kitchen object and the
-	// same number is what applyBuildResources writes onto this pod.
-	heapMiB int64,
 ) corev1.PodTemplateSpec {
 	// The clone lands the whole repository and the lifecycle is pointed
 	// inside it: the build root is what is built, exactly as it is for the
@@ -136,28 +161,46 @@ func buildpacksPod(
 		{Name: volumeLayers, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		dockerConfigVolume(credentials.Push),
 		readDockerConfigVolume(credentials.Read),
+		// What detection tells the buildpacks. The object is written beside
+		// the Job — see applyBuildPlatformEnv — and is there whether or not
+		// there is anything to say, so that the pod spec does not depend on
+		// what was detected.
+		{Name: volumePlatformEnv, VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: buildPlatformEnvName(plan.Job),
+				},
+			},
+		}},
 	}
 	if gitSecret != "" {
 		volumes = append(volumes, gitCredentialVolume(gitSecret))
 	}
 
 	// What every phase is told, whichever credential it holds: the platform
-	// contract it speaks, and what detection made of the repository. The
-	// framework's variables are the buildpacks' own configuration (BP_*) and
-	// are read in both the phases that run them, so they are given to every
-	// phase rather than guessed at one.
+	// contract it speaks, and where to find a registry credential if it has
+	// one. Both are the *lifecycle's* own inputs, which is why they are
+	// environment variables at all — what detection made of the repository is
+	// the buildpacks' input and reaches them as files instead, through the
+	// platform directory below.
 	lifecycleEnv := func(credential string) []corev1.EnvVar {
 		env := []corev1.EnvVar{{Name: "CNB_PLATFORM_API", Value: BuildpacksPlatformAPI}}
 		if credential != "" {
 			env = append(env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: dockerConfigDir})
 		}
-		return append(env, frameworkEnv(detected, heapMiB)...)
+		return env
 	}
 	// The credential-holding phases mount one docker config each; the two
-	// that run the repository's code mount neither.
+	// that run the repository's code mount neither, and mount the platform
+	// directory instead — they are the two phases that run buildpacks, and
+	// the other three neither read it nor accept the flag naming it.
 	readMounts := []corev1.VolumeMount{workspace, layers, readDockerConfigMount()}
 	pushMounts := []corev1.VolumeMount{workspace, layers, dockerConfigMount()}
-	hermeticMounts := []corev1.VolumeMount{workspace, layers}
+	buildpackMounts := []corev1.VolumeMount{workspace, layers, {
+		Name:      volumePlatformEnv,
+		MountPath: buildpacksPlatformDir + "/env",
+		ReadOnly:  true,
+	}}
 
 	// One phase, as a container. Every phase is told the same two things
 	// about where it works — the layers directory each writes its part of
@@ -179,6 +222,10 @@ func buildpacksPod(
 	}
 	layersArg := "-layers=" + buildpacksLayersDir
 	appArg := "-app=" + appDir
+	// Only detect and build define this flag: the other three phases run no
+	// buildpack, so passing it to them would be an unknown flag rather than
+	// a redundant one.
+	platformArg := "-platform=" + buildpacksPlatformDir
 
 	return corev1.PodTemplateSpec{
 		Spec: corev1.PodSpec{
@@ -195,12 +242,12 @@ func buildpacksPod(
 				phase("analyzer", readMounts, credentials.Read, layersArg, plan.Tag),
 				// Which buildpacks claim the repository. This is the first
 				// phase that runs somebody else's code.
-				phase("detector", hermeticMounts, "", appArg, layersArg),
+				phase("detector", buildpackMounts, "", appArg, layersArg, platformArg),
 				// The layers the cache image still has.
 				phase("restorer", readMounts, credentials.Read,
 					append(cnbCacheArgs(cache), layersArg)...),
 				// The repository's own build.
-				phase("builder", hermeticMounts, "", appArg, layersArg),
+				phase("builder", buildpackMounts, "", appArg, layersArg, platformArg),
 			},
 			Containers: []corev1.Container{
 				// The push, and the only container in the pod that can. Its
@@ -235,10 +282,16 @@ func cnbCacheArgs(cache *kitchenv1alpha1.BuildCacheStatus) []string {
 	return []string{"-cache-image=" + cache.Ref}
 }
 
-// frameworkEnv is what detection tells the lifecycle, in the order the
-// framework package sorted it: a Job's pod template cannot be edited after it
-// is created, so the same repository has to produce the same spec every time
-// rather than one that depends on map iteration order.
+// buildPlatformEnv is what detection tells the buildpacks, as the platform
+// directory's contents: one entry per variable, which the reconciler writes
+// as one ConfigMap key per variable and the lifecycle reads back as one file
+// per variable out of `<platform>/env`.
+//
+// It is a map rather than the ordered slice this used to be because the
+// ConfigMap is a map: the API server sorts its keys, so the same repository
+// produces the same object — and the same Job pod template, which cannot be
+// edited after it is created — without anything here sorting anything. The
+// framework package still sorts what it hands over, for its own reasons.
 //
 // The heap cap is added here rather than in the framework package because it
 // is not a fact about the repository at all: it is the platform's own build
@@ -253,16 +306,22 @@ func cnbCacheArgs(cache *kitchenv1alpha1.BuildCacheStatus) []string {
 // needs should be able to say so. What it replaces is the *absence* of a
 // cap, which nothing in a repository can supply for a build it cannot
 // configure at all.
-func frameworkEnv(detected framework.Framework, heapMiB int64) []corev1.EnvVar {
-	env := make([]corev1.EnvVar, 0, len(detected.BuildEnv)+1)
+//
+// A platform variable replaces a buildpack layer's rather than joining it,
+// because the lifecycle applies the platform directory over the accumulated
+// layer environment — so NODE_OPTIONS here also replaces the
+// `--use-openssl-ca` node-engine contributes as a *default*, for the
+// buildpacks that run after it. That is what `pack build --env NODE_OPTIONS`
+// does too, and nothing in a Kitchen build reaches a registry behind a
+// private CA; adding a flag rather than replacing the list would mean a
+// `.append` file in a build-config directory beside this one.
+func buildPlatformEnv(detected framework.Framework, heapMiB int64) map[string]string {
+	env := make(map[string]string, len(detected.BuildEnv)+1)
 	if detected.RunsNode && heapMiB > 0 {
-		env = append(env, corev1.EnvVar{
-			Name:  "NODE_OPTIONS",
-			Value: fmt.Sprintf("--max-old-space-size=%d", heapMiB),
-		})
+		env["NODE_OPTIONS"] = fmt.Sprintf("--max-old-space-size=%d", heapMiB)
 	}
 	for _, v := range detected.BuildEnv {
-		env = append(env, corev1.EnvVar{Name: v.Name, Value: v.Value})
+		env[v.Name] = v.Value
 	}
 	return env
 }

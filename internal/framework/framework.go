@@ -73,9 +73,11 @@ type Framework struct {
 	Port int32
 
 	// BuildEnv is what the builder has to be told: the web-server
-	// configuration for a framework that builds to a directory of files, and
-	// for every Node framework the build script to run and the runtime
-	// version to run it under.
+	// configuration for a framework that builds to a directory of files, for
+	// every Node framework the build script to run and the runtime version to
+	// run it under, and for a framework that starts its own server the file
+	// that server is built into — without which the image is exported with no
+	// Node runtime in it (see launchPointEnv).
 	BuildEnv []BuildVar
 
 	// Command is how the framework's own documentation starts what it built,
@@ -96,6 +98,10 @@ type Framework struct {
 	// than the framework's: a Dockerfile declares its entrypoint, the
 	// non-Node languages' buildpacks all declare a process, and the static
 	// frameworks are started by the web-server buildpack.
+	//
+	// Where it is a `node <file>` command it is also what the *image* is
+	// built to start, because the same file becomes BP_LAUNCHPOINT — see
+	// launchPointEnv, which is what puts a Node runtime in the image at all.
 	Command []string
 
 	// RunsNode says the repository's build runs under Node.js. It is a fact
@@ -144,11 +150,12 @@ const (
 // is here rather than computed in Detect: the Release is cut from the name
 // alone.
 //
-// BuildEnv is deliberately absent here and computed in Detect instead,
-// because every variable in it depends on the repository rather than on the
-// framework — whether there is a build script to run, and which runtime
-// version the manifest asks for — and a map of slices that callers append to
-// is a way to hand out shared backing arrays.
+// BuildEnv is deliberately absent here and assembled in Detect instead. Most
+// of it depends on the repository rather than on the framework — whether
+// there is a build script to run, and which runtime version the manifest asks
+// for — and the part that does not (the launch point, derived from Command)
+// belongs on the same slice: a map of slices that callers append to is a way
+// to hand out shared backing arrays.
 var catalogue = map[string]Framework{
 	Dockerfile: {Name: Dockerfile, Strategy: kitchenv1alpha1.BuildStrategyDockerfile},
 
@@ -385,6 +392,58 @@ func nodeEnv(pkg packageJSON) []BuildVar {
 	return vars
 }
 
+// launchPointEnv is how a framework that builds its own server ends up in an
+// image that can run it.
+//
+// A Node runtime is a buildpack layer rather than part of the base image, and
+// the node-engine buildpack marks that layer for *launch* only when something
+// in the build plan requires `node` with `launch: true`. Only the start
+// buildpacks do: `npm-start` requires it where the manifest has a `start`
+// script, `node-start` where it can find the application's entry file. A
+// framework that writes its server into a directory the build has not
+// produced yet satisfies neither, so the group passes on node-engine,
+// npm-install and node-run-script — all three of which want Node at build
+// time only — and the exported image contains no Node at all. The platform
+// hands the framework's command to the launcher correctly and it still dies:
+//
+//	node: line 1: node: command not found
+//
+// BP_LAUNCHPOINT names the file node-start should start, and
+// BP_VERIFY_LAUNCHPOINT is that buildpack's own answer to a launch point
+// "that is generated and may not exist yet": with it set to false, detect
+// stops stat-ing the path and passes, which is the whole of the fix. Neither
+// asks anything of the repository. What follows is the layer that carries
+// `node`, the launch `node_modules` the deploy tasks and workers need to
+// resolve their imports, and a default process type the image did not have.
+//
+// It is derived from Command rather than declared beside it so that the two
+// cannot disagree: the file the image is built to start is the file the
+// platform starts. A command that is not exactly `node <file>` gets neither
+// variable — `npm start` is the manifest's own script, which is what makes
+// `npm-start` fire for the two frameworks that name it.
+func launchPointEnv(f Framework) []BuildVar {
+	file, ok := launchPoint(f.Command)
+	if !ok {
+		return nil
+	}
+	return []BuildVar{
+		{Name: "BP_LAUNCHPOINT", Value: file},
+		{Name: "BP_VERIFY_LAUNCHPOINT", Value: "false"},
+	}
+}
+
+// launchPoint is the file a start command runs, for the commands that name
+// one: `node <file>`, and nothing else. A command with flags in it, or one
+// that runs a package manager, is not a launch point — node-start would build
+// `node <the whole thing>` out of it, which is a different program from the
+// one the framework documented.
+func launchPoint(command []string) (string, bool) {
+	if len(command) == 2 && command[0] == "node" {
+		return command[1], true
+	}
+	return "", false
+}
+
 // nginx is the web-server buildpack's configuration for a directory of static
 // files: it generates an nginx.conf serving root, listening on $PORT.
 //
@@ -405,8 +464,13 @@ func nginx(root string, pushState bool) []BuildVar {
 // withEnv copies a catalogue entry with build variables attached, sorted by
 // name so the same repository always produces the same pod spec — an
 // unordered environment would rewrite the Job on every reconcile.
+//
+// What the framework itself implies is added here rather than at each call:
+// a start command the repository declares nothing about has to reach the
+// lifecycle as well, or the image is built without the runtime that command
+// needs. See launchPointEnv.
 func withEnv(f Framework, groups ...[]BuildVar) Framework {
-	env := []BuildVar{}
+	env := append([]BuildVar{}, launchPointEnv(f)...)
 	for _, group := range groups {
 		env = append(env, group...)
 	}
