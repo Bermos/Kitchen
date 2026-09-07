@@ -780,6 +780,19 @@ kitchen:
       # interval. Below a minute the cost is real, since a round reads the
       # cluster and queries the store.
       intervalSeconds: 60
+      policy:
+        # -- What this installation counts as worth hearing, as one of three
+        # named presets: `strict`, `balanced` or `homelab`. `balanced` is the
+        # platform's own judgement and is the compiled-in numbers exactly, so
+        # an installation that leaves this alone behaves as it always did;
+        # `homelab` is one host and a handful of projects, where two projects
+        # failing together is a correlation and paging is off by default.
+        #
+        # It is a seed rather than the source of truth: the preset and the six
+        # numbers underneath it are edited afterwards on `/platform/policy` and
+        # through `PATCH /api/v1/platform/policy`, and the Kitchen object is
+        # created once, on install.
+        preset: balanced
   # How long each class of what the platform keeps is kept, in days. Every
   # entry is optional and an empty one *inherits*: the telemetry classes from
   # `kitchen.observability.clickhouse.retentionDays`, and `audit` from

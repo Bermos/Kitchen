@@ -304,6 +304,8 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` |
 | GET | `/platform/retention` | How long each class of what the platform keeps is kept, and how far back each one actually goes | `operator` |
 | PATCH | `/platform/retention` | Change any class's retention. Refuses an audit retention under the documented floor without an explicit override | `operator` |
+| GET | `/platform/policy` | What this installation counts as worth hearing: the correlation threshold and window, the escalation clock, the longest silence, and the three presets | `operator` |
+| PATCH | `/platform/policy` | Change any of those numbers, or rebase on a preset. Every finding records the values it was evaluated against | `operator` |
 | GET | `/platform/backup` | What an export would carry, what it would not, and whether this cluster can snapshot volumes | `operator` |
 | POST | `/platform/backup` | Export the platform's state as one gzipped tar | `operator` |
 | PUT | `/platform/backup/destination` | Set where scheduled archives are written, and what encrypts them there. Carries the bucket's credential and the archive's key; echoes neither | `operator` |

@@ -328,6 +328,14 @@ spec:
       # — the screens go on evaluating on request either way.
       enabled: {{ .Values.kitchen.observability.signals.enabled }}
       intervalSeconds: {{ int .Values.kitchen.observability.signals.intervalSeconds }}
+      policy:
+        # What this installation counts as worth hearing. Only the preset is a
+        # chart value, deliberately: the six numbers underneath it are a screen
+        # (`/platform/policy`) and an API, and seeding each of them from values
+        # would make the chart a second place they are set. This is the one
+        # answer somebody knows at install time — "this is a homelab" — and
+        # the numbers are the operator's afterwards.
+        preset: {{ .Values.kitchen.observability.signals.policy.preset | quote }}
   {{- with include "kitchen.retentionBlock" . }}
   # How long each class of what the platform keeps is kept. Only the classes
   # set in values appear here: an absent one inherits the telemetry or the
