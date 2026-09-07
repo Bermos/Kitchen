@@ -176,6 +176,13 @@ type ServiceOffering struct {
 	// here.
 	// +optional
 	Environment string `json:"environment,omitempty"`
+
+	// Contracts is where this offering's machine-readable description lives
+	// in the repository. It is `contract` on the wire — the obvious Go name
+	// is already the method that applies the defaults, the same collision
+	// `Speaks`, `Authorization` and `VisibleTo` resolve the same way.
+	// +optional
+	Contracts *OfferingContract `json:"contract,omitempty"`
 }
 
 // ProcessName is the workload that answers this offering, with the default
@@ -205,4 +212,43 @@ func (p *Project) OfferingNames() []string {
 		names = append(names, offering.Name)
 	}
 	return names
+}
+
+// OfferingContract is where the machine-readable description of an offering
+// lives **in the repository**, resolved per release rather than held as a
+// field on the Project (#498).
+//
+// That is the whole of why it is a path and not a document: a document on
+// the Project drifts from what is running, and an artifact extracted from
+// the source at build time and attached to the image is true by
+// construction, because the image is what is running. Extraction is an input
+// to the build record — reproducible, attributable to a commit — rather than
+// scraped from a running environment, which would make it an observation of
+// the platform instead of a fact about the source.
+//
+// It is the *application's* half of an offering, so it may be declared in
+// kitchen.json beside `process`, `protocol` and `auth`. Only `visibility`
+// is the platform's.
+type OfferingContract struct {
+	// OpenAPI is the path of this offering's OpenAPI document, relative to
+	// the repository root, resolved at every build of the project.
+	//
+	// A path that is not there at the commit under build, or a file that is
+	// not a document this platform can read, is recorded on the Build as a
+	// failed artifact rather than swallowed: a specification other teams are
+	// writing code against is wrong when it is silently absent, and the
+	// build itself is not failed for it (docs/COMPLIANCE.md §5.4 — a deploy
+	// that works must not be blocked by a documentation toolchain).
+	// +kubebuilder:validation:MaxLength=256
+	// +optional
+	OpenAPI string `json:"openapi,omitempty"`
+}
+
+// Contract is the offering's contract with its defaults applied, and the
+// second return says whether the offering declares one at all.
+func (o ServiceOffering) Contract() (OfferingContract, bool) {
+	if o.Contracts == nil {
+		return OfferingContract{}, false
+	}
+	return *o.Contracts, o.Contracts.OpenAPI != ""
 }

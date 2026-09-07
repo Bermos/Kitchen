@@ -1091,6 +1091,31 @@ type BuildStatus struct {
 	// +optional
 	Artifact *ArtifactStatus `json:"artifact,omitempty"`
 
+	// ReleaseArtifacts is what this build extracted from the source beside
+	// the image and attached to it: the OpenAPI document an offering names
+	// today (#498), whatever else #187 comes to carry.
+	//
+	// `Artifact` above is the image; these are attached *to* it, as OCI
+	// referrers on its digest. That is deliberate and it is what gives them
+	// a lifetime nobody has to manage — an unreferenced blob is something a
+	// registry garbage-collects, a referrer is safe from that and is deleted
+	// with the image it describes, so an artifact is backed up exactly as
+	// much as the release it belongs to.
+	//
+	// This list is an index, not the content: each row names the artifact,
+	// where in the repository it came from and the digest it is stored
+	// under, which is what makes two releases' artifacts comparable without
+	// a database — the deferred contract-versioning work in #489 needs only
+	// to be able to fetch two digests.
+	//
+	// A row whose `failure` is set is an artifact the build could not
+	// produce. It is recorded rather than dropped, because the failure mode
+	// of an extraction pipeline is silence, and it does not fail the build.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	ReleaseArtifacts []ReleaseArtifactStatus `json:"releaseArtifacts,omitempty"`
+
 	// Acquisition is what this Build resolved, from which reference, and
 	// when — the acquisition's answer to "why did this environment change",
 	// asked months later (#308).
@@ -1510,4 +1535,81 @@ type BuildList struct {
 
 func init() {
 	SchemeBuilder.Register(&Build{}, &BuildList{})
+}
+
+// ReleaseArtifactType is what a release artifact *is*, which decides how it
+// is read back and what renders it.
+//
+// It has one value today, and it gains values rather than gaining a shape:
+// the mechanism — extract at build time, attach to the image digest, index
+// the row here — is the same for every artifact #187 will carry, and a
+// reader has to be able to tell them apart without knowing which release of
+// Kitchen wrote the row.
+// +kubebuilder:validation:Enum=openapi
+type ReleaseArtifactType string
+
+// ReleaseArtifactOpenAPI is an OpenAPI document: the contract an offering
+// serves, at the release serving it.
+const ReleaseArtifactOpenAPI ReleaseArtifactType = "openapi"
+
+// ReleaseArtifactStatus is one artifact this build extracted from the source
+// and attached to its image.
+type ReleaseArtifactStatus struct {
+	// Name identifies the artifact within the build, and is what the API
+	// asks for when it fetches one back. For an offering's contract it is
+	// the offering's own name, which is what makes "the specification of
+	// pricing-api at the release serving production" a lookup rather than a
+	// search.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// Type is what the artifact is.
+	Type ReleaseArtifactType `json:"type"`
+
+	// Path is where it came from in the repository, relative to the
+	// repository root, at the commit this build built. It is recorded rather
+	// than recomputed for the reason `DockerfileTarget` is: the declaration
+	// moves and the build does not.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// MediaType is what the artifact is stored under in the registry, which
+	// is also what a reader is served it as.
+	// +optional
+	MediaType string `json:"mediaType,omitempty"`
+
+	// Digest is the artifact blob's own digest, as `sha256:…`. It is
+	// content-addressed, so the same document extracted by two builds is one
+	// blob however many builds point at it — and two releases' artifacts are
+	// identical exactly when this field is.
+	// +optional
+	Digest string `json:"digest,omitempty"`
+
+	// Size is the artifact in bytes, so that a reader can decide whether to
+	// fetch it before fetching it.
+	// +optional
+	Size int64 `json:"size,omitempty"`
+
+	// Failure is why the artifact is not there, when it is not: a path that
+	// was not at the commit, a document that did not parse, a file over the
+	// limit. It is set with `digest` empty and never both.
+	// +optional
+	Failure string `json:"failure,omitempty"`
+}
+
+// Failed reports an artifact row that records an extraction that did not
+// happen, as opposed to one that did.
+func (a ReleaseArtifactStatus) Failed() bool {
+	return a.Failure != ""
+}
+
+// ReleaseArtifact finds one of this build's artifacts by name.
+func (b *Build) ReleaseArtifact(name string) (ReleaseArtifactStatus, bool) {
+	for _, artifact := range b.Status.ReleaseArtifacts {
+		if artifact.Name == name {
+			return artifact, true
+		}
+	}
+	return ReleaseArtifactStatus{}, false
 }

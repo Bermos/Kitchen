@@ -18,8 +18,10 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -64,6 +66,17 @@ type offeringRequest struct {
 	// Environment is which of this project's environments the offering
 	// serves; empty is the project's production environment.
 	Environment string `json:"environment,omitempty"`
+	// Contract is where the offering's machine-readable description lives in
+	// the repository, resolved at every build (#498). It is the
+	// application's half of an offering, so a repository may declare it too.
+	Contract *contractRequest `json:"contract,omitempty"`
+}
+
+// contractRequest is `contract` on an offering: paths, not documents. What
+// the platform serves is what the build extracted from the source, which is
+// why nothing here accepts a document body.
+type contractRequest struct {
+	OpenAPI string `json:"openapi,omitempty"`
 }
 
 // offeringsFromRequest validates the whole list against the project the
@@ -132,9 +145,52 @@ func offeringsFromRequest(
 				"which is the default — or %s, which admits every project on the platform (got %q)",
 				name, kitchenv1alpha1.OfferingRequest, kitchenv1alpha1.OfferingOpen, request.Visibility)
 		}
+		if err := offeringContract(&offering, request.Contract); err != nil {
+			return nil, err
+		}
 		offers = append(offers, offering)
 	}
 	return offers, nil
+}
+
+// offeringContract validates the path an offering names its contract at.
+//
+// The path is checked and the document is not: whether there is an OpenAPI
+// document at it is a fact about a commit, answered by the build that reads
+// it and recorded on that build. A settings route that went and looked would
+// be answering about whatever the default branch holds this minute, which is
+// not what any release serves.
+func offeringContract(offering *kitchenv1alpha1.ServiceOffering, request *contractRequest) error {
+	if request == nil {
+		return nil
+	}
+	path := strings.TrimSpace(request.OpenAPI)
+	if path == "" {
+		return nil
+	}
+	if err := validRepoPath(path); err != nil {
+		return fmt.Errorf("offering %q names its OpenAPI document at %q, and %w", offering.Name, request.OpenAPI, err)
+	}
+	offering.Contracts = &kitchenv1alpha1.OfferingContract{OpenAPI: path}
+	return nil
+}
+
+// validRepoPath is the one rule a contract path has to keep: it names a file
+// inside the repository. An absolute path or one that climbs out of the tree
+// is refused here rather than at the build, where the refusal would reach
+// whoever deployed rather than whoever wrote it.
+func validRepoPath(path string) error {
+	switch {
+	case strings.HasPrefix(path, "/"):
+		return errors.New("it is relative to the repository root — drop the leading slash")
+	case path != filepath.Clean(path):
+		return errors.New("it has to be written plainly, without '.' or a trailing slash")
+	case strings.HasPrefix(path, "../") || path == "..":
+		return errors.New("it cannot climb out of the repository")
+	case len(path) > 256:
+		return errors.New("it is longer than 256 characters")
+	}
+	return nil
 }
 
 // offeringProcess holds the workload an offering names to the one thing this
@@ -189,6 +245,11 @@ type offeringView struct {
 	// resolves to, with the default filled in, so a reader never has to know
 	// how the platform names a project's production environment.
 	Environment string `json:"environment"`
+	// Contract is where this offering's machine-readable description lives
+	// in the repository, when it names one. What each environment actually
+	// serves is on the offering's own page, because it is a fact about a
+	// release rather than about the declaration.
+	Contract *contractRequest `json:"contract,omitempty"`
 	// Mine says this offering is made by a project the caller holds a role
 	// on. It is what lets the dashboard tell "something my team offers"
 	// from "something another team offers" without a second read.
@@ -236,6 +297,7 @@ func (s *Server) listOfferings(w http.ResponseWriter, req *http.Request) {
 				Auth:        string(offering.Auth()),
 				Visibility:  string(offering.Visibility()),
 				Environment: offeringEnvironmentName(project, offering),
+				Contract:    contractView(offering),
 				Mine:        mine,
 			})
 		}
@@ -247,6 +309,16 @@ func (s *Server) listOfferings(w http.ResponseWriter, req *http.Request) {
 		return views[i].Name < views[j].Name
 	})
 	writeList(w, views)
+}
+
+// contractView is the offering's contract as the catalogue answers it, or
+// nothing where the offering declares none.
+func contractView(offering kitchenv1alpha1.ServiceOffering) *contractRequest {
+	contract, ok := offering.Contract()
+	if !ok {
+		return nil
+	}
+	return &contractRequest{OpenAPI: contract.OpenAPI}
 }
 
 // offeringEnvironmentName is the environment an offering serves, with the
@@ -277,6 +349,7 @@ func offeringViews(project *kitchenv1alpha1.Project) []offeringView {
 			Auth:        string(offering.Auth()),
 			Visibility:  string(offering.Visibility()),
 			Environment: offeringEnvironmentName(project, offering),
+			Contract:    contractView(offering),
 			Mine:        true,
 		})
 	}

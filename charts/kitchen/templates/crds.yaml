@@ -3238,6 +3238,87 @@ spec:
                   request closed is not resurrected the next time the build that made it
                   is reconciled.
                 type: string
+              releaseArtifacts:
+                description: |-
+                  ReleaseArtifacts is what this build extracted from the source beside
+                  the image and attached to it: the OpenAPI document an offering names
+                  today (#498), whatever else #187 comes to carry.
+
+                  `Artifact` above is the image; these are attached *to* it, as OCI
+                  referrers on its digest. That is deliberate and it is what gives them
+                  a lifetime nobody has to manage — an unreferenced blob is something a
+                  registry garbage-collects, a referrer is safe from that and is deleted
+                  with the image it describes, so an artifact is backed up exactly as
+                  much as the release it belongs to.
+
+                  This list is an index, not the content: each row names the artifact,
+                  where in the repository it came from and the digest it is stored
+                  under, which is what makes two releases' artifacts comparable without
+                  a database — the deferred contract-versioning work in #489 needs only
+                  to be able to fetch two digests.
+
+                  A row whose `failure` is set is an artifact the build could not
+                  produce. It is recorded rather than dropped, because the failure mode
+                  of an extraction pipeline is silence, and it does not fail the build.
+                items:
+                  description: |-
+                    ReleaseArtifactStatus is one artifact this build extracted from the source
+                    and attached to its image.
+                  properties:
+                    digest:
+                      description: |-
+                        Digest is the artifact blob's own digest, as `sha256:…`. It is
+                        content-addressed, so the same document extracted by two builds is one
+                        blob however many builds point at it — and two releases' artifacts are
+                        identical exactly when this field is.
+                      type: string
+                    failure:
+                      description: |-
+                        Failure is why the artifact is not there, when it is not: a path that
+                        was not at the commit, a document that did not parse, a file over the
+                        limit. It is set with `digest` empty and never both.
+                      type: string
+                    mediaType:
+                      description: |-
+                        MediaType is what the artifact is stored under in the registry, which
+                        is also what a reader is served it as.
+                      type: string
+                    name:
+                      description: |-
+                        Name identifies the artifact within the build, and is what the API
+                        asks for when it fetches one back. For an offering's contract it is
+                        the offering's own name, which is what makes "the specification of
+                        pricing-api at the release serving production" a lookup rather than a
+                        search.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    path:
+                      description: |-
+                        Path is where it came from in the repository, relative to the
+                        repository root, at the commit this build built. It is recorded rather
+                        than recomputed for the reason `DockerfileTarget` is: the declaration
+                        moves and the build does not.
+                      type: string
+                    size:
+                      description: |-
+                        Size is the artifact in bytes, so that a reader can decide whether to
+                        fetch it before fetching it.
+                      format: int64
+                      type: integer
+                    type:
+                      description: Type is what the artifact is.
+                      enum:
+                      - openapi
+                      type: string
+                  required:
+                  - name
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               source:
                 description: 'Source is how the commit reached the branch: through
                   review, or not.'
@@ -9278,6 +9359,27 @@ spec:
                       enum:
                       - none
                       type: string
+                    contract:
+                      description: |-
+                        Contracts is where this offering's machine-readable description lives
+                        in the repository. It is `contract` on the wire — the obvious Go name
+                        is already the method that applies the defaults, the same collision
+                        `Speaks`, `Authorization` and `VisibleTo` resolve the same way.
+                      properties:
+                        openapi:
+                          description: |-
+                            OpenAPI is the path of this offering's OpenAPI document, relative to
+                            the repository root, resolved at every build of the project.
+
+                            A path that is not there at the commit under build, or a file that is
+                            not a document this platform can read, is recorded on the Build as a
+                            failed artifact rather than swallowed: a specification other teams are
+                            writing code against is wrong when it is silently absent, and the
+                            build itself is not failed for it (docs/COMPLIANCE.md §5.4 — a deploy
+                            that works must not be blocked by a documentation toolchain).
+                          maxLength: 256
+                          type: string
+                      type: object
                     environment:
                       description: |-
                         Environment is which of the provider's environments a binding

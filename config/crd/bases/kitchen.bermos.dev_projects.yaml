@@ -481,6 +481,27 @@ spec:
                       enum:
                       - none
                       type: string
+                    contract:
+                      description: |-
+                        Contracts is where this offering's machine-readable description lives
+                        in the repository. It is `contract` on the wire — the obvious Go name
+                        is already the method that applies the defaults, the same collision
+                        `Speaks`, `Authorization` and `VisibleTo` resolve the same way.
+                      properties:
+                        openapi:
+                          description: |-
+                            OpenAPI is the path of this offering's OpenAPI document, relative to
+                            the repository root, resolved at every build of the project.
+
+                            A path that is not there at the commit under build, or a file that is
+                            not a document this platform can read, is recorded on the Build as a
+                            failed artifact rather than swallowed: a specification other teams are
+                            writing code against is wrong when it is silently absent, and the
+                            build itself is not failed for it (docs/COMPLIANCE.md §5.4 — a deploy
+                            that works must not be blocked by a documentation toolchain).
+                          maxLength: 256
+                          type: string
+                      type: object
                     environment:
                       description: |-
                         Environment is which of the provider's environments a binding
