@@ -31,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/Bermos/Kitchen/internal/version"
 )
 
 // The harness: a fake platform, a temporary home, and a way of running a
@@ -143,6 +145,12 @@ type platform struct {
 	// issuerRedirect makes the token endpoint answer a redirect to it, which
 	// is the one answer the key exchange refuses to follow.
 	issuerRedirect string
+
+	// release is what the platform says it is running: version.Header on
+	// every API response, and the `version` field of /config.json, exactly as
+	// the real one does. Empty is an installation from before the header
+	// existed, which says nothing and is compared against nothing.
+	release string
 }
 
 // recorded is one request the fake platform saw.
@@ -184,6 +192,13 @@ func newPlatform(t *testing.T) *platform {
 
 func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 	body, _ := io.ReadAll(req.Body)
+	// The real API stamps its release onto every response under /api/
+	// (internal/api, versioned), which is what the CLI reads to find out it is
+	// behind. /config.json is the dashboard's handler and carries the number
+	// in its body instead, which answerConfig does.
+	if p.release != "" && req.URL.Path != configPath {
+		w.Header().Set(version.Header, p.release)
+	}
 	p.mutex.Lock()
 	p.requests = append(p.requests, recorded{
 		Method: req.Method, Path: req.URL.Path, Query: req.URL.RawQuery, Body: string(body),
@@ -256,8 +271,12 @@ func (p *platform) answerConfig(w http.ResponseWriter) {
 	if p.issuerOverride != "" {
 		issuer = p.issuerOverride
 	}
+	reported := p.release
+	if reported == "" {
+		reported = "test"
+	}
 	writeAnswer(w, http.StatusOK, platformConfig{
-		Issuer: issuer, ClientID: "kitchen-ui", APIURL: p.server.URL, Version: "test",
+		Issuer: issuer, ClientID: "kitchen-ui", APIURL: p.server.URL, Version: reported,
 	})
 }
 

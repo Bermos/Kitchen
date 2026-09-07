@@ -114,6 +114,45 @@ images use; `go install` passes no linker flags, so the binary reports the
 module version the toolchain recorded in it instead. A `go build ./cmd/kitchen`
 in a working directory has neither, and says `dev`.
 
+### Keeping the CLI in step
+
+**The CLI says when it is older than the installation it is talking to.** One
+tag versions the chart, both images and this binary, so the two numbers are
+directly comparable, and being behind has a shape: routes, flags and output
+fields the platform has grown that this release has never heard of. From a
+terminal that looks like a command failing for no reason, which is a long way
+to walk back from.
+
+So it does not wait to be asked. Every API response carries the platform's own
+release in `X-Kitchen-Version` ([API.md](API.md#the-platforms-release-on-every-response)),
+the CLI reads it off whatever call the command was already making, and if this
+binary is the older of the two it says so on stderr when the command is done:
+
+```
+! kitchen 0.15.0 is older than the installation it is talking to, which is on
+  0.17.2. Commands may be missing routes, flags and fields this release has
+  never seen — update with `go install github.com/Bermos/Kitchen/cmd/kitchen@v0.17.2`
+  (or set KITCHEN_NO_VERSION_CHECK to stop being told).
+```
+
+Four things it does not do, and each is deliberate:
+
+- **It costs no request.** The number arrives on the back of a call that was
+  happening anyway. Nothing is polled, nothing is fetched at startup, and a
+  command that talks to no platform compares nothing.
+- **It is never the answer.** It goes to stderr — a `warning` event under
+  `--json`, on the stream warnings already use — so stdout still carries the
+  answer and nothing else. A script piping this into `jq` never sees it.
+- **It never changes an exit status,** and it is said after a failed command as
+  well as a successful one, because a failure is the likelier moment for it to
+  be the explanation.
+- **It stays quiet about anything it cannot answer:** a `dev` build, a platform
+  from before the header existed, or a binary that is *ahead* of the
+  installation — a real skew, but one nobody holding the CLI can fix.
+
+`KITCHEN_NO_VERSION_CHECK=1` turns it off for somebody who has decided to stay
+where they are.
+
 ## Signing in
 
 **The CLI authenticates with an API key**, exchanged at the platform's identity
@@ -1754,6 +1793,7 @@ to be read by whoever sent the request. `hint` says what would fix it.
 | `KITCHEN_JSON` | `1` turns `--json` on for a whole session |
 | `KITCHEN_NO_INPUT` | `1` turns `--no-input` on |
 | `KITCHEN_CONFIG_HOME` | Where the credential file lives |
+| `KITCHEN_NO_VERSION_CHECK` | `1` stops the CLI saying it is older than the installation |
 
 | File | Holds |
 |---|---|
@@ -1770,6 +1810,7 @@ cannot write it carries on and exchanges every time.
 |---|---|---|
 | Where it lives | This repository, released with the platform | One tag versions the chart, both images and the CLI; a client and the API it depends on move together, and the schema test can check the CLI's claims against the API's own route table |
 | Sign-in | An API key exchanged at the issuer | The device grant does not exist in the issuer's OAuth provider, and a loopback client would have to be seeded for one fixed port. A key is also the narrowest credential the platform issues — a role on one project |
+| Telling somebody their CLI is out of date | A sentence on stderr at the end of the command, off a header every API response already carries | The alternative shapes are all worse: a version endpoint polled before the real call costs a request on every command, a check against a release feed talks to something that is not the installation, and refusing to run would turn a skew that is usually harmless into an outage. Warning on stderr changes no answer and no exit status, so the cost of being wrong is one ignorable line — which is what lets it stay quiet in the three cases it cannot judge (`dev`, a silent platform, a CLI that is ahead) instead of guessing |
 | Machine-first output | `--json` everywhere, NDJSON for anything followed, an error envelope, fixed exit codes | A CLI that can only be read by a person is a CLI that has to be screen-scraped, and a scraped surface is one nobody can change |
 | The schema | Derived from the commands, and tested against the API's route table | A published surface that is written by hand falls behind the real one; this one cannot, and an endpoint that moves fails a test rather than a user |
 | The escape hatch | `kitchen api`, reaching any endpoint | The API is larger than this CLI and always will be. Nothing the platform can do should be unreachable from a terminal because nobody has written a subcommand yet |

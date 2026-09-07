@@ -32,6 +32,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/ui"
+	"github.com/Bermos/Kitchen/internal/version"
 )
 
 // settingsPath is the one URL both settings routes answer on.
@@ -684,5 +685,54 @@ func TestASettingsChangeIsNotRefusedOverAnUnrelatedConcurrentEdit(t *testing.T) 
 	if kitchen.Spec.Observability.ClickHouse.RetentionDays != 30 {
 		t.Fatalf("a merge patch of one field must leave the other write alone, got %+v",
 			kitchen.Spec.Observability.ClickHouse)
+	}
+}
+
+// TestEveryAPIResponseNamesThePlatformsRelease is the API's half of the CLI's
+// "this binary is behind the installation" warning. The header is what makes
+// that check cost nothing: the client reads it off the call it was making
+// anyway, so it has to be on the answers a client actually gets — including
+// the refusals, since a CLI too old to authenticate is exactly one that wants
+// telling.
+func TestEveryAPIResponseNamesThePlatformsRelease(t *testing.T) {
+	h := newHarness(t, nil)
+	h.server.UI = ui.Handler(UIConfig(h.server.Client, "kitchen-ui"))
+	handler := h.server.Handler()
+
+	for _, tc := range []struct {
+		name   string
+		path   string
+		token  string
+		status int
+	}{
+		{name: "an answer", path: "/api/v1/projects", status: http.StatusOK},
+		{name: "a refusal", path: "/api/v1/projects", token: "not-a-token", status: http.StatusUnauthorized},
+		{name: "a route that is not there", path: "/api/v1/nothing", status: http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// An empty token means "sign in normally"; h.do reads a variadic,
+			// so the anonymous case has to be spelled rather than passed.
+			var recorder *httptest.ResponseRecorder
+			if tc.token == "" {
+				recorder = h.do(t, http.MethodGet, tc.path, "")
+			} else {
+				recorder = h.do(t, http.MethodGet, tc.path, "", tc.token)
+			}
+			if recorder.Code != tc.status {
+				t.Fatalf("want %d, got %d: %s", tc.status, recorder.Code, recorder.Body.String())
+			}
+			if got := recorder.Header().Get(version.Header); got != version.Version {
+				t.Fatalf("%s = %q, want %q", version.Header, got, version.Version)
+			}
+		})
+	}
+
+	// The dashboard is served by the same process and says the same number in
+	// the body of /config.json, which is where a client that has not called
+	// the API yet reads it — `kitchen login` does exactly that.
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/config.json", nil))
+	if config := decode[ui.Config](t, recorder); config.Version != version.Version {
+		t.Fatalf("/config.json reports %q, want %q", config.Version, version.Version)
 	}
 }

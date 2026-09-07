@@ -119,8 +119,7 @@ func login(parent context.Context, r *Runtime, key, fromFile string, fromStdin b
 	ctx, cancel := r.context(parent)
 	defer cancel()
 
-	probe := newClient(base, staticToken(""))
-	probe.http = r.httpClient()
+	probe := r.clientFor(base, staticToken(""))
 	config, err := probe.discover(ctx)
 	if err != nil {
 		return err
@@ -140,8 +139,7 @@ func login(parent context.Context, r *Runtime, key, fromFile string, fromStdin b
 	// whether the project granted it anything is a separate question. Asking
 	// the API who this is answers both, and means `login` never reports
 	// success for a credential the next command will be refused with.
-	authenticated := newClient(base, staticToken(token))
-	authenticated.http = r.httpClient()
+	authenticated := r.clientFor(base, staticToken(token))
 	who, err := authenticated.me(ctx)
 	if err != nil {
 		return err

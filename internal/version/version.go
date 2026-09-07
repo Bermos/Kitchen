@@ -29,6 +29,15 @@ import (
 // and no module version recorded in the build.
 const dev = "dev"
 
+// Header is the response header the API stamps its own release onto, and the
+// one place either side of that exchange spells it. Every response under
+// /api/ carries it, so a client learns which release it is talking to from
+// whatever call it was already making rather than from a request of its own —
+// which is what makes the CLI's "this binary is behind the installation"
+// warning cost nothing. /config.json carries the same number in its body, for
+// the dashboard and for a client that has not called the API yet.
+const Header = "X-Kitchen-Version"
+
 // Version is the release, as a bare SemVer string with no leading "v":
 // "0.2.0" on a published image, whatever `git describe` says on a local build,
 // and "dev" when nothing set it.

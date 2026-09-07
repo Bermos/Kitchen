@@ -334,6 +334,9 @@ var publishedVariables = []variableSpec{
 	{"KITCHEN_JSON", "1, true, yes or on turns --json on for every command"},
 	{"KITCHEN_NO_INPUT", "1, true, yes or on turns --no-input on for every command"},
 	{"KITCHEN_CONFIG_HOME", "Where the credential file lives, instead of the user's configuration directory"},
+	{"KITCHEN_NO_VERSION_CHECK", "1, true, yes or on stops the CLI saying, on stderr, that it is older " +
+		"than the installation it is talking to. The check costs no request — every API response " +
+		"carries the platform's release — and never changes an exit status"},
 }
 
 var publishedFiles = []fileSpec{

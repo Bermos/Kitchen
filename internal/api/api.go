@@ -55,6 +55,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
 	"github.com/Bermos/Kitchen/internal/signals"
+	"github.com/Bermos/Kitchen/internal/version"
 )
 
 // maxRequestBody bounds the request bodies the API accepts. Everything it
@@ -376,7 +377,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(route.Pattern, s.guard(route.Requires, route.Handler))
 	}
 
-	authenticated := s.authenticated(mux)
+	authenticated := versioned(s.authenticated(mux))
 	if s.UI == nil {
 		return authenticated
 	}
@@ -388,6 +389,26 @@ func (s *Server) Handler() http.Handler {
 	root.Handle("/api/", authenticated)
 	root.Handle("/", s.UI)
 	return root
+}
+
+// versioned stamps the platform's own release onto every API response.
+//
+// It is a header rather than a route because the question it answers — is the
+// client that just called older than the platform it is calling? — is worth
+// asking on every request and worth no request of its own. The CLI reads it
+// off whatever call it was already making and says so when it is behind
+// (docs/CLI.md, "Keeping the CLI in step"); the dashboard is served by the
+// same process and already has the number in /config.json.
+//
+// It wraps the authenticated handler rather than sitting inside writeJSON, so
+// the streams, the downloads and the refusals carry it too: a client that only
+// ever follows logs, or one whose token has expired, should learn it is out of
+// date from that alone.
+func versioned(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set(version.Header, version.Version)
+		next.ServeHTTP(w, req)
+	})
 }
 
 // telemetryStore resolves the connection to the telemetry store the way the
