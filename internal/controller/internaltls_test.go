@@ -196,6 +196,9 @@ var _ = Describe("The platform's internal CA", func() {
 	issuerObject := func(name string) *unstructured.Unstructured {
 		return certManagerObject("Issuer", name, PlatformNamespace)
 	}
+	clusterIssuerObject := func(name string) *unstructured.Unstructured {
+		return certManagerObject("ClusterIssuer", name, "")
+	}
 
 	conditionOn := func() *metav1.Condition {
 		kitchen := &kitchenv1alpha1.Kitchen{}
@@ -218,6 +221,24 @@ var _ = Describe("The platform's internal CA", func() {
 			},
 		}, "status", "conditions")).To(Succeed())
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, cert)).To(Succeed())
+	}
+
+	// issueTheCA takes the CA the whole way: requested, cert-manager's Secret
+	// written, its Ready condition set, and reconciled again so that
+	// everything downstream of an issued CA exists.
+	issueTheCA := func() {
+		issueOnce()
+		ExpectWithOffset(1, client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: InternalCASecretName, Namespace: PlatformNamespace},
+			Type:       corev1.SecretTypeTLS,
+			StringData: map[string]string{
+				"ca.crt":  "-- the platform's CA --",
+				"tls.crt": "-- the platform's CA --",
+				"tls.key": "-- the key nothing but cert-manager may hold --",
+			},
+		}))).To(Succeed())
+		writeIssued(caCertKey)
+		issueOnce()
 	}
 
 	// accountsSecret is the identity provider's connection secret, which says
@@ -296,6 +317,7 @@ var _ = Describe("The platform's internal CA", func() {
 			certificate(storeCertificateName),
 			issuerObject(internalSelfSignedIssuerName),
 			issuerObject(internalCAIssuerName),
+			clusterIssuerObject(InternalCAClusterIssuerName),
 			&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 				Name: InternalCAConfigMapName, Namespace: PlatformNamespace,
 			}},
@@ -446,6 +468,76 @@ var _ = Describe("The platform's internal CA", func() {
 		Expect(row.Healthy).To(BeTrue())
 	})
 
+	// #468 step 5a. A claim's database lives in kitchen-databases, and a
+	// namespaced Issuer cannot sign there — the naive way to make it possible
+	// is to copy the CA Secret, private key and all, into that namespace,
+	// which is exactly the blast radius #443 refuses to widen.
+	It("publishes the CA as a ClusterIssuer, so it can sign outside its own namespace", func() {
+		connectionSecret(map[string]string{
+			clickhouse.SecretKeyHost:              telemetryHost,
+			clickhouse.SecretKeyScheme:            clickhouse.SchemeHTTPS,
+			clickhouse.SecretKeyCertificateSecret: storeCertificateName,
+		})
+
+		issueTheCA()
+
+		clusterIssuer := clusterIssuerObject(InternalCAClusterIssuerName)
+		Expect(k8sClient.Get(ctx,
+			types.NamespacedName{Name: InternalCAClusterIssuerName}, clusterIssuer)).To(Succeed())
+		signsWith, found, err := unstructured.NestedString(clusterIssuer.Object, "spec", "ca", "secretName")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(signsWith).To(Equal(InternalCASecretName),
+			"a ClusterIssuer resolves this Secret out of cert-manager's cluster resource "+
+				"namespace, which for the bundled cert-manager is this one — so the key is "+
+				"read by cert-manager and never copied anywhere")
+
+		By("keeping the namespaced Issuer as well, for the stores beside the CA")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: internalCAIssuerName, Namespace: PlatformNamespace,
+		}, issuerObject(internalCAIssuerName))).To(Succeed())
+
+		By("leaving the CA's private key in this namespace and nowhere else")
+		secrets := &corev1.SecretList{}
+		Expect(k8sClient.List(ctx, secrets)).To(Succeed())
+		for _, secret := range secrets.Items {
+			if len(secret.Data["tls.key"]) == 0 || secret.Name != InternalCASecretName {
+				continue
+			}
+			Expect(secret.Namespace).To(Equal(PlatformNamespace))
+		}
+	})
+
+	// The CA is the platform's rather than any one store's, and a claim's
+	// database needs it on an installation where every bundled store is
+	// external or deliberately in the clear — which is an installation this
+	// controller would otherwise never be woken for.
+	It("brings the CA up for its own sake, with no store asking for anything", func() {
+		issueFor(internalCAOnlyRequestName)
+
+		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: internalSelfSignedIssuerName, Namespace: PlatformNamespace,
+		}, issuerObject(internalSelfSignedIssuerName))).To(Succeed())
+
+		By("and the issuers once cert-manager has signed it")
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: InternalCASecretName, Namespace: PlatformNamespace},
+			Type:       corev1.SecretTypeTLS,
+			StringData: map[string]string{
+				"ca.crt":  "-- the platform's CA --",
+				"tls.crt": "-- the platform's CA --",
+				"tls.key": "-- the key nothing but cert-manager may hold --",
+			},
+		})).To(Succeed())
+		writeIssued(caCertKey)
+		issueFor(internalCAOnlyRequestName)
+
+		Expect(k8sClient.Get(ctx,
+			types.NamespacedName{Name: InternalCAClusterIssuerName},
+			clusterIssuerObject(InternalCAClusterIssuerName))).To(Succeed())
+	})
+
 	It("issues the object store a certificate for the name applications reach it by", func() {
 		connectionSecret(map[string]string{
 			clickhouse.SecretKeyHost:              telemetryHost,
@@ -569,8 +661,15 @@ var _ = Describe("The platform's internal CA", func() {
 		Expect(cond.Reason).To(Equal("StoreInTheClear"))
 		Expect(cond.Message).To(ContainSubstring(PlatformNamespace))
 
-		By("issuing nothing, because nothing asked it to")
-		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).NotTo(Succeed())
+		By("issuing the store nothing, because nothing asked it to")
+		Expect(k8sClient.Get(ctx, storeCertKey, certificate(storeCertificateName))).NotTo(Succeed())
+
+		By("and still bringing the CA itself up, which is not this store's")
+		// #468 step 5a: the CA signs the databases claims provision, which
+		// live in another namespace and are reconciled by another controller.
+		// It existing only where a bundled store wanted one would leave those
+		// on a per-cluster CA for a reason nothing about them explains.
+		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).To(Succeed())
 
 		By("not holding the platform short of Ready over a choice somebody made")
 		kitchen := &kitchenv1alpha1.Kitchen{}
@@ -739,7 +838,10 @@ var _ = Describe("The platform's internal CA", func() {
 		Expect(conditionOn()).To(BeNil(),
 			"neither store's certificate is the platform's, so there is nothing here it can "+
 				"say anything true about")
-		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, accountsCertKey, certificate(accountsCertificateName))).NotTo(Succeed())
+		// The CA is another matter: it is the platform's rather than any one
+		// store's, and it signs the claim databases too (#468 step 5a).
+		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).To(Succeed())
 	})
 
 	It("issues nothing for a store whose certificate is somebody else's", func() {
@@ -757,6 +859,9 @@ var _ = Describe("The platform's internal CA", func() {
 		Expect(conditionOn()).To(BeNil(),
 			"an external store over TLS is not the internal CA's business, and a condition "+
 				"about a CA nothing uses is noise in the one list this is said in")
-		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, storeCertKey, certificate(storeCertificateName))).NotTo(Succeed())
+		// And, as above, the CA itself is still brought up: it is not this
+		// store's, and a claim's database takes its certificate from it.
+		Expect(k8sClient.Get(ctx, caCertKey, certificate(InternalCACertificateName))).To(Succeed())
 	})
 })

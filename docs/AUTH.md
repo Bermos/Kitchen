@@ -813,6 +813,52 @@ An external Postgres is somebody else's certificate to manage:
 host's roots. Empty is a connection in the clear, and the Kitchen singleton
 says so — `InternalCAReady`, reason `StoreInTheClear`.
 
+**The same doctrine now covers a project's own database** (#443, #468 step
+5a). It did not for a long time, and the gap was not the verification — a
+`postgres` claim's binding has carried `sslmode=verify-full&sslrootcert=…`
+since #456, with the platform mounting the authority at
+`/var/run/kitchen/claims/<claim>/ca.crt` so that an application nobody has
+touched verifies. The gap was *which authority*: every CloudNativePG Cluster a
+claim provisioned minted a CA of its own, so an application handed one root
+per database had been given something that vouches for exactly one thing and
+cannot be added to any trust store worth having.
+
+A claim's Cluster is now issued its server certificate from
+`kitchen-internal-ca`, and that authority is the same one on the paragraphs
+above. What makes it possible without widening the blast radius is the kind of
+issuer rather than any copying: the operator writes a cert-manager
+**`ClusterIssuer`** named `kitchen-internal-ca`, backed by the CA Secret where
+it already is, and cert-manager — the only thing that ever reads the private
+key — issues a `Certificate` into `kitchen-databases`. **The key does not
+leave `kitchen-system`.** Copying the CA Secret into the database namespace so
+a namespaced `Issuer` could sign there is the shortcut that was refused: it
+would put the authority for the whole platform into a namespace whose contents
+are provisioned on a developer's request.
+
+Three things follow, and each is deliberate:
+
+- **The certificate covers all three of a Cluster's Services** — `-rw`, `-ro`
+  and `-r`, in all four resolvable forms — so `verify-full` works for a
+  read-only connection somebody writes by hand and not only for the host the
+  binding names.
+- **The client CA is left alone.** CloudNativePG authenticates its own
+  `streaming_replica` with a client certificate from a client CA it generates
+  and rotates; `clientCASecret` and `replicationTLSSecret` are paired with
+  each other in its schema rather than with the server's, and supplying one
+  without the other would take that rotation over for no gain.
+- **A platform with no CA to issue from keeps what it had.** cert-manager not
+  serving, or a `kitchen-internal-ca` that has not issued yet, leaves the
+  Cluster on CloudNativePG's own CA — and the claim says which it got on a
+  `ServerCertificate` condition (`PlatformCA` or `ProviderCA`). Neither is a
+  fault: the connection is `verify-full` against the certificate the binding
+  carries either way, and what differs is only who vouches for it. A database
+  that cannot start because its certificate is late would be the worse
+  failure.
+
+Nothing an application reads moves with this. The binding's URL, the key the
+certificate travels in and the path it is mounted at are all unchanged; the
+bytes at that path are the platform's root instead of one database's.
+
 Two credentials are generated into the secret `<release>-auth` on install and
 preserved across upgrades:
 

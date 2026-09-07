@@ -206,6 +206,36 @@ export function claimRequirements(claim: Claim): string[] {
 }
 
 /**
+ * Which authority signed the database a claim binds (#443).
+ *
+ * Every claim connects `verify-full` against a certificate the platform
+ * mounts for it, so this is never the difference between checked and
+ * unchecked — it is the difference between one authority that vouches for
+ * everything Kitchen runs and one that a single database minted for itself.
+ * A workload told to trust the second has been handed a root it cannot use
+ * for anything else, which is why the good state is worth showing rather than
+ * only the bad one.
+ *
+ * It is read off the claim's own condition rather than a field, because the
+ * fact belongs to the database the claim is bound to at this moment: a claim
+ * provisioned before the platform had a CA moves to it on the reconcile that
+ * reissues, and the badge moves with it. A claim of a type or a provider that
+ * says nothing — every hosted database, whose certificate a public root
+ * already vouches for — carries no condition and gets no badge.
+ */
+export function claimCertificateBadge(
+  claim: { conditions?: Condition[] },
+): { label: string; color: "neutral" | "warning"; title: string } | null {
+  const condition = (claim.conditions ?? []).find((it) => it.type === "ServerCertificate");
+  if (!condition) return null;
+  const title = condition.message ?? "";
+  if (condition.status === "True") {
+    return { label: "TLS: platform CA", color: "neutral", title };
+  }
+  return { label: "TLS: its own CA", color: "warning", title };
+}
+
+/**
  * What is keeping a claim's data, and how far back it can be put — the two
  * facts a backup policy is worth anything for (#245 phase 2).
  *

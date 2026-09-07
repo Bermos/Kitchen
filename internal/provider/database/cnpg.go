@@ -132,6 +132,13 @@ type CNPG struct {
 	StorageClass string
 	// Instances per Cluster.
 	Instances int
+	// ServerCAIssuer is the cert-manager ClusterIssuer a claim's database
+	// takes its server certificate from — the platform's own internal CA
+	// (#468, step 5a). Empty leaves every Cluster on the per-cluster CA
+	// CloudNativePG generates for itself, which is what a provisioner built
+	// outside the operator gets and what every database had before this.
+	// See cnpg_tls.go.
+	ServerCAIssuer string
 }
 
 // cnpgConfig is the `cnpg` slice of a Connection's spec.config: the defaults
@@ -194,6 +201,11 @@ func NewCNPG(opts Options) (*CNPG, error) {
 		StorageSize:  firstNonEmpty(cfg.StorageSize, DefaultStorageSize),
 		StorageClass: cfg.StorageClass,
 		Instances:    cfg.Instances,
+		// Not a Connection field: which authority signs the databases this
+		// platform runs is the platform's decision and not one an operator
+		// makes per Connection, so it is passed in by whoever built the
+		// provisioner rather than read out of spec.config.
+		ServerCAIssuer: opts.ServerCAIssuer,
 	}
 	if len(provisioner.Images) == 0 {
 		provisioner.Images = DefaultPostgresImages
@@ -255,6 +267,9 @@ func (c *CNPG) ProvisionWith(ctx context.Context, res naming.Resource, req Requi
 		// declared.
 		Provenance: ProvenanceProduction,
 		Region:     c.region(ctx, cluster.GetName()),
+		// Read back off the Cluster rather than remembered from the write,
+		// so that the claim reports what is true now.
+		CertificateAuthority: c.certificateAuthorityOf(cluster),
 	}, nil
 }
 
@@ -423,6 +438,20 @@ func (c *CNPG) ensureCluster(
 		if err := c.ensurePgHBA(ctx, existing); err != nil {
 			return nil, err
 		}
+		// And the server certificate is the third, for the same reason and at
+		// the cost of one rolling restart the first time it is applied: see
+		// ensureServerCertificates. A Cluster somebody else created is left
+		// alone here as everywhere else — and is not issued a certificate it
+		// would never name.
+		if existing.GetLabels()[managedByLabel] == managedByValue {
+			certificate, err := c.serverCertificateSecret(ctx, name)
+			if err != nil {
+				return nil, err
+			}
+			if err := c.ensureServerCertificates(ctx, existing, certificate); err != nil {
+				return nil, err
+			}
+		}
 		return existing, c.ready(existing)
 	case meta.IsNoMatchError(err):
 		return nil, notInstalled(err)
@@ -430,11 +459,27 @@ func (c *CNPG) ensureCluster(
 		return nil, err
 	}
 
-	desired, err := c.desiredCluster(name, project, resolution, req, parent)
+	// The namespace first, before anything is put in it. On a first
+	// provision it does not exist, and the certificate below is the first
+	// object written there — ahead of the Cluster itself, because the Cluster
+	// has to name the Secret it will be issued into. Requesting it into a
+	// namespace that is not there fails, and fails the same way on every
+	// retry, so a claim would never provision at all.
+	if err := c.ensureNamespace(ctx); err != nil {
+		return nil, err
+	}
+
+	// The certificate is requested before the Cluster, because the Cluster has
+	// to name the Secret it will be issued into. Naming one cert-manager has
+	// not written yet costs nothing: CloudNativePG waits for a server Secret
+	// exactly as it waits for the one it would have generated itself.
+	certificate, err := c.serverCertificateSecret(ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.ensureNamespace(ctx); err != nil {
+
+	desired, err := c.desiredCluster(name, project, resolution, req, parent, certificate)
+	if err != nil {
 		return nil, err
 	}
 	if err := c.Client.Create(ctx, desired); err != nil {
@@ -476,6 +521,7 @@ func (c *CNPG) desiredCluster(
 	resolution Resolution,
 	req Requirements,
 	parent *unstructured.Unstructured,
+	certificate string,
 ) (*unstructured.Unstructured, error) {
 	image := resolution.Image
 	storageSize := firstNonEmpty(req.StorageSize, c.StorageSize)
@@ -507,14 +553,19 @@ func (c *CNPG) desiredCluster(
 		storage["storageClass"] = storageClass
 	}
 
-	cluster := &unstructured.Unstructured{Object: map[string]any{
-		"spec": map[string]any{
-			"instances": int64(c.Instances),
-			"imageName": image,
-			"bootstrap": bootstrap,
-			"storage":   storage,
-		},
-	}}
+	spec := map[string]any{
+		"instances": int64(c.Instances),
+		"imageName": image,
+		"bootstrap": bootstrap,
+		"storage":   storage,
+	}
+	// The server identity, where the platform has an authority to issue it.
+	// A branch inherits nothing here: it is a Cluster of its own with its own
+	// Services, so it is issued its own certificate for its own names.
+	if certificates := clusterCertificates(certificate); certificates != nil {
+		spec["certificates"] = certificates
+	}
+	cluster := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
 	// Written through the setter rather than into the literal above, because
 	// an unstructured object holds `[]any` and nothing else: a `[]string` in
 	// there survives until the first deep copy and panics there.
@@ -741,8 +792,9 @@ func (c *CNPG) binding(ctx context.Context, cluster *unstructured.Unstructured) 
 	// `sslmode=require` rather than libpq's default, which is `prefer`:
 	// prefer negotiates TLS and silently falls back to plaintext when the
 	// server declines, so a downgrade is indistinguishable from a normal
-	// connection. CloudNativePG serves TLS on every cluster it creates, with
-	// a CA it generates itself, so requiring encryption costs nothing here.
+	// connection. Every cluster serves TLS — signed by the platform's own CA
+	// where there is one, and by CloudNativePG's per-cluster CA otherwise —
+	// so requiring encryption costs nothing here.
 	//
 	// It is `require` here and not `verify-full`, because `sslrootcert` names
 	// a *file* and this provisioner cannot know where the file will be: what
@@ -784,15 +836,25 @@ func (c *CNPG) binding(ctx context.Context, cluster *unstructured.Unstructured) 
 // serverCA is the certificate authority that signed this cluster's server
 // certificate, as an application has to verify the connection against it.
 //
-// CloudNativePG generates a CA per Cluster and nothing public vouches for it,
-// so an application has nowhere to get it from: it cannot mount a Secret in
-// the platform's database namespace, and no image the platform did not build
-// carries that root. The certificate itself therefore travels in the binding,
-// which is the answer #433 settled on for the bundled object store.
+// Nothing public vouches for it either way, so an application has nowhere to
+// get it from: it cannot mount a Secret in the platform's database namespace,
+// and no image the platform did not build carries that root. The certificate
+// itself therefore travels in the binding, which is the answer #433 settled
+// on for the bundled object store.
+//
+// **Which authority it is has changed and the binding has not** (#468, step
+// 5a). Where the platform has a CA, this is the platform's — the same root
+// that signs the telemetry store and the identity provider's database, issued
+// to this Cluster by cert-manager (cnpg_tls.go) — and where it does not, it
+// is still the per-cluster one CloudNativePG generates. Both arrive here the
+// same way and are published under the same binding key at the same mounted
+// path, which is what makes this a change of who signs rather than a change
+// anything downstream can notice.
 //
 // The name comes off the Cluster's own status, where CloudNativePG publishes
-// it — an installation may hand it a CA of its own — and falls back to
-// `<cluster>-ca`, which is what it calls the one it generates.
+// whichever it is using — the Secret this platform named, one an installation
+// handed it, or its own — and falls back to `<cluster>-ca`, which is what it
+// calls the one it generates.
 //
 // A CA that is not there is not an error. The binding then carries no `ca`
 // key, which reads as "verify against the host's roots" — the right answer
@@ -877,6 +939,14 @@ func (c *CNPG) deleteCluster(ctx context.Context, id string) error {
 		return nil
 	}
 	namespace, name := splitID(id, c.Namespace)
+	// The server certificate goes with it, for the reason the ScheduledBackup
+	// does: nothing owner-references it — it is written before the Cluster
+	// exists, since the Cluster has to name the Secret it will be issued
+	// into — so nothing else would ever collect it, and cert-manager would go
+	// on renewing a certificate for a database nobody has.
+	if err := c.deleteServerCertificate(ctx, namespace, name); err != nil {
+		return err
+	}
 	cluster := &unstructured.Unstructured{}
 	cluster.SetGroupVersionKind(clusterGVK())
 	cluster.SetNamespace(namespace)

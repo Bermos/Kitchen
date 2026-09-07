@@ -76,13 +76,40 @@ apart for a client that wants the pieces.
 
 **Every URL asks for TLS, and the platform is what verifies it.** libpq's
 default is `prefer`, which negotiates TLS and falls back to plaintext without
-saying so — a downgrade and a normal connection look identical. CloudNativePG
-signs each database with a CA it generates for that cluster and nothing public
-vouches for it, so the certificate itself travels in the binding, exactly as
-`objectStore`'s `caCert` does: an application pod cannot mount a Secret in the
-platform's database namespace, and no image the platform did not build carries
-that root. The key is **absent, not empty**, for a hosted database whose
-certificate the host's own roots already vouch for.
+saying so — a downgrade and a normal connection look identical. Nothing public
+vouches for a database this platform runs, so the certificate of the authority
+that signed it travels in the binding, exactly as `objectStore`'s `caCert`
+does: an application pod cannot mount a Secret in the platform's database
+namespace, and no image the platform did not build carries that root. The key
+is **absent, not empty**, for a hosted database whose certificate the host's
+own roots already vouch for.
+
+**That authority is the platform's own CA** (#443). A database this platform
+provisions is issued its server certificate from `kitchen-internal-ca` — the
+same CA behind the telemetry store, the identity provider's Postgres and the
+bundled object store — so an application handed the `ca` key has one root that
+vouches for everything Kitchen runs, rather than one root per database that
+cannot usefully be added to anything. The claim's `ServerCertificate`
+condition says which authority it is:
+
+| condition | reason | what it means |
+|---|---|---|
+| `True` | `PlatformCA` | the platform's own CA signed this database |
+| `False` | `ProviderCA` | CloudNativePG's per-cluster CA did, because the platform has no CA to issue from — no cert-manager, or one that has not issued yet |
+| absent | — | the provider does not say, which is every hosted database |
+
+Neither reading is a fault, and the dashboard does not draw one as such: the
+connection is `verify-full` against the certificate the binding carries either
+way, and what differs is only who vouches for it.
+
+**A database provisioned before this existed moves once.** The first reconcile
+after the upgrade names the new certificate on the Cluster, and CloudNativePG
+applies that as **one rolling restart of that database** — a single-instance
+Cluster, which is the default, is briefly unavailable while it happens. It
+happens once per database and never again. Nothing an application reads
+changes: the URL, the `ca` key and the path the certificate is mounted at are
+the same before and after, and the bytes at that path become the platform's
+root.
 
 **There is nothing for an application to do about it** (#456). Both Postgres
 drivers read `sslrootcert` as a *file*, so the platform writes the file: every

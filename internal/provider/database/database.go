@@ -175,7 +175,35 @@ type Instance struct {
 	// included. It is recorded on the claim's status as the placement of
 	// record — reported, not declared.
 	Region string
+	// CertificateAuthority says who signed the server certificate the
+	// binding's `verify-full` is checked against. Reported, like Region, and
+	// empty for a provider that has nothing to say — every hosted database,
+	// whose certificate a public root already vouches for.
+	CertificateAuthority CertificateAuthority
 }
+
+// CertificateAuthority is what signed a database's server certificate, as
+// far as the claim that provisioned it is concerned (#443).
+//
+// It is two words rather than a name because it is the answer to one
+// question — is this the authority the rest of the platform is on, or one
+// this database minted for itself — and an application verifies against the
+// certificate the binding carries either way. What changes with it is the
+// blast radius of trusting that authority, which is why the claim says it.
+type CertificateAuthority string
+
+const (
+	// CAUndeclared is a provider that does not say. Every hosted database is
+	// here, and so is one whose certificate this platform never looked at.
+	CAUndeclared CertificateAuthority = ""
+	// CAPlatform is Kitchen's own internal CA — the one that also signs the
+	// telemetry store, the identity provider's database and the object
+	// store, so that one authority is the whole of what a workload trusts.
+	CAPlatform CertificateAuthority = "platform"
+	// CAProvider is an authority the database's own operator generated for
+	// it, vouching for that one database and nothing else.
+	CAProvider CertificateAuthority = "provider"
+)
 
 // Branch is a copy of an instance's data under its own address, cheap where
 // the provider supports copy-on-write and merely possible where it does not.
@@ -375,6 +403,12 @@ type Options struct {
 	Cluster client.Client
 	// Namespace the in-cluster provisioners put their objects in.
 	Namespace string
+	// ServerCAIssuer is the cert-manager ClusterIssuer an in-cluster
+	// provisioner asks for its database's server certificate — the
+	// platform's own internal CA. Empty leaves the database on whatever
+	// authority its operator generates for itself, which is the state every
+	// provisioner built outside the platform is in.
+	ServerCAIssuer string
 }
 
 // Factory builds a Provisioner for a Connection.

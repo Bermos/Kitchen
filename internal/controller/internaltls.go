@@ -34,8 +34,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/accountsdb"
@@ -81,6 +83,27 @@ const (
 	InternalCACertificateName = "kitchen-internal-ca"
 	InternalCASecretName      = "kitchen-internal-ca"
 	internalCAIssuerName      = "kitchen-internal-ca"
+
+	// InternalCAClusterIssuerName is the same CA under the one kind that can
+	// issue into a namespace that is not this one (#468, step 5a).
+	//
+	// A namespaced Issuer signs only for Certificates beside it, and the
+	// databases a claim provisions are in `kitchen-databases` — so a claim's
+	// Cluster could take its server certificate from the platform's CA only
+	// if the CA's *private key* were copied there, which is precisely the
+	// blast radius #443 refuses to widen. A ClusterIssuer resolves its CA
+	// Secret from cert-manager's cluster resource namespace and reads it as
+	// cert-manager, so the key stays in `kitchen-system` and nothing but
+	// cert-manager ever reads it.
+	//
+	// **That resolution is the one assumption here.** cert-manager defaults
+	// `--cluster-resource-namespace` to its own pod's namespace, and the
+	// bundled cert-manager is a sub-chart of this release, so it is
+	// `kitchen-system`. An installation running its own cert-manager
+	// elsewhere has to point that flag here — the same requirement the ACME
+	// ClusterIssuer's Cloudflare token already carries, and the chart's
+	// README says so for both.
+	InternalCAClusterIssuerName = "kitchen-internal-ca"
 
 	// InternalCAConfigMapName holds the CA certificate and nothing else, for
 	// the platform's own components to verify against. It is a ConfigMap
@@ -128,6 +151,13 @@ const (
 	connectionSecretKeyHost              = "host"
 	connectionSecretKeyCertificateSecret = "certificateSecret"
 
+	// internalCAOnlyRequestName is the Secret name a singleton-driven
+	// reconcile carries. No Secret is called this and none is meant to be:
+	// the request exists to say "bring the CA up", and the missing Secret is
+	// how the store half of the reconcile is skipped without a second code
+	// path to keep in step with the first.
+	internalCAOnlyRequestName = "kitchen-internal-ca-only"
+
 	// internalCAComponentName is the row this appears as in
 	// status.components, beside the workloads. A CA that never issued is
 	// exactly the kind of failure that is invisible everywhere else: the
@@ -174,17 +204,56 @@ const (
 
 // The namespaced Issuer is this file's alone; the ClusterIssuers and the
 // Certificates are shared with the edge TLS the KitchenReconciler owns.
-// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;clusterissuers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 
-// Reconcile issues from one connection secret.
+// Reconcile brings the platform's CA up, and issues from one connection
+// secret where the request names one.
 func (r *InternalTLSReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Everything below is reported on the Kitchen singleton by
+	// KitchenReconciler.reconcileInternalTLS, which reads these same objects.
+	// A failure here is retried rather than surfaced, because on a first
+	// install this runs before there is a singleton to surface it on — and
+	// the commonest failure is cert-manager not serving yet, which is the
+	// ordering rather than a fault.
+	pending := ctrl.Result{RequeueAfter: internalTLSRetryInterval}
+	settled := ctrl.Result{RequeueAfter: internalTLSResyncInterval}
+
+	// The CA comes first and is brought up **for its own sake**, whatever the
+	// request was about.
+	//
+	// It used to be created only on the way to a store's certificate, on the
+	// reading that a CA nothing signs with is a CA nobody needs. That stopped
+	// being true when a claim's database started taking its server
+	// certificate from it (#468, step 5a): a `postgres` claim is provisioned
+	// by another controller entirely, on an installation that may run every
+	// bundled store in the clear and so never ask this one for anything. A CA
+	// that exists only where ClickHouse does would leave those claims falling
+	// back to CloudNativePG's own per-cluster CA — quietly, and for a reason
+	// nothing about the claim explains.
+	//
+	// It costs a self-signed root, a certificate and two issuers on an
+	// installation that never signs anything with them. That is cheaper than
+	// the two answers to "which CA signed this database" that the alternative
+	// produces.
+	ready, message, err := r.ensureInternalCA(ctx)
+	if err != nil {
+		return pending, ignoreNoMatch(err)
+	}
+	if !ready {
+		log.V(1).Info("waiting for the platform's internal CA", "reason", message)
+		return pending, nil
+	}
+
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, req.NamespacedName, secret); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		// A request that names no Secret is the Kitchen singleton's: it is
+		// what wakes this controller on an installation whose stores ask for
+		// nothing, and the CA above is the whole of what it wanted.
+		return settled, client.IgnoreNotFound(err)
 	}
 
 	certSecret := strings.TrimSpace(string(secret.Data[connectionSecretKeyCertificateSecret]))
@@ -192,7 +261,7 @@ func (r *InternalTLSReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// Either an external store, whose certificate is somebody else's, or
 		// one an installation has deliberately left in the clear. Both are
 		// reported on the Kitchen singleton; neither is issued for.
-		return ctrl.Result{}, nil
+		return settled, nil
 	}
 	if errs := validation.IsDNS1123Subdomain(certSecret); len(errs) > 0 {
 		// Nothing to retry: the secret has to change first, and a change to it
@@ -210,36 +279,44 @@ func (r *InternalTLSReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
-	// Everything below is reported on the Kitchen singleton by
-	// KitchenReconciler.reconcileInternalTLS, which reads these same objects.
-	// A failure here is retried rather than surfaced, because on a first
-	// install this runs before there is a singleton to surface it on — and
-	// the commonest failure is cert-manager not serving yet, which is the
-	// ordering rather than a fault.
-	pending := ctrl.Result{RequeueAfter: internalTLSRetryInterval}
-
-	if err := r.applySelfSignedIssuer(ctx); err != nil {
-		return pending, ignoreNoMatch(err)
-	}
-	ca, err := r.applyInternalCACertificate(ctx)
-	if err != nil {
-		return pending, ignoreNoMatch(err)
-	}
-	if ready, message := certificateReady(ca); !ready {
-		log.V(1).Info("waiting for the platform's internal CA", "reason", message)
-		return pending, nil
-	}
-
-	if err := r.publishInternalCABundle(ctx); err != nil {
-		return pending, err
-	}
-	if err := r.applyInternalCAIssuer(ctx); err != nil {
-		return pending, ignoreNoMatch(err)
-	}
 	if _, err := r.applyStoreCertificate(ctx, certSecret, names); err != nil {
 		return pending, ignoreNoMatch(err)
 	}
-	return ctrl.Result{RequeueAfter: internalTLSResyncInterval}, nil
+	return settled, nil
+}
+
+// ensureInternalCA writes the objects the platform's certificate authority
+// is, and answers whether it has issued.
+//
+// The order is the dependency order and each step is idempotent: the
+// self-signed issuer, the CA certificate it signs, the bundle published from
+// it once it exists, and the two issuers that sign with it — one namespaced,
+// for the bundled stores beside it, and one cluster-scoped, for the claim
+// databases that are not (see [InternalCAClusterIssuerName]).
+//
+// `ready` false is the ordinary state of a fresh install rather than a
+// fault, and the message says which half of it is still outstanding.
+func (r *InternalTLSReconciler) ensureInternalCA(ctx context.Context) (bool, string, error) {
+	if err := r.applySelfSignedIssuer(ctx); err != nil {
+		return false, "", err
+	}
+	ca, err := r.applyInternalCACertificate(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if ready, message := certificateReady(ca); !ready {
+		return false, message, nil
+	}
+	if err := r.publishInternalCABundle(ctx); err != nil {
+		return false, "", err
+	}
+	if err := r.applyInternalCAIssuer(ctx); err != nil {
+		return false, "", err
+	}
+	if err := r.applyInternalCAClusterIssuer(ctx); err != nil {
+		return false, "", err
+	}
+	return true, "", nil
 }
 
 // ignoreNoMatch drops the error a cluster whose cert-manager is not serving
@@ -253,12 +330,20 @@ func ignoreNoMatch(err error) error {
 	return err
 }
 
-// SetupWithManager watches the connection secrets the chart writes.
+// SetupWithManager watches the connection secrets the chart writes, and the
+// Kitchen singleton.
 //
 // Every Secret in the platform namespace is offered and all but the ones
 // carrying a certificateSecret key are dropped, which is one predicate rather
 // than a label the chart would have to remember to write. The initial sync is
 // what makes this run during `helm install`, before anything has changed.
+//
+// The singleton is watched for the CA alone, and it is what makes the CA
+// exist on an installation where no store asks for a certificate — which is
+// every installation whose stores are external or deliberately in the clear,
+// and where a `postgres` claim would otherwise find no issuer to take its
+// server certificate from. It maps to a request naming no Secret, which the
+// Reconcile above reads as "the CA and nothing else".
 func (r *InternalTLSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	asksForACertificate := func(obj client.Object) bool {
 		secret, ok := obj.(*corev1.Secret)
@@ -271,6 +356,13 @@ func (r *InternalTLSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("internaltls").
 		For(&corev1.Secret{}, builder.WithPredicates(
 			predicate.NewPredicateFuncs(asksForACertificate))).
+		Watches(&kitchenv1alpha1.Kitchen{}, handler.EnqueueRequestsFromMapFunc(
+			func(context.Context, client.Object) []reconcile.Request {
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{
+					Namespace: PlatformNamespace,
+					Name:      internalCAOnlyRequestName,
+				}}}
+			})).
 		Complete(r)
 }
 
@@ -324,7 +416,10 @@ func (r *KitchenReconciler) reconcileInternalTLS(
 	}
 	if len(stores) == 0 {
 		// Nothing the platform runs, or nothing whose certificate is the
-		// platform's. The CA is not created for its own sake.
+		// platform's. The CA itself exists either way — it signs the claim
+		// databases too, which are not stores of this platform's and are not
+		// surveyed here — but this condition is about the bundled stores, and
+		// with none of them there is nothing for it to say.
 		meta.RemoveStatusCondition(&kitchen.Status.Conditions, condInternalCAReady)
 		return true
 	}
@@ -641,6 +736,38 @@ func (r *InternalTLSReconciler) applyInternalCAIssuer(ctx context.Context) error
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {
 		issuer.SetLabels(map[string]string{
 			labelComponentKey: internalCAIssuerName,
+			labelManagedByKey: labelManagedByValue,
+		})
+		return unstructured.SetNestedMap(issuer.Object, map[string]any{
+			"secretName": InternalCASecretName,
+		}, "spec", "ca")
+	})
+	return err
+}
+
+// applyInternalCAClusterIssuer writes the same CA under the kind that can
+// issue outside the platform namespace.
+//
+// It is a second object rather than a replacement for the namespaced Issuer
+// above, because the two are not equivalent: a ClusterIssuer is a
+// cluster-scoped singleton, and an installation running its own cert-manager
+// with a different `--cluster-resource-namespace` gets a ClusterIssuer that
+// resolves nothing while the namespaced Issuer — which reads its Secret from
+// beside itself — keeps working. The bundled stores are signed by the one
+// that cannot fail; only what has to cross a namespace uses the other.
+//
+// Nothing is copied by writing it. The Secret named here is read by
+// cert-manager and by nothing else, and it never leaves `kitchen-system`:
+// what crosses into `kitchen-databases` is a certificate cert-manager signed,
+// which is the whole point of doing it this way.
+func (r *InternalTLSReconciler) applyInternalCAClusterIssuer(ctx context.Context) error {
+	issuer := &unstructured.Unstructured{}
+	issuer.SetGroupVersionKind(certManagerGVK("ClusterIssuer"))
+	issuer.SetName(InternalCAClusterIssuerName)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, issuer, func() error {
+		issuer.SetLabels(map[string]string{
+			labelComponentKey: InternalCAClusterIssuerName,
 			labelManagedByKey: labelManagedByValue,
 		})
 		return unstructured.SetNestedMap(issuer.Object, map[string]any{

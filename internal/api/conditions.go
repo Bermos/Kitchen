@@ -110,6 +110,15 @@ var conditionSeverities = map[conditionStatement]conditionSeverity{
 	// A store left unencrypted is a choice this platform reports. The
 	// component survey already reads it that way (internalTLSComponent).
 	{controller.ConditionInternalCAReady, controller.ReasonStoreInTheClear}: severityInfo,
+	// Which authority signed a claim's database. The platform's own CA is the
+	// statement holding and has nothing to say; the database's own is a fact
+	// rather than a fault, because the connection is `verify-full` against
+	// the certificate the binding carries either way and what differs is only
+	// who vouches for it. A `False` read as broken would put a red dot on
+	// every database claim of an installation with no cert-manager, which is
+	// #436's failure exactly.
+	{controller.ConditionServerCertificate, controller.ReasonPlatformCA}: severityNone,
+	{controller.ConditionServerCertificate, controller.ReasonProviderCA}: severityInfo,
 	// A dependency this installation did not ask for is not a failed install.
 	{kitchenv1alpha1.AddonReady, controller.ReasonAddonNotInstalled}: severityInfo,
 	// A build the platform had nothing to build for: the commit's source at

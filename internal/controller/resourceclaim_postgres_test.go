@@ -101,6 +101,10 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 	var (
 		reconciler  *ResourceClaimReconciler
 		provisioner database.Provisioner
+		// asked is what the reconciler built the provisioner from, so a test
+		// can check what the platform hands a provisioner rather than only
+		// what it does with the answer.
+		asked database.Options
 	)
 
 	bound := database.Instance{
@@ -142,7 +146,8 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 		reconciler = &ResourceClaimReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
-			Databases: func(database.Options) (database.Provisioner, error) {
+			Databases: func(opts database.Options) (database.Provisioner, error) {
+				asked = opts
 				return provisioner, nil
 			},
 		}
@@ -216,6 +221,64 @@ var _ = Describe("A postgres claim that asks for a particular database", func() 
 		secret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: appNS, Name: claim.Status.SecretName}, secret)).To(Succeed())
 		Expect(string(secret.Data["url"])).To(Equal(bound.Binding.URL))
+	})
+
+	// #443 and #468 step 5a. Which authority signs a claim's database is a
+	// fact about the claim, and the whole point of moving it to the
+	// platform's CA is that somebody can see that it moved.
+	Describe("the authority that signed the database", func() {
+		It("names the platform's CA to the provisioner, whether or not it exists yet", func() {
+			provisioner = &plainProvisioner{instance: bound}
+			createClaim("")
+			reconcileOnce()
+
+			Expect(asked.ServerCAIssuer).To(Equal(InternalCAClusterIssuerName),
+				"the provisioner is told which ClusterIssuer to ask; whether it is there is "+
+					"its own to find out, and an installation whose CA has not issued yet is "+
+					"a state it handles rather than one this has to predict")
+		})
+
+		It("says so on the claim when the platform's CA signed it", func() {
+			signed := bound
+			signed.CertificateAuthority = database.CAPlatform
+			provisioner = &plainProvisioner{instance: signed}
+			createClaim("")
+			reconcileOnce()
+
+			cond := meta.FindStatusCondition(getClaim().Status.Conditions, condServerCertificate)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal(ReasonPlatformCA))
+			Expect(cond.Message).To(ContainSubstring(InternalCACertificateName))
+		})
+
+		It("says so, and does not call it a fault, when the database signed itself", func() {
+			signed := bound
+			signed.CertificateAuthority = database.CAProvider
+			provisioner = &plainProvisioner{instance: signed}
+			createClaim("")
+			reconcileOnce()
+
+			claim := getClaim()
+			Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound),
+				"a database on an authority of its own is still encrypted, still verified "+
+					"and still bound")
+			cond := meta.FindStatusCondition(claim.Status.Conditions, condServerCertificate)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(ReasonProviderCA))
+		})
+
+		It("says nothing about a provider that does not say", func() {
+			provisioner = &plainProvisioner{instance: bound}
+			createClaim("")
+			reconcileOnce()
+
+			Expect(meta.FindStatusCondition(
+				getClaim().Status.Conditions, condServerCertificate)).To(BeNil(),
+				"a hosted database's certificate is vouched for by a public root and the "+
+					"platform has no opinion to offer about it")
+		})
 	})
 
 	It("hands the claim's version, extensions and storage to the provisioner", func() {

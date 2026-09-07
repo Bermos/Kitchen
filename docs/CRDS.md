@@ -2301,9 +2301,31 @@ that cannot be reached has not un-made the database — and the controller
 watches these Secrets, so one deleted under a claim is written again on that
 event rather than whenever the claim is next reconciled. The `ca` key carries
 the certificate of the authority that signed the server's, for a database this
-platform runs itself: CloudNativePG generates one per cluster, nothing public
-vouches for it, and an application pod can neither mount it nor be expected to
-carry it in an image the platform did not build.
+platform runs itself: nothing public vouches for it, and an application pod can
+neither mount it nor be expected to carry it in an image the platform did not
+build.
+
+**And that authority is the platform's own** (#443, #468 step 5a). A
+`postgres` claim's CloudNativePG Cluster is issued its server certificate from
+`kitchen-internal-ca` — the same CA that signs the telemetry store, the
+identity provider's Postgres and the object store — so an application is handed
+one root that vouches for everything Kitchen runs rather than one per database.
+The operator writes a cert-manager `ClusterIssuer` backed by the CA Secret
+where it already is and a `Certificate` in the database namespace, which is
+what keeps the CA's *private key* in `kitchen-system`: it is read by
+cert-manager and copied nowhere. The certificate covers all three of a
+Cluster's Services (`-rw`, `-ro`, `-r`) in every resolvable form, and
+CloudNativePG's own replication client CA is left to CloudNativePG.
+
+`status.conditions` carries a **`ServerCertificate`** condition saying which
+authority it is: `PlatformCA`, or `ProviderCA` for a Cluster still on the
+per-cluster CA CloudNativePG generates — which is where an installation with no
+cert-manager, or one whose CA has not issued yet, stays. Neither is a fault and
+the dashboard does not draw one as such: the connection is `verify-full`
+against the certificate the binding carries either way, and what differs is who
+vouches for it. A database provisioned before this existed moves to the
+platform's CA on the next reconcile, which CloudNativePG applies as **one
+rolling restart of that Cluster**; nothing in the binding changes with it.
 
 **A binding that carries an authority is mounted, and names where** (#456).
 Every workload an environment materializes from a Release that reads the claim
