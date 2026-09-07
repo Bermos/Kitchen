@@ -198,7 +198,7 @@ func TestTheRequirementsTransitionCarriesTheChangeByNameAndNotByValue(t *testing
 	)
 
 	transition := requirementsTransition(env, previous, testBundleDigest, changed, &owners,
-		&dataClassChange{previous: "", next: inventoryClassConfidential}, nil,
+		&dataClassChange{previous: "", next: inventoryClassConfidential}, nil, nil,
 		continuityChange{}, kitchenv1alpha1.Continuity{})
 	if transition.From != previous || transition.To != testBundleDigest {
 		t.Fatalf("the transition must run from the previous digest to the next: %q -> %q",
@@ -564,5 +564,112 @@ func TestEligibilityOfAStrangersReleaseIsRefused(t *testing.T) {
 		"/api/v1/environments/"+testEnvironment+"/eligibility?release=blog-rel-0", "")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// #494: who may bind to an offering this environment serves. It rides the
+// requirements endpoint because it is the same kind of declaration by the
+// same people — what this environment will answer is its owners' to say, not
+// the deploying team's — so these tests pin the three things that makes true:
+// the write is the owners', the vocabulary is checked, and an empty list is a
+// lock rather than an open door.
+func TestServesIsWrittenThroughTheOwnerGatedEndpoint(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
+	h.updateEnvironment(t, func(env *kitchenv1alpha1.Environment) {
+		env.Spec.Owners = []string{testCaller}
+	})
+
+	recorder := h.do(t, http.MethodPatch, requirementsPath, `{"serves":["preview","production"]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	env := h.environment(t)
+	if env.Spec.Serves == nil {
+		t.Fatal("the declaration was not written")
+	}
+	// The platform's own order, whatever order it was sent in: two
+	// environments admitting the same classes have to read the same.
+	got := env.ServedConsumers()
+	if len(got) != 2 || got[0] != kitchenv1alpha1.EnvironmentProduction ||
+		got[1] != kitchenv1alpha1.EnvironmentPreview {
+		t.Fatalf("want production then preview, got %v", got)
+	}
+	view := decode[environmentView](t, recorder)
+	if len(view.Serves) != 2 || view.Serves[0] != string(kitchenv1alpha1.EnvironmentProduction) {
+		t.Fatalf("the answer must echo the declaration, got %v", view.Serves)
+	}
+}
+
+func TestADeveloperWhoIsNotAnOwnerMayNotChangeServes(t *testing.T) {
+	// The same separation the bar has, and for the same reason: pointing
+	// other teams' previews at this environment is not a consequence of being
+	// able to deploy into it.
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	h.updateEnvironment(t, func(env *kitchenv1alpha1.Environment) {
+		env.Spec.Owners = []string{"risk-officer@example.com"}
+	})
+
+	recorder := h.do(t, http.MethodPatch, requirementsPath, `{"serves":["preview"]}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if h.environment(t).Spec.Serves != nil {
+		t.Fatal("the refused write must not have landed")
+	}
+}
+
+func TestAnEmptyServesIsALockAndAnUnknownClassIsRefused(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, requirementsPath, `{"serves":["everybody"]}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); !strings.Contains(got, "production, stage, preview") {
+		t.Fatalf("the refusal must name the vocabulary, got %q", got)
+	}
+
+	if recorder = h.do(t, http.MethodPatch, requirementsPath, `{"serves":["preview"]}`); recorder.Code != 200 {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder = h.do(t, http.MethodPatch, requirementsPath, `{"serves":[]}`); recorder.Code != 200 {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	env := h.environment(t)
+	if env.Spec.Serves == nil || len(env.ServedConsumers()) != 0 {
+		t.Fatalf("an empty list serves nobody: %+v", env.Spec.Serves)
+	}
+	if view := decode[environmentView](t, recorder); len(view.Serves) != 0 || view.Serves == nil {
+		t.Fatalf("the answer is an empty list rather than a missing field, got %v", view.Serves)
+	}
+}
+
+// A preview environment is torn down with its pull request, so an offering
+// served from one is an address that disappears when somebody merges. It is
+// refused where the declaration is made rather than accepted and never
+// chosen, which would be a setting that reads as though it did something.
+func TestAPreviewEnvironmentIsRefusedTheDeclaration(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.updateEnvironment(t, func(env *kitchenv1alpha1.Environment) {
+		env.Spec.Type = kitchenv1alpha1.EnvironmentPreview
+		env.Spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 1, Branch: "feat/x"}
+	})
+
+	recorder := h.do(t, http.MethodPatch, requirementsPath, `{"serves":["preview"]}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); !strings.Contains(got, "torn down with its pull request") {
+		t.Fatalf("the refusal must say why, got %q", got)
+	}
+	if h.environment(t).Spec.Serves != nil {
+		t.Fatal("the refused declaration must not have landed")
+	}
+
+	// An empty list on a preview is not a declaration and is admitted: it
+	// is what every environment already is, and refusing it would refuse a
+	// call that changes nothing.
+	if recorder = h.do(t, http.MethodPatch, requirementsPath, `{"serves":[]}`); recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }

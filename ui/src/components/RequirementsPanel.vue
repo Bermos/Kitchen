@@ -65,6 +65,27 @@ const rto = ref("");
 const rpo = ref("");
 const saving = ref(false);
 
+// Who may bind to an offering this environment serves. It is a set of
+// classes rather than a list of projects on purpose: the environment's owners
+// decide what *kind* of thing may call in — somebody's preview, somebody's
+// production — and which projects those are is the offering's own grant.
+const CONSUMER_CLASSES = ["production", "stage", "preview"] as const;
+const serves = ref<string[]>([]);
+
+/** A preview cannot declare one, and the API refuses it: a preview is torn
+ *  down with its pull request, so an offering served from one is an address
+ *  that disappears when somebody merges. The panel says that rather than
+ *  drawing an editor whose Save is always a 400. */
+const servesApplies = computed(() => props.environment.type !== "preview");
+
+/** One class on or off. A checkbox here is bound one at a time rather than to
+ *  the array, because a bare UCheckbox writes a boolean into whatever it is
+ *  given — an array model is only honoured inside a checkbox group — and the
+ *  list would be replaced by `true` on the first click. */
+function toggleServes(cls: string, on: boolean) {
+  serves.value = on ? [...serves.value, cls] : serves.value.filter((each) => each !== cls);
+}
+
 const criticalityOptions = [
   { label: "undesignated", value: "" },
   ...CRITICALITIES.map((value) => ({ label: value, value: value as string })),
@@ -77,6 +98,7 @@ function openEditor() {
   criticality.value = props.environment.criticality ?? "";
   rto.value = props.environment.rto ?? "";
   rpo.value = props.environment.rpo ?? "";
+  serves.value = [...(props.environment.serves ?? [])];
   editing.value = true;
 }
 
@@ -104,6 +126,12 @@ async function save() {
       bundleDigest: trimmed,
       ...(trimmed !== "" ? { parameters: parseParameters(parameters.value).parameters } : {}),
       owners: parseOwners(owners.value),
+      // Left out entirely on a preview: the field is absent rather than an
+      // empty list, so the save is not a write of something a preview may
+      // not have.
+      ...(servesApplies.value
+        ? { serves: CONSUMER_CLASSES.filter((cls) => serves.value.includes(cls)) }
+        : {}),
       criticality: criticality.value,
       rto: rto.value.trim(),
       rpo: rpo.value.trim(),
@@ -192,6 +220,32 @@ async function save() {
         </p>
       </div>
 
+      <!-- Who may bind to an offering this environment serves. It is the
+           same kind of declaration by the same people as the two above: what
+           this environment will answer is its owners' to say, not the
+           deploying team's. -->
+      <div class="border-t border-default px-5 py-4">
+        <div class="flex items-baseline gap-3 flex-wrap">
+          <p class="text-xs text-muted">Serves</p>
+          <div v-if="servesApplies && environment.serves?.length" class="flex flex-wrap gap-1">
+            <UBadge v-for="cls in environment.serves" :key="cls" color="neutral" variant="subtle" size="sm">
+              {{ cls }}
+            </UBadge>
+          </div>
+          <p v-else class="text-xs text-dimmed">nobody — no other project's environment may bind here</p>
+        </div>
+        <p v-if="servesApplies" class="text-xs text-dimmed mt-1 max-w-3xl">
+          Which classes of another project's environments may bind to an offering served from here. A binding
+          resolves to an environment that admits the class asking, so a consumer's preview reaches whatever its
+          owners opened to previews — and nothing, rather than production, when they opened none.
+        </p>
+        <p v-else class="text-xs text-dimmed mt-1 max-w-3xl">
+          A preview is torn down with its pull request, so nothing may bind to it — an offering served from here
+          would be an address that disappears when somebody merges. The environments that outlive a request say
+          who they serve.
+        </p>
+      </div>
+
       <!-- The deployed release against the bar. -->
       <div v-if="environment.release" class="border-t border-default px-5 py-4">
         <UAlert
@@ -267,6 +321,21 @@ async function save() {
           </UFormField>
           <UFormField label="Owners" help="One per line: an issuer subject, or a verified email address. Empty leaves changes to platform operators alone.">
             <UTextarea v-model="owners" class="w-full font-mono" :rows="3" placeholder="risk-officer@example.com" />
+          </UFormField>
+          <UFormField
+            v-if="servesApplies"
+            label="Serves"
+            help="Which classes of another project's environments may bind to an offering served from here. None checked serves nobody."
+          >
+            <div class="flex flex-wrap gap-4 pt-1">
+              <UCheckbox
+                v-for="cls in CONSUMER_CLASSES"
+                :key="cls"
+                :model-value="serves.includes(cls)"
+                :label="cls"
+                @update:model-value="(on: boolean | 'indeterminate') => toggleServes(cls, on === true)"
+              />
+            </div>
           </UFormField>
           <div class="grid gap-3 sm:grid-cols-3">
             <UFormField label="Criticality" help="The institution's designation, not Kitchen's.">

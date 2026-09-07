@@ -91,8 +91,9 @@ same two collisions a project's own name is refused for.
 
 - `name` and `type` say which environment this is, and are the deploying
   team's: `developer`, the same role that deletes one.
-- `owners`, `requirements`, `dataClass`, `residency`, `criticality`, `rto` and
-  `rpo` are the environment owners' declaration, and are admitted from
+- `owners`, `requirements`, `dataClass`, `residency`, `serves`
+  ([who may bind here](#which-consumers-may-bind-here)), `criticality`, `rto`
+  and `rpo` are the environment owners' declaration, and are admitted from
   **platform operators alone**. This is the requirements endpoint's rule met
   one step earlier: an environment that does not exist yet names no owners, so
   there is nobody else it could be. A developer sending any of them is
@@ -422,12 +423,78 @@ and recorded the same way:
   observed: the platform records the answer the institution is accountable
   for. Absent inherits the platform's declared residency in the
   [inventory](audit.md#the-classification-inventory).
+- `serves` replaces the list of consumer classes admitted here — see
+  [the next section](#which-consumers-may-bind-here). An empty list is a
+  lock, exactly as an empty `owners` is.
 
 Every change is recorded in the audit log before it is made, marked
 privileged, with the previous bundle digest and the *names* of the parameters
 that moved — and, for the data declarations, the previous value itself (a
 classification is a label, not a secret) — so the log alone says what the bar
 was at any moment, and a change can be walked back on paper.
+
+## Which consumers may bind here
+
+An environment also declares **who it will answer**: which classes of *another
+project's* environments may bind to an
+[offering](projects.md#what-this-project-offers-other-projects) served from it,
+through a [`service` claim](claims.md#creating-a-claim).
+
+```sh
+curl -sS -X PATCH -H "authorization: Bearer $TOKEN" \
+  -d '{"serves": ["production", "preview"]}' \
+  https://kitchen.apps.example.com/api/v1/environments/pricing-staging/requirements
+```
+
+It rides the requirements endpoint, with the same authorization, because it is
+the same kind of statement by the same people: what an environment is worth,
+and who it will answer, is not the deploying team's to say. The list replaces
+the whole of what was there; the classes are `production`, `stage` and
+`preview`, and anything else is refused with the vocabulary named. A **preview**
+environment cannot declare one at all — it is torn down with its pull request,
+so an offering served from it is an address that disappears when somebody
+merges.
+
+**An environment that declares nothing serves nobody.** That is the same safe
+default `owners` takes, and it is the whole point: an environment nobody has
+opened must not be one that whoever deploys into it can point another team's
+previews at. It is also a change of behaviour for bindings that already exist —
+before this, every consumer of an offering reached the environment the offering
+named, whatever kind of environment was asking.
+
+What a consumer gets follows from it, one class at a time:
+
+- The claim resolves **one binding per class** of the consumer's own
+  environments. The environment the offering names is the default and is tried
+  first; where it does not admit the class asking, the claim takes a durable
+  environment that does — **a stage before production**, since an environment
+  its owners set aside for consumers is the conservative destination. A preview
+  environment of the *provider* is never chosen: it disappears with its pull
+  request.
+- **A class nothing admits reaches nothing.** The claim records the refusal
+  against that class, naming what would permit it, and the consumer's
+  environments of that class deploy without the binding's variables and say so
+  on their `ClaimsBound` condition. That holds however the application reads
+  the address — the platform's own `KITCHEN_SERVICE_<NAME>` variables and a
+  `fromResourceClaim` entry the project wrote itself both resolve per class,
+  and **neither holds a deployment back**: a grant another team's owners have
+  not made is not a state to wait through, so the environment deploys without
+  the variable rather than sitting unready. That covers the binding that is
+  merely *not resolved yet* as well — an environment of the provider that
+  nothing has deployed into leaves the claim `Pending`, and the consumer's
+  first deploy goes out without the variable and rolls again when the claim
+  resolves, because resolving it wakes the consumer's environments. A claim
+  no class of consumer resolved at all is `Failed` — never quietly bound to
+  production.
+- **A consumer's production environment binds to a stage when only the stage
+  admits it.** That is the provider's own grant being honoured rather than
+  second-guessed; the binding names the environment it reached, on the claim
+  and in the binding Secret, so nobody has to infer it.
+- **The data class composes.** An environment rated above the environment its
+  binding reaches does not read it — the same comparison
+  `dataclass-le-environment` makes, since data does not flow somewhere rated
+  below it. An unrated provider environment receives no classified consumer,
+  for the reason an unrated environment receives no classified project.
 
 ## Whether a release clears it
 

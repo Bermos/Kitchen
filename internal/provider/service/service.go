@@ -37,14 +37,14 @@ const ProviderName = "project"
 
 // Declaration is what the platform says about a binding to an offering.
 //
-// Previews get the same address production gets — `shared` — and that is
-// both what the offering means today and the only honest answer available:
-// the offering names one environment of the provider, and which environments
-// of a provider a *preview* may reach is the question #494 answers with
-// `Environment.serves.consumers`. Until then a preview of the consumer calls
-// the environment the offering names, exactly as the consumer's production
-// does, and the claim says so where the choice is made rather than leaving
-// it to be discovered.
+// A preview gets a *running environment* of the provider rather than a
+// resource of its own — `shared` — because that is what an offering is: there
+// is nothing here to branch or to create fresh. Which environment it gets is
+// no longer the same one production gets, though: the provider's environment
+// owners say which classes of consumer they admit (`serves.consumers`, #494),
+// so a preview reaches whatever they opened to previews — a staging
+// environment, or nothing at all — and the claim's own status says which,
+// per class.
 //
 // Sharing here is not the sharing a database claim asks to be named: a
 // binding provisions no data, so there is nothing for a preview to write
@@ -53,8 +53,9 @@ const ProviderName = "project"
 // opt into.
 var Declaration = contract.Declaration{
 	Preview: contract.PreviewShared,
-	PreviewNote: "a preview calls the same environment of the provider that production calls — which " +
-		"environment a preview may reach is the offering's to say, and saying it per consumer is a later issue",
+	PreviewNote: "a preview calls a running environment of the provider rather than a resource of its " +
+		"own; which environment that is, or whether it reaches one at all, is the provider environment " +
+		"owners' declaration (serves.consumers)",
 	IdleNote: "a binding is an address and runs nothing, so an idle preview parks nothing here; the " +
 		"workload behind the address is the providing project's and idles on its own terms",
 }

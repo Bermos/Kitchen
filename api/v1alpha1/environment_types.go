@@ -51,6 +51,73 @@ const (
 	EnvironmentPreview EnvironmentType = "preview"
 )
 
+// EnvironmentTypes is every class of environment, in the order the platform
+// reads them: what a consumer environment can be, and so what an
+// environment's owners choose from when they say who may bind here.
+func EnvironmentTypes() []EnvironmentType {
+	return []EnvironmentType{EnvironmentProduction, EnvironmentStage, EnvironmentPreview}
+}
+
+// EnvironmentServes is what this environment offers *outward*: which classes
+// of consumer environment may bind to an offering it serves (#494).
+//
+// It is the environment owners' declaration, like Requirements, DataClass and
+// Criticality beside it, and for the same reason — what an environment is
+// worth, and who it will answer, is not the deploying team's to say. The
+// deploying team chooses beneath the ceiling its owners set and cannot raise
+// it.
+//
+// The struct exists rather than a bare list on the spec because `serves` is
+// the question and `consumers` is the first of its answers; an offering that
+// later wants to say *what* it serves as well as *whom* has somewhere to say
+// it.
+type EnvironmentServes struct {
+	// Consumers are the classes of consumer environment admitted here: a
+	// production environment of another project, a stage of one, a preview
+	// of one.
+	//
+	// **Absent or empty serves nothing.** An environment nobody has rated
+	// must not be one that whoever deploys into it can point previews at —
+	// the same safe default Owners already takes, and the reason a claim
+	// that resolves to an unrated environment is refused with the sentence
+	// that would permit it rather than quietly binding to production.
+	// +optional
+	// +kubebuilder:validation:MaxItems=3
+	Consumers []EnvironmentType `json:"consumers,omitempty"`
+}
+
+// Admits reports whether an environment of class `consumer` may bind to an
+// offering this environment serves. An environment that declares no `serves`
+// admits nobody, which is the whole of the default.
+func (e *Environment) Admits(consumer EnvironmentType) bool {
+	if e == nil || e.Spec.Serves == nil {
+		return false
+	}
+	for _, admitted := range e.Spec.Serves.Consumers {
+		if admitted == consumer {
+			return true
+		}
+	}
+	return false
+}
+
+// ServedConsumers is the classes this environment admits, in the platform's
+// own order rather than the order they were written — so that two
+// environments declaring the same thing read the same everywhere, and an
+// audit record of a change is a change.
+func (e *Environment) ServedConsumers() []EnvironmentType {
+	if e == nil || e.Spec.Serves == nil {
+		return nil
+	}
+	var out []EnvironmentType
+	for _, class := range EnvironmentTypes() {
+		if e.Admits(class) {
+			out = append(out, class)
+		}
+	}
+	return out
+}
+
 // PreviewInfo links a preview Environment to its pull request.
 type PreviewInfo struct {
 	// +kubebuilder:validation:Minimum=1
@@ -148,6 +215,14 @@ type EnvironmentSpec struct {
 	// one whoever deploys into it can lower the bar of.
 	// +optional
 	Owners []string `json:"owners,omitempty"`
+
+	// Serves is who may bind to an offering this environment serves: the
+	// classes of consumer environment admitted here (#494). Absent serves
+	// nothing, which is the safe default and not a gap — see
+	// [EnvironmentServes]. It is the owners' declaration and travels on the
+	// same owner-gated endpoint as the requirements below.
+	// +optional
+	Serves *EnvironmentServes `json:"serves,omitempty"`
 
 	// Requirements is what an artifact must bring in order to land here,
 	// declared by the environment's owners rather than by the project that

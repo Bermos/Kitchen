@@ -1081,6 +1081,21 @@ kitchen api PATCH /environments/shop-staging/requirements \
 That is the whole reason to declare one: the first release into it is judged
 against a bar that was already there.
 
+The same endpoint says **who this environment will answer** — which classes of
+another project's environments may bind to an offering served from here. There
+is no command for it and there deliberately is not one: it is a field of a
+write `kitchen api` already carries, made by the environment's owners rather
+than by anybody working in a linked directory, and a command of its own would
+be a second spelling of one PATCH.
+
+```sh
+kitchen api PATCH /environments/shop-staging/requirements \
+  --data '{"serves": ["preview"]}'   # other teams' previews may bind here; nothing else may
+```
+
+An environment that has declared nothing serves nobody, so a consumer's preview
+binds to this one only once somebody says so.
+
 ### Rolling back
 
 Rollback is not a special operation: a `Release` is an immutable snapshot of an

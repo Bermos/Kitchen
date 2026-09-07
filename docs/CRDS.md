@@ -1918,6 +1918,12 @@ spec:
                                         # rule refuses a project classified above it; absent = unrated
   residency: CH                         # declared location of its data; absent inherits
                                         # Kitchen.spec.residency in the compliance inventory
+  serves:
+    consumers: [production, preview]    # which classes of *another project's* environments may bind to
+                                        # an offering served from here. Absent or empty serves nobody,
+                                        # which is the safe default: an environment nobody has opened
+                                        # must not be one whoever deploys into it can point previews at.
+                                        # The owners' declaration, on the same endpoint as the bar
 status:
   phase: Live                           # Pending | Deploying | Live | Degraded | Terminating
   url: https://my-shop-pr-42.apps.example.com
@@ -2824,10 +2830,29 @@ spec:
 status:
   phase: Bound
   secretName: prices-binding            # binding keys: host, port, url (http offerings only),
-                                        # project, offering, environment
+                                        # project, offering, environment. This is the first class
+                                        # below that resolved — production's, on an ordinary claim
   instanceID: pricing/pricing-api       # what it is bound to, as one string
-  previewMode: shared                   # a preview calls the environment the offering names
+  previewMode: shared                   # a preview calls a running environment of the provider
   dataProvenance: production            # what comes back is the provider's data as it stands
+  service:
+    bindings:                           # one row per class of the CONSUMER's environments, always
+                                        # all three: which environment of the provider it reaches,
+                                        # or why it reaches nothing (#494). status.secretName above
+                                        # is the first of these that resolved; which Secret a given
+                                        # environment reads comes from these rows, never from it
+      - consumer: production
+        environment: pricing            # the environment the offering names, which admits production
+        secretName: prices-binding
+        host: pricing.kitchen-pricing.svc.cluster.local
+        dataClass: internal             # that environment's rating, as it stood here: an environment
+                                        # rated above it reads none of this binding
+      - consumer: stage
+        reason: "no environment of project pricing admits a stage consumer: …"
+      - consumer: preview
+        environment: pricing-staging    # a stage whose owners opened it to previews
+        secretName: prices-binding-preview
+        host: pricing-staging.kitchen-pricing.svc.cluster.local
 ```
 
 The provider side is [`Project.spec.offers`](#project-namespaced-kitchen-system):
@@ -2845,12 +2870,22 @@ there is no release to ask: a project whose workloads come from its
 `kitchen.json` declares none of them in `spec.processes`, and an offering
 naming one would otherwise never resolve.
 
+**Which environment each class of the consumer reaches is the provider
+environment owners' to decide** — `Environment.spec.serves.consumers`, and an
+environment that declares nothing admits nobody. The offering's own environment
+is the default; where it does not admit the class asking, the claim takes a
+durable environment of the provider that does, a stage before production, and a
+class nothing admits reaches nothing. The consumer's environments of that class
+then deploy without the binding's variables and say so on their `ClaimsBound`
+condition.
+
 **What is Failed and what is Pending.** A project that does not exist, an
-offering it does not make, an offering that admits consumers by request, and a
-workload nothing addresses are all `Failed` with the name in the message:
-nothing appears on a timer that would make any of them right. An environment
-the providing project has not deployed into yet is `Pending`, because that one
-does.
+offering it does not make, an offering that admits consumers by request, a
+workload nothing addresses, and an offering no environment of the provider
+admits any class of this consumer are all `Failed` with the name in the
+message: nothing appears on a timer that would make any of them right. An
+environment the providing project has not deployed into yet is `Pending`,
+because that one does.
 
 **Deleting the claim takes back the Secret and nothing else** — the offering
 carries on being offered. Deleting the *providing project* is refused while

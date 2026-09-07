@@ -188,7 +188,7 @@ describe("deleting a binding to another project's offering", () => {
     connection: "",
     type: "service",
     createdAt: "2026-09-07T00:00:00Z",
-    service: { project: "pricing", offering: "pricing-api" },
+    service: { project: "pricing", offering: "pricing-api", bindings: [] },
   };
 
   it("says the offering carries on being offered", () => {

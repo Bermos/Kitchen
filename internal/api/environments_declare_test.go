@@ -197,6 +197,7 @@ func TestOnlyAnOperatorDeclaresWhatANewEnvironmentDemands(t *testing.T) {
 		{"a residency", `{"name": "` + declaredStage + `", "residency": "CH"}`},
 		{"a designation", `{"name": "` + declaredStage + `", "criticality": "critical"}`},
 		{"a tolerance", `{"name": "` + declaredStage + `", "rto": "15m"}`},
+		{"who it serves", `{"name": "` + declaredStage + `", "serves": ["preview"]}`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			h := asMember(t, kitchenv1alpha1.AccessRoleAdmin)
@@ -320,4 +321,33 @@ func TestDeletingADeclaredEnvironment(t *testing.T) {
 			t.Fatalf("want 202 for an operator, got %d: %s", recorder.Code, recorder.Body.String())
 		}
 	})
+}
+
+// #494 at the moment an environment is declared: who it will answer is part
+// of the owners' half of the body, so an operator can stand an environment up
+// already open to other teams' previews — and an environment declared without
+// it serves nobody, like every environment nobody has opened.
+func TestADeclaredEnvironmentSaysWhoItServesOrNobody(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPost, declarePath,
+		`{"name": "`+declaredStage+`", "serves": ["preview", "production"]}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[environmentView](t, recorder)
+	if len(view.Serves) != 2 || view.Serves[0] != string(kitchenv1alpha1.EnvironmentProduction) {
+		t.Fatalf("want the declaration in the platform's order, got %v", view.Serves)
+	}
+
+	// And one declared without it: the field is answered as an empty list
+	// rather than left out, because "nobody" is the answer.
+	h = newHarness(t, nil, fixtures()...)
+	recorder = h.do(t, http.MethodPost, declarePath, `{"name": "`+declaredStage+`"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[environmentView](t, recorder); len(view.Serves) != 0 {
+		t.Fatalf("an environment nobody opened serves nobody, got %v", view.Serves)
+	}
 }

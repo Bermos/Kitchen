@@ -955,7 +955,44 @@ offering at the same address. An offering that speaks `tcp` gets no `url` and
 no `KITCHEN_SERVICE_<NAME>` — a URL for a wire protocol would be the platform
 inventing a scheme it was never told.
 
-**Four refusals, and which is `Failed` and which is `Pending` is the whole of
+**A binding per class of the consumer's environments.** Which environments of
+the provider may be reached is the *provider environment owners'* declaration —
+`serves.consumers`, on the
+[environment's own endpoint](environments.md#which-consumers-may-bind-here) —
+so the claim resolves one address for each class of the consumer's
+environments: its production, its stages and its previews. The claim's
+`service.bindings` answers the question the feature exists for, one row per
+class, whether it reaches anything or not:
+
+```json
+"service": {
+  "project": "pricing", "offering": "pricing-api",
+  "bindings": [
+    {"consumer": "production", "environment": "pricing",
+     "host": "pricing.kitchen-pricing.svc.cluster.local"},
+    {"consumer": "stage", "reason": "no environment of project pricing admits a stage consumer: …"},
+    {"consumer": "preview", "environment": "pricing-staging",
+     "host": "pricing-staging.kitchen-pricing.svc.cluster.local"}
+  ]
+}
+```
+
+A class that reaches something has a binding Secret of its own, so a preview
+and a production environment of one project can call two different environments
+of another. `status.secretName` names the Secret of the **first class that
+resolved**, in the order above — it is what the finalizer and an operator older
+than this read, and anything asking "what does *this* environment reach" goes
+through the rows rather than through it.
+
+A class that reaches nothing has the reason, in words that name what would
+permit it, and the consumer's environments of that class deploy without the
+variables and carry the same sentence on their `ClaimsBound` condition — both
+for the `KITCHEN_SERVICE_<NAME>` triple and for a `fromResourceClaim` entry the
+project wrote itself, and neither holds the deployment back. An environment
+rated above the environment its binding reaches reads none of it either,
+through the comparison `dataclass-le-environment` makes.
+
+**Five refusals, and which is `Failed` and which is `Pending` is the whole of
 what they mean:**
 
 | The claim names | What happens |
@@ -965,18 +1002,20 @@ what they mean:**
 | a workload nothing addresses — a worker, a scheduled job | `Failed`. There is no Service in front of one, so there is no address to hand over |
 | a workload the offering's environment is not running | `Failed`, naming what it *is* running. The offering is resolved against that environment's release, which is where a workload declared in the repository lives |
 | an environment the providing project has not deployed into yet | `Pending`. That one *does* come right on its own: the environment appears when something is deployed there, or when its owners declare it |
+| an offering no environment of the provider admits *any* class of this consumer's environments | `Failed`, naming what each of the provider's environments does serve and how its owners would open one. A binding nothing admits is refused rather than quietly sent to production |
 
 The API makes the first two checks at the door as well, so a claim that could
 not bind is refused with a `400` rather than created and left failing. The
 reconciler makes them again, because an offering can be closed or withdrawn
 after a claim was written.
 
-A preview of the consumer calls the same environment production calls, which
-is what `shared` means here and what the claim's preview mode says. It costs
-the provider nothing — a binding provisions no data of its own — and *which*
-environments of a provider a preview may reach is the offering's to say, which
-is a later issue. `previewMode: none` leaves the variables out of previews
-entirely.
+A preview of the consumer calls whichever environment of the provider admits
+previews, which is what `shared` means here and what the claim's preview mode
+says: what a preview reads is somebody's running environment rather than a
+resource of its own, and it costs the provider nothing because a binding
+provisions no data. Which environment that is — production, a stage, or none at
+all — is the provider environment owners' declaration above.
+`previewMode: none` leaves the variables out of previews entirely.
 
 **There is no NetworkPolicy behind this yet, and that is deliberate.** The
 edge a binding declares is what a default-deny between application namespaces
@@ -1602,7 +1641,7 @@ with the body above.
 | `inngest` | `inngestSelfHosted` | `fresh` — an Inngest server of the preview's own, run in this cluster — its own event stream, function set and run history, empty rather than a copy of production's, on its own storage; created with the preview and destroyed with it, which is what keeps one pull request's events from triggering another's functions | **blocked** — in connect mode, where the worker holds an outbound WebSocket to the server's gateway that never crosses the interceptor — and scale to zero is a project-level policy, so every environment of the project keeps its pods. A claim in serve mode declares otherwise: the server is in this cluster and calls the environment's own URL, so the call crosses the interceptor and wakes it, and the project keeps its scale to zero | **parks with it** — the preview's server is scaled to no pods with it and back up on wake; the volume its runs and its queue are on survives the park, so a preview that wakes finds the work it left | unaffected |
 | `redis` | `valkey` | `fresh` — a new, empty instance of the preview's own, configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | **parks with it** — a preview's instance is scaled to no pods with it and back up on wake; a queue's volume survives the park, and a cache holds nothing it cannot recompute | unaffected |
 | `redis` | `redis` | `fresh` — a logical database of the preview's own at the same server, allocated to it alone and handed back when the preview closes: the branch declares provenance synthetic — it never holds production's keys, though a server the platform does not run cannot be emptied, so a database is handed out again only once every untouched one is gone | unaffected | **stays as it is** — a logical database at a server this platform does not run: there is no process of the preview's own to park, and the server stays up for every other claim on it | unaffected |
-| `service` | `project` | `shared` — a preview calls the same environment of the provider that production calls — which environment a preview may reach is the offering's to say, and saying it per consumer is a later issue | unaffected | **stays as it is** — a binding is an address and runs nothing, so an idle preview parks nothing here; the workload behind the address is the providing project's and idles on its own terms | unaffected |
+| `service` | `project` | `shared` — a preview calls a running environment of the provider rather than a resource of its own; which environment that is, or whether it reaches one at all, is the provider environment owners' declaration (serves.consumers) | unaffected | **stays as it is** — a binding is an address and runs nothing, so an idle preview parks nothing here; the workload behind the address is the providing project's and idles on its own terms | unaffected |
 <!-- end generated -->
 
 ### Choosing on the claim

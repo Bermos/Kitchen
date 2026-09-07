@@ -85,9 +85,14 @@ type createEnvironmentRequest struct {
 	Requirements *kitchenv1alpha1.EnvironmentRequirements `json:"requirements,omitempty"`
 	DataClass    *string                                  `json:"dataClass,omitempty"`
 	Residency    *string                                  `json:"residency,omitempty"`
-	Criticality  *string                                  `json:"criticality,omitempty"`
-	RTO          *string                                  `json:"rto,omitempty"`
-	RPO          *string                                  `json:"rpo,omitempty"`
+	// Serves is who this environment will answer: the classes of another
+	// project's environments that may bind to an offering served from here
+	// (#494). Absent serves nobody, which is the state an environment
+	// declared without it is in and the state one nobody declared is in.
+	Serves      *[]string `json:"serves,omitempty"`
+	Criticality *string   `json:"criticality,omitempty"`
+	RTO         *string   `json:"rto,omitempty"`
+	RPO         *string   `json:"rpo,omitempty"`
 }
 
 // declares reports whether the body carries any of the owners' half. It is
@@ -95,14 +100,14 @@ type createEnvironmentRequest struct {
 // declaring an environment and nothing about it is the ordinary case.
 func (r createEnvironmentRequest) declares() bool {
 	return len(r.Owners) > 0 || r.Requirements != nil || r.DataClass != nil ||
-		r.Residency != nil || r.Criticality != nil || r.RTO != nil || r.RPO != nil
+		r.Residency != nil || r.Serves != nil || r.Criticality != nil || r.RTO != nil || r.RPO != nil
 }
 
 // declarationRefusal is the 403 for a caller who may declare an environment
 // and may not declare what it demands. It says both halves of the way
 // forward, because "ask an operator" on its own is a dead end.
 const declarationRefusal = "an environment that does not exist yet names no owners, so only a platform " +
-	"operator may set its owners, requirements, dataClass, residency, criticality, rto or rpo at " +
+	"operator may set its owners, requirements, dataClass, residency, serves, criticality, rto or rpo at " +
 	"creation. Create it with a name and a type, and have an operator declare the rest through " +
 	"PATCH /api/v1/environments/{name}/requirements — which is also where an owner they name may " +
 	"change it afterwards"
@@ -211,6 +216,14 @@ func (s *Server) createProjectEnvironment(w http.ResponseWriter, req *http.Reque
 	if body.Residency != nil {
 		env.Spec.Residency = strings.TrimSpace(*body.Residency)
 	}
+	if body.Serves != nil {
+		serves, err := servesFromRequest(env, *body.Serves)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		env.Spec.Serves = &kitchenv1alpha1.EnvironmentServes{Consumers: serves.next}
+	}
 	continuity.apply(&env.Spec.Criticality, &env.Spec.RTO, &env.Spec.RPO)
 
 	details := map[string]any{"type": string(envType), "declared": true}
@@ -222,6 +235,13 @@ func (s *Server) createProjectEnvironment(w http.ResponseWriter, req *http.Reque
 	}
 	if env.Spec.DataClass != "" {
 		details["dataClass"] = string(env.Spec.DataClass)
+	}
+	if env.Spec.Serves != nil {
+		served := make([]string, 0, len(env.Spec.Serves.Consumers))
+		for _, class := range env.ServedConsumers() {
+			served = append(served, string(class))
+		}
+		details["serves"] = served
 	}
 	continuity.recordInto(details, kitchenv1alpha1.Continuity{})
 	transition := audit.Transition{

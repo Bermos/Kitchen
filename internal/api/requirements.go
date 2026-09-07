@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -81,6 +82,14 @@ type patchEnvironmentRequirementsRequest struct {
 	// falls back to the platform default; the value is declared, not
 	// observed.
 	Residency *string `json:"residency,omitempty"`
+	// Serves replaces the classes of consumer environment that may bind to
+	// an offering this environment serves — `production`, `stage`,
+	// `preview`. An empty list is a lock, not an open door, exactly as the
+	// owners list is: an environment that serves nobody is the safe state.
+	// It travels on this endpoint because it is the same kind of
+	// declaration as the bar and the data class — who this environment will
+	// answer is its owners' to say, not the deploying team's.
+	Serves *[]string `json:"serves,omitempty"`
 	// Criticality designates how much it matters that *this environment*
 	// keeps working, and RTO/RPO are its disruption tolerances. Empty removes
 	// each. They travel on this endpoint for the same reason the data class
@@ -120,6 +129,65 @@ func requirementsRefusal(env *kitchenv1alpha1.Environment) string {
 	return fmt.Sprintf("changing the requirements of %s is for its owners (%s) or a platform operator; "+
 		"deploying into an environment does not grant a say in what it demands",
 		env.Name, strings.Join(env.Spec.Owners, ", "))
+}
+
+// servesChange is the consumer classes a PATCH leaves behind, with the
+// previous list for the audit record — a grant widened without its previous
+// value is a change nobody can walk back on paper.
+type servesChange struct {
+	previous []string
+	next     []kitchenv1alpha1.EnvironmentType
+}
+
+// servesFromRequest reads the replacement list, or says what is wrong with
+// it. Every entry has to be a class of environment the platform knows,
+// because a class it does not know admits nobody and would read as though it
+// admitted somebody.
+func servesFromRequest(env *kitchenv1alpha1.Environment, values []string) (servesChange, error) {
+	change := servesChange{next: []kitchenv1alpha1.EnvironmentType{}}
+	for _, class := range env.ServedConsumers() {
+		change.previous = append(change.previous, string(class))
+	}
+	// A preview is torn down with its pull request, so an offering served
+	// from one is an address that disappears when somebody merges. Refused
+	// here rather than accepted and never chosen, which would be a
+	// declaration that reads as though it did something.
+	if env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && len(values) > 0 {
+		return servesChange{}, fmt.Errorf(
+			"environment %s is a preview, and a preview is torn down with its pull request: nothing may bind "+
+				"to it. Declare serves on the environment that outlives the request", env.Name)
+	}
+	known := kitchenv1alpha1.EnvironmentTypes()
+	for _, value := range values {
+		class := kitchenv1alpha1.EnvironmentType(strings.TrimSpace(value))
+		if !slices.Contains(known, class) {
+			return servesChange{}, fmt.Errorf(
+				"serves names %q, which is not a class of environment: the classes are %s",
+				value, joinEnvironmentTypes(known))
+		}
+		if !slices.Contains(change.next, class) {
+			change.next = append(change.next, class)
+		}
+	}
+	// The platform's own order, so that two environments admitting the same
+	// classes read the same wherever they are shown.
+	ordered := make([]kitchenv1alpha1.EnvironmentType, 0, len(change.next))
+	for _, class := range known {
+		if slices.Contains(change.next, class) {
+			ordered = append(ordered, class)
+		}
+	}
+	change.next = ordered
+	return change, nil
+}
+
+// joinEnvironmentTypes names the vocabulary for a refusal.
+func joinEnvironmentTypes(classes []kitchenv1alpha1.EnvironmentType) string {
+	names := make([]string, 0, len(classes))
+	for _, class := range classes {
+		names = append(names, string(class))
+	}
+	return strings.Join(names, ", ")
 }
 
 // dataClassChange and residencyChange carry a declaration's before and after
@@ -166,6 +234,7 @@ func requirementsTransition(
 	owners *[]string,
 	dataClass *dataClassChange,
 	residency *residencyChange,
+	serves *servesChange,
 	continuity continuityChange,
 	before kitchenv1alpha1.Continuity,
 ) audit.Transition {
@@ -186,6 +255,14 @@ func requirementsTransition(
 	if residency != nil {
 		details["previousResidency"] = residency.previous
 		details["residency"] = residency.next
+	}
+	if serves != nil {
+		next := make([]string, 0, len(serves.next))
+		for _, class := range serves.next {
+			next = append(next, string(class))
+		}
+		details["previousServes"] = serves.previous
+		details["serves"] = next
 	}
 	continuity.recordInto(details, before)
 	return audit.Transition{
@@ -282,9 +359,9 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 		return
 	}
 	if body.BundleDigest == nil && body.Parameters == nil && body.Owners == nil &&
-		body.DataClass == nil && body.Residency == nil && !continuity.touched() {
+		body.DataClass == nil && body.Residency == nil && body.Serves == nil && !continuity.touched() {
 		badRequest(w, "nothing to change: send bundleDigest, parameters, owners, dataClass, "+
-			"residency, criticality, rto or rpo")
+			"residency, serves, criticality, rto or rpo")
 		return
 	}
 	if body.Owners != nil {
@@ -317,6 +394,15 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 	if body.Residency != nil {
 		residency = &residencyChange{previous: env.Spec.Residency, next: strings.TrimSpace(*body.Residency)}
 	}
+	var serves *servesChange
+	if body.Serves != nil {
+		change, err := servesFromRequest(env, *body.Serves)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		serves = &change
+	}
 
 	changed := changedParameterNames(previousParameters, nextParameters)
 	// The designation as it stands, for the record: a change without its
@@ -325,7 +411,7 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 		Criticality: env.Spec.Criticality, RTO: env.Spec.RTO, RPO: env.Spec.RPO,
 	}
 	if !s.recorded(w, req, requirementsTransition(env, previousDigest, nextDigest, changed, body.Owners,
-		classChange, residency, continuity, before)) {
+		classChange, residency, serves, continuity, before)) {
 		return
 	}
 
@@ -338,6 +424,13 @@ func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.R
 	}
 	if residency != nil {
 		env.Spec.Residency = residency.next
+	}
+	if serves != nil {
+		// An empty list is a lock: the environment keeps a `serves` block
+		// that admits nobody rather than losing the block, so that "its
+		// owners closed it" and "its owners never opened it" are the same
+		// state — which they are, and both serve nothing.
+		env.Spec.Serves = &kitchenv1alpha1.EnvironmentServes{Consumers: serves.next}
 	}
 	continuity.apply(&env.Spec.Criticality, &env.Spec.RTO, &env.Spec.RPO)
 	switch {

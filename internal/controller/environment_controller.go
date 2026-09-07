@@ -754,6 +754,14 @@ type claimEffects struct {
 	// this preview and the claim's own reason — the volume's counterpart
 	// to unboundInPreview.
 	unmountedInPreview []string
+	// unboundHere names each service binding this environment reads none of,
+	// whatever class of environment it is, and why: no environment of the
+	// providing project admits a consumer of this class (#494), or the one
+	// that does is rated below this environment's data class. Unlike the two
+	// above it is not a preview's story — a production environment can be
+	// refused a binding just as squarely — so it is said about every
+	// environment.
+	unboundHere []string
 	// cas is the certificate authority each claim this environment reads
 	// hands it, if any, and the binding Secret it is projected from. Every
 	// workload the claim's variables reach mounts all of them; see
@@ -794,10 +802,11 @@ func (r *EnvironmentReconciler) resolveEnv(
 	// They are the claims' rather than the Release's: where somebody else's
 	// environment answers is a fact about the platform now rather than about
 	// this commit, so a rollback calls the same offering (#493).
-	out, err := serviceBindingEnv(ctx, r.Client, env, env.Spec.ProjectRef.Name, appNS)
+	out, unbound, err := serviceBindingEnv(ctx, r.Client, env, env.Spec.ProjectRef.Name, appNS)
 	if err != nil {
 		return nil, effects, false, err
 	}
+	effects.unboundHere = unbound
 	seen := map[string]bool{}
 	// Separate from seen, which is settled before the preview switch below
 	// has decided which binding this environment actually reads — and the
@@ -814,7 +823,13 @@ func (r *EnvironmentReconciler) resolveEnv(
 				}
 				return nil, effects, false, err
 			}
-			if claim.Status.SecretName == "" {
+			// A service claim never holds a deploy up. Which environment of
+			// the provider this one may reach is another project's owners'
+			// declaration (#494), so an unresolved binding is not a state
+			// this environment is waiting through — the variable is left
+			// out and the reason is said. Every other type is the release's
+			// own dependency and is waited for.
+			if claim.Status.SecretName == "" && claim.Spec.Type != kitchenv1alpha1.ClaimTypeService {
 				return nil, effects, true, nil
 			}
 			if !seen[claim.Name] {
@@ -827,7 +842,28 @@ func (r *EnvironmentReconciler) resolveEnv(
 				}
 			}
 			secretName := claim.Status.SecretName
-			if isPreview {
+			// A binding to another project's offering is resolved per class
+			// of *this* environment rather than read off status.secretName,
+			// and never through the preview mode (#494).
+			//
+			// Both halves of that matter. `shared` here means a preview
+			// calls a running environment of the provider rather than a
+			// resource of its own — it does not mean production's address,
+			// which is exactly what a preview must not be handed on the
+			// strength of a grant nobody made. And status.secretName is
+			// only the first class that resolved, so reading it would send
+			// production to the stage a preview was admitted to.
+			if claim.Spec.Type == kitchenv1alpha1.ClaimTypeService {
+				name, refusal := bindingForEnvironment(claim, env)
+				if refusal != "" {
+					note := claim.Name + ": " + refusal
+					if !slices.Contains(effects.unboundHere, note) {
+						effects.unboundHere = append(effects.unboundHere, note)
+					}
+					continue
+				}
+				secretName = name
+			} else if isPreview {
 				switch mode := contract.PreviewMode(claim.Status.PreviewMode); {
 				case mode.Isolated():
 					// The preview reads its own branch's binding, and waits
@@ -1726,28 +1762,49 @@ func (r *EnvironmentReconciler) unpublished(
 }
 
 // recordClaimsBound puts on the Environment which of its claims bind nothing
-// here, and why, in the claims' own words. It is only ever False: a preview
-// for which every claim binds carries no condition, because that is the
-// ordinary case and not worth a line on every object.
+// here, and why, in the claims' own words. It is only ever False: an
+// environment for which every claim binds carries no condition, because that
+// is the ordinary case and not worth a line on every object.
+//
+// Two different facts share it. What a *preview* gets is the provider's
+// declaration and the claim's own choice; what any environment gets from a
+// binding to another project's offering is the providing project's
+// environment owners' declaration (#494), and that one refuses a production
+// environment as readily as a preview. The reason says which is being read.
 func recordClaimsBound(env *kitchenv1alpha1.Environment, effects claimEffects) {
-	if len(effects.unboundInPreview) == 0 && len(effects.unmountedInPreview) == 0 {
+	if len(effects.unboundInPreview) == 0 && len(effects.unmountedInPreview) == 0 &&
+		len(effects.unboundHere) == 0 {
 		meta.RemoveStatusCondition(&env.Status.Conditions, condClaimsBound)
 		return
 	}
 	var parts []string
+	previews := len(effects.unboundInPreview) > 0 || len(effects.unmountedInPreview) > 0
 	if len(effects.unboundInPreview) > 0 {
 		parts = append(parts, "deployed without the variables read from "+strings.Join(effects.unboundInPreview, "; "))
 	}
 	if len(effects.unmountedInPreview) > 0 {
 		parts = append(parts, "deployed without the volume of "+strings.Join(effects.unmountedInPreview, "; "))
 	}
+	if previews {
+		parts = append(parts, "The claim binds nothing in a preview environment, by its provider's "+
+			"declaration and the claim's own choice")
+	}
+	// A service binding this environment reads none of. It is a different
+	// sentence from the two above because it is a different fact: not what a
+	// preview gets, but who the *providing* project's environment owners
+	// admit — and it is said about a production environment just as readily.
+	if len(effects.unboundHere) > 0 {
+		parts = append(parts, "deployed without the address of "+strings.Join(effects.unboundHere, "; "))
+	}
+	reason := "NothingForPreviews"
+	if !previews {
+		reason = "NotAdmittedHere"
+	}
 	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
-		Type:   condClaimsBound,
-		Status: metav1.ConditionFalse,
-		Reason: "NothingForPreviews",
-		Message: strings.Join(parts, "; ") +
-			". The claim binds nothing in a preview environment, by its provider's declaration and the claim's " +
-			"own choice",
+		Type:               condClaimsBound,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            strings.Join(parts, ". "),
 		ObservedGeneration: env.Generation,
 	})
 }

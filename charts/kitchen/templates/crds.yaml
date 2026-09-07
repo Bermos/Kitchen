@@ -4568,6 +4568,38 @@ spec:
                 minLength: 2
                 pattern: ^([0-9]+h)?([0-9]+m)?$
                 type: string
+              serves:
+                description: |-
+                  Serves is who may bind to an offering this environment serves: the
+                  classes of consumer environment admitted here (#494). Absent serves
+                  nothing, which is the safe default and not a gap — see
+                  [EnvironmentServes]. It is the owners' declaration and travels on the
+                  same owner-gated endpoint as the requirements below.
+                properties:
+                  consumers:
+                    description: |-
+                      Consumers are the classes of consumer environment admitted here: a
+                      production environment of another project, a stage of one, a preview
+                      of one.
+
+                      **Absent or empty serves nothing.** An environment nobody has rated
+                      must not be one that whoever deploys into it can point previews at —
+                      the same safe default Owners already takes, and the reason a claim
+                      that resolves to an unrated environment is refused with the sentence
+                      that would permit it rather than quietly binding to production.
+                    items:
+                      description: |-
+                        EnvironmentType says what an Environment is for, and where it is
+                        published: the project's production environment, a rung of its promotion
+                        pipeline on the way there, or an ephemeral preview of one pull request.
+                      enum:
+                      - production
+                      - stage
+                      - preview
+                      type: string
+                    maxItems: 3
+                    type: array
+                type: object
               type:
                 default: production
                 description: |-
@@ -14166,6 +14198,84 @@ spec:
                   Secret in the project namespace holding the binding keys
                   (url, host, password, ...), per environment where applicable.
                 type: string
+              service:
+                description: |-
+                  Service is what a service claim resolved for each class of consumer
+                  environment (#494): which environment of the provider a preview, a
+                  stage and production each reach, or why they reach nothing. Absent on
+                  every other type.
+                properties:
+                  bindings:
+                    description: |-
+                      Bindings is one row per class of consumer environment, in the
+                      platform's own order.
+                    items:
+                      description: |-
+                        ClaimServiceBinding is what one class of the consumer's environments
+                        reaches through this binding (#494): a preview of the consumer, a stage of
+                        it, or its production.
+
+                        One entry per class, always all three, whether the class resolved or not —
+                        which is what makes the status the answer to "what does my preview reach",
+                        rather than a list somebody has to notice the absence of a row in. A class
+                        that resolved carries the environment and the Secret; a class that did not
+                        carries the reason and nothing else.
+                      properties:
+                        consumer:
+                          allOf:
+                          - enum:
+                            - production
+                            - stage
+                            - preview
+                          - enum:
+                            - production
+                            - stage
+                            - preview
+                          description: |-
+                            Consumer is the class of the consumer's environment this row is
+                            about.
+                          type: string
+                        dataClass:
+                          description: |-
+                            DataClass is the provider environment's rating as it stood when this
+                            resolved. It is recorded rather than looked up again because it is
+                            what the *consumer's* environment is compared against before it reads
+                            the binding: an environment rated above what it is calling does not
+                            read it, through the same comparison every other data-class refusal
+                            makes.
+                          enum:
+                          - public
+                          - internal
+                          - confidential
+                          - strictlyConfidential
+                          type: string
+                        environment:
+                          description: |-
+                            Environment is which environment of the *providing* project this
+                            class reaches, empty when the class reaches nothing.
+                          type: string
+                        host:
+                          description: |-
+                            Host is the address behind that Secret, repeated here because a
+                            status that says only "there is a Secret" cannot answer what a
+                            preview reaches without reading one.
+                          type: string
+                        reason:
+                          description: |-
+                            Reason is why this class reaches nothing, in the words that name what
+                            would permit it. Empty on a class that resolved.
+                          type: string
+                        secretName:
+                          description: |-
+                            SecretName is the binding Secret this class's workloads read their
+                            address out of, in the consumer's own application namespace. Empty
+                            when the class reaches nothing.
+                          type: string
+                      required:
+                      - consumer
+                      type: object
+                    type: array
+                type: object
               volume:
                 description: |-
                   Volume is what a volume claim materialized, and empty for every other

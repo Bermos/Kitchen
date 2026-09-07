@@ -954,6 +954,14 @@ jobs:
           kubectl -n kitchen-system patch project "${PROJECT}" --type merge -p \
             "{\"spec\":{\"offers\":[{\"name\":\"${OFFERING}\",\"process\":\"api\",\"protocol\":\"http\",\"visibility\":\"open\"}]}}"
 
+          # And its production environment admits production consumers, which
+          # is the *environment owners'* half of the grant (#494): an
+          # environment that declares nothing serves nobody, so a project
+          # opening an offering does not thereby open every environment behind
+          # it. Nothing here admits a preview — the next case is about that.
+          kubectl -n kitchen-system patch environment "${PROJECT}-production" --type merge -p \
+            '{"spec":{"serves":{"consumers":["production"]}}}'
+
           # The release froze `<host>/<name>:<tag>@<digest>`, and an image
           # source names the parts separately. The digest is what pins, so the
           # tag is dropped: what is left is the repository, which is
@@ -1140,6 +1148,222 @@ jobs:
               ;;
           esac
           kubectl -n kitchen-system delete resourceclaims.kitchen.bermos.dev "${BINDING}-absent" --wait=false
+
+      # #494, end to end: which environment of the provider a consumer's
+      # *preview* reaches is the provider environment owners' declaration, and
+      # an environment that declares nothing reaches nobody.
+      #
+      # Both halves are asserted against pods rather than objects. The claim
+      # says what each class of the consumer's environments reaches; the
+      # consumer's own preview is what proves the environment reconciler acts
+      # on it — a preview that was handed production's address would pass
+      # every status check in the world.
+      - name: What a consumer's preview may reach is the provider's to say
+        run: |
+          set -euo pipefail
+          variable="KITCHEN_SERVICE_$(echo "${BINDING}" | tr 'a-z-' 'A-Z_')"
+          stage="${PROJECT}-staging"
+          consumer_preview="${CONSUMER}-pr-1"
+          binding() { # binding <consumer class> <field>
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" \
+              -o jsonpath="{.status.service.bindings[?(@.consumer=='$1')].$2}"
+          }
+          preview_web_pod() {
+            kubectl -n "${CONSUMER_APP_NS}" get pod \
+              -l "kitchen.bermos.dev/environment=${consumer_preview},kitchen.bermos.dev/component=web" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              | awk '$2 == "True" { print $1; exit }'
+          }
+          told() { # told <pod>
+            kubectl -n "${CONSUMER_APP_NS}" exec "$1" -- sh -c "printenv ${variable}" 2>/dev/null || true
+          }
+
+          # Production reaches the environment the offering names. A preview
+          # reaches nothing, because nothing admits one — and the row says
+          # what would, as a fact about the provider rather than as an
+          # instruction to a reader who could not act on it.
+          echo "production reaches $(binding production environment)"
+          [ "$(binding production environment)" = "${PROJECT}-production" ] || {
+            echo "::error::production reaches '$(binding production environment)'"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o yaml
+            exit 1
+          }
+          [ -z "$(binding preview environment)" ] || {
+            echo "::error::a preview reaches $(binding preview environment), and nothing admits one"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o yaml
+            exit 1
+          }
+          refusal="$(binding preview reason)"
+          echo "a preview reaches nothing: ${refusal}"
+          case "${refusal}" in
+            *serves.consumers*) ;;
+            *)
+              echo "::error::the refusal does not name what would permit it: ${refusal}"
+              exit 1
+              ;;
+          esac
+
+          # The consumer's own preview, running what its production runs. It
+          # is applied rather than built, like the provider's preview above.
+          consumer_release="$(kubectl -n kitchen-system get environment "${CONSUMER}-production" \
+            -o jsonpath='{.spec.releaseRef.name}')"
+          [ -n "${consumer_release}" ] || { echo "::error::the consumer runs no release"; exit 1; }
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Environment
+          metadata:
+            name: ${consumer_preview}
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: ${CONSUMER}}
+            type: preview
+            releaseRef: {name: ${consumer_release}}
+            preview:
+              pullRequest: 1
+              branch: binding-policy
+          EOF
+          for _ in $(seq 90); do
+            kubectl -n "${CONSUMER_APP_NS}" get deploy "${consumer_preview}" >/dev/null 2>&1 && break
+            sleep 5
+          done
+          kubectl -n "${CONSUMER_APP_NS}" rollout status "deploy/${consumer_preview}" --timeout=5m || {
+            echo "::error::the consumer's preview never came up"
+            kubectl -n kitchen-system get environment "${consumer_preview}" -o yaml
+            kubectl -n "${CONSUMER_APP_NS}" get pods -o wide
+            exit 1
+          }
+
+          # It is deployed, and it has no address: the variable is left out
+          # rather than the environment being held back, and the environment
+          # says why on its ClaimsBound condition.
+          pod="$(preview_web_pod)"
+          [ -n "${pod}" ] || { echo "::error::the consumer's preview has no ready web pod"; exit 1; }
+          [ -z "$(told "${pod}")" ] || {
+            echo "::error::the consumer's preview was handed ${variable}=$(told "${pod}")," \
+                 "and no environment of ${PROJECT} admits a preview"
+            exit 1
+          }
+          said="$(kubectl -n kitchen-system get environment "${consumer_preview}" \
+            -o jsonpath='{.status.conditions[?(@.type=="ClaimsBound")].message}')"
+          echo "the preview says: ${said}"
+          case "${said}" in
+            *"${BINDING}"*) ;;
+            *)
+              echo "::error::the preview does not say which binding it is deployed without: ${said}"
+              kubectl -n kitchen-system get environment "${consumer_preview}" -o yaml
+              exit 1
+              ;;
+          esac
+
+          # A stage of the provider, running what production runs, whose
+          # owners open it to other teams' previews. It is declared rather
+          # than promoted into: what is under test is who may bind to it.
+          release="$(kubectl -n kitchen-system get environment "${PROJECT}-production" \
+            -o jsonpath='{.spec.releaseRef.name}')"
+          [ -n "${release}" ] || { echo "::error::production runs no release"; exit 1; }
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Environment
+          metadata:
+            name: ${stage}
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: ${PROJECT}}
+            type: stage
+            releaseRef: {name: ${release}}
+            serves:
+              consumers: [preview]
+          EOF
+          for _ in $(seq 90); do
+            kubectl -n "${APP_NS}" get deploy "${stage}-api" >/dev/null 2>&1 && break
+            sleep 5
+          done
+          kubectl -n "${APP_NS}" rollout status "deploy/${stage}-api" --timeout=5m || {
+            echo "::error::the provider's stage never came up"
+            kubectl -n kitchen-system get environment "${stage}" -o yaml
+            kubectl -n "${APP_NS}" get pods -o wide
+            exit 1
+          }
+
+          # The claim resolves again on its own — the environment appearing is
+          # what wakes it — and now a preview reaches the stage while
+          # production is untouched.
+          for _ in $(seq 60); do
+            [ "$(binding preview environment)" = "${stage}" ] && break
+            sleep 5
+          done
+          echo "a preview now reaches $(binding preview environment)"
+          [ "$(binding preview environment)" = "${stage}" ] || {
+            echo "::error::a preview reaches '$(binding preview environment)', not the stage that admits it"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o yaml
+            exit 1
+          }
+          [ "$(binding production environment)" = "${PROJECT}-production" ] || {
+            echo "::error::production moved to $(binding production environment)"
+            exit 1
+          }
+          preview_secret="$(binding preview secretName)"
+          preview_host="$(kubectl -n "${CONSUMER_APP_NS}" get secret "${preview_secret}" \
+            -o jsonpath='{.data.host}' | base64 -d)"
+          [ "${preview_host}" = "${stage}-api.${APP_NS}.svc.cluster.local" ] || {
+            echo "::error::the preview's address is ${preview_host}"
+            exit 1
+          }
+
+          # And the consumer's preview is handed it, and answered by the
+          # stage's own pods rather than production's — which is the whole of
+          # what a preview binding to a stage means.
+          for _ in $(seq 60); do
+            pod="$(preview_web_pod)"
+            [ -n "${pod}" ] && [ -n "$(told "${pod}")" ] && break
+            sleep 5
+          done
+          pod="$(preview_web_pod)"
+          address="$(told "${pod}")"
+          echo "the consumer's preview is told ${variable}=${address}"
+          case "${address}" in
+            *"${stage}-api.${APP_NS}.svc.cluster.local"*) ;;
+            *)
+              echo "::error::the consumer's preview is told '${address}', and the stage answers at ${preview_host}"
+              kubectl -n "${CONSUMER_APP_NS}" get deploy "${consumer_preview}" \
+                -o jsonpath='{.spec.template.spec.containers[0].env}' | tr ',' '\n'
+              exit 1
+              ;;
+          esac
+          served="$(kubectl -n "${CONSUMER_APP_NS}" exec "${pod}" \
+            -- sh -c "wget -q -O - \"\${${variable}}/host.txt\"" 2>/dev/null || true)"
+          echo "the consumer's preview was answered by ${served}"
+          case "${served}" in
+            "${stage}-api-"*) ;;
+            *)
+              echo "::error::the consumer's preview was answered by '${served}', which is not one of" \
+                   "the stage's api pods"
+              exit 1
+              ;;
+          esac
+
+          # Closing it takes the address back: the row loses its environment
+          # and its Secret, so nothing is left for a preview to keep reading.
+          kubectl -n kitchen-system patch environment "${stage}" --type merge -p \
+            '{"spec":{"serves":{"consumers":[]}}}'
+          for _ in $(seq 60); do
+            [ -z "$(binding preview environment)" ] && break
+            sleep 5
+          done
+          [ -z "$(binding preview environment)" ] || {
+            echo "::error::a preview still reaches $(binding preview environment) after it was closed"
+            exit 1
+          }
+          if kubectl -n "${CONSUMER_APP_NS}" get secret "${preview_secret}" >/dev/null 2>&1; then
+            echo "::error::the preview's binding secret ${preview_secret} was left behind"
+            exit 1
+          fi
+          echo "the address was taken back with the grant"
+
+          # Both environments are this step's own, and which environments
+          # exist decides where a binding lands — so they go with it rather
+          # than being inherited by whatever runs next.
+          kubectl -n kitchen-system delete environment "${stage}" "${consumer_preview}" --wait=false
 
       # #301's third criterion. Two releases of the same images, applied by
       # hand: what differs between them is the frozen configuration the deploy
