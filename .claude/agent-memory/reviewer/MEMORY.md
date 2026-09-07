@@ -32,6 +32,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-07: A new claim state was given a UI tone of `info` ("nothing is wrong") while the condition it writes stays `Status: False` with an unclassified reason, which `conditionSeverityOf` defaults to `severityError` — so the badge is blue and the condition row red on one object. Ask: is the new reason in `internal/api/conditions.go`'s table, and does `TestEveryExportedReasonIsClassified` even see it (it only covers *exported* `Reason…` constants, and claim/environment reasons are string literals)?
 - 2026-09-07: A "waiting for another team" state was routed into an existing refusal condition whose reason word says something else (`ClaimsBound`/`NotAdmittedHere`, about the provider's *environment owners*), so a request nobody has answered reads as a refusal somebody made. Ask: when a new state reuses an old condition, does the old reason still describe it?
 
+- 2026-09-07: Moving a ConfigMap from a directory mount to per-key `subPath` mounts made a pre-existing weak `checksum/config` (hashed over the raw `.Values`, not the rendered ConfigMap, three lines from a sibling that hashes the rendered template) load-bearing: `tpl`-rendered content that changes because another value changed no longer rolls the pod, and a subPath file never updates in place, so the pod keeps the old file for its whole life. Ask: when a mount stops propagating updates, is the annotation that rolls the pod a hash of the *rendered* object?
+- 2026-09-07: A least-privilege split assigned credentials by what a phase is *called* rather than by the requests it makes: the CNB analyze phase, handed the output tag, does `POST /v2/<name>/blobs/uploads/` to fail fast, so the read-only credential broke every buildpacks build — only on installations that had supplied one. Ask: for each container in a split, which HTTP verbs does its tool actually issue against the target it is given?
+
 ## Chain links that were missed
 
 - 2026-09-06: A route landed without its `docs/API.md` row; a field landed without `docs/CRDS.md`; a chart value landed without its README row. The tests cover policy, schema and the dashboard's policy copy; the docs rows and the screen are what they cannot.
@@ -47,6 +50,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-07: One screen gained a new explanatory row for a claim state without excluding it from the existing `phase === "Failed"` refusal row, so a denied claim was drawn twice, in two wordings, in one table — while the sibling screen carried a comment saying exactly this must not happen. Ask: does the new row's filter overlap any filter already rendering the same objects?
 - 2026-09-07: The one act a refused reader has ("ask again") was put on the Overview while the pane where claims are asked for and given up is on Settings, which shows the same refusal with no button. Ask: is the action on the screen where the object is managed, or only where it happens to be listed?
 
+- 2026-09-07: A chart fix whose *recovery* needs a manual `kubectl delete pod` (a StatefulSet with `OrderedReady` will not roll a pod that is not Running-and-Ready, so `helm upgrade --wait` on an already-broken install hangs) landed with no `### Upgrading to ...` section in `charts/kitchen/README.md`, where eight such sections already live. Ask: does the already-broken installation reach the fix by upgrading alone, and if not, is there a README upgrade section?
+- 2026-09-07: A credential-split test and its kind case both passed with one all-powerful account, because the narrower credential is opt-in by naming convention (`<secret>-read`) and `credentialsWithRead` silently falls back to `Read == Push` — so every assertion about "which container holds which" was vacuous. Ask: does the fixture create the narrowing artifact, and does the test assert the predicate (`scoped()`) before asserting anything that depends on it?
+
 ## Decisions that should have been surfaced
 
 - 2026-09-07: A stage environment stopped inheriting the project's criticality; a default that changes behaviour for existing installations must be in the PR body and the changelog.
@@ -61,6 +67,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-07: A route's role was justified in its own policy comment and docs by "nothing else about the consumer crosses" while the row it answers carries the requesting developer's email address. Ask: does the payload match the sentence that argues for the role, field by field?
 - 2026-09-07: Dropping a create-time refusal turned a claim into a cross-project *write*: any developer on any project can now put a row in another project's queue and an entry in its activity feed. That is the feature, but it is a new unsolicited cross-project surface and belongs in the blast radius. Ask: what can a stranger now write into somebody else's project?
+
+- 2026-09-07: A template comment rewritten to "correct" it dropped the half the old one got right (that the other mount order fails *silently*, not with a crash) while the commit body stated both. Ask: is the corrected comment as true as the commit message that explains it?
+- 2026-09-07: A fix that widens which containers hold the pushing credential (one more lifecycle phase) is a security-posture change even when it restores a broken path; the body must state the new principle, not only the bug. Ask: after this fix, how many containers hold the credential that can push, and does a comment elsewhere still claim there is one?
 
 ## Commit and title
 
