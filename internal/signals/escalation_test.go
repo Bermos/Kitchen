@@ -53,7 +53,7 @@ func alertFor(alerts []Alert, audience Audience) (Alert, bool) {
 
 // Nothing has happened yet: both readers see the tier the rule declared.
 func TestAFreshConditionReadsAtItsDeclaredTier(t *testing.T) {
-	alerts := Assess(openPair(alertNow.Add(-5*time.Minute)), nil, alertNow)
+	alerts := Assess(openPair(alertNow.Add(-5*time.Minute)), nil, DefaultPolicy(), alertNow)
 
 	developer, ok := alertFor(alerts, AudienceDeveloper)
 	if !ok {
@@ -81,7 +81,7 @@ func TestAnAcknowledgedConditionIsATicketForItsOwnerAndALogForEverybodyElse(t *t
 		},
 	}
 
-	alerts := Assess(open, state, alertNow)
+	alerts := Assess(open, state, DefaultPolicy(), alertNow)
 	developer, _ := alertFor(alerts, AudienceDeveloper)
 	operator, _ := alertFor(alerts, AudienceOperator)
 	if developer.Tier != TierTicket {
@@ -99,7 +99,7 @@ func TestAnAcknowledgedConditionIsATicketForItsOwnerAndALogForEverybodyElse(t *t
 func TestAnUnacknowledgedConditionAddsTheOperatorAsATicket(t *testing.T) {
 	open := openPair(alertNow.Add(-(EscalationWindow + 12*time.Minute)))
 
-	alerts := Assess(open, nil, alertNow)
+	alerts := Assess(open, nil, DefaultPolicy(), alertNow)
 	developer, _ := alertFor(alerts, AudienceDeveloper)
 	operator, _ := alertFor(alerts, AudienceOperator)
 
@@ -133,7 +133,7 @@ func TestAnOperatorsOwnConditionEscalatesToNobody(t *testing.T) {
 		Title: "not ready", OpenedAt: alertNow.Add(-3 * EscalationWindow),
 	}}
 
-	alerts := Assess(open, nil, alertNow)
+	alerts := Assess(open, nil, DefaultPolicy(), alertNow)
 	if len(alerts) != 1 {
 		t.Fatalf("an operator condition is one delivery: %+v", alerts)
 	}
@@ -150,7 +150,7 @@ func TestAnOperatorsOwnConditionEscalatesToNobody(t *testing.T) {
 func TestAnUnacknowledgedConditionBecomesUntended(t *testing.T) {
 	open := openPair(alertNow.Add(-(UntendedAfter + time.Minute)))
 
-	alerts := Assess(open, nil, alertNow)
+	alerts := Assess(open, nil, DefaultPolicy(), alertNow)
 	developer, _ := alertFor(alerts, AudienceDeveloper)
 	operator, _ := alertFor(alerts, AudienceOperator)
 	if !developer.Untended || !operator.Untended {
@@ -172,7 +172,7 @@ func TestAMembersAckDoesNotSatisfyTheOperatorsRow(t *testing.T) {
 		{Fingerprint: fingerprint, Audience: AudienceOperator}: {
 			Acknowledged: true, AcknowledgedBy: "ops@example.com", AcknowledgedAt: alertNow,
 		},
-	}, alertNow)
+	}, DefaultPolicy(), alertNow)
 	developer, _ := alertFor(operatorAcked, AudienceDeveloper)
 	if !developer.Escalated {
 		t.Error("an operator's ack does not acknowledge the project's row")
@@ -184,7 +184,7 @@ func TestAMembersAckDoesNotSatisfyTheOperatorsRow(t *testing.T) {
 		{Fingerprint: fingerprint, Audience: AudienceDeveloper}: {
 			Acknowledged: true, AcknowledgedBy: "ana@example.com", AcknowledgedAt: alertNow,
 		},
-	}, alertNow)
+	}, DefaultPolicy(), alertNow)
 	operator, _ := alertFor(memberAcked, AudienceOperator)
 	if operator.Escalated {
 		t.Error("somebody has acknowledged, so nothing escalates")
@@ -203,7 +203,7 @@ func TestAMembersSilenceDoesNotSilenceTheOperatorsRow(t *testing.T) {
 			SilencedBy: "ana@example.com", SilenceReason: "known, fix in flight",
 			SilencedUntil: alertNow.Add(time.Hour),
 		},
-	}, alertNow)
+	}, DefaultPolicy(), alertNow)
 
 	developer, _ := alertFor(alerts, AudienceDeveloper)
 	operator, _ := alertFor(alerts, AudienceOperator)
@@ -223,7 +223,7 @@ func TestAnExpiredSilenceStopsSilencing(t *testing.T) {
 		{Fingerprint: open[0].Fingerprint, Audience: AudienceDeveloper}: {
 			SilencedBy: "ana@example.com", SilencedUntil: alertNow.Add(-time.Minute),
 		},
-	}, alertNow)
+	}, DefaultPolicy(), alertNow)
 
 	developer, _ := alertFor(alerts, AudienceDeveloper)
 	if developer.Tier != TierPage {
@@ -244,7 +244,7 @@ func TestAClaimIsMitigation(t *testing.T) {
 		{Fingerprint: "node.notready/node-b", Audience: AudienceOperator}: {
 			ClaimedBy: "ops@example.com", ClaimedAt: alertNow,
 		},
-	}, alertNow)
+	}, DefaultPolicy(), alertNow)
 
 	if alerts[0].Escalated {
 		t.Error("somebody has taken it, so it is not untended")
@@ -321,7 +321,7 @@ func TestSilenceValidation(t *testing.T) {
 		"reason and an": {"known, fix in flight", alertNow.Add(4 * time.Hour), true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := ValidateSilence(test.reason, test.until, alertNow)
+			err := ValidateSilence(test.reason, test.until, DefaultPolicy(), alertNow)
 			if test.ok && err != nil {
 				t.Fatalf("a silence with a reason and an expiry is allowed: %v", err)
 			}

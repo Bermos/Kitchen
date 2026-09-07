@@ -59,6 +59,28 @@ type Snapshot struct {
 	// Platform is what the Kitchen singleton says about itself.
 	Platform PlatformFacts
 
+	// Policy is the installation's thresholds, resolved once from the
+	// singleton. It is never absent — [Gather] resolves the default even when
+	// the singleton could not be read — because a rule comparing against a
+	// zero threshold would be a rule with no threshold at all.
+	Policy Policy
+
+	// Round is the rest of the catalogue's answer over this same snapshot,
+	// set by [Registry.Evaluate] between its two passes and read by the one
+	// rule that declares [Signal.Correlates].
+	//
+	// It is a field on the snapshot rather than a second argument to Evaluate
+	// because the rules' contract is that they are pure functions of one
+	// value, and a correlator that took a different shape from every other
+	// rule would need its own test harness, its own availability handling and
+	// its own reason to be trusted.
+	Round Findings
+
+	// PlatformChanges is what this platform did to itself recently, joined
+	// from the four places that record it — see [PlatformChange]. It is rung
+	// 3 of the correlation ladder and nothing else reads it.
+	PlatformChanges []PlatformChange
+
 	// From the API server.
 	Pods         []corev1.Pod
 	Deployments  []appsv1.Deployment
@@ -77,6 +99,10 @@ type Snapshot struct {
 	Environments []kitchenv1alpha1.Environment
 	Projects     []kitchenv1alpha1.Project
 	Builds       []kitchenv1alpha1.Build
+	// ResourceClaims is every project's attached resource, read for one
+	// question: whether the projects failing together attach the same one.
+	// See [Snapshot.sharedClaim].
+	ResourceClaims []kitchenv1alpha1.ResourceClaim
 
 	// Continuity is each environment's resolved criticality and disruption
 	// tolerances (#141), folded from Projects and Environments once by

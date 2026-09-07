@@ -143,6 +143,12 @@ func (f *fakeStore) QueryK8sEvents(context.Context, clickhouse.K8sEventQuery) ([
 	return nil, nil
 }
 
+func (f *fakeStore) QueryAuditRecords(
+	context.Context, clickhouse.AuditQuery,
+) ([]clickhouse.AuditRecord, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) TelemetryFreshness(context.Context, time.Duration) ([]clickhouse.NodeFreshness, error) {
 	return nil, nil
 }

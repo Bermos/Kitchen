@@ -682,6 +682,18 @@ func (s *Server) routes() []route {
 		{"PATCH /api/v1/platform/retention", s.patchRetention,
 			operatorOnly("changing the platform's retention")},
 
+		// What this installation counts as worth hearing: the correlation
+		// threshold and window, the escalation clock, and the longest silence
+		// a member may set (#472). It is the operator's alone and it is the
+		// floor — `/alerts → Routing` is who hears about a condition and a
+		// project edits its own, while this is what makes something a
+		// condition at all, and the compliance posture reads it rather than
+		// any project's override.
+		{"GET /api/v1/platform/policy", s.getSignalPolicy,
+			operatorOnly("reading the platform's signal policy")},
+		{"PATCH /api/v1/platform/policy", s.patchSignalPolicy,
+			operatorOnly("changing the platform's signal policy")},
+
 		// The backup. Reading what an archive would carry is already the
 		// platform's shape — how many projects, which secrets, which database —
 		// and taking one hands over every credential the installation holds, so

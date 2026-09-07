@@ -71,6 +71,27 @@ type SignalTransition struct {
 	Detail   string `json:"detail"`
 	Evidence string `json:"evidence"`
 
+	// Confidence is which rung of the correlation ladder a cross-project
+	// finding was raised at, and is empty for every other rule. It is on the
+	// row because the rung is a claim the round made from inputs it no longer
+	// has — the node placement, the timeline — and a history that dropped it
+	// could not say afterwards whether the platform had known why.
+	Confidence string `json:"confidence,omitempty"`
+
+	// Projects is the affected set a correlation covered and Correlates the
+	// rules whose rows it stands in front of, both comma-joined. They are
+	// stored because the overview folds those rows into the correlation, and
+	// a fold the history could not reproduce would make a recorded round read
+	// differently from the one that was evaluated.
+	Projects   string `json:"projects,omitempty"`
+	Correlates string `json:"correlates,omitempty"`
+
+	// Policy is the installation's thresholds when the row was written, as
+	// signals.Policy spells them. Two installations on catalogue v1 with
+	// different policies disagree about whether a rule fired, and this is what
+	// makes them distinguishable after the fact.
+	Policy string `json:"policy,omitempty"`
+
 	// Since is what the round could prove about the condition's age, and
 	// OpenedAt when this platform first saw it.
 	Since    time.Time `json:"since"`
@@ -116,6 +137,10 @@ func (c *Client) InsertSignalTransitions(ctx context.Context, transitions []Sign
 			"title":       transition.Title,
 			"detail":      transition.Detail,
 			"evidence":    transition.Evidence,
+			"confidence":  transition.Confidence,
+			"projects":    transition.Projects,
+			"correlates":  transition.Correlates,
+			"policy":      transition.Policy,
 			"since":       since.UTC().Format(storeTimestampLayout),
 			"opened_at":   openedAt.UTC().Format(storeTimestampLayout),
 		})
@@ -157,6 +182,10 @@ func (c *Client) OpenSignalTransitions(ctx context.Context) ([]SignalTransition,
     argMax(title, timestamp) AS title,
     argMax(detail, timestamp) AS detail,
     argMax(evidence, timestamp) AS evidence,
+    argMax(confidence, timestamp) AS confidence,
+    argMax(projects, timestamp) AS projects,
+    argMax(correlates, timestamp) AS correlates,
+    argMax(policy, timestamp) AS policy,
     formatDateTime(argMax(since, timestamp), '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS since_ts,
     formatDateTime(argMax(opened_at, timestamp), '%%Y-%%m-%%dT%%H:%%i:%%S.%%fZ', 'UTC') AS opened_ts
 FROM %s.%s
@@ -194,6 +223,10 @@ type signalTransitionRow struct {
 	Title       string `json:"title"`
 	Detail      string `json:"detail"`
 	Evidence    string `json:"evidence"`
+	Confidence  string `json:"confidence"`
+	Projects    string `json:"projects"`
+	Correlates  string `json:"correlates"`
+	Policy      string `json:"policy"`
 	Since       string `json:"since_ts"`
 	OpenedAt    string `json:"opened_ts"`
 }
@@ -231,6 +264,10 @@ func parseSignalTransitions(body string) ([]SignalTransition, error) {
 			Title:       row.Title,
 			Detail:      row.Detail,
 			Evidence:    row.Evidence,
+			Confidence:  row.Confidence,
+			Projects:    row.Projects,
+			Correlates:  row.Correlates,
+			Policy:      row.Policy,
 		}
 		if since, err := time.Parse(otelTimestampLayout, row.Since); err == nil {
 			transition.Since = since

@@ -101,6 +101,19 @@ type Transition struct {
 	Detail   string
 	Evidence string
 
+	// Confidence is which rung of the correlation ladder the finding was
+	// raised at, empty for every rule that is not a cross-project detector.
+	// Projects and Correlates are the rest of that answer: the affected set,
+	// and the rules whose rows the correlation stands in front of.
+	Confidence Confidence
+	Projects   []string
+	Correlates []ID
+
+	// Policy is the installation's thresholds when the row was written, as
+	// [Policy.Provenance] spells them — the provenance a finding evaluated
+	// against configurable numbers needs to stay reproducible.
+	Policy string
+
 	// Since is what the snapshot could prove about the condition's age, and
 	// OpenedAt is when this platform first saw it. They are both here because
 	// they answer different questions: a pod's last restart is Since, and
@@ -130,6 +143,10 @@ func (t Transition) Finding() Finding {
 		Detail:      t.Detail,
 		Since:       t.Since,
 		Evidence:    t.Evidence,
+		Confidence:  t.Confidence,
+		Projects:    t.Projects,
+		Correlates:  t.Correlates,
+		Policy:      t.Policy,
 	}
 }
 
@@ -288,6 +305,10 @@ func (t *Tracker) transition(
 		Title:       finding.Title,
 		Detail:      finding.Detail,
 		Evidence:    finding.Evidence,
+		Confidence:  finding.Confidence,
+		Projects:    finding.Projects,
+		Correlates:  finding.Correlates,
+		Policy:      finding.Policy,
 		Since:       finding.Since,
 		OpenedAt:    openedAt,
 	}

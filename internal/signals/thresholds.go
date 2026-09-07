@@ -21,12 +21,22 @@ import "time"
 // Every number the catalogue compares against, in one file, each with the
 // reason it is that number.
 //
-// They are constants rather than configuration, which docs/OBSERVABILITY.md §7
-// settles explicitly: configurable thresholds are an alerting-era feature, and
-// the catalogue is versioned code either way. They are gathered here rather
-// than spread across the rules because the only way to keep thirty-odd rules
-// agreeing on what "sustained" or "near the limit" means is to make disagreeing
-// require editing the same screenful of text.
+// Almost all of them are constants rather than configuration, which
+// docs/OBSERVABILITY.md §7 settles explicitly: configurable thresholds are an
+// alerting-era feature, and the catalogue is versioned code either way. They
+// are gathered here rather than spread across the rules because the only way to
+// keep thirty-odd rules agreeing on what "sustained" or "near the limit" means
+// is to make disagreeing require editing the same screenful of text.
+//
+// Six of them are no longer constants, and §9 is why rather than in spite of
+// it: it recorded the trade-off as "code, until the alerting era forces the
+// question with real requirements", and the homelab installation supplied the
+// requirement — a correlation threshold of three is a threshold a three-project
+// estate never reaches, so the detector reads as health there and as nothing
+// anywhere else. Those six live in [Policy], their values here are the
+// `balanced` preset, and every finding records the ones it was evaluated
+// against. Nothing else moved: which signals exist, what they compute and their
+// base tier are still code.
 //
 // The taste behind them, since it is not visible in any single number: a rule
 // fires when a competent operator woken by it would agree they wanted waking.
@@ -324,12 +334,15 @@ const (
 	BuildLookback = 24 * time.Hour
 )
 
-// Cross-project detectors.
+// Cross-project detectors. Both numbers here are the `balanced` preset's; what
+// a round is judged against is [Snapshot.Policy].
 const (
 	// CorrelatedProjects is how many projects must degrade together before it
 	// is called a platform problem. Three, per §7: two projects sharing a node
 	// or a dependency is a coincidence worth nothing, and three at once has
-	// never been three unrelated causes.
+	// never been three unrelated causes. The `homelab` preset lowers it to
+	// two, because an estate of four projects cannot produce three of
+	// anything.
 	CorrelatedProjects = 3
 )
 

@@ -31,13 +31,16 @@ import (
 // words. Past a multiple of the same window it becomes an untended-incident
 // line on the compliance posture, with names on it.
 //
-// # Why these are constants
+// # Why these are constants, and what happened to that
 //
 // The base tier is code and the clock is policy (#471, decision 4), and the
-// policy half is #472's — an installation that runs one estate at business
-// hours and another at 24/7 will want two windows. Until it exists there is
-// one number, in one place, so that #472 has one thing to make configurable
-// rather than four literals to find.
+// policy half was #472's — an installation that runs one estate at business
+// hours and another at 24/7 will want two windows. It exists now: these three
+// are the `balanced` preset's values in [Policy], nothing here reads them
+// directly any more, and the number a round is actually judged against comes
+// off [Snapshot.Policy]. They stay as constants because a preset has to be
+// *something*, and because an installation that has configured nothing must
+// keep behaving exactly as it did.
 
 const (
 	// EscalationWindow is how long an owner-tier condition may sit
@@ -68,8 +71,9 @@ const (
 	MaxSilence = 30 * 24 * time.Hour
 )
 
-// UntendedAfter is the whole of the second clock, so that nothing multiplies
-// the two constants together in more than one place.
+// UntendedAfter is the `balanced` preset's second clock. What a round is
+// judged against is [Policy.UntendedAfter], which multiplies the configured
+// pair; this is the default that pair falls back to.
 const UntendedAfter = UntendedMultiple * EscalationWindow
 
 // symptomMarker separates a fingerprint from the derived, symptom-shaped copy
@@ -170,7 +174,13 @@ func (a Alert) Key() TransitionKey {
 //     marked, not moved, because nothing is more broken at hour four — and
 //     the operator's row is raised to at least a ticket and carries the
 //     sentence saying why.
-func Assess(open []Transition, mitigations map[TransitionKey]MitigationState, now time.Time) []Alert {
+func Assess(
+	open []Transition,
+	mitigations map[TransitionKey]MitigationState,
+	policy Policy,
+	now time.Time,
+) []Alert {
+	policy = policy.Normalised()
 	owners := ownerAudiences(open)
 
 	alerts := make([]Alert, 0, len(open))
@@ -183,7 +193,7 @@ func Assess(open []Transition, mitigations map[TransitionKey]MitigationState, no
 		if owners[transition.Fingerprint] != transition.Audience {
 			continue
 		}
-		alert := assessOwner(transition, mitigations[transition.Key()], now)
+		alert := assessOwner(transition, mitigations[transition.Key()], policy, now)
 		escalated[transition.Fingerprint] = alert
 		alerts = append(alerts, alert)
 	}
@@ -193,7 +203,7 @@ func Assess(open []Transition, mitigations map[TransitionKey]MitigationState, no
 			continue
 		}
 		alerts = append(alerts, assessBystander(transition, mitigations[transition.Key()],
-			escalated[transition.Fingerprint], now))
+			escalated[transition.Fingerprint], policy, now))
 	}
 
 	SortAlerts(alerts)
@@ -216,11 +226,17 @@ func ownerAudiences(open []Transition) map[string]Audience {
 }
 
 // assessOwner is the row belonging to whoever has to fix it.
-func assessOwner(transition Transition, state MitigationState, now time.Time) Alert {
+func assessOwner(transition Transition, state MitigationState, policy Policy, now time.Time) Alert {
+	// The recorded row carries the tier the rule declared. What this
+	// installation does with it is the policy's — paging off holds a page
+	// down to a ticket — and it is applied to the base rather than only to
+	// the answer, so that a screen saying "a page, held down because somebody
+	// is on it" never says "page" on an installation that does not page.
+	base := policy.Deliver(transition.Tier)
 	alert := Alert{
 		Finding:    transition.Finding(),
-		Base:       transition.Tier,
-		Tier:       transition.Tier,
+		Base:       base,
+		Tier:       base,
 		Mitigation: state,
 		OpenedAt:   transition.OpenedAt,
 		Owner:      true,
@@ -237,9 +253,9 @@ func assessOwner(transition Transition, state MitigationState, now time.Time) Al
 		alert.Tier = alert.Tier.atMost(TierTicket)
 	default:
 		alert.Unmitigated = unmitigatedFor(transition, now)
-		if ownerTier(alert.Base) && alert.Unmitigated > EscalationWindow {
+		if ownerTier(alert.Base) && alert.Unmitigated > policy.EscalationWindow {
 			alert.Escalated = true
-			alert.Untended = alert.Unmitigated > UntendedAfter
+			alert.Untended = alert.Unmitigated > policy.UntendedAfter()
 			alert.Note = escalationNote(transition.Scope, alert.Unmitigated)
 		}
 	}
@@ -248,11 +264,18 @@ func assessOwner(transition Transition, state MitigationState, now time.Time) Al
 
 // assessBystander is the row belonging to whoever is only being kept informed
 // — in practice the operator's copy of a project's condition.
-func assessBystander(transition Transition, state MitigationState, owner Alert, now time.Time) Alert {
+func assessBystander(
+	transition Transition,
+	state MitigationState,
+	owner Alert,
+	policy Policy,
+	now time.Time,
+) Alert {
+	base := policy.Deliver(transition.Tier)
 	alert := Alert{
 		Finding:    transition.Finding(),
-		Base:       transition.Tier,
-		Tier:       transition.Tier,
+		Base:       base,
+		Tier:       base,
 		Mitigation: state,
 		OpenedAt:   transition.OpenedAt,
 		Actionable: true,

@@ -282,7 +282,7 @@ func (s *Server) alertRound(ctx context.Context) (alertRound, error) {
 		}
 	}
 
-	round.alerts = signals.Assess(round.open, states, now)
+	round.alerts = signals.Assess(round.open, states, s.signalPolicy(ctx), now)
 	if round.source != sourceRecorded {
 		// Nothing on an evaluated round can be acted on, and the rows say so
 		// themselves rather than only in the message above them: a client
@@ -422,7 +422,7 @@ func (s *Server) writeMitigation(w http.ResponseWriter, req *http.Request, kind 
 			return
 		}
 		until = parsed.UTC()
-		if err := signals.ValidateSilence(body.Reason, until, now); err != nil {
+		if err := signals.ValidateSilence(body.Reason, until, s.signalPolicy(ctx), now); err != nil {
 			badRequest(w, "%s", err.Error())
 			return
 		}
@@ -468,7 +468,7 @@ func (s *Server) writeMitigation(w http.ResponseWriter, req *http.Request, kind 
 	if records, err := store.SignalMitigations(ctx); err == nil {
 		states = signals.FoldMitigations(signals.MitigationsFrom(records))
 	}
-	for _, alert := range signals.Assess([]signals.Transition{delivery}, states, now) {
+	for _, alert := range signals.Assess([]signals.Transition{delivery}, states, s.signalPolicy(ctx), now) {
 		if alert.Key() == delivery.Key() {
 			writeJSON(w, http.StatusOK, alertViewOf(alert))
 			return
@@ -803,7 +803,8 @@ func (s *Server) untendedFromHistory(ctx context.Context) ([]untendedIncident, s
 			"here can be said to be untended"
 	}
 	states := signals.FoldMitigations(signals.MitigationsFrom(records))
-	return untendedIncidents(signals.Assess(signals.TransitionsFrom(rows), states, time.Now().UTC())), ""
+	return untendedIncidents(signals.Assess(signals.TransitionsFrom(rows), states,
+		s.signalPolicy(ctx), time.Now().UTC())), ""
 }
 
 // untendedIncident is one such line.

@@ -48,6 +48,10 @@ type Store interface {
 	UnroutedHosts(ctx context.Context, query clickhouse.PlatformRequestsQuery) ([]clickhouse.UnroutedHost, error)
 	// QueryK8sEvents is the cluster's Warning history.
 	QueryK8sEvents(ctx context.Context, query clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error)
+	// QueryAuditRecords is what people did to the platform, and is read for
+	// one purpose: the privileged records are the fourth leg of the
+	// correlation ladder's timeline. See gatherAuditChanges.
+	QueryAuditRecords(ctx context.Context, query clickhouse.AuditQuery) ([]clickhouse.AuditRecord, error)
 	// TelemetryFreshness is when each node's collector last shipped anything.
 	// A node absent from the answer reported nothing within the lookback,
 	// which is node.silent's whole subject.

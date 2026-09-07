@@ -1476,6 +1476,95 @@ spec:
                         maximum: 3600
                         minimum: 15
                         type: integer
+                      policy:
+                        default: {}
+                        description: |-
+                          Policy is the clock the catalogue is read against: how many projects
+                          have to degrade together before it is one incident, how long a
+                          failure may run unmitigated, and how long a member may silence their
+                          own row.
+
+                          It is deliberately the only configurable half. Which signals exist,
+                          what they compute and their base tier stay versioned code — see
+                          docs/OBSERVABILITY.md §9 — because two installations on catalogue v1
+                          that disagreed about what a rule *is* would destroy the thing the
+                          version is for. The numbers here are not that: they are the
+                          installation's own idea of what is worth hearing, and every finding
+                          records the ones it was evaluated against.
+                        properties:
+                          correlatedProjects:
+                            description: |-
+                              CorrelatedProjects is how many projects must be degrading together
+                              before it is called one platform problem rather than several
+                              application problems.
+                            format: int32
+                            maximum: 100
+                            minimum: 2
+                            type: integer
+                          correlationWindowMinutes:
+                            description: |-
+                              CorrelationWindowMinutes is how far apart two failures may have
+                              started and still count as the same moment.
+                            format: int32
+                            maximum: 1440
+                            minimum: 1
+                            type: integer
+                          escalationWindowMinutes:
+                            description: |-
+                              EscalationWindowMinutes is how long an owner-tier condition may sit
+                              unacknowledged before the operator is added to it.
+                            format: int32
+                            maximum: 10080
+                            minimum: 5
+                            type: integer
+                          maxSilenceHours:
+                            description: |-
+                              MaxSilenceHours is the longest silence a member may set on their own
+                              project's row.
+                            format: int32
+                            maximum: 8760
+                            minimum: 1
+                            type: integer
+                          paging:
+                            description: |-
+                              Paging is whether the catalogue's `page` tier is delivered as a page
+                              at all. False holds every paging condition down to a ticket, which is
+                              what the homelab preset wants: nobody is on call for a house.
+
+                              It is the floor and not an absolute. A project turning paging back on
+                              for its own rows is tightening, and the tighten rule is the
+                              load-bearing one.
+                            type: boolean
+                          preset:
+                            default: balanced
+                            description: |-
+                              Preset is the base every unset number comes from.
+
+                                - `strict` wants to hear about it early: two projects correlate, half
+                                  an hour unmitigated escalates, a silence lasts a week.
+                                - `balanced` is the platform's own judgement and the compiled-in
+                                  numbers exactly.
+                                - `homelab` is one host and a handful of projects: two projects
+                                  correlate — three is a threshold a small estate never reaches —
+                                  nothing escalates before the afternoon, and **paging is off by
+                                  default**. By default, because a project may turn it back on for
+                                  itself: asking to be woken more often is tightening, which is
+                                  always allowed.
+                            enum:
+                            - strict
+                            - balanced
+                            - homelab
+                            type: string
+                          untendedMultiple:
+                            description: |-
+                              UntendedMultiple is how many escalation windows a condition survives
+                              before it stops being an alert and becomes a line on the compliance
+                              posture.
+                            format: int32
+                            maximum: 100
+                            minimum: 1
+                            type: integer
+                        type: object
                     type: object
                   traces:
                     default: {}

@@ -90,6 +90,9 @@ type stubStore struct {
 	err       error
 	freshness []clickhouse.NodeFreshness
 	events    []clickhouse.K8sEvent
+	// auditRecords is the privileged half of the audit log, which the
+	// correlation ladder reads as the fourth leg of its timeline.
+	auditRecords []clickhouse.AuditRecord
 	// storeStatsReads counts the store-health reads one gather makes, which is
 	// how the "one narrow read, not the dashboard's overview" contract is
 	// asserted rather than assumed.
@@ -121,6 +124,12 @@ func (s *stubStore) UnroutedHosts(context.Context, clickhouse.PlatformRequestsQu
 
 func (s *stubStore) QueryK8sEvents(context.Context, clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error) {
 	return s.events, s.err
+}
+
+func (s *stubStore) QueryAuditRecords(
+	context.Context, clickhouse.AuditQuery,
+) ([]clickhouse.AuditRecord, error) {
+	return s.auditRecords, s.err
 }
 
 func (s *stubStore) TelemetryFreshness(context.Context, time.Duration) ([]clickhouse.NodeFreshness, error) {

@@ -17,6 +17,7 @@ limitations under the License.
 package signals
 
 import (
+	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -42,8 +43,11 @@ var catalogueV1 = []ID{
 	SignalTunnelDown, SignalUnroutedHosts,
 	// Builds.
 	SignalBuildQueueBackedUp, SignalBuildPodPending, SignalBuildStalled, SignalBuildFailingRepeated,
-	// Cross-project.
+	// Cross-project. The third is rung 1 of the confidence ladder widened past
+	// HTTP: the same coincidence-in-time claim, over every other rule in this
+	// list rather than over the two that read the request rollup (#472).
 	SignalLatencyCorrelated, SignalErrorCorrelated, SignalComponentUnhealthy,
+	SignalCorrelated,
 	// Continuity: the one rule whose threshold the institution sets (#141).
 	SignalRTOAtRisk,
 }
@@ -182,8 +186,11 @@ func TestEvaluationIsDeterministic(t *testing.T) {
 	if len(first) != len(second) {
 		t.Fatalf("rounds differ in size: %d then %d", len(first), len(second))
 	}
+	// Compared as what the API and the history actually carry, which is also
+	// the only comparison a Finding admits now that a correlation carries the
+	// projects it folded up.
 	for i := range first {
-		if first[i] != second[i] {
+		if !reflect.DeepEqual(first[i], second[i]) {
 			t.Fatalf("position %d differs: %+v then %+v", i, first[i], second[i])
 		}
 	}

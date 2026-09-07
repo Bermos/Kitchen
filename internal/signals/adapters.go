@@ -19,6 +19,7 @@ package signals
 import (
 	"context"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/Bermos/Kitchen/internal/clickhouse"
@@ -229,6 +230,10 @@ func TransitionRows(transitions []Transition) []clickhouse.SignalTransition {
 			Title:       transition.Title,
 			Detail:      transition.Detail,
 			Evidence:    transition.Evidence,
+			Confidence:  string(transition.Confidence),
+			Projects:    strings.Join(transition.Projects, listSeparator),
+			Correlates:  joinIDs(transition.Correlates),
+			Policy:      transition.Policy,
 			Since:       transition.Since,
 			OpenedAt:    transition.OpenedAt,
 		})
@@ -257,14 +262,54 @@ func TransitionsFrom(rows []clickhouse.SignalTransition) []Transition {
 				Node:        row.Node,
 				Name:        row.Name,
 			},
-			Title:    row.Title,
-			Detail:   row.Detail,
-			Evidence: row.Evidence,
-			Since:    row.Since,
-			OpenedAt: row.OpenedAt,
+			Title:      row.Title,
+			Detail:     row.Detail,
+			Evidence:   row.Evidence,
+			Confidence: Confidence(row.Confidence),
+			Projects:   splitList(row.Projects),
+			Correlates: splitIDs(row.Correlates),
+			Policy:     row.Policy,
+			Since:      row.Since,
+			OpenedAt:   row.OpenedAt,
 		})
 	}
 	return transitions
+}
+
+// listSeparator joins the two list-shaped columns a correlation carries. The
+// transitions table is flat — one column per field, no nesting — so a list is
+// a joined string, and a comma is safe here because both lists hold Kubernetes
+// names and signal ids, neither of which may contain one.
+const listSeparator = ","
+
+func joinIDs(ids []ID) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, string(id))
+	}
+	return strings.Join(parts, listSeparator)
+}
+
+func splitList(joined string) []string {
+	if joined == "" {
+		return nil
+	}
+	return strings.Split(joined, listSeparator)
+}
+
+func splitIDs(joined string) []ID {
+	parts := splitList(joined)
+	if parts == nil {
+		return nil
+	}
+	ids := make([]ID, 0, len(parts))
+	for _, part := range parts {
+		ids = append(ids, ID(part))
+	}
+	return ids
 }
 
 // The mitigation records' two mappings, for the reason the transitions' are

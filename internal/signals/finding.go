@@ -208,6 +208,41 @@ type Finding struct {
 	// the finding. Relative, because the dashboard is served from the same
 	// origin as the API that answers with it.
 	Evidence string `json:"evidence"`
+
+	// Projects is the affected set a cross-project detector correlated, and
+	// Correlates the rules whose findings it folded up. Both are empty on
+	// every other finding.
+	//
+	// They are on the finding rather than left to be parsed out of the detail
+	// because of what the platform overview does with them: the project rows
+	// belonging to a correlated signal fold into the correlation and say so,
+	// and a fold computed from prose would be a screen guessing which rows it
+	// was allowed to hide. The affected set is deliberately *not* part of the
+	// fingerprint — see the scope comment on the cross-project detectors:
+	// which projects are caught up changes minute to minute and the condition
+	// does not.
+	Projects   []string `json:"projects,omitempty"`
+	Correlates []ID     `json:"correlates,omitempty"`
+
+	// Confidence is which rung of the correlation ladder this was raised at,
+	// and is set by the three cross-project detectors alone — see
+	// [Confidence]. Every other rule leaves it empty, because "how sure are
+	// you that these belong together" is not a question a rule about one
+	// container is answering.
+	Confidence Confidence `json:"confidence,omitempty"`
+
+	// Policy is the installation's thresholds at the moment this was
+	// evaluated, as [Policy.Provenance] spells them.
+	//
+	// It is on every finding rather than on the ones whose rule reads a
+	// configurable number, and that is the decision #472 turns on: the
+	// catalogue is versioned code so that two installations on v1 agree about
+	// what a rule *is*, and the moment the clock became configuration a
+	// version stopped being enough to reproduce a finding. Recording the
+	// values makes `v1 @ correlatedProjects=2` and `v1 @ correlatedProjects=3`
+	// distinguishable after the fact, which a compliance posture that reads
+	// *the floor* needs and an audit pack cannot be evidence without.
+	Policy string `json:"policy,omitempty"`
 }
 
 // Findings is one evaluated round.

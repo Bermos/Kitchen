@@ -33,6 +33,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -115,7 +116,13 @@ func Gather(ctx context.Context, sources Sources, options Options) *Snapshot {
 		now = sources.Now().UTC()
 	}
 	snapshot := &Snapshot{
-		Now:       now,
+		Now: now,
+		// The default rather than the zero value, and set before anything is
+		// read: an installation whose singleton could not be fetched still
+		// has to be judged against *some* clock, and a correlation threshold
+		// of zero would call every pair of failures an incident. gatherKitchen
+		// replaces it with the configured one where it can.
+		Policy:    DefaultPolicy(),
 		Traffic:   map[EnvKey]clickhouse.RequestSeries{},
 		Resources: map[EnvKey]clickhouse.ResourceSeries{},
 		Freshness: map[string]time.Time{},
@@ -125,6 +132,9 @@ func Gather(ctx context.Context, sources Sources, options Options) *Snapshot {
 	gatherCluster(ctx, sources, snapshot)
 	gatherStore(ctx, sources, snapshot, options)
 	gatherDNS(ctx, sources, snapshot)
+	// The timeline is joined from four sources that are read in three places,
+	// so it is ordered once here rather than by whichever leg wrote last.
+	SortPlatformChanges(snapshot.PlatformChanges)
 	return snapshot
 }
 
@@ -134,7 +144,7 @@ func gatherCluster(ctx context.Context, sources Sources, snapshot *Snapshot) {
 		for _, input := range []Input{
 			InputPods, InputWorkloads, InputNodes, InputClaims, InputGateways,
 			InputRoutes, InputCertificates, InputEnvironments, InputProjects,
-			InputBuilds, InputKitchen,
+			InputBuilds, InputKitchen, InputResourceClaims, InputPlatformChanges,
 		} {
 			snapshot.MarkUnreadable(input, "no API server client is configured")
 		}
@@ -175,6 +185,13 @@ func gatherCluster(ctx context.Context, sources Sources, snapshot *Snapshot) {
 		snapshot.Builds = builds.Items
 	})
 
+	claimsAttached := &kitchenv1alpha1.ResourceClaimList{}
+	listInto(ctx, sources.Client, snapshot, InputResourceClaims, claimsAttached, func() {
+		snapshot.ResourceClaims = claimsAttached.Items
+	})
+
+	gatherPlatformChanges(ctx, sources.Client, snapshot)
+
 	// The designations are folded once, here, from whichever of the two
 	// lists came back. A rule that could not have both is skipped by its
 	// Requires before it ever reads the map.
@@ -191,6 +208,9 @@ func gatherKitchen(ctx context.Context, reader client.Client, snapshot *Snapshot
 		snapshot.MarkUnreadable(InputKitchen, err.Error())
 		return
 	}
+	// The thresholds this round is judged against, resolved once. Every
+	// finding records them; see [Finding.Policy].
+	snapshot.Policy = PolicyFrom(kitchen)
 	snapshot.Platform = PlatformFacts{
 		BaseDomain:         kitchen.Spec.BaseDomain,
 		GatewayAddress:     kitchen.Status.GatewayAddress,
@@ -199,6 +219,79 @@ func gatherKitchen(ctx context.Context, reader client.Client, snapshot *Snapshot
 		Components:         kitchen.Status.Components,
 		RetentionDays:      retention.Resolve(kitchen).LongestTelemetry(),
 	}
+}
+
+// gatherPlatformChanges joins the two kinds that record what the platform did
+// to itself into rung 3's timeline: releases and addon upgrades.
+//
+// Both are kept after they finish on purpose — "the list is the installation's
+// upgrade history" is PlatformUpdate's own comment, and AddonUpgrade was built
+// to its shape (#474) — which is the whole reason this join is possible at all.
+// An attempt that is still running is on the timeline as well as one that
+// finished: an upgrade in flight at the moment six projects started failing is
+// the most interesting row this list can hold.
+func gatherPlatformChanges(ctx context.Context, reader client.Client, snapshot *Snapshot) {
+	updates := &kitchenv1alpha1.PlatformUpdateList{}
+	upgrades := &kitchenv1alpha1.AddonUpgradeList{}
+	for _, list := range []client.ObjectList{updates, upgrades} {
+		if err := reader.List(ctx, list); err != nil {
+			if meta.IsNoMatchError(err) {
+				snapshot.MarkNotApplicable(InputPlatformChanges,
+					"the platform's own change kinds are not installed in this cluster")
+				return
+			}
+			// Half a timeline is worse than none: a ladder that could see
+			// releases and not addon upgrades would climb to rung 3 for one
+			// and stop at rung 2 for the other, which reads as a difference
+			// between the incidents rather than between the reads.
+			snapshot.MarkUnreadable(InputPlatformChanges, err.Error())
+			return
+		}
+	}
+
+	changes := make([]PlatformChange, 0, len(updates.Items)+len(upgrades.Items))
+	for i := range updates.Items {
+		update := &updates.Items[i]
+		at := platformChangeAt(update.Status.StartedAt, update.CreationTimestamp)
+		changes = append(changes, PlatformChange{
+			At:   at,
+			Kind: "release",
+			Summary: fmt.Sprintf("this platform was upgraded to %s (%s)",
+				update.Spec.Version, phaseOrRunning(string(update.Status.Phase))),
+		})
+	}
+	for i := range upgrades.Items {
+		upgrade := &upgrades.Items[i]
+		at := platformChangeAt(upgrade.Status.StartedAt, upgrade.CreationTimestamp)
+		changes = append(changes, PlatformChange{
+			At:   at,
+			Kind: "addon",
+			Summary: fmt.Sprintf("the %s addon was upgraded (%s)",
+				upgrade.Spec.Addon, phaseOrRunning(string(upgrade.Status.Phase))),
+		})
+	}
+	snapshot.PlatformChanges = append(snapshot.PlatformChanges, changes...)
+}
+
+// platformChangeAt prefers the change's own instant over the record's. A
+// PlatformUpdate and an AddonUpgrade both stamp when the install job was
+// created rather than when the object was written, for exactly this reason —
+// the timestamp has to be the platform change's and not the observer's — and
+// the creation time is the fallback for a record that has not started yet.
+func platformChangeAt(started *metav1.Time, created metav1.Time) time.Time {
+	if started != nil && !started.IsZero() {
+		return started.Time.UTC()
+	}
+	return created.Time.UTC()
+}
+
+// phaseOrRunning is a phase a reader can read. An empty phase is an attempt
+// nothing has reported on, which is "in flight" rather than a blank.
+func phaseOrRunning(phase string) string {
+	if phase == "" {
+		return "in flight"
+	}
+	return strings.ToLower(phase)
 }
 
 func gatherWorkloads(ctx context.Context, reader client.Client, snapshot *Snapshot) {
@@ -349,7 +442,7 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 	if sources.Store == nil {
 		for _, input := range []Input{
 			InputRawRequests, InputRequests, InputResources,
-			InputClusterEvents, InputFreshness, InputStore,
+			InputClusterEvents, InputFreshness, InputStore, InputAudit,
 		} {
 			snapshot.MarkNotApplicable(input, "no telemetry store is configured")
 		}
@@ -357,6 +450,7 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 	}
 
 	gatherClusterEvents(ctx, sources.Store, snapshot)
+	gatherAuditChanges(ctx, sources.Store, snapshot)
 	gatherFreshness(ctx, sources.Store, snapshot)
 	gatherStoreHealth(ctx, sources.Store, snapshot)
 	gatherTraffic(ctx, sources.Store, snapshot, options)
@@ -409,6 +503,81 @@ func gatherClusterEvents(ctx context.Context, store Store, snapshot *Snapshot) {
 		return
 	}
 	snapshot.ClusterEvents = events
+	snapshot.PlatformChanges = append(snapshot.PlatformChanges, infrastructureChanges(events)...)
+}
+
+// infrastructureChanges is the third leg of rung 3's timeline: the things the
+// cluster did that nobody in this platform asked for.
+//
+// A node coming back and a Gateway being reprogrammed are the two that explain
+// several projects failing at one instant, and both arrive as ordinary
+// Kubernetes events. The reasons are matched rather than the kinds alone,
+// because every pod that ever failed to schedule is also an event on a node.
+func infrastructureChanges(events []clickhouse.K8sEvent) []PlatformChange {
+	changes := make([]PlatformChange, 0, 2)
+	for _, event := range events {
+		kind, ok := infrastructureChangeKinds[strings.ToLower(event.Kind)+"/"+strings.ToLower(event.Reason)]
+		if !ok {
+			continue
+		}
+		where := event.Name
+		if where == "" {
+			where = event.Node
+		}
+		changes = append(changes, PlatformChange{
+			At:      event.Timestamp.UTC(),
+			Kind:    kind,
+			Summary: fmt.Sprintf("%s %s: %s", kind, where, event.Reason),
+		})
+	}
+	return changes
+}
+
+// infrastructureChangeKinds is the small, named set of (kind, reason) pairs
+// that count as the platform changing underneath its tenants. It is a list
+// rather than a prefix match because "every Warning event on a Node" is most
+// of the events a busy cluster produces, and a timeline of those would raise
+// every correlation to rung 3 and mean nothing.
+var infrastructureChangeKinds = map[string]string{
+	"node/rebooted":                  "node",
+	"node/nodenotready":              "node",
+	"node/nodeready":                 "node",
+	"node/nodenotschedulable":        "node",
+	"node/nodeallocatableenforced":   "node",
+	"gateway/programmed":             "gateway",
+	"gateway/reconciled":             "gateway",
+	"gateway/addressnotassigned":     "gateway",
+	"gateway/listenersnotvalid":      "gateway",
+	"gateway/listenersnotprogrammed": "gateway",
+}
+
+// gatherAuditChanges is the fourth leg: what a person did to this platform.
+//
+// Only the privileged records, which is the audit log's own word for a
+// transition that moved a *control* rather than a workload — a waiver, a
+// requirement, a credential, a grant, a settings change. A deploy is not a
+// platform change: it is one project's, it is on that project's timeline, and
+// a correlation across six projects that named it would be naming the loudest
+// row rather than the cause.
+func gatherAuditChanges(ctx context.Context, store Store, snapshot *Snapshot) {
+	records, err := store.QueryAuditRecords(ctx, clickhouse.AuditQuery{
+		Privileged: true,
+		Since:      snapshot.Now.Add(-ResourceWindow),
+		Until:      snapshot.Now,
+		Limit:      clickhouse.DefaultAuditLimit,
+	})
+	if err != nil {
+		snapshot.MarkUnreadable(InputAudit, err.Error())
+		return
+	}
+	for _, record := range records {
+		snapshot.PlatformChanges = append(snapshot.PlatformChanges, PlatformChange{
+			At:   record.Timestamp.UTC(),
+			Kind: "operator",
+			Summary: fmt.Sprintf("%s changed %s %s", record.Actor,
+				strings.ToLower(record.Kind), record.Name),
+		})
+	}
 }
 
 func gatherFreshness(ctx context.Context, store Store, snapshot *Snapshot) {

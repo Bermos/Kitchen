@@ -169,6 +169,8 @@ export type Route =
   | "GET /api/v1/platform/ingest"
   | "GET /api/v1/platform/retention"
   | "PATCH /api/v1/platform/retention"
+  | "GET /api/v1/platform/policy"
+  | "PATCH /api/v1/platform/policy"
   | "GET /api/v1/platform/backup"
   | "POST /api/v1/platform/backup"
   | "PUT /api/v1/platform/backup/destination"
@@ -335,6 +337,8 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/platform/ingest": { kind: "operator", doing: "reading the platform's ingest" },
   "GET /api/v1/platform/retention": { kind: "operator", doing: "reading the platform's retention" },
   "PATCH /api/v1/platform/retention": { kind: "operator", doing: "changing the platform's retention" },
+  "GET /api/v1/platform/policy": { kind: "operator", doing: "reading the platform's signal policy" },
+  "PATCH /api/v1/platform/policy": { kind: "operator", doing: "changing the platform's signal policy" },
   "GET /api/v1/platform/backup": { kind: "operator", doing: "reading what a platform backup would carry" },
   "POST /api/v1/platform/backup": { kind: "operator", doing: "exporting the platform's state" },
   "PUT /api/v1/platform/backup/destination": { kind: "operator", doing: "setting where the platform's backups are written" },

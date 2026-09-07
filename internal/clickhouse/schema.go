@@ -661,8 +661,17 @@ var (
 	// the tier model ranks below log: an old row is a condition nobody
 	// declared a tier for, and answering "act now" for it would be inventing
 	// one.
+	// `confidence` and `policy` arrived with the correlation ladder (#472).
+	// A row written before them reads back empty, which is the right answer
+	// twice over: a finding from before the ladder was raised at no rung, and
+	// one from before the thresholds were configurable was evaluated against
+	// numbers nobody had chosen.
 	signalTransitionColumnsAdded = []addedColumn{
 		{"tier", "LowCardinality(String)"},
+		{"confidence", "LowCardinality(String)"},
+		{"projects", "String"},
+		{"correlates", "String"},
+		{"policy", "LowCardinality(String)"},
 	}
 )
 
@@ -1583,6 +1592,10 @@ func createSignalTransitionsTable(database string, retentionDays int32) string {
     title       String,
     detail      String,
     evidence    String,
+    confidence  LowCardinality(String),
+    projects    String,
+    correlates  String,
+    policy      LowCardinality(String),
     since       DateTime64(3, 'UTC'),
     opened_at   DateTime64(3, 'UTC')
 )
