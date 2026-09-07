@@ -810,3 +810,104 @@ scheduled CronJob's own, copied, with a TTL added because this run is owned by
 nobody. It is recorded in the audit log as an `export` against the `Kitchen`
 object, exactly as a download is, because an archive leaving the cluster is the
 same event whichever direction it left in.
+
+## Platform credentials
+
+`GET`, `POST /platform/credentials` and `DELETE /platform/credentials/{name}`
+are what this platform has handed to things that are not people — a scheduled
+job, an agent — and what each of them may do
+([#349](https://github.com/Bermos/Kitchen/issues/349)).
+
+They are the project key routes one level up. A credential is created at the
+identity provider with an account of its own to own it, because a key has no
+`sub` of its own, and the grant that makes it useful goes on the `Kitchen`
+singleton — where it carries **scopes** rather than a role. The whole of the
+model, and why it is scopes rather than a fourth platform role, is
+[AUTH.md, "Platform credentials"](../AUTH.md#platform-credentials); this is the
+wire.
+
+### Listing
+
+```json
+{"items": [
+  {"name": "nightly", "subject": "user_01H8X…",
+   "email": "nightly@platform.kitchen.local",
+   "scopes": ["platform.read"], "expires": "2026-10-07T09:14:00Z",
+   "expired": false, "prefix": "a3f19c",
+   "created": "2026-09-07T09:14:00Z", "lastUsed": "2026-09-07T03:00:11Z"},
+  {"name": "quarterly-evidence", "subject": "user_01H8Y…",
+   "email": "quarterly-evidence@platform.kitchen.local",
+   "scopes": ["compliance.read"], "projects": ["billing", "shop"],
+   "expires": "2026-09-06T09:00:00Z", "expired": true,
+   "prefix": "77b201", "created": "2026-06-08T09:00:00Z"}]}
+```
+
+**There is no credential value here and there never is one again.** It is
+stored hashed at the identity provider, so a listing carries only `prefix` —
+enough to tell two apart and useless as a credential.
+
+`scopes` is read from the platform's grant rather than from anything stored on
+the credential, so an **empty** list is a credential whose grant has been
+removed: it still authenticates and can do nothing, and the listing says so
+rather than hiding it. `expired` is answered rather than left to the reader to
+compute, because a lapsed credential is the state the screen exists to make
+visible — and the platform's own sweep will remove it within a few minutes,
+along with the account behind it.
+
+### Issuing
+
+```sh
+POST /platform/credentials
+{"name": "nightly", "scopes": ["platform.read"], "expiresInDays": 30,
+ "projects": []}
+```
+
+answers `201` with the listing's shape plus the credential itself:
+
+```json
+{"name": "nightly", "subject": "user_01H8X…",
+ "email": "nightly@platform.kitchen.local", "scopes": ["platform.read"],
+ "expires": "2026-10-07T09:14:00Z", "expired": false, "prefix": "a3f19c",
+ "created": "2026-09-07T09:14:00Z", "key": "a3f19c…"}
+```
+
+**That is the only response that carries `key`.** Nothing stores it in a form
+anything can read back, so a lost credential is revoked and reissued.
+
+| Field | |
+|---|---|
+| `name` | Lowercase letters, digits and dashes, at most 32 characters — the same DNS-label rule a project and a CI key follow, because it is the local part of the account's address and a path segment here. One credential per name |
+| `scopes` | Required, and at least one: there is no scope that is obviously the one somebody meant, and a credential with none would authenticate and be able to do nothing. An unknown scope is a `400` naming the vocabulary rather than a credential quietly narrower than the one that was asked for |
+| `expiresInDays` | Defaults to 30, capped at 90. `400` outside that — a credential that has to outlive a quarter is one to reissue, which is an action somebody takes and the log records |
+| `projects` | Optional. Narrows the scoped routes that are about one project — today that is `GET /projects/{name}/audit-pack` — to the ones named. Empty is every project, because that is what a platform scope means when nobody narrowed it. A name that is not a project is a `400`: the whole point of the list is that it narrows, so a typo in it would narrow to nothing |
+
+Both halves land or neither. The credential is created at the issuer, the grant
+is written on the singleton, and a grant that will not land takes the credential
+back with it — a credential nothing has granted anything to is one nothing in
+Kitchen lists.
+
+### Revoking
+
+`DELETE /platform/credentials/{name}` answers `204`. The credential goes first
+and the grant comes off after: of the two ways this can end up half done, a
+grant naming an account that no longer exists is a line to tidy up and a
+credential that still works is not.
+
+A grant whose credential is **already** gone at the issuer is this route's to
+remove too — it is the half left behind by an interrupted revocation, and
+leaving it would mean the only way to tidy it is `kubectl`.
+
+### What issuing one is not
+
+`POST /platform/credentials` requires the operator role and names **no scope**,
+which is what stops a credential minting its own successors, outliving its own
+expiry by issuing a fresh one, or granting itself scopes nobody chose. The same
+holds for `PATCH /settings`, `/updates` and every connection write, and
+`TestNoScopeReachesCredentialIssuance` is what keeps it true as the table grows.
+
+### When the issuer has none
+
+An installation federated to an issuer of its own answers `503` here, with the
+sentence that says why: credentials are that issuer's to hand out, and this
+platform has no endpoint at it to ask through. It is the same answer
+`POST /projects/{name}/keys` gives for the same reason.

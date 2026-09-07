@@ -16,6 +16,8 @@ limitations under the License.
 
 package v1alpha1
 
+import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 // AccessRole is the role a grant names on a Project. The three are ordered —
 // admin contains developer contains viewer — but the ordering lives in
 // internal/access, which is the only thing that decides anything from a role.
@@ -83,13 +85,110 @@ type AccessGrant struct {
 	Role AccessRole `json:"role"`
 }
 
+// PlatformScope is one class of operation a platform credential may perform.
+//
+// It is a scope rather than a fourth platform role, and that is the whole
+// design. The platform has two roles and a project has three; "may read the
+// retention policy" is not a hat anybody wears, it is one operation a
+// scheduled job needs. A role to hold it would be a fourth role in a model
+// that has three, which is the same objection internal/api/policy.go already
+// records against inventing a reviewer role to hold an access recertification.
+//
+// What a scope may reach is decided by internal/api/policy.go and by nothing
+// here: a route names the scope that satisfies it, and a route that names none
+// is the operator's alone however this list grows. So the set below is small
+// on purpose, and stays small — each value is an argument about what a
+// credential pasted into a scheduled job or an agent is allowed to become.
+// +kubebuilder:validation:Enum=platform.read;compliance.read;backup.run
+type PlatformScope string
+
+const (
+	// PlatformScopeRead is the platform's own read-only surface: its nodes,
+	// workloads, edge, storage, cluster events, ingest, signals and retention.
+	// Everything it reaches is a fact about the cluster, and none of it is a
+	// credential.
+	PlatformScopeRead PlatformScope = "platform.read"
+
+	// PlatformScopeComplianceRead is the evidence surface: who holds what, the
+	// access recertifications, the compliance posture, the audit chain's
+	// verification and a project's audit pack. It is separate from
+	// PlatformScopeRead because it is a different question with a different
+	// audience — a compliance job wants it and a capacity job does not — and
+	// because it reads across every project rather than about the cluster.
+	PlatformScopeComplianceRead PlatformScope = "compliance.read"
+
+	// PlatformScopeBackupRun is taking a backup, and reading what one would
+	// carry.
+	//
+	// It is a scope of its own for one reason, and it is the reason the scopes
+	// are split at all: a platform backup is every custom resource, every
+	// Secret in the platform namespace and the identity provider's database,
+	// in the clear. A scope that lumped it in with the reads above would make
+	// the cron job that watches retention into a credential that can exfiltrate
+	// the installation.
+	PlatformScopeBackupRun PlatformScope = "backup.run"
+)
+
+// PlatformCredential is one machine credential's reach on the platform itself.
+//
+// It is what a scheduled job or an agent holds: an API key at the identity
+// provider, owned by an account of its own under the reserved platform domain,
+// named here by that account's `sub` exactly as every other grant names an
+// account. Nothing about it is stored on the key — the key is a credential and
+// this is what the platform will honour it for, which is the same separation
+// a CI key's project role already has (docs/AUTH.md, "Machine accounts").
+//
+// Three things bound it, and all three are here rather than in the code that
+// reads it:
+//
+//   - **Scopes**, which are operations and never a role. A credential holds
+//     no platform role at all: internal/access resolves it as a member, like
+//     any other account nobody made an operator.
+//   - **Expires**, which is not optional. A credential that outlives the job
+//     it was pasted into is the failure mode this whole shape exists to make
+//     survivable, so the expiry is enforced where the scopes are resolved —
+//     an expired credential holds nothing, whether or not anything has got
+//     round to deleting it.
+//   - **Projects**, which narrows the handful of scoped routes that are about
+//     one project rather than about the platform.
+type PlatformCredential struct {
+	AccessSubject `json:",inline"`
+
+	// Scopes are the operations this credential may perform. A credential with
+	// none holds nothing, which is why the list cannot be empty: an entry that
+	// granted nothing would be a credential that authenticates and can do
+	// nothing, reported as a working credential.
+	// +kubebuilder:validation:MinItems=1
+	// +listType=set
+	Scopes []PlatformScope `json:"scopes"`
+
+	// Expires is when this credential stops being honoured. It is required,
+	// and it is read at every request rather than only by whatever sweeps the
+	// list: a leaked credential dies on its own, at this instant, without
+	// anything having to run.
+	Expires metav1.Time `json:"expires"`
+
+	// Projects narrows the scoped routes that are about one project — today
+	// that is a project's audit pack — to the ones named here.
+	//
+	// An empty list is every project, because that is what a *platform* scope
+	// means when nobody has narrowed it, and because the narrowing is the
+	// operator's tool rather than a trap for whoever forgets it. The screen
+	// that issues a credential offers the list; a credential that should only
+	// ever see two projects says so here.
+	// +optional
+	// +listType=set
+	Projects []string `json:"projects,omitempty"`
+}
+
 // AccessSpec is the platform's own access list.
 //
 // It is a struct around a single list rather than the bare list itself
 // because the platform role is unlikely to be the last platform-scoped
 // access decision — a platform-wide read-only role is the most likely next
 // one — and a field that has to grow a sibling later grows it here instead of
-// forcing a rename of something operators have already written down.
+// forcing a rename of something operators have already written down. That
+// prediction held: Credentials below is the sibling.
 type AccessSpec struct {
 	// Operators own the platform: everything, everywhere, and project admin
 	// on every project, present and future. Every other account is a member —
@@ -112,4 +211,18 @@ type AccessSpec struct {
 	// +listType=map
 	// +listMapKey=subject
 	Operators []AccessSubject `json:"operators"`
+
+	// Credentials are the platform credentials this installation has issued:
+	// machine accounts that hold scopes on the platform rather than a role on
+	// a project.
+	//
+	// It carries `omitempty`, unlike Operators above, because here an absent
+	// list and an empty one mean the same thing — no credential has been
+	// issued, or none is left — and there is nothing to seed. A platform that
+	// has never issued one is a platform where nothing but a person may reach
+	// the platform surface, which is where every installation starts.
+	// +optional
+	// +listType=map
+	// +listMapKey=subject
+	Credentials []PlatformCredential `json:"credentials,omitempty"`
 }

@@ -5,14 +5,16 @@ import type { Config } from "./config.js";
  * Who the accounts in this identity provider are, and which of them are
  * people.
  *
- * There are three kinds of row in the user table and only one of them signs
+ * There are four kinds of row in the user table and only one of them signs
  * in. The **service account** owns the operator's own credential. A **machine
  * account** owns one CI key and exists so that the key has a `sub` of its own
- * to be granted a project role with (docs/AUTH.md, "Machine accounts"). Both
- * are credentials wearing an account's clothes, and the platform must not
- * count either as a person: an installation is bootstrapped when a *person*
- * exists, and the account directory the operator seeds its operator list from
- * and resolves addresses against is a directory of *people*.
+ * to be granted a project role with (docs/AUTH.md, "Machine accounts"). A
+ * **platform credential's account** owns one key too, and exists so that a
+ * scheduled job or an agent has a `sub` to be granted platform *scopes* with.
+ * All three are credentials wearing an account's clothes, and the platform
+ * must not count any of them as a person: an installation is bootstrapped when
+ * a *person* exists, and the account directory the operator seeds its operator
+ * list from and resolves addresses against is a directory of *people*.
  *
  * That line is drawn here and nowhere else. Two places drawing it slightly
  * differently is how the platform ends up believing it has an administrator
@@ -41,6 +43,27 @@ import type { Config } from "./config.js";
  * as an account nobody recognises. Change both, or neither.
  */
 export const MACHINE_ACCOUNT_DOMAIN = "machines.kitchen.local";
+
+/**
+ * The domain every platform credential's account sits under.
+ *
+ * A platform credential (issue #349) is the third kind of row this file draws
+ * a line around: an account owning one key, like a machine account, but
+ * holding scopes on the *platform* instead of a role on one project. It gets a
+ * reserved domain of its own rather than a reserved project under the one
+ * above, for a reason that is structural rather than tidy: a machine account's
+ * local part is `<project>.<key>`, and a project name is a single DNS label
+ * with no dot in it, so a single-label local part under a second domain cannot
+ * be shaped like a CI key's address and a CI key's cannot be shaped like this.
+ * Reserving a project name instead would collide with whatever installation
+ * already has a project by that name.
+ *
+ * Everything `isPerson` protects applies here identically, and for a sharper
+ * reason: the platform seeds its operator list from the accounts that exist
+ * when nobody has named any (docs/AUTH.md, "Bootstrap"), so an account counted
+ * as a person here would be a credential that becomes an operator by upgrade.
+ */
+export const PLATFORM_ACCOUNT_DOMAIN = "platform.kitchen.local";
 
 /**
  * The local part carries which project the key was made for and what it is
@@ -91,6 +114,30 @@ export function isMachineAccount(email: string): boolean {
 	return normalizeEmail(email).endsWith(`@${MACHINE_ACCOUNT_DOMAIN}`);
 }
 
+/** The address the account owning the platform credential `name` is created as. */
+export function platformAddress(name: string): string {
+	return `${name}@${PLATFORM_ACCOUNT_DOMAIN}`;
+}
+
+/** Whether an address belongs to a platform credential's account. */
+export function isPlatformAccount(email: string): boolean {
+	return normalizeEmail(email).endsWith(`@${PLATFORM_ACCOUNT_DOMAIN}`);
+}
+
+/**
+ * The credential name an address names, or null when it is not a platform
+ * credential's — or is one this service did not write, which is the same
+ * answer. The local part is one label, so an address carrying a dot in it is
+ * not something anything here can act on.
+ */
+export function platformIdentity(email: string): string | null {
+	if (!isPlatformAccount(email)) {
+		return null;
+	}
+	const name = normalizeEmail(email).slice(0, -(PLATFORM_ACCOUNT_DOMAIN.length + 1));
+	return isLabel(name) ? name : null;
+}
+
 /**
  * The project and key an address names, or null when it is not a machine
  * account's — or is one this service did not write, which is the same answer:
@@ -124,7 +171,7 @@ export function isServiceAccount(config: Config, email: string | undefined | nul
 
 /** Whether an address belongs to somebody who signs in. */
 export function isPerson(config: Config, email: string): boolean {
-	return !isServiceAccount(config, email) && !isMachineAccount(email);
+	return !isServiceAccount(config, email) && !isMachineAccount(email) && !isPlatformAccount(email);
 }
 
 /** One row of the user table, reduced to what anything here reads. */

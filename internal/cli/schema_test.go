@@ -130,9 +130,15 @@ func TestDashboardOnlyMatchesTheAPIsTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the API's route table: %v", err)
 	}
-	kinds := map[string]string{}
+	// A route is out of a stored credential's reach when it is the operator's
+	// *and* no platform scope reaches it. Since #349 those are two different
+	// things: `GET /platform/retention` is still operatorOnly in kind, and a
+	// platform credential scoped `platform.read` runs it — so judging by the
+	// kind alone would have every command in this test declaring itself the
+	// dashboard's while `kitchen retention` worked perfectly well.
+	reachable := map[string]bool{}
 	for _, route := range policy.Routes {
-		kinds[route.Pattern] = route.Kind
+		reachable[route.Pattern] = route.Kind != api.PolicyOperator || route.Scope != ""
 	}
 
 	document := tree(t)
@@ -150,31 +156,32 @@ func TestDashboardOnlyMatchesTheAPIsTable(t *testing.T) {
 
 	for _, command := range document.Commands {
 		t.Run(command.Path, func(t *testing.T) {
-			operatorOnly, routes := true, 0
+			unrunnable, routes := true, 0
 			for _, call := range reach[command.Path] {
-				kind, known := kinds[call]
+				admits, known := reachable[call]
 				if !known {
 					// `kitchen api` reaches whatever it is given, and
 					// `kitchen login` talks to the issuer: neither is a row
-					// of the table, and neither is the operator's.
-					operatorOnly = false
+					// of the table, and neither is out of reach.
+					unrunnable = false
 					break
 				}
 				routes++
-				if kind != api.PolicyOperator {
-					operatorOnly = false
+				if admits {
+					unrunnable = false
 				}
 			}
-			operatorOnly = operatorOnly && routes > 0
+			unrunnable = unrunnable && routes > 0
 
 			switch {
-			case operatorOnly && command.Needs.Platform == nil:
-				t.Error("every endpoint this command reaches needs the operator role, which no " +
-					"credential `kitchen login` can store holds — so it has to say it is the " +
-					"dashboard's, or it ships unrunnable and silent (#208)")
-			case !operatorOnly && command.Needs.Platform != nil:
+			case unrunnable && command.Needs.Platform == nil:
+				t.Error("every endpoint this command reaches is the operator's and no platform " +
+					"scope reaches any of them, so no credential `kitchen login` can store will " +
+					"run it — it has to say it is the dashboard's, or it ships unrunnable and " +
+					"silent (#208)")
+			case !unrunnable && command.Needs.Platform != nil:
 				t.Error("this command says it is the dashboard's, but the API's table admits a " +
-					"project key to something it reaches — take the statement off, and give it " +
+					"credential to something it reaches — take the statement off, and give it " +
 					"a section in docs/CLI.md instead")
 			}
 		})

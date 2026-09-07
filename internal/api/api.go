@@ -180,6 +180,11 @@ type Server struct {
 	// with no identity provider and one whose database was unreachable are not
 	// the same archive.
 	accountsDB func(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) (accountsConnection, string)
+
+	// clock is what a platform credential's expiry is judged against. Nil is
+	// the wall clock; a test sets it to put a credential either side of its
+	// expiry without waiting for one.
+	clock func() time.Time
 }
 
 // accountsConnection is the identity provider's database as the backup
@@ -336,6 +341,17 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) NeedLeaderElection() bool { return false }
 
 func (s *Server) log() logr.Logger { return logf.Log.WithName("api") }
+
+// now is the clock the authorization reads. A platform credential's expiry is
+// applied at every request rather than only by whatever sweeps the list, so
+// there is a clock here at all; it is a field for the same reason logStore is,
+// so a test can put a credential either side of its expiry without waiting.
+func (s *Server) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now().UTC()
+}
 
 // reader is where the uncached reads go; see APIReader.
 func (s *Server) reader() client.Reader {

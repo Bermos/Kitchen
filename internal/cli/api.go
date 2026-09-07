@@ -51,6 +51,15 @@ type account struct {
 	Email        string `json:"email,omitempty"`
 	Name         string `json:"name,omitempty"`
 	PlatformRole string `json:"platformRole"`
+	// Kind is what sort of caller this is — `person`, `key` for a project's CI
+	// key, or `credential` for one of the platform's own (#349) — and Scopes
+	// what a credential holds, which is the whole of what a credential can be
+	// asked about itself. Both are absent from an older API's answer, which
+	// reads as a person with no scopes: the conservative direction, and the
+	// same one every other optional field here takes.
+	Kind     string   `json:"kind,omitempty"`
+	Scopes   []string `json:"scopes,omitempty"`
+	Projects []string `json:"projects,omitempty"`
 }
 
 // condition is one of the platform's conditions, in Kubernetes' own shape
