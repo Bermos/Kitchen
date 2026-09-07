@@ -118,3 +118,27 @@ func CheckEnvSecretRefs(vars []kitchenv1alpha1.EnvVar) error {
 	}
 	return nil
 }
+
+// SyncedConnectionSecrets names every Secret the platform copies into an
+// application namespace on behalf of one Connection: the registry's docker
+// config, the read-only credential beside it where the registry issues one,
+// and the git token.
+//
+// It exists so that the API can take those copies away with the Connection
+// (#431). A build syncs them out to wherever they are needed and nothing owner
+// -references them, so deleting the Connection and the credential the platform
+// wrote in the platform namespace used to leave the credential itself sitting
+// in every project's namespace it had ever reached — including a project that
+// has since been repointed at a different Connection, which is exactly the
+// case an operator believes they have revoked.
+//
+// The names are computed rather than listed, and by the same functions the
+// build syncs under, so a fourth copy added later cannot be added here and
+// forgotten there.
+func SyncedConnectionSecrets(connection string) []string {
+	if connection == "" {
+		return nil
+	}
+	registry := registrySecretName(connection)
+	return []string{registry, readCredentialSecretName(registry), gitSecretName(connection)}
+}
