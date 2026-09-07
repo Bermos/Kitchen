@@ -48,14 +48,15 @@ const (
 func edgeSignals() []Signal {
 	return []Signal{{
 		ID:       SignalGatewayUnprogrammed,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierPage},
 		Summary:  "the shared Gateway is not programmed, so nothing published is reachable",
 		Requires: []Input{InputGateways},
 		Evaluate: evaluateGatewayUnprogrammed,
 	}, {
 		ID:      SignalRouteRejected,
-		Version: 1,
+		Version: 2,
 		// Deliberately developer, where §7 lists it under an operator table.
 		// An application's route carries the project and environment labels, so
 		// routeScope attributes the finding to the environment whose URL is
@@ -64,6 +65,7 @@ func edgeSignals() []Signal {
 		// it on that environment's diagnostics strip; the operator sees it
 		// either way, since developer findings are additive.
 		Audience: AudienceDeveloper,
+		Tiers:    Tiers{Developer: TierPage, Operator: TierTicket},
 		Summary:  "an HTTPRoute was not accepted, or its backends did not resolve",
 		Requires: []Input{InputRoutes},
 		Evaluate: evaluateRouteRejected,
@@ -74,22 +76,27 @@ func edgeSignals() []Signal {
 		// globally routable. Under version 1 every install whose Gateway sat
 		// behind a router's port forward reported each of its published
 		// hostnames as a critical, permanently.
-		Version:  2,
+		//
+		// 3: a tier per audience, like every other rule.
+		Version:  3,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierTicket},
 		Summary:  "a published name does not resolve to the address the platform is reached at",
 		Requires: []Input{InputDNS},
 		Evaluate: evaluateDNSMismatch,
 	}, {
 		ID:       SignalCertExpiring,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierTicket},
 		Summary:  "a certificate is inside its renewal window with the renewal not progressing",
 		Requires: []Input{InputCertificates},
 		Evaluate: evaluateCertExpiring,
 	}, {
 		ID:       SignalTunnelDown,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierPage},
 		Summary:  "cloudflared is unavailable or flapping",
 		Requires: []Input{InputWorkloads},
 		Evaluate: evaluateTunnelDown,
@@ -98,8 +105,11 @@ func edgeSignals() []Signal {
 		// 2: the hostnames the platform's own routes publish are subtracted
 		// before a host counts as unrouted, which is what stops the dashboard's
 		// own URL being reported as traffic nobody published.
-		Version:  2,
+		//
+		// 3: a tier per audience, like every other rule.
+		Version:  3,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierLog},
 		Summary:  "the edge is being asked, persistently, for hosts the platform never published",
 		// The raw rows, not the rollup: the unrouted bucket is a group-by over
 		// http_requests, and it is the only rule in the catalogue that reads it.

@@ -157,12 +157,17 @@ func (r *Registry) Evaluate(snapshot *Snapshot) Findings {
 // only place that holds both a rule and what the rule produced. It is what
 // [Findings.ForEnvironment] filters on, so a finding that arrived without it
 // would be an operator's problem rendered on a developer's diagnostics strip.
+//
+// [Finding.Tier] is the third and rides on the second: the tier is declared per
+// audience, so the tier a finding carries is the one for the audience it was
+// just stamped with.
 func stamped(findings []Finding, signal Signal, now time.Time) []Finding {
 	for i := range findings {
 		if findings[i].Since.IsZero() {
 			findings[i].Since = now
 		}
 		findings[i].Audience = signal.Audience
+		findings[i].Tier, _ = signal.Tiers.For(signal.Audience)
 	}
 	return findings
 }
@@ -193,6 +198,10 @@ func unevaluable(signal Signal, snapshot *Snapshot) (*Finding, bool) {
 			// simply be the bare id.
 			finding.Fingerprint = string(signal.ID) + unevaluableMarker
 			finding.Audience = signal.Audience
+			// A rule that could not be evaluated carries its own tier, not a
+			// lower one: "I cannot see whether production is serving" is the
+			// same claim on the reader's attention as the rule it replaced.
+			finding.Tier, _ = signal.Tiers.For(signal.Audience)
 			return &finding, true
 		}
 	}

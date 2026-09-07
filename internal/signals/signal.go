@@ -99,6 +99,15 @@ type Signal struct {
 	// diagnostics strip.
 	Audience Audience
 
+	// Tiers is what each audience this rule reaches is meant to *do* about
+	// it — see [Tiers]. It is declared per audience because that is the
+	// unit the decision is made at: the same condition is a page for the
+	// person who can fix it and a data point for the person who cannot.
+	//
+	// A rule that leaves out an audience it is delivered to does not
+	// construct; see [Signal.validate].
+	Tiers Tiers
+
 	// Summary is one line of what the rule fires on, for the catalogue listing
 	// and for explaining a finding whose title is necessarily terse.
 	Summary string
@@ -161,5 +170,5 @@ func (s Signal) validate() error {
 	case s.Audience != AudienceOperator && s.Audience != AudienceDeveloper:
 		return fmt.Errorf("signal %q has an unknown audience %q", s.ID, s.Audience)
 	}
-	return nil
+	return s.Tiers.validate(s.ID, s.Audience)
 }

@@ -77,6 +77,14 @@ type Transition struct {
 	Fingerprint string
 	Audience    Audience
 
+	// Tier is what this delivery's audience is meant to do about the
+	// condition, as the rule declared it for that audience. It is on the row
+	// rather than looked up from the catalogue when the row is read, for the
+	// reason Version is: the catalogue moves, and a history that
+	// reinterpreted an old row against today's declaration would be a
+	// history that changes what it said.
+	Tier Tier
+
 	// Version is the rule's own version at the moment this row was written.
 	// It travels with the transition so that a catalogue change is visible in
 	// the history — a condition that opened under version 1 and resolved
@@ -116,6 +124,7 @@ func (t Transition) Finding() Finding {
 		Severity:    t.Severity,
 		Scope:       t.Scope,
 		Audience:    t.Audience,
+		Tier:        t.Tier,
 		Fingerprint: t.Fingerprint,
 		Title:       t.Title,
 		Detail:      t.Detail,
@@ -152,19 +161,27 @@ type episode struct {
 // as a platform where nothing is wrong.
 type Tracker struct {
 	versions map[ID]int
+	tiers    map[ID]Tiers
 	open     map[TransitionKey]episode
 }
 
-// NewTracker builds a tracker over a catalogue. The catalogue is read for one
-// thing only — each rule's version, which every row it writes carries.
+// NewTracker builds a tracker over a catalogue. The catalogue is read for two
+// things only — each rule's version and its tier declaration, both of which
+// every row it writes carries.
+//
+// The tier has to come from here rather than from the finding, because a
+// finding carries one tier and a developer condition is written as two rows:
+// the delivery's audience decides which half of the declaration the row gets.
 func NewTracker(catalogue *Registry) *Tracker {
 	versions := map[ID]int{}
+	tiers := map[ID]Tiers{}
 	if catalogue != nil {
 		for _, signal := range catalogue.Signals() {
 			versions[signal.ID] = signal.Version
+			tiers[signal.ID] = signal.Tiers
 		}
 	}
-	return &Tracker{versions: versions, open: map[TransitionKey]episode{}}
+	return &Tracker{versions: versions, tiers: tiers, open: map[TransitionKey]episode{}}
 }
 
 // Restore seeds the tracker with the conditions the store says are already
@@ -254,12 +271,17 @@ func (t *Tracker) transition(
 	finding Finding,
 	now, openedAt time.Time,
 ) Transition {
+	// The declaration's half for *this* delivery's audience, which is what
+	// makes the operator's copy of a developer condition a ticket while the
+	// developer's own copy is a page.
+	tier, _ := t.tiers[finding.Signal].For(key.Audience)
 	return Transition{
 		At:          now,
 		State:       state,
 		Signal:      finding.Signal,
 		Fingerprint: key.Fingerprint,
 		Audience:    key.Audience,
+		Tier:        tier,
 		Version:     t.versions[finding.Signal],
 		Severity:    finding.Severity,
 		Scope:       finding.Scope,

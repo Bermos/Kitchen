@@ -100,8 +100,9 @@ func ContinuityFacts(
 func continuitySignals() []Signal {
 	return []Signal{{
 		ID:       SignalRTOAtRisk,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceDeveloper,
+		Tiers:    Tiers{Developer: TierPage, Operator: TierTicket},
 		Summary: "an environment is serving nothing and is eating into the recovery time " +
 			"objective the institution declared for it",
 		Requires: []Input{InputWorkloads, InputEnvironments, InputProjects},
