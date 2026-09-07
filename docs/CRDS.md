@@ -2773,6 +2773,12 @@ another team's service and a sibling process are the same thing. A binding and
 one of the project's own workloads therefore cannot share a name, and the API
 refuses the collision from either side.
 
+Which workload answers is resolved against the **release** the offering's
+environment is running, and against the project's own declaration only where
+there is no release to ask: a project whose workloads come from its
+`kitchen.json` declares none of them in `spec.processes`, and an offering
+naming one would otherwise never resolve.
+
 **What is Failed and what is Pending.** A project that does not exist, an
 offering it does not make, an offering that admits consumers by request, and a
 workload nothing addresses are all `Failed` with the name in the message:

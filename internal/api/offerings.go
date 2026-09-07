@@ -137,11 +137,19 @@ func offeringsFromRequest(
 	return offers, nil
 }
 
-// offeringProcess holds the workload an offering names to the two things
-// that have to be true of it: the project declares it, and something
-// addresses it. A worker and a scheduled job are refused by name — nothing
-// is in front of either, so there is no address to hand a consumer, and
-// finding that out from a claim that will not bind is the wrong end of it.
+// offeringProcess holds the workload an offering names to the one thing this
+// layer can be sure of: if the project declares it, something has to address
+// it. A worker and a scheduled job are refused by name — nothing is in front
+// of either, so there is no address to hand a consumer, and finding that out
+// from a claim that will not bind is the wrong end of it.
+//
+// **A workload the project does not declare is admitted**, and that is not
+// laxity: a repository's kitchen.json *replaces* the project's process list
+// at every build, so a project configured that way declares none of its
+// workloads here and every offering of one would be refused at the door.
+// Which workloads an environment is actually running is a fact about its
+// release, which is what the claim resolves the offering against — and what
+// reports, on the consumer's claim, a name no release ever had.
 func offeringProcess(
 	offering *kitchenv1alpha1.ServiceOffering,
 	processes []kitchenv1alpha1.ProcessSpec,
@@ -150,9 +158,7 @@ func offeringProcess(
 	if name == kitchenv1alpha1.WebProcessName {
 		return nil
 	}
-	names := []string{kitchenv1alpha1.WebProcessName}
 	for _, process := range processes {
-		names = append(names, process.Name)
 		if process.Name != name {
 			continue
 		}
@@ -163,8 +169,7 @@ func offeringProcess(
 		}
 		return nil
 	}
-	return fmt.Errorf("offering %q names the workload %q, which this project does not have: its workloads "+
-		"are %s", offering.Name, name, strings.Join(names, ", "))
+	return nil
 }
 
 // offeringView is one offering as the catalogue answers it.

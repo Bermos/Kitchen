@@ -123,10 +123,6 @@ func TestTheShapeOfAnOfferingIsRefusedHere(t *testing.T) {
 			`{"offers": [{"name": "a"}, {"name": "a"}]}`,
 			"declared twice",
 		},
-		"a workload the project does not have": {
-			`{"offers": [{"name": "a", "process": "api"}]}`,
-			"which this project does not have",
-		},
 		"a protocol nothing speaks": {
 			`{"offers": [{"name": "a", "protocol": "grpc"}]}`,
 			"speaks either http",
@@ -149,6 +145,23 @@ func TestTheShapeOfAnOfferingIsRefusedHere(t *testing.T) {
 				t.Errorf("the refusal should say %q: %s", testCase.says, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// A repository's kitchen.json replaces the project's workload list at every
+// build, so a project configured that way declares none of them here — and an
+// offering of one has to be writable anyway. What is refused is the workload
+// the project *does* declare and nothing addresses.
+func TestAnOfferingMayNameAWorkloadTheRepositoryDeclares(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	recorder := h.do(t, http.MethodPatch, "/api/v1/projects/shop",
+		`{"offers": [{"name": "shop-api", "process": "api"}]}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if view := decode[projectView](t, recorder); len(view.Offers) != 1 || view.Offers[0].Process != "api" {
+		t.Errorf("the offering keeps the workload it named: %+v", view.Offers)
 	}
 }
 

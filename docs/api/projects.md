@@ -343,7 +343,7 @@ end of it, which is why the dashboard names them beside each row.
 | Field | Means |
 |---|---|
 | `name` | What a consumer's claim names. A DNS label of at most 40 characters, because it travels into the consumer's environment variables |
-| `process` | The workload that answers: `web`, or one of the project's `service` workloads. Empty is `web`. A worker or a scheduled job is refused — nothing addresses one, so there is no address to hand a consumer |
+| `process` | The workload that answers: `web`, or one of the project's `service` workloads. Empty is `web`. A worker or a scheduled job the project declares is refused here — nothing addresses one, so there is no address to hand a consumer. A name the project does not declare is admitted, because a repository's `kitchen.json` replaces the workload list at every build: what a consumer's claim resolves the offering against is the release the environment is running, and a name no release ever had is reported on the consumer's claim |
 | `protocol` | `http`, handed to a consumer as a URL as well as a host and a port, or `tcp`, handed over as the host and the port alone. Empty is `http` |
 | `auth` | What a consumer has to do to be admitted by the application itself. `none` is the only rung built, and it is not the weak rung it reads as — what admits a consumer is the grant below, and reachability once policy between application namespaces lands. A forward-auth gate and per-consumer OIDC identities are their own issue |
 | `visibility` | `request` (the default) admits only consumers this project has approved, and approving is not built yet — so a `request` offering binds nobody. `open` admits every project on the platform |

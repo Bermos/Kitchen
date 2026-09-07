@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -231,6 +232,71 @@ var _ = Describe("ResourceClaim of type service", func() {
 		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimFailed))
 		Expect(readyCondition(name).Reason).To(Equal("OfferingNotAddressed"))
 		Expect(readyCondition(name).Message).To(ContainSubstring("mailer"))
+	})
+
+	It("resolves a workload the release declares and the project does not", func() {
+		// A project whose workloads come from its repository declares none of
+		// them in spec.processes: kitchen.json replaces the list at every
+		// build, so the release is the only place the workload exists.
+		bare := &kitchenv1alpha1.Project{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: provider, Namespace: namespace},
+			bare)).To(Succeed())
+		bare.Spec.Processes = nil
+		Expect(k8sClient.Update(ctx, bare)).To(Succeed())
+		defer func() {
+			current := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: provider, Namespace: namespace},
+				current)).To(Succeed())
+			current.Spec.Processes = []kitchenv1alpha1.ProcessSpec{
+				{Name: "api", Type: kitchenv1alpha1.ProcessService, Port: 8080},
+				{Name: "mailer", Type: kitchenv1alpha1.ProcessWorker},
+			}
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
+		}()
+
+		release := &kitchenv1alpha1.Release{
+			ObjectMeta: metav1.ObjectMeta{Name: provider + "-rel-1", Namespace: namespace},
+			Spec: kitchenv1alpha1.ReleaseSpec{
+				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: provider},
+				BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: provider + "-bld-1"},
+				Image:      "registry.example.com/pricing@sha256:" + strings.Repeat("a", 64),
+				ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+					Processes: []kitchenv1alpha1.ProcessSpec{
+						{Name: "api", Type: kitchenv1alpha1.ProcessService, Port: 9000},
+					},
+				},
+			},
+		}
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, release))).To(Succeed())
+		env := &kitchenv1alpha1.Environment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: prodEnv, Namespace: namespace}, env)).To(Succeed())
+		env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: release.Name}
+		Expect(k8sClient.Update(ctx, env)).To(Succeed())
+		defer func() {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, release))).To(Succeed())
+			current := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: prodEnv, Namespace: namespace},
+				current)).To(Succeed())
+			current.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{}
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
+		}()
+
+		offer(kitchenv1alpha1.ServiceOffering{
+			Name:      "pricing-api",
+			Process:   "api",
+			VisibleTo: kitchenv1alpha1.OfferingOpen,
+		})
+		const name = "repo-declared"
+		createClaim(name, `{"service": {"project": "pricing", "offering": "pricing-api"}}`)
+		reconcileOnce(name)
+
+		claim := getClaim(name)
+		Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: claim.Status.SecretName, Namespace: consumerNS}, secret)).To(Succeed())
+		Expect(string(secret.Data[service.BindingKeyPort])).To(Equal("9000"),
+			"the port is the release's, which is what the environment is running")
 	})
 
 	It("hands a tcp offering a host and a port and no URL", func() {

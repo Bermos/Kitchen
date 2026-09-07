@@ -936,6 +936,7 @@ what they mean:**
 | a project that does not exist, or an offering it does not make | `Failed`, naming it — and naming what the project *does* offer. Nothing appears on a timer that would make the name right |
 | an offering that admits consumers by request | `Failed`. `visibility: request` is the default, and the flow that turns a request into a grant is not built: until it is, an offering admits a consumer only when its project opens it to every project on the platform |
 | a workload nothing addresses — a worker, a scheduled job | `Failed`. There is no Service in front of one, so there is no address to hand over |
+| a workload the offering's environment is not running | `Failed`, naming what it *is* running. The offering is resolved against that environment's release, which is where a workload declared in the repository lives |
 | an environment the providing project has not deployed into yet | `Pending`. That one *does* come right on its own: the environment appears when something is deployed there, or when its owners declare it |
 
 The API makes the first two checks at the door as well, so a claim that could

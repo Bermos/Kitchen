@@ -135,7 +135,16 @@ func (serviceContract) reconcile(
 				env.Spec.ProjectRef.Name))
 	}
 
-	address, err := offeringAddress(provider, env, offering)
+	// What the offering's workload *is* comes from the release that
+	// environment is running, and from the project's own declaration only
+	// where there is no release to ask: a project whose workloads are
+	// declared in kitchen.json has none of them in `spec.processes`, and an
+	// offering naming one would otherwise never resolve.
+	running, err := r.runningProcesses(ctx, env, provider)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	address, err := offeringAddress(provider, env, offering, running)
 	if err != nil {
 		return r.failed(ctx, claim, "OfferingNotAddressed", err)
 	}
@@ -221,6 +230,36 @@ func offeringGrantRefusal(
 		kitchenv1alpha1.OfferingOpen, provider.Name)
 }
 
+// runningProcesses is the workload list an offering is resolved against: the
+// snapshot of the release this environment runs, and the project's own
+// declaration where the environment runs nothing yet.
+//
+// The release is asked first because it is what the environment actually
+// materialized — and because a repository's kitchen.json *replaces* the
+// project's process list at build time, so for a project configured that way
+// the project's own list is empty and the release's is the only true one.
+func (r *ResourceClaimReconciler) runningProcesses(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	provider *kitchenv1alpha1.Project,
+) ([]kitchenv1alpha1.ProcessSpec, error) {
+	if env.Spec.ReleaseRef.Name == "" {
+		return provider.Spec.Processes, nil
+	}
+	release := &kitchenv1alpha1.Release{}
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ReleaseRef.Name}
+	if err := r.Get(ctx, key, release); err != nil {
+		if apierrors.IsNotFound(err) {
+			return provider.Spec.Processes, nil
+		}
+		return nil, err
+	}
+	if len(release.Spec.ConfigSnapshot.Processes) == 0 {
+		return provider.Spec.Processes, nil
+	}
+	return release.Spec.ConfigSnapshot.Processes, nil
+}
+
 // offeringEndpoint is where an offering answers, inside the cluster and
 // nowhere else.
 type offeringEndpoint struct {
@@ -267,6 +306,7 @@ func offeringAddress(
 	provider *kitchenv1alpha1.Project,
 	env *kitchenv1alpha1.Environment,
 	offering kitchenv1alpha1.ServiceOffering,
+	processes []kitchenv1alpha1.ProcessSpec,
 ) (offeringEndpoint, error) {
 	appNS := appNamespace(provider.Name)
 	endpoint := offeringEndpoint{protocol: offering.Protocol()}
@@ -280,7 +320,7 @@ func offeringAddress(
 		endpoint.port = servicePort
 		return endpoint, nil
 	}
-	for _, process := range provider.Spec.Processes {
+	for _, process := range processes {
 		if process.Name != name {
 			continue
 		}
@@ -295,9 +335,14 @@ func offeringAddress(
 		endpoint.port = process.Port
 		return endpoint, nil
 	}
+	names := []string{kitchenv1alpha1.WebProcessName}
+	for _, process := range processes {
+		names = append(names, process.Name)
+	}
 	return offeringEndpoint{}, fmt.Errorf(
-		"offering %s of project %s names the workload %q, which the project does not declare: its workloads "+
-			"are %s", offering.Name, provider.Name, name, strings.Join(provider.ProcessNames(), ", "))
+		"offering %s of project %s names the workload %q, and environment %s is running none by that name: "+
+			"it runs %s. A workload declared in the repository arrives with the release that declares it",
+		offering.Name, provider.Name, name, env.Name, strings.Join(names, ", "))
 }
 
 // missingOffering names which half of a service claim's config is absent,

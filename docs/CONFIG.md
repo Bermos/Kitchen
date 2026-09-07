@@ -579,6 +579,7 @@ and each disagreement fails the build with what to change:
 |---|---|
 | an offering the project does not make | the offerings it does make, and where one is added |
 | a `process` the project serves it from something else | both — an offering answered by the wrong workload answers with the wrong application |
+| a `process` no release of the project runs | the consumer's claim says so, not the build: which workloads an environment runs is a fact about its release, and this file is what declares them |
 | a `protocol` the project offers it as something else | both — an offering handed over as a URL and one handed over as a host and a port are two different things to whoever is writing the client |
 
 `process`, `protocol` and `auth` are optional and declare no opinion when left
