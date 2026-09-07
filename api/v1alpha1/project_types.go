@@ -777,6 +777,33 @@ type ProjectSpec struct {
 	// +listType=map
 	// +listMapKey=name
 	Files []ConfigFile `json:"files,omitempty"`
+
+	// Offers are the services this project makes available to other
+	// projects (#493): which workload answers, what it speaks, and who may
+	// bind to it. The consumer's half is an ordinary ResourceClaim of type
+	// `service`, so an edge between two projects is a list here and a claim
+	// there and no new kind of object anywhere.
+	//
+	// It is a list on the Project because an offering has no lifecycle of
+	// its own: it is a statement the project makes about itself, it dies
+	// with the project, and there is nothing to reconcile until somebody
+	// claims it.
+	//
+	// **`visibility` is the platform's half and the rest is the
+	// repository's.** Which workload serves an offering and what it speaks
+	// are facts about the code and may be declared in kitchen.json; who may
+	// bind to it is a grant, and a grant anybody with push access could
+	// widen is not a grant — so it is written here through the API by a
+	// project admin, and a file that declares one fails the build saying
+	// why. An offering nobody has opened is `request`, which admits nobody
+	// until the request flow (#495) lands.
+	//
+	// Entries merge per name rather than by position (listType=map), so two
+	// people adding two offerings do not drop each other's.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Offers []ServiceOffering `json:"offers,omitempty"`
 }
 
 // RegistryConnection is the Connection this project pushes its builds to,

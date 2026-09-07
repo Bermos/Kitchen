@@ -911,6 +911,35 @@ deploy and a workload that never becomes ready.
 [Projects](api/projects.md#changing-a-projects-settings) is the whole of what
 the body takes.
 
+### Offering a service, and binding to one
+
+What one project offers another (#493) is a list on the project and a claim on
+the consumer, and both go through `kitchen api` — no command carries either,
+which is a decision and not an omission: the commands for this are
+`kitchen services`, `kitchen bind` and `kitchen topology`, and they are
+designed together with the catalogue and the observed graph
+([#501](https://github.com/Bermos/Kitchen/issues/501)) rather than one at a
+time.
+
+```sh
+# The provider: what this project answers to, and who may bind
+kitchen api PATCH /projects/pricing --data '{"offers":[
+  {"name":"pricing-api","process":"api","protocol":"http","visibility":"open"}]}'
+
+# The catalogue: what the platform offers, and from which environment
+kitchen api GET /offerings --json | jq '.items[] | select(.visibility=="open")'
+
+# The consumer: a binding, by name
+kitchen api POST /claims --data '{"name":"prices","project":"checkout","type":"service",
+  "service":{"project":"pricing","offering":"pricing-api"}}'
+```
+
+The application then reads `KITCHEN_SERVICE_PRICES`, with `_HOST` and `_PORT`
+beside it — the same three variables a sibling workload's address arrives in.
+`kitchen env list` does not show them: they are the platform's, like `PORT`
+and `KITCHEN_URL`, and are not part of the project's variable list.
+[Claims](api/claims.md) is the whole of what a `service` claim is.
+
 ### The settings the repository keeps
 
 A project can carry its build and runtime settings in a `kitchen.json` beside
@@ -1670,6 +1699,7 @@ cannot write it carries on and exchanges every time.
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | The platform commands | Declared the dashboard's for now, in `--help`, in `kitchen schema` and in a refusal that names the screen | A key is a role on one project and those routes need the operator role, so no credential this CLI can store runs them — and `kitchen api` carries the same token, so it is no way round a *role*. Shipping them published and silently unrunnable was the state [#208](https://github.com/Bermos/Kitchen/issues/208) found; a platform-scoped key is the real answer and is [#349](https://github.com/Bermos/Kitchen/issues/349), designed with [#318](https://github.com/Bermos/Kitchen/issues/318) because both decide what a key is |
 | Notification subscriptions | No command; `kitchen api` for all of it, including the dead letters | A subscription is written once and then read when something is wrong, which is a screen's shape rather than a command's — and the one write carries a signing key, which is precisely the value not to have in a shell history when the same key is already being pasted into the receiver. What *is* worth reaching from a terminal is the dead-letter list on the morning a relay was down, and that is one `kitchen api GET /notifications/deliveries?phase=DeadLettered` away, with `POST /notifications/deliveries/{name}/retry` beside it |
+| Offering a service, and binding to one | No command; `kitchen api` for the offering, the catalogue and the claim | The commands this wants — a catalogue to browse, a binding to ask for, a topology to pipe — are one design and not three ([#501](https://github.com/Bermos/Kitchen/issues/501)): `kitchen topology --json` is an edge list, which is the one of them worth designing rather than deriving, and `kitchen bind` is the front of an approval flow that does not exist yet. Shipping one of them now would fix the shape of the other two before the questions they answer are built. What is reachable meanwhile is everything: the offering is a field of `PATCH /projects/{name}`, the catalogue is `GET /offerings`, and the binding is one `POST /claims` |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |
 
 ## Open

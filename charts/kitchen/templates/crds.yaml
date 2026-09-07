@@ -1652,6 +1652,75 @@ spec:
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
+                  offers:
+                    description: |-
+                      Offers are the services this commit says the project offers other
+                      projects: which workload answers, and what it speaks.
+
+                      **They are a declaration, not a grant**, and the split is the same one
+                      the volumes draw. Which workload serves an offering and what protocol
+                      it speaks are facts about the code and belong in this file with the
+                      rest of them; *who may bind* is the project's standing, and this file
+                      is written by anybody who can open a pull request — so `visibility` is
+                      refused here by name, and the build checks what is left against the
+                      project's own offerings rather than writing them.
+
+                      What that catches is the failure the declaration is for: the code
+                      serves the offering from the `api` workload and the project offers the
+                      web one, which binds every consumer to an address that answers with
+                      the wrong application.
+                    items:
+                      description: |-
+                        RepoOffering is one entry of kitchen.json's `offers`: an offering as the
+                        commit understands it.
+
+                        It is deliberately not [ServiceOffering]: that type carries `visibility`
+                        and `environment`, which are the two halves of an offering a repository
+                        may not decide — who may bind, and which of the project's environments
+                        serves it.
+                      properties:
+                        auth:
+                          allOf:
+                          - enum:
+                            - none
+                          - enum:
+                            - none
+                          description: |-
+                            Authorization is the rung of the ladder the commit expects —
+                            `auth` in the file. Empty declares no opinion.
+                          type: string
+                        name:
+                          description: |-
+                            Name is the offering's, which is what ties the declaration to the one
+                            the project actually makes.
+                          type: string
+                        process:
+                          description: |-
+                            Process is the workload the commit expects to serve it; empty
+                            declares no opinion and matches whatever the project says.
+                          type: string
+                        protocol:
+                          allOf:
+                          - enum:
+                            - http
+                            - tcp
+                          - enum:
+                            - http
+                            - tcp
+                          description: |-
+                            Speaks is the protocol the commit expects to be handed over as —
+                            `protocol` in the file. Empty declares no opinion; a value that
+                            disagrees with the project's fails the build, because an offering
+                            handed over as a URL and one handed over as a host and a port are
+                            two different things to whoever is writing the client.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   path:
                     description: |-
                       Path the file was read from, relative to the repository root — the
@@ -8977,6 +9046,101 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              offers:
+                description: |-
+                  Offers are the services this project makes available to other
+                  projects (#493): which workload answers, what it speaks, and who may
+                  bind to it. The consumer's half is an ordinary ResourceClaim of type
+                  `service`, so an edge between two projects is a list here and a claim
+                  there and no new kind of object anywhere.
+
+                  It is a list on the Project because an offering has no lifecycle of
+                  its own: it is a statement the project makes about itself, it dies
+                  with the project, and there is nothing to reconcile until somebody
+                  claims it.
+
+                  **`visibility` is the platform's half and the rest is the
+                  repository's.** Which workload serves an offering and what it speaks
+                  are facts about the code and may be declared in kitchen.json; who may
+                  bind to it is a grant, and a grant anybody with push access could
+                  widen is not a grant — so it is written here through the API by a
+                  project admin, and a file that declares one fails the build saying
+                  why. An offering nobody has opened is `request`, which admits nobody
+                  until the request flow (#495) lands.
+
+                  Entries merge per name rather than by position (listType=map), so two
+                  people adding two offerings do not drop each other's.
+                items:
+                  description: |-
+                    ServiceOffering is one thing a Project offers to other projects: which of
+                    its workloads answers, what that workload speaks, what a consumer has to
+                    do to be admitted, and who may ask.
+
+                    The three fields whose JSON name differs from the Go one do so because the
+                    obvious Go names are already methods that apply the defaults — `Protocol`,
+                    `Auth`, `Visibility` — and a field and a method cannot share a name. The
+                    wire and the CRD carry the obvious spelling, which is what anybody writing
+                    one reads.
+                  properties:
+                    auth:
+                      description: |-
+                        Authorization is the rung of the ladder this offering is on; empty is
+                        `none`. It is `auth` on the wire.
+                      enum:
+                      - none
+                      type: string
+                    environment:
+                      description: |-
+                        Environment is which of the provider's environments a binding
+                        resolves to. Empty is the project's production environment, which is
+                        what an offering means when it says nothing.
+
+                        It is the *offering's* default and not the consumer's choice: two
+                        consumers wanting two different environments of one offering is
+                        #489's `serves.consumers` question, and is deliberately not answered
+                        here.
+                      type: string
+                    name:
+                      description: |-
+                        Name identifies the offering within the project, and is what a claim
+                        names. It is a DNS label because it travels into object names and into
+                        the consumer's environment variables.
+                      maxLength: 40
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    process:
+                      description: |-
+                        Process is the workload that answers: `web`, or one of the project's
+                        declared service processes. Empty means `web`, which is what an
+                        application with one workload offers.
+
+                        A worker and a scheduled job cannot be offered, and the API says so:
+                        nothing addresses them, so there is no address to hand a consumer.
+                      type: string
+                    protocol:
+                      description: |-
+                        Speaks is `http` or `tcp`; empty is `http`. It is `protocol` on the
+                        wire — see the type's comment for why the Go field is not.
+                      enum:
+                      - http
+                      - tcp
+                      type: string
+                    visibility:
+                      description: |-
+                        VisibleTo is `request` or `open`; empty is `request`. It is
+                        `visibility` on the wire, and it is the one field of an offering a
+                        repository may not declare.
+                      enum:
+                      - request
+                      - open
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               previews:
                 description: PreviewsSpec configures preview environments for pull
                   requests.
@@ -13416,6 +13580,7 @@ spec:
                 - volume
                 - inngest
                 - redis
+                - service
                 type: string
                 x-kubernetes-validations:
                 - message: 'type is immutable: delete the claim and ask for the other
@@ -13431,15 +13596,17 @@ spec:
                 one.'
               messageExpression: '''connectionRef is required: it names the Connection
                 that provisions a '' + self.type + '' claim. Only a claim of a type
-                the platform provisions itself (oidcClient, volume) goes without one.'''
-              rule: self.type in ['oidcClient', 'volume'] || has(self.connectionRef)
+                the platform provisions itself (oidcClient, volume, service) goes
+                without one.'''
+              rule: self.type in ['oidcClient', 'volume', 'service'] || has(self.connectionRef)
             - message: 'this claim type takes no connectionRef: the platform provisions
                 it itself, and a Connection here would name a provider nothing would
                 ask.'
               messageExpression: '''a '' + self.type + '' claim takes no connectionRef:
                 the platform provisions it itself, and a Connection here would name
                 a provider nothing would ask.'''
-              rule: '!(self.type in [''oidcClient'', ''volume'']) || !has(self.connectionRef)'
+              rule: '!(self.type in [''oidcClient'', ''volume'', ''service'']) ||
+                !has(self.connectionRef)'
             - message: spec.backup belongs to a claim whose resource this platform
                 runs and can configure backups for, which is postgres alone. A resource
                 somebody else runs is backed up by whoever runs it.

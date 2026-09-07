@@ -193,13 +193,13 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/projects` | List projects | any account — filtered |
 | POST | `/projects` | Create a project — from a repository, or from an image somebody else built | any person |
 | GET | `/projects/{name}` | One project — its env vars by name, never their values; its configuration files, and a secret one's digest rather than its content | `viewer` |
-| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime, workloads, configuration files. Not its env vars | `admin` |
+| PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime, workloads, configuration files, what it offers other projects. Not its env vars | `admin` |
 | PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |
 | GET | `/projects/{name}/secrets` | Its own secrets by name, and the reference each is read by. Never a value | `viewer` |
 | PUT | `/projects/{name}/secrets/{secret}` | Set one, or replace the value of one already there. The value goes in and never comes back out | `developer` |
 | DELETE | `/projects/{name}/secrets/{secret}` | Remove one, unless a variable still reads it | `developer` |
 | PUT | `/projects/{name}/files/{file}` | Set the content of one of its secret configuration files, or replace it. The content goes in and never comes back out | `admin` |
-| DELETE | `/projects/{name}` | Delete it, and everything derived from it | `admin` |
+| DELETE | `/projects/{name}` | Delete it, and everything derived from it. Refused with `409` while another project binds to one of its offerings, naming them; `?breakBindings=true` deletes it anyway and leaves those claims failing | `admin` |
 | GET | `/projects/{name}/builds` | That project's builds, newest first | `viewer` |
 | POST | `/projects/{name}/builds` | Build a commit — a rebuild | `developer` |
 | POST | `/projects/{name}/acquisitions` | Take a new digest of the image a project runs — "check now", or `{"digest": "sha256:…"}` for one exactly. `202`, and the Build that carries it. Refused on a project built from a repository, which is moved by a commit | `admin` |
@@ -337,10 +337,11 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/domains` | Attach one — the response carries the DNS record to create | `developer` |
 | GET | `/domains/{name}` | One domain, verification instructions included | `viewer` |
 | DELETE | `/domains/{name}` | Detach it; the operator removes its certificate | `developer` |
+| GET | `/offerings` | The offering catalogue: what every project on this platform offers the others, and which environment serves each. An `open` offering is listed to any account, because any project may bind to it; `mine` marks the ones a project this account is on makes | any account |
 | GET | `/claim-types` | What can be claimed: every claim type, and what each provider that fulfils it declares about previews, idling and deploys | any account |
 | GET | `/claim-volumes` | What a volume claim could bind: the cluster's existing volumes, what each offers, who already holds it, and whether a new claim could write it | any account — filtered |
 | GET | `/claims` | Every resource claim. `?project=` filters | any account — filtered |
-| POST | `/claims` | Ask for a provisioned resource: a database, a bucket or a cache from a connection — optionally naming what it has to be, and what previews get — an OAuth client from the platform's identity provider, a persistent volume mounted into one of the project's processes — cut fresh, or an existing one the platform did not create — or the keys a worker connects to Inngest with | `developer` † |
+| POST | `/claims` | Ask for a provisioned resource: a database, a bucket or a cache from a connection — optionally naming what it has to be, and what previews get — an OAuth client from the platform's identity provider, a persistent volume mounted into one of the project's processes — cut fresh, or an existing one the platform did not create — the keys a worker connects to Inngest with, or a binding to something another project offers | `developer` † |
 | GET | `/claims/{name}` | One claim | `viewer` |
 | DELETE | `/claims/{name}` | Delete it — what happens to the data is its `deletionPolicy`'s call; an OAuth client is always deregistered, and an Inngest app's preview environments are archived | `developer` † |
 | GET | `/claims/{name}/recoveries` | How far back this claim's provider can reconstruct its data, and the copies already recovered | `viewer` |

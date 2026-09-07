@@ -93,6 +93,11 @@ type createClaimRequest struct {
 	// cluster's answer, and land on the claim.
 	Volume *kitchenv1alpha1.VolumeConfig `json:"volume,omitempty"`
 
+	// Service is what a service claim binds: the project that makes the
+	// offering, and the offering's name. Nothing about *where* it is — that
+	// is the offering's to decide, and the reconciler resolves it.
+	Service *kitchenv1alpha1.ServiceConfig `json:"service,omitempty"`
+
 	// Redis is what the instance has to be: a cache or a queue, how much
 	// memory it may use, and which Valkey. `usage` is the one that matters —
 	// see RedisConfig for why getting it backwards loses work silently.
@@ -322,6 +327,26 @@ type claimShaper interface {
 	deletionOutcome(claim *kitchenv1alpha1.ResourceClaim) string
 }
 
+// crossProjectShaper is the half of a shaper that has to read an object
+// outside the claim's own project. It is optional, and one type implements
+// it: a service claim names another project's offering, and whether that
+// offering exists and admits this consumer is decidable at the door — so it
+// is decided there, rather than by creating a claim that is about to fail.
+//
+// It is separate from config rather than a wider signature on it because
+// five of the six types have nothing outside their project to resolve, and a
+// context and a server handed to each of them would be five invitations to
+// read one.
+type crossProjectShaper interface {
+	resolve(
+		ctx context.Context,
+		s *Server,
+		w http.ResponseWriter,
+		body *createClaimRequest,
+		project *kitchenv1alpha1.Project,
+	) bool
+}
+
 // claimField is one type-specific field of createClaimRequest: how to tell
 // it was sent, and what a claim of another type lacks that makes it
 // meaningless there.
@@ -342,6 +367,7 @@ var claimShapers = map[string]claimShaper{
 	kitchenv1alpha1.ClaimTypeVolume:      volumeClaimShaper{},
 	kitchenv1alpha1.ClaimTypeInngest:     inngestClaimShaper{},
 	kitchenv1alpha1.ClaimTypeRedis:       redisClaimShaper{},
+	kitchenv1alpha1.ClaimTypeService:     serviceClaimShaper{},
 }
 
 // claimShaperFor resolves a request's type to the table's row and the API's
@@ -437,6 +463,14 @@ func (s *Server) claimShape(
 	config, ok := shaper.config(w, body, project, provider)
 	if !ok {
 		return nil, nil, "", false
+	}
+	// A type whose request names something outside this project resolves it
+	// here, where the refusal can name what was not found. Only the service
+	// claim does — see crossProjectShaper.
+	if cross, names := shaper.(crossProjectShaper); names {
+		if !cross.resolve(ctx, s, w, body, project) {
+			return nil, nil, "", false
+		}
 	}
 	return config, ref, provider, true
 }

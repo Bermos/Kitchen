@@ -294,6 +294,9 @@ export interface Project {
    * file carries its content; a secret one carries a digest of what the
    * platform holds and never the content. */
   files?: ConfigFile[];
+  /** What this project offers other projects. Absent when it offers
+   * nothing, which is almost all of them. */
+  offers?: Offering[];
   /** The project's staged pipeline, in promotion order. Absent for the
    * default build-straight-to-production flow. Stages are topology — what
    * each environment demands lives on the Environment's requirements. */
@@ -379,6 +382,50 @@ export interface Promotion {
  * other one, and leaving the field off this type is what stops the dashboard
  * sending it by accident.
  */
+/** What a project offers other projects (#493): which of its workloads
+ * answers, what that workload speaks, which environment serves it, and who
+ * may bind to it.
+ *
+ * `visibility` is the half of it the platform owns. `open` admits every
+ * project; `request` admits the ones the providing project has approved, and
+ * approving is not built yet — so a `request` offering is listed and binds
+ * nobody. Everything else may also be declared in the repository's
+ * kitchen.json, which is why an offering can arrive here without anybody
+ * having filled this form in. */
+export interface Offering {
+  /** The project that makes the offering. */
+  project: string;
+  name: string;
+  /** The workload that answers, with the default filled in: "web", or one of
+   * the project's service workloads. */
+  process: string;
+  /** "http" — handed to a consumer as a URL as well as a host and a port —
+   * or "tcp", handed over as the host and the port alone. */
+  protocol: string;
+  /** What a consumer has to do to be admitted by the application itself.
+   * "none" is the only rung built. */
+  auth: string;
+  /** "open" or "request". */
+  visibility: string;
+  /** Which environment of the providing project a binding resolves to, with
+   * the default filled in. */
+  environment: string;
+  /** Whether the offering is made by a project this account is on. */
+  mine?: boolean;
+}
+
+/** One offering as the settings form writes it. Every field but the name is
+ * optional: what is left out takes the platform's default, and a default that
+ * moves later reaches an offering that never chose. */
+export interface OfferingWrite {
+  name: string;
+  process?: string;
+  protocol?: string;
+  auth?: string;
+  visibility?: string;
+  environment?: string;
+}
+
 export interface ProjectSettings {
   productionBranch?: string;
   requirePullRequest?: boolean;
@@ -440,6 +487,10 @@ export interface ProjectSettings {
    * and a secret file carries none at all — that goes to
    * PUT /projects/{name}/files/{file}, which no response reads back. */
   files?: ConfigFileWrite[];
+  /** Replace what this project offers other projects wholesale; `[]`
+   * withdraws every offering, which leaves the consumers' claims failing and
+   * is a decision with somebody else on the other end of it. */
+  offers?: OfferingWrite[];
   /** Reclassify the project's data; "" removes the classification. Always
    * allowed — environments rated below the new class read as non-compliant
    * in the inventory and at promotion, rather than the correction being
@@ -2390,6 +2441,9 @@ export interface NewClaimBackup {
 export interface Claim {
   name: string;
   project: string;
+  /** The offering a service claim binds: the project that makes it, and its
+   * name. Where it resolved to is on the claim's Provisioned condition. */
+  service?: { project: string; offering: string };
   /** The claim's declared sensitivity class — never above its project's,
    * which the create refuses. Absent means unclassified. */
   dataClass?: string;
@@ -2625,6 +2679,10 @@ export interface NewClaim {
   /** redis only: what the instance is for, how much memory it may use, and
    * which Valkey. */
   redis?: ClaimRedis;
+  /** service only, and required there: the project that makes the offering
+   * and the offering's name. Nothing about where it is — that is the
+   * offering's to decide, and the platform resolves it. */
+  service?: { project: string; offering: string };
   /** postgres only: whether the database is archived off the cluster, how
    * often, kept for how long, and where. Absent inherits the whole of it. */
   backup?: NewClaimBackup;
@@ -5131,6 +5189,12 @@ export const api = {
     request<Domain>("POST", "/domains", domain),
   deleteDomain: (name: string) => request<Domain>("DELETE", `/domains/${name}`),
   claims: list<Claim>("/claims"),
+  // The offering catalogue: what the projects on this platform offer each
+  // other. It answers about projects this account holds no role on, which is
+  // the grant doing what it says — an offering nobody can find is one nobody
+  // binds to — and it carries the offering and nothing else about the
+  // project behind it.
+  offerings: list<Offering>("/offerings"),
   claimTypes: () => request<ClaimType[]>("GET", "/claim-types"),
   // What a volume claim could bind. A bound volume is named, not chosen from
   // something the platform filled in — it existed before the cluster did —

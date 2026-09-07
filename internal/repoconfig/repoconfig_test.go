@@ -911,6 +911,86 @@ func TestVolumesRefusals(t *testing.T) {
 	}
 }
 
+// A commit declares the offerings it serves and nothing about who may bind
+// to them (#493). What has to survive the parse is the offering's name and
+// the two opinions the file is allowed to hold about it.
+func TestOffersTravelWithTheCommit(t *testing.T) {
+	config, err := Parse([]byte(`{
+	  "offers": [
+	    {"name": "pricing-api", "process": "api", "protocol": "http"},
+	    {"name": "tiles"}
+	  ]
+	}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(config.Offers) != 2 {
+		t.Fatalf("offers = %+v, want both", config.Offers)
+	}
+	if config.Offers[0].Process != "api" || config.Offers[0].Speaks != kitchenv1alpha1.OfferingHTTP {
+		t.Errorf("the declaration did not survive the parse: %+v", config.Offers[0])
+	}
+	if config.Offers[1].Process != "" || config.Offers[1].Speaks != "" {
+		t.Errorf("a declaration that held no opinion gained one: %+v", config.Offers[1])
+	}
+	if !slices.Contains(config.Declares(), "offers.tiles") || !config.DeclaresOffering("pricing-api") {
+		t.Errorf("the file does not say it declared its offerings: %v", config.Declares())
+	}
+}
+
+// The one thing this file may not do is say who may bind. The refusal names
+// the field for the reason the volume refusals do: "unknown field" would be
+// a true answer that explains nothing about the one line in the file that
+// would have widened a grant.
+func TestOffersRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		file     string
+		mentions string
+	}{
+		{
+			name:     "opening the offering to everybody",
+			file:     `{"offers": [{"name": "a", "visibility": "open"}]}`,
+			mentions: "sets visibility",
+		},
+		{
+			name:     "moving which environment serves it",
+			file:     `{"offers": [{"name": "a", "environment": "shop-staging"}]}`,
+			mentions: "sets environment",
+		},
+		{
+			name:     "no offering named",
+			file:     `{"offers": [{"process": "api"}]}`,
+			mentions: "names none",
+		},
+		{
+			name:     "one offering declared twice",
+			file:     `{"offers": [{"name": "a"}, {"name": "a"}]}`,
+			mentions: "declared twice",
+		},
+		{
+			name:     "a protocol that is neither",
+			file:     `{"offers": [{"name": "a", "protocol": "grpc"}]}`,
+			mentions: "which is neither",
+		},
+		{
+			name:     "a rung that is not built",
+			file:     `{"offers": [{"name": "a", "auth": "gate"}]}`,
+			mentions: "the only rung built is none",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file))
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("err = %v, want the file refused", err)
+			}
+			if !strings.Contains(err.Error(), tc.mentions) {
+				t.Errorf("message %q does not say what is wrong (%s)", err, tc.mentions)
+			}
+		})
+	}
+}
+
 // The project's posture is the ceiling and the file may only tighten below it
 // (#431). The two are written by different people — a project's settings are
 // somebody with a role on the project, a kitchen.json is whoever opened the

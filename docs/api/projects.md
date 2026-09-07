@@ -318,6 +318,56 @@ internal project, for the same reason they are empty on a preview the platform
 will not publish: there is no address the application can send anyone to. What
 a consumer uses instead is the in-cluster Service address.
 
+### What this project offers other projects
+
+`offers` is what this project makes available to the other projects on the
+platform: an internal API, a shared cache, a container one team maintains and
+four teams query. The consumer's half is an ordinary
+[`ResourceClaim`](claims.md) of type `service`, so an edge between two
+projects is a list here and a claim there — and no new kind of object at
+either end.
+
+```json
+{"offers": [
+  {"name": "pricing-api", "process": "api", "protocol": "http", "auth": "none",
+   "visibility": "open", "environment": "pricing-production"}
+]}
+```
+
+The list **replaces** what the project offers, like the workload list and for
+the same reason: what a project answers to is part of what it is. `[]`
+withdraws every offering, which leaves the consumers' claims `Failed` saying
+the offering they name is gone — a decision with somebody else on the other
+end of it, which is why the dashboard names them beside each row.
+
+| Field | Means |
+|---|---|
+| `name` | What a consumer's claim names. A DNS label of at most 40 characters, because it travels into the consumer's environment variables |
+| `process` | The workload that answers: `web`, or one of the project's `service` workloads. Empty is `web`. A worker or a scheduled job is refused — nothing addresses one, so there is no address to hand a consumer |
+| `protocol` | `http`, handed to a consumer as a URL as well as a host and a port, or `tcp`, handed over as the host and the port alone. Empty is `http` |
+| `auth` | What a consumer has to do to be admitted by the application itself. `none` is the only rung built, and it is not the weak rung it reads as — what admits a consumer is the grant below, and reachability once policy between application namespaces lands. A forward-auth gate and per-consumer OIDC identities are their own issue |
+| `visibility` | `request` (the default) admits only consumers this project has approved, and approving is not built yet — so a `request` offering binds nobody. `open` admits every project on the platform |
+| `environment` | Which environment of *this* project serves it. Empty is the project's production environment. It is the offering's default and not the consumer's choice |
+
+**The shape may come from `kitchen.json`; the grant may not.** Which workload
+serves an offering and what it speaks are facts about the code, so
+[the repository file](../CONFIG.md) may declare them — and a file that
+declares `visibility` or `environment` fails the build saying why: this file
+is committed to a repository anybody who can open a pull request may write,
+and a grant they could widen is not a grant. A file that declares an offering
+the project does not make fails the same way, naming where to add it. What the
+build does with the rest is check it: a declaration whose workload or protocol
+the project contradicts fails rather than binding somebody else's application
+to an address that answers with the wrong thing.
+
+`GET /projects/{name}` echoes the list with every default filled in, and
+`GET /offerings` is the same rows across every project — the catalogue a
+consumer picks from, which is why it answers about projects the caller holds
+no role on. That is the offering doing what it says rather than a hole in the
+scope rule: an `open` offering admits any project, so its name is already
+knowable by anybody who could write the claim. Nothing else about the project
+is on that row.
+
 ### The preview ceiling
 
 `previewsMax` is how many preview environments this project may have **live at
@@ -1048,3 +1098,23 @@ down the project's environments (production included), garbage-collects its
 builds, releases, domains and claims, and removes the application namespace.
 There is no undo, which is why the dashboard makes you type the project's name
 first.
+
+**A project other projects bind to is refused**, with a `409` naming them:
+
+```json
+{"error": "project pricing offers services that 2 other project(s) bind to — checkout, storefront — and deleting it takes the offerings with it, so every one of those bindings stops resolving. Have them drop the bindings first, or repeat the request with ?breakBindings=true to delete it anyway and leave their claims failing"}
+```
+
+Deleting a project takes its `offers` with it, and that is the one part of a
+project's blast radius that belongs to somebody else — the finalizer is the
+garbage collector for everything *this* project owns, and another team's
+binding is not one of those things. `?breakBindings=true` says it anyway:
+
+```sh
+curl -sS -X DELETE -H "authorization: Bearer $TOKEN" \
+  "https://kitchen.apps.example.com/api/v1/projects/pricing?breakBindings=true"
+```
+
+Nothing of the consumers' is touched — their claims are not deleted. They go
+`Failed` on their next reconcile saying the project they bind to is gone,
+which is the true state and the one they can act on.

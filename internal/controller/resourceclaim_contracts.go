@@ -73,6 +73,7 @@ var claimContracts = map[string]claimContract{
 	kitchenv1alpha1.ClaimTypeVolume:      volumeContract{},
 	kitchenv1alpha1.ClaimTypeInngest:     inngestContract{},
 	kitchenv1alpha1.ClaimTypeRedis:       redisContract{},
+	kitchenv1alpha1.ClaimTypeService:     serviceContract{},
 }
 
 // claimContractFor resolves a claim's type and its contract. ok is false

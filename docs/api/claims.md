@@ -884,6 +884,81 @@ still in it.
 The CLI reaches all of this through `kitchen api`, as for every claim type;
 no command creates a claim.
 
+**`service`** binds something **another project** on this platform offers: an
+internal API, a shared cache, a container one team maintains and four teams
+query. It is the one claim type whose provider is a project rather than a
+Connection or the platform itself, and it provisions nothing at all — the
+workload behind the address is the other project's, running under its quota,
+its release and its access list.
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "prices", "project": "checkout", "type": "service",
+       "service": {"project": "pricing", "offering": "pricing-api"}}' \
+  https://kitchen.apps.example.com/api/v1/claims
+```
+
+`service.project` and `service.offering` name one of that project's
+[`offers`](projects.md#what-this-project-offers-other-projects), and they are
+the whole of the request: *where* the offering answers is the providing
+project's to decide, so a consumer that could name a host would be a consumer
+that had stopped depending on the offering and started depending on where it
+happened to be running. It takes no `connection` and no `deletionPolicy` — a
+binding provisions nothing, so there is nothing for a policy to keep or
+destroy.
+
+**The binding carries an address and no credential.** `host`, `port`, and —
+for an offering that speaks `http` — `url`; plus `project`, `offering` and
+`environment`, so that a binding can be traced back to what it is of. The
+consumer's workloads read them as `KITCHEN_SERVICE_<NAME>`,
+`KITCHEN_SERVICE_<NAME>_HOST` and `KITCHEN_SERVICE_<NAME>_PORT`, where
+`<NAME>` is the claim's own name upper-cased with dashes as underscores. That
+is deliberately the same prefix a **sibling workload's** address arrives under
+([processes](processes.md)): from inside the application another team's
+service and a sibling process are the same thing, an address it did not have
+to work out. The cost of the reuse is that a binding and one of the project's
+own workloads cannot share a name, and the API refuses the collision from
+either side — creating the claim, and adding the workload — naming the
+variable both would arrive in.
+
+Unlike every `fromResourceClaim` variable, these are **not in the release
+snapshot**: the address of somebody else's environment is a fact about the
+platform now rather than about this commit, so a rollback calls the same
+offering at the same address. An offering that speaks `tcp` gets no `url` and
+no `KITCHEN_SERVICE_<NAME>` — a URL for a wire protocol would be the platform
+inventing a scheme it was never told.
+
+**Four refusals, and which is `Failed` and which is `Pending` is the whole of
+what they mean:**
+
+| The claim names | What happens |
+|---|---|
+| a project that does not exist, or an offering it does not make | `Failed`, naming it — and naming what the project *does* offer. Nothing appears on a timer that would make the name right |
+| an offering that admits consumers by request | `Failed`. `visibility: request` is the default, and the flow that turns a request into a grant is not built: until it is, an offering admits a consumer only when its project opens it to every project on the platform |
+| a workload nothing addresses — a worker, a scheduled job | `Failed`. There is no Service in front of one, so there is no address to hand over |
+| an environment the providing project has not deployed into yet | `Pending`. That one *does* come right on its own: the environment appears when something is deployed there, or when its owners declare it |
+
+The API makes the first two checks at the door as well, so a claim that could
+not bind is refused with a `400` rather than created and left failing. The
+reconciler makes them again, because an offering can be closed or withdrawn
+after a claim was written.
+
+A preview of the consumer calls the same environment production calls, which
+is what `shared` means here and what the claim's preview mode says. It costs
+the provider nothing — a binding provisions no data of its own — and *which*
+environments of a provider a preview may reach is the offering's to say, which
+is a later issue. `previewMode: none` leaves the variables out of previews
+entirely.
+
+**There is no NetworkPolicy behind this yet, and that is deliberate.** The
+edge a binding declares is what a default-deny between application namespaces
+would allow, and the two halves land together: an allow-policy on its own is
+not inert — it takes the provider's pods out of their namespace's
+default-allow — so the first binding on the platform would cut off every
+caller nobody had declared, the Gateway included.
+
+The CLI reaches this through `kitchen api` like every other claim type.
+
 ## Destroying the data is the admin's
 
 Claiming a resource and taking one away are the developer's: both rows in the
@@ -1499,6 +1574,7 @@ with the body above.
 | `inngest` | `inngestSelfHosted` | `fresh` — an Inngest server of the preview's own, run in this cluster — its own event stream, function set and run history, empty rather than a copy of production's, on its own storage; created with the preview and destroyed with it, which is what keeps one pull request's events from triggering another's functions | **blocked** — in connect mode, where the worker holds an outbound WebSocket to the server's gateway that never crosses the interceptor — and scale to zero is a project-level policy, so every environment of the project keeps its pods. A claim in serve mode declares otherwise: the server is in this cluster and calls the environment's own URL, so the call crosses the interceptor and wakes it, and the project keeps its scale to zero | **parks with it** — the preview's server is scaled to no pods with it and back up on wake; the volume its runs and its queue are on survives the park, so a preview that wakes finds the work it left | unaffected |
 | `redis` | `valkey` | `fresh` — a new, empty instance of the preview's own, configured like production's and torn down with the preview: the branch declares provenance synthetic | unaffected | **parks with it** — a preview's instance is scaled to no pods with it and back up on wake; a queue's volume survives the park, and a cache holds nothing it cannot recompute | unaffected |
 | `redis` | `redis` | `fresh` — a logical database of the preview's own at the same server, allocated to it alone and handed back when the preview closes: the branch declares provenance synthetic — it never holds production's keys, though a server the platform does not run cannot be emptied, so a database is handed out again only once every untouched one is gone | unaffected | **stays as it is** — a logical database at a server this platform does not run: there is no process of the preview's own to park, and the server stays up for every other claim on it | unaffected |
+| `service` | `project` | `shared` — a preview calls the same environment of the provider that production calls — which environment a preview may reach is the offering's to say, and saying it per consumer is a later issue | unaffected | **stays as it is** — a binding is an address and runs nothing, so an idle preview parks nothing here; the workload behind the address is the providing project's and idles on its own terms | unaffected |
 <!-- end generated -->
 
 ### Choosing on the claim

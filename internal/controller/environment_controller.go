@@ -383,6 +383,12 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// preview's own API, which is the whole of what makes a preview of a
 	// multi-workload unit a preview of the unit rather than of one quarter
 	// of it pointed at production.
+	//
+	// The addresses of *other projects'* offerings this project binds to are
+	// in podEnv already, ahead of the project's own variables and read
+	// exactly the same way (#493): from inside the application a sibling
+	// process and another team's service are the same thing, an address it
+	// did not have to work out.
 	podEnv = append(
 		append(platformEnv(kitchen, project.Name, env, release, publicURL),
 			serviceEnv(env, release, appNS)...),
@@ -756,8 +762,10 @@ type claimEffects struct {
 	cas []claimCA
 }
 
-// resolveEnv turns the Release's frozen env into container env vars, resolving
-// claim references through their binding secrets. requeue=true means a
+// resolveEnv is the environment a workload of this unit starts with, below
+// the platform's own variables: the bindings this project has to other
+// projects' offerings (#493), and then the Release's frozen env with every
+// claim reference resolved through its binding secret. requeue=true means a
 // referenced ResourceClaim has no binding for this environment yet: the
 // claim is unbound, or a preview whose branch is still coming up, or a claim
 // an older operator bound without saying what previews get.
@@ -779,8 +787,17 @@ func (r *EnvironmentReconciler) resolveEnv(
 	appNS string,
 ) ([]corev1.EnvVar, claimEffects, bool, error) {
 	isPreview := env.Spec.Type == kitchenv1alpha1.EnvironmentPreview
-	var out []corev1.EnvVar
 	effects := claimEffects{}
+	// The bindings this project has to other projects' offerings come first,
+	// so that a variable the project sets itself still wins — the same
+	// ordering the platform's own variables take, and for the same reason.
+	// They are the claims' rather than the Release's: where somebody else's
+	// environment answers is a fact about the platform now rather than about
+	// this commit, so a rollback calls the same offering (#493).
+	out, err := serviceBindingEnv(ctx, r.Client, env, env.Spec.ProjectRef.Name, appNS)
+	if err != nil {
+		return nil, effects, false, err
+	}
 	seen := map[string]bool{}
 	// Separate from seen, which is settled before the preview switch below
 	// has decided which binding this environment actually reads — and the

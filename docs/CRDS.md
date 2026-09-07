@@ -875,6 +875,16 @@ spec:
       path: /data/conf/app.ini          # it is held in a Secret the API writes
       secret: true                      # and no response ever reads back, so
                                         # `content` is refused here
+  offers:                               # what this project offers OTHER projects (#493)
+    - name: pricing-api                 # what a consumer's claim names
+      process: api                      # the workload that answers; empty is web
+      protocol: http                    # http (default) — a URL as well as a host and a port —
+                                        # or tcp, the host and the port alone
+      auth: none                        # the only rung built; a gate and per-consumer OIDC
+                                        # identities are a later issue
+      visibility: open                  # request (default) admits only approved consumers, and
+                                        # approving is not built yet; open admits every project
+      environment: my-shop-production   # which environment serves it; empty is production
 status:
   conditions: [...]                     # Ready, Previews, PreviewCapacity, SourceConnected,
                                         # RegistryConnected, WebhookRegistered, InitialBuild,
@@ -900,6 +910,20 @@ status:
                                         # It is also what keeps a registry that stays down to one
                                         # failed acquisition rather than one every interval
 ```
+
+`offers` is the provider half of the edge between two projects (#493): a list
+here, an ordinary `ResourceClaim` of
+[`type: service`](#type-service--an-address-for-something-another-project-offers)
+there, and no new kind of object at either end. An offering has no lifecycle
+of its own — it is a statement the project makes about itself, it dies with
+the project, and there is nothing to reconcile until somebody claims it.
+
+**`visibility` is the platform's half and the rest is the repository's.**
+Which workload serves an offering and what it speaks are facts about the code
+and may be declared in `kitchen.json`; who may bind to it is a grant, and a
+grant anybody with push access could widen is not a grant — so a file that
+declares one fails the build saying why. `docs/api/projects.md` carries the
+field table, and `docs/CONFIG.md` what a repository may declare.
 
 `files` is what software the platform did not build is configured by (#311).
 It is configuration rather than storage — small, changing with a deploy, and
@@ -2710,6 +2734,56 @@ volume attaches to one pod at a time and production has it: previews get
 PersistentVolumeClaim the platform created — and not even that where the claim
 named a PersistentVolumeClaim that was already in the namespace. The
 PersistentVolume, and every byte on it, stays.
+
+### `type: service` — an address for something another project offers
+
+The sixth type, and the one whose provider is neither a Connection nor the
+platform: it is **another Project**. Nothing is provisioned — the offering is
+already running, under its own project's quota, release and access list — so
+what the reconciler does is resolve the offering, check the grant and write
+the address down.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: ResourceClaim
+metadata:
+  name: prices
+spec:
+  projectRef: { name: checkout }        # the consumer
+  type: service                         # immutable; connectionRef is refused
+  config:                               # deletionPolicy is refused: a binding provisions nothing
+    service:
+      project: pricing                  # the project that makes the offering
+      offering: pricing-api             # one of its spec.offers
+status:
+  phase: Bound
+  secretName: prices-binding            # binding keys: host, port, url (http offerings only),
+                                        # project, offering, environment
+  instanceID: pricing/pricing-api       # what it is bound to, as one string
+  previewMode: shared                   # a preview calls the environment the offering names
+  dataProvenance: production            # what comes back is the provider's data as it stands
+```
+
+The provider side is [`Project.spec.offers`](#project-namespaced-kitchen-system):
+which of that project's workloads answers, what it speaks, and who may bind.
+The consumer's workloads read the binding as `KITCHEN_SERVICE_<NAME>` with
+`_HOST` and `_PORT` beside it — deliberately the same three variables a
+sibling workload's address arrives in, because from inside the application
+another team's service and a sibling process are the same thing. A binding and
+one of the project's own workloads therefore cannot share a name, and the API
+refuses the collision from either side.
+
+**What is Failed and what is Pending.** A project that does not exist, an
+offering it does not make, an offering that admits consumers by request, and a
+workload nothing addresses are all `Failed` with the name in the message:
+nothing appears on a timer that would make any of them right. An environment
+the providing project has not deployed into yet is `Pending`, because that one
+does.
+
+**Deleting the claim takes back the Secret and nothing else** — the offering
+carries on being offered. Deleting the *providing project* is refused while
+another project binds to it, naming them; see
+[docs/api/projects.md](api/projects.md#deleting-a-project).
 
 ---
 

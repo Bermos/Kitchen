@@ -74,6 +74,14 @@ const (
 	// Connection is the self-hosted provider.
 	ClaimTypeInngest = "inngest"
 
+	// ClaimTypeService is a binding to another project's offering: an
+	// address, in this cluster, for something a second team runs and this
+	// project calls. It is the one claim type whose provider is another
+	// Project — the platform provisions nothing at all, it resolves an
+	// offering, checks the grant and writes the address down — which is why
+	// it takes no Connection.
+	ClaimTypeService = "service"
+
 	// ClaimTypeRedis is a Redis-speaking cache or queue from a
 	// cache-capable Connection: the Valkey this cluster runs one of per
 	// claim, or a server somebody else runs. What it is *for* — a cache
@@ -176,6 +184,13 @@ var ClaimTypes = []ClaimType{
 		HoldsDataProviders: []string{ProviderInngestSelfHosted},
 	},
 	{Name: ClaimTypeRedis, Capability: CapabilityCache, Resource: "cache", HoldsData: true},
+	// A service binding holds no data of its own: what it provisions is an
+	// address, and the data behind it is the *provider's*, kept by the
+	// provider's own claims under the provider's own policies. So deleting
+	// the binding takes back exactly what the platform put into the world —
+	// a Secret and, once #497 lands, a policy edge — and deletionPolicy has
+	// nothing to choose between and is refused.
+	{Name: ClaimTypeService, Resource: "service binding"},
 }
 
 // LookupClaimType finds a claim type by the value of spec.type.
@@ -225,8 +240,8 @@ func (c *ResourceClaim) Type() (ClaimType, bool) {
 // Connection — ClaimTypesWithoutConnection — rather than against a named
 // exception, and the refusal names the type it refused. The set in the
 // markers is held to the table by a test, since a marker cannot read one.
-// +kubebuilder:validation:XValidation:rule="self.type in ['oidcClient', 'volume'] || has(self.connectionRef)",message="connectionRef is required: it names the Connection that provisions the resource. Only a claim the platform provisions itself goes without one.",messageExpression="'connectionRef is required: it names the Connection that provisions a ' + self.type + ' claim. Only a claim of a type the platform provisions itself (oidcClient, volume) goes without one.'"
-// +kubebuilder:validation:XValidation:rule="!(self.type in ['oidcClient', 'volume']) || !has(self.connectionRef)",message="this claim type takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.",messageExpression="'a ' + self.type + ' claim takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.'"
+// +kubebuilder:validation:XValidation:rule="self.type in ['oidcClient', 'volume', 'service'] || has(self.connectionRef)",message="connectionRef is required: it names the Connection that provisions the resource. Only a claim the platform provisions itself goes without one.",messageExpression="'connectionRef is required: it names the Connection that provisions a ' + self.type + ' claim. Only a claim of a type the platform provisions itself (oidcClient, volume, service) goes without one.'"
+// +kubebuilder:validation:XValidation:rule="!(self.type in ['oidcClient', 'volume', 'service']) || !has(self.connectionRef)",message="this claim type takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.",messageExpression="'a ' + self.type + ' claim takes no connectionRef: the platform provisions it itself, and a Connection here would name a provider nothing would ask.'"
 // +kubebuilder:validation:XValidation:rule="!has(self.backup) || self.type == 'postgres'",message="spec.backup belongs to a claim whose resource this platform runs and can configure backups for, which is postgres alone. A resource somebody else runs is backed up by whoever runs it.",messageExpression="'spec.backup belongs to a postgres claim: a ' + self.type + ' claim names a resource this platform does not run its own backups of, so a policy here would be a promise nothing keeps.'"
 type ResourceClaimSpec struct {
 	ProjectRef LocalObjectReference `json:"projectRef"`
@@ -242,7 +257,7 @@ type ResourceClaimSpec struct {
 	// it on a bound claim would leave a database behind while the
 	// application's environment quietly started reading OAuth credentials
 	// out of the same keys. Ask for the other one and delete this.
-	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore;volume;inngest;redis
+	// +kubebuilder:validation:Enum=postgres;oidcClient;objectStore;volume;inngest;redis;service
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable: delete the claim and ask for the other kind"
 	Type string `json:"type"`
 
@@ -894,6 +909,41 @@ func (c *ResourceClaim) Redis() RedisConfig {
 		return RedisConfig{}
 	}
 	return *cfg.Redis
+}
+
+// ServiceConfig is the `service` slice of a service claim's spec.config: the
+// offering this project binds to, named by the project that offers it.
+//
+// Two strings and no address. What the offering resolves to is the
+// *provider's* to decide — which of its workloads answers, and which of its
+// environments — so a consumer that could name a host would be a consumer
+// that had stopped depending on the offering and started depending on where
+// it happened to be running.
+type ServiceConfig struct {
+	// Project is the project that makes the offering.
+	// +kubebuilder:validation:MinLength=1
+	Project string `json:"project"`
+
+	// Offering is the name of one of that project's `spec.offers`.
+	// +kubebuilder:validation:MinLength=1
+	Offering string `json:"offering"`
+}
+
+// Service is the offering this claim binds to, empty for a claim of another
+// type or one that reached the cluster without a readable config — the API
+// validates a config before it is written, and the reconciler refuses an
+// empty one rather than guessing at which project was meant.
+func (c *ResourceClaim) Service() ServiceConfig {
+	if c.Spec.Type != ClaimTypeService {
+		return ServiceConfig{}
+	}
+	var cfg struct {
+		Service *ServiceConfig `json:"service,omitempty"`
+	}
+	if !c.DecodeConfig(&cfg) || cfg.Service == nil {
+		return ServiceConfig{}
+	}
+	return *cfg.Service
 }
 
 // ClaimPhase is the coarse lifecycle summary of a ResourceClaim.

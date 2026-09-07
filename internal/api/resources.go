@@ -697,6 +697,20 @@ type patchProjectRequest struct {
 	// snapshot for exactly that reason: a rollback restores the file its
 	// release ran with.
 	Files *[]fileRequest `json:"files,omitempty"`
+	// Offers replaces the project's offerings wholesale, in the same shape
+	// as the workload list and for the same reason: an offering is part of
+	// what this project *is*, and the admin who decides what it runs decides
+	// what it answers to. An empty list withdraws every offering — which
+	// leaves the consumers' claims Failed, saying that the offering they
+	// name is gone, so it is a decision with somebody else on the other end
+	// of it.
+	//
+	// `visibility` is the field this route exists for. The rest of an
+	// offering may be declared in kitchen.json — which workload answers and
+	// what it speaks are facts about the code — and a file that declares who
+	// may bind is refused, because a grant anybody with push access could
+	// widen is not a grant.
+	Offers *[]offeringRequest `json:"offers,omitempty"`
 }
 
 // fileRequest and the validation behind it live in internal/appconfig, for
@@ -1253,6 +1267,64 @@ func refusedRepositorySettings(
 	return false
 }
 
+// applyProjectDeclarations writes the three lists that say what this project
+// runs and what it answers to — its workloads, its configuration files and
+// its offerings — onto the project, and the one rule none of them can state
+// on its own.
+//
+// **The order is the whole reason they are one function.** Each of the last
+// two is checked against the workloads *as this request leaves them*, so a
+// single request may add a service workload and the offering that serves it,
+// or a worker and the file it reads. A seeded file is checked after both,
+// because it reads a file of this project and one request may add the file
+// and the workload that seeds it. false means a refusal has already been
+// written.
+func (s *Server) applyProjectDeclarations(
+	ctx context.Context,
+	w http.ResponseWriter,
+	project *kitchenv1alpha1.Project,
+	body patchProjectRequest,
+) bool {
+	if body.Processes != nil {
+		processes, err := processesFromRequest(*body.Processes)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return false
+		}
+		if refusedWorkloadBuiltFromNoRepository(w, project, processes) {
+			return false
+		}
+		if s.refusedWorkloadNamedLikeABinding(ctx, w, project, processes) {
+			return false
+		}
+		project.Spec.Processes = processes
+	}
+	if body.Files != nil {
+		files, err := filesFromRequest(*body.Files, project.Spec.Files, project.Spec.Processes)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return false
+		}
+		project.Spec.Files = files
+	}
+	if body.Offers != nil {
+		offers, err := offeringsFromRequest(*body.Offers, project.Spec.Processes)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return false
+		}
+		project.Spec.Offers = offers
+	}
+	// Refused here so the sentence names the file, rather than arriving later
+	// as an environment that will not deploy.
+	if err := appconfig.ValidateSeededFiles(
+		project.Spec.Runtime.Init, project.Spec.Processes, project.Spec.Files); err != nil {
+		badRequest(w, "%s", err.Error())
+		return false
+	}
+	return true
+}
+
 func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -1311,36 +1383,7 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 		}
 		project.Spec.Promotion = stages
 	}
-	if body.Processes != nil {
-		processes, err := processesFromRequest(*body.Processes)
-		if err != nil {
-			badRequest(w, "%s", err.Error())
-			return
-		}
-		if refusedWorkloadBuiltFromNoRepository(w, project, processes) {
-			return
-		}
-		project.Spec.Processes = processes
-	}
-	// After the workloads, so that one request may add a worker and a file
-	// for it: the names a file may mention are the ones this project will
-	// have when the write lands, not the ones it had when it arrived.
-	if body.Files != nil {
-		files, err := filesFromRequest(*body.Files, project.Spec.Files, project.Spec.Processes)
-		if err != nil {
-			badRequest(w, "%s", err.Error())
-			return
-		}
-		project.Spec.Files = files
-	}
-	// After both, because it is the one rule neither can state on its own: a
-	// seed reads a file of this project, and one request may add the file and
-	// the workload that seeds it. Refused here so the sentence names the
-	// file, rather than arriving later as an environment that will not
-	// deploy.
-	if err := appconfig.ValidateSeededFiles(
-		project.Spec.Runtime.Init, project.Spec.Processes, project.Spec.Files); err != nil {
-		badRequest(w, "%s", err.Error())
+	if !s.applyProjectDeclarations(ctx, w, project, body) {
 		return
 	}
 	var nextClass *kitchenv1alpha1.DataClass
@@ -1472,6 +1515,12 @@ func (s *Server) deleteProject(w http.ResponseWriter, req *http.Request) {
 	project := &kitchenv1alpha1.Project{}
 	if err := s.get(ctx, req.PathValue("name"), project); err != nil {
 		s.writeError(w, err)
+		return
+	}
+	// Another project's binding is the one thing in a project's blast radius
+	// that is not the project's own (#493), so it is asked about before
+	// anything is recorded or removed.
+	if s.refusedProjectWithConsumers(ctx, w, req, project) {
 		return
 	}
 	if !s.recorded(w, req, audit.Transition{
@@ -2555,6 +2604,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"promotionStages", body.PromotionStages != nil},
 		{"processes", body.Processes != nil},
 		{"files", body.Files != nil},
+		{"offers", body.Offers != nil},
 		{"dataClass", body.DataClass != nil},
 	} {
 		if field.changed {

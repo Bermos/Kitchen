@@ -354,6 +354,15 @@ func (r *BuildReconciler) readConfig(
 		res, updateErr := r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
 		return &res, updateErr
 	}
+	// The offerings it declares are the same bargain (#493): the file says
+	// what this commit serves and the project says who may bind to it, so a
+	// declaration the project makes no offering for, or one whose workload
+	// or protocol it contradicts, fails here rather than binding somebody
+	// else's application to the wrong address.
+	if err := checkDeclaredOffers(config, project); err != nil {
+		res, updateErr := r.fail(ctx, build, project, reasonConfigInvalid, err.Error())
+		return &res, updateErr
+	}
 
 	build.Status.Config = config
 	logf.FromContext(ctx).Info("build read the commit's own configuration",
@@ -416,6 +425,62 @@ func noteIgnoredSecurity(
 		Type: condConfigHonoured, Status: metav1.ConditionFalse, Reason: reasonSecurityCeiling,
 		Message: message, ObservedGeneration: build.Generation,
 	})
+}
+
+// checkDeclaredOffers holds the commit's `offers` against the project's own.
+//
+// The file cannot make an offering, for the reason it cannot make a claim:
+// who may bind to this project is a grant, and this file is written by
+// anybody who can open a pull request. So what it declares is checked
+// instead, and two things are worth checking:
+//
+//   - **An offering that is not there.** The commit believes it serves
+//     something the project does not offer, so every consumer that would have
+//     bound to it has nothing to bind to. The refusal names the offering to
+//     add and where.
+//   - **A workload or a protocol that disagrees.** This is the failure the
+//     declaration is actually for: the code serves the offering from `api`,
+//     the project offers `web`, and the consumers are bound to an address
+//     that answers with the wrong application — which looks like the
+//     provider's bug, in somebody else's project.
+//
+// It takes no client: both sides are already in hand, which is the whole
+// difference between this and the volume check beside it.
+func checkDeclaredOffers(config *kitchenv1alpha1.RepoConfig, project *kitchenv1alpha1.Project) error {
+	if config == nil || len(config.Offers) == 0 {
+		return nil
+	}
+	for _, declared := range config.Offers {
+		offering, ok := project.Offering(declared.Name)
+		if !ok {
+			has := "this project offers nothing"
+			if names := project.OfferingNames(); len(names) > 0 {
+				has = "this project's offerings are " + strings.Join(names, ", ")
+			}
+			return fmt.Errorf("%s declares the offering %q, and %s. Who may bind to an offering is a grant, "+
+				"which a committed file cannot make on its own: add the offering in the dashboard or with "+
+				"`kitchen api PATCH /projects/%s`, and this build will find it",
+				kitchenv1alpha1.RepoConfigFileName, declared.Name, has, project.Name)
+		}
+		if declared.Process != "" && declared.Process != offering.ProcessName() {
+			return fmt.Errorf("%s declares the offering %q served by the workload %q, and the project serves "+
+				"it from %q. The commit and the project have to agree about which workload answers, or "+
+				"every consumer is bound to an address that answers with the wrong application",
+				kitchenv1alpha1.RepoConfigFileName, declared.Name, declared.Process, offering.ProcessName())
+		}
+		if declared.Speaks != "" && declared.Speaks != offering.Protocol() {
+			return fmt.Errorf("%s declares the offering %q speaking %s, and the project offers it as %s. "+
+				"An offering handed over as a URL and one handed over as a host and a port are two "+
+				"different things to whoever is writing the client",
+				kitchenv1alpha1.RepoConfigFileName, declared.Name, declared.Speaks, offering.Protocol())
+		}
+		if declared.Authorization != "" && declared.Authorization != offering.Auth() {
+			return fmt.Errorf("%s declares the offering %q admitting consumers by %s, and the project admits "+
+				"them by %s", kitchenv1alpha1.RepoConfigFileName, declared.Name,
+				declared.Authorization, offering.Auth())
+		}
+	}
+	return nil
 }
 
 // checkDeclaredVolumes holds the commit's `volumes` against the project's

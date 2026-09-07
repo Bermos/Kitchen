@@ -349,12 +349,17 @@ export const NOTHING_DEPLOYED = "nothing deployed yet";
 export function claimUsedBy(claim: Claim): string {
   if (claim.volume?.process) return claim.volume.process;
   if (claim.type === "oidcClient") return "whatever signs people in";
+  // A binding arrives as a variable of the platform's own rather than through
+  // the project's list, so every workload has it whether or not anything in
+  // `spec.env` points at the claim.
+  if (claim.type === "service") return "every process, through the platform's own variables";
   return claim.secret ? "every process, through the variables" : "not bound yet";
 }
 
 /** A claim's plan, in the sense the Attached resources table means it: what was
  * asked for, in one phrase, or the connection it came through. */
 export function claimPlan(claim: Claim): string {
+  if (claim.service) return `${claim.service.project}/${claim.service.offering}`;
   if (claim.volume) return claim.volume.size || claim.volume.bound?.capacity || "bound storage";
   if (claim.postgres?.version) return `pg ${claim.postgres.version}`;
   if (claim.redis) return claim.redis.usage ?? "cache";
@@ -404,6 +409,11 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "resources",
     label: "Attached resources",
     description: "What this project depends on, and what it costs to take one away.",
+  },
+  {
+    id: "offerings",
+    label: "Offerings",
+    description: "What this project offers the other projects on this platform, and who may bind to it.",
   },
   { id: "variables", label: "Variables", description: "The environment this project's processes start with." },
   { id: "files", label: "Files", description: "The configuration files the platform places into the workloads." },

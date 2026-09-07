@@ -94,6 +94,7 @@ func (postgresClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceClaim)
 type claimConfigBody struct {
 	Postgres *kitchenv1alpha1.PostgresConfig `json:"postgres,omitempty"`
 	Volume   *kitchenv1alpha1.VolumeConfig   `json:"volume,omitempty"`
+	Service  *kitchenv1alpha1.ServiceConfig  `json:"service,omitempty"`
 }
 
 // claimPostgresView is the claim's database requirements as it answered

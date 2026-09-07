@@ -9,6 +9,7 @@ import {
   type ClaimType,
   type Connection,
   type NewClaim,
+  type Offering,
 } from "../lib/api";
 import { DESTRUCTIVE_POLICY, destroysDataRefusal, mayDestroyData } from "../lib/claims";
 import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
@@ -75,6 +76,7 @@ const typeOptions = [
   { label: "volume — a persistent disk mounted into one process, cut new or already there", value: "volume" },
   { label: "inngest — durable background work from Inngest Cloud", value: "inngest" },
   { label: "redis — a cache or a queue from a connection", value: "redis" },
+  { label: "service — an address for something another project offers", value: "service" },
 ];
 const isOIDC = computed(() => type.value === "oidcClient");
 const isPostgres = computed(() => type.value === "postgres");
@@ -100,6 +102,66 @@ function objectStoreRequest() {
   return Object.keys(block).length ? block : undefined;
 }
 const isVolume = computed(() => type.value === "volume");
+
+// The service half: a binding to something another project offers (#493).
+// There is nothing to provision and nothing to configure — the offering is
+// already running, under its own project's quota — so the whole of the form
+// is which one, chosen from what the platform is offered rather than typed
+// from memory.
+const isService = computed(() => type.value === "service");
+const offerings = ref<Offering[]>([]);
+const offeringsLoaded = ref(false);
+/** "project/name", the two halves the claim sends separately. */
+const chosenOffering = ref("");
+
+async function loadOfferings() {
+  offeringsLoaded.value = false;
+  try {
+    offerings.value = await api.offerings();
+  } catch {
+    offerings.value = [];
+  } finally {
+    offeringsLoaded.value = true;
+  }
+}
+
+/** Every offering on the platform, with the ones that admit consumers by
+ * request listed disabled rather than left out: an offering nobody can see is
+ * an offering nobody asks for, and asking is what the next issue is about. */
+const offeringOptions = computed(() =>
+  offerings.value.map((entry) => ({
+    label: [
+      `${entry.project}/${entry.name}`,
+      entry.protocol,
+      `from ${entry.environment}`,
+      entry.visibility === "open" ? "" : "admits consumers by request",
+    ]
+      .filter(Boolean)
+      .join(" — "),
+    value: `${entry.project}/${entry.name}`,
+    disabled: entry.visibility !== "open" && entry.project !== props.project,
+  })),
+);
+
+const offering = computed<Offering | undefined>(() =>
+  offerings.value.find((entry) => `${entry.project}/${entry.name}` === chosenOffering.value),
+);
+
+/** The service block as the API takes it. */
+function serviceRequest() {
+  const [project, name] = [
+    chosenOffering.value.slice(0, chosenOffering.value.indexOf("/")),
+    chosenOffering.value.slice(chosenOffering.value.indexOf("/") + 1),
+  ];
+  return { project, offering: name };
+}
+
+/** What this binding will arrive as in the application, which is the same
+ * three variables a sibling workload's address arrives in — and the reason a
+ * binding may not take a workload's name. */
+const bindingVariable = computed(
+  () => `KITCHEN_SERVICE_${(name.value || "<name>").toUpperCase().replaceAll("-", "_")}`,
+);
 
 const isInngest = computed(() => type.value === "inngest");
 const isRedis = computed(() => type.value === "redis");
@@ -611,6 +673,9 @@ watch(open, (value) => {
   inngestServePath.value = "";
   bindable.value = { persistentVolumes: [], persistentVolumeClaims: [] };
   bindableLoaded.value = false;
+  offerings.value = [];
+  offeringsLoaded.value = false;
+  chosenOffering.value = "";
   void loadConnections();
   void loadClaimTypes();
 });
@@ -622,6 +687,12 @@ watch(isBoundVolume, (bound) => {
   if (bound && !bindableLoaded.value) void loadBindableVolumes();
 });
 
+// The catalogue is read the moment somebody asks to bind something, and not
+// before: the six other claim types have no use for it.
+watch(isService, (binding) => {
+  if (binding && !offeringsLoaded.value) void loadOfferings();
+});
+
 const ready = computed(() => {
   if (!name.value) return false;
   if (isOIDC.value) return true;
@@ -629,6 +700,7 @@ const ready = computed(() => {
     return Boolean(volProcess.value && volMountPath.value.trim() && volBind.value && volAccessMode.value);
   }
   if (isVolume.value) return Boolean(volProcess.value && volSize.value.trim() && volMountPath.value.trim());
+  if (isService.value) return Boolean(chosenOffering.value);
   return Boolean(connection.value);
 });
 
@@ -663,6 +735,18 @@ async function save() {
         deletionPolicy: deletionPolicy.value,
         ...(dataClass.value ? { dataClass: dataClass.value } : {}),
       };
+    } else if (isService.value) {
+      claim = {
+        name: name.value,
+        project: props.project,
+        connection: "",
+        type: type.value,
+        service: serviceRequest(),
+        ...(previewMode.value ? { previewMode: previewMode.value } : {}),
+        // No deletion policy: a binding provisions nothing, so there is
+        // nothing for one to keep or destroy, and the API refuses the field.
+        ...(dataClass.value ? { dataClass: dataClass.value } : {}),
+      };
     } else if (isInngest.value) {
       claim = {
         name: name.value,
@@ -695,7 +779,9 @@ async function save() {
     toast.add({
       title: `Claim ${created.name} created`,
       color: "success",
-      icon: isOIDC.value
+      icon: isService.value
+        ? "i-lucide-share-2"
+        : isOIDC.value
         ? "i-lucide-key-round"
         : isObjectStore.value
           ? "i-lucide-folder-archive"
@@ -892,6 +978,59 @@ async function save() {
             <USelect v-model="deletionPolicy" :items="policyOptions" class="w-full" />
             <p v-if="destroyRefusal && !isBoundVolume" class="mt-1 text-xs text-muted">{{ destroyRefusal }}.</p>
           </UFormField>
+        </template>
+
+        <template v-else-if="isService">
+          <p class="text-xs text-muted">
+            An address for something another project on this platform offers — an internal API, a shared cache, a
+            container one team maintains and several call. Nothing is provisioned: the workload behind the address is
+            the other project's, and this claim is what says your application may reach it.
+          </p>
+
+          <UFormField
+            label="What to bind"
+            help="What the projects on this platform offer. An offering that admits consumers by request is listed and
+              cannot be chosen yet — asking for one, and having it approved, is not built."
+            required
+          >
+            <USelect
+              v-model="chosenOffering"
+              :items="offeringOptions"
+              :disabled="offeringsLoaded && !offeringOptions.length"
+              :placeholder="offeringsLoaded && !offeringOptions.length ? 'Nothing is offered yet' : 'Select an offering'"
+              class="w-full"
+            />
+          </UFormField>
+
+          <p v-if="offering" class="text-xs text-muted">
+            The application reads it as <span class="font-mono">{{ bindingVariable }}</span
+            ><template v-if="offering.protocol === 'http'">
+              — a URL, with <span class="font-mono">_HOST</span> and <span class="font-mono">_PORT</span> beside it</template
+            ><template v-else>
+              — <span class="font-mono">_HOST</span> and <span class="font-mono">_PORT</span>, and no URL: this
+              offering speaks something other than HTTP</template
+            >. That is the same variable one of this project's own service workloads arrives in, so a binding cannot
+            take a workload's name.
+          </p>
+
+          <UFormField
+            label="Previews get"
+            help="The same address production gets. Which environment of the provider a preview may reach is the
+              offering's to say, and saying it per consumer is a later issue; ask for none to leave the variables out
+              of previews entirely."
+          >
+            <USelect
+              v-model="previewMode"
+              :items="previewOptions"
+              :disabled="!previewOptions.length"
+              placeholder="the platform's own declaration"
+              class="w-full"
+            />
+          </UFormField>
+
+          <p class="text-xs text-muted">
+            Deleting this claim removes the binding and nothing else: the offering carries on being offered.
+          </p>
         </template>
 
         <template v-else>
