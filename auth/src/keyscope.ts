@@ -20,7 +20,7 @@ import { log } from "./log.js";
  * successors (issue #318).
  *
  * So the reach of a key is stated here rather than left to be whatever
- * better-auth happens to mount, and there are exactly two kinds of key:
+ * better-auth happens to mount, and there are exactly three kinds of key:
  *
  * - **The operator's service credential** — the one value the chart generates
  *   into the release's auth Secret and seeds as the service account's key. It
@@ -33,6 +33,15 @@ import { log } from "./log.js";
  * - **Every other key** — a project's CI key, which is a machine account's
  *   credential (docs/AUTH.md, "Machine accounts"). It may do the one thing
  *   `kitchen login` and CI do with it and nothing more.
+ * - **A platform credential** (issue #349), which is the same one thing. It is
+ *   widened at the *operator API*, where scopes on the Kitchen singleton let it
+ *   reach a handful of routes an operator would otherwise have to run by hand.
+ *   Here it is widened by nothing at all: it exchanges itself for a token and
+ *   reads its own session, exactly as a CI key does. That is worth stating out
+ *   loud rather than leaving as the absence of a case, because the tempting
+ *   version of this feature — one credential that is "more privileged" — would
+ *   have made a key that reaches more of the platform also reach more of the
+ *   issuer, which is the shape #349 was written to refuse.
  *
  * The two are told apart by the presented value rather than by looking the
  * key's owner up, which is what keeps this guard free: it runs in front of
@@ -43,10 +52,13 @@ import { log } from "./log.js";
  * so "the presented key is the service key" and "the caller is the service
  * account" are the same statement.
  *
- * A key that is *widened* later — issue #349's platform-scoped credential — is
- * a third answer to the same question rather than a second mechanism: what
- * changes is which paths `mayReach` returns true for, decided from the key's
- * own scope. The shape here is deliberately one function taking a path.
+ * A key that is *widened* was expected to be a third answer to the same
+ * question — which paths `mayReach` returns true for, decided from the key's
+ * own scope. #349 landed and the answer turned out to be that nothing here
+ * moves: what a platform credential may do is Kitchen's state rather than the
+ * issuer's, so the widening happens entirely on the other side of the boundary
+ * and this file kept its two paths. The shape is still deliberately one
+ * function taking a path, for the next one that does need it.
  *
  * The file answers a second question too, and it is the same one from the
  * other side: **where a key comes from**. The rule above bounds what a
@@ -162,12 +174,12 @@ export const KEY_ISSUANCE_REFUSAL =
  * which no Kitchen screen offers.
  *
  * So the invariant is stated here rather than left to nobody happening to post
- * there: **a key comes from `POST /projects/{name}/keys` and belongs to a
- * machine account, or it does not exist.** The service credential is admitted
- * for the same reason it is admitted everywhere else — it is the platform
- * talking to its own issuer — and a platform-scoped key (issue #349) does not
- * need this door opened, because it too would be minted through the platform's
- * own path.
+ * there: **a key comes from the Kitchen API — `POST /projects/{name}/keys` or
+ * `POST /platform/credentials` — and belongs to an account created for it, or
+ * it does not exist.** The service credential is admitted for the same reason
+ * it is admitted everywhere else — it is the platform talking to its own
+ * issuer — and the platform credential issue #349 added needed no door opened
+ * here, because it too is minted through the platform's own path.
  *
  * Like the guard above it verifies nothing and looks nothing up: the question
  * is whether a caller of this kind may be at this endpoint at all, which is
