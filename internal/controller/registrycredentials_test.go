@@ -17,9 +17,14 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
@@ -98,8 +103,15 @@ func assertCredential(t *testing.T, spec corev1.PodSpec, container, wantVolume s
 
 func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
-		credentialsWithRead("kitchen-registry-registry", "kitchen-registry-registry-read"), "").Spec
+	credentials := credentialsWithRead("kitchen-registry-registry", "kitchen-registry-registry-read")
+	// Said out loud because everything below is vacuous without it: on an
+	// installation whose registry issues no narrower credential the two
+	// volumes name one Secret, and every container mounts something that
+	// can push whichever volume it names.
+	if !credentials.scoped() {
+		t.Fatal("the fixture's registry issues no read-only credential, so this test asserts nothing")
+	}
+	pod := buildpacksPod(project, build, testWebPlan(project, build), nil, credentials, "").Spec
 
 	// detect and build run the buildpacks, which run the repository's own
 	// build: `npm install` and whatever its lifecycle scripts do. Neither
@@ -107,11 +119,12 @@ func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T
 	assertCredential(t, pod, "detector", "")
 	assertCredential(t, pod, "builder", "")
 
-	// The phases that read the registry read with the credential that
-	// cannot push; the one that pushes is the only one holding the one that
-	// can.
-	assertCredential(t, pod, "analyzer", volumeDockerConfigRead)
+	// The phase that only reads reads with the credential that cannot push.
+	// The two that need to write hold the one that can: export because it
+	// pushes, analyze because it validates write access to the tag it is
+	// given before the build starts (#534).
 	assertCredential(t, pod, "restorer", volumeDockerConfigRead)
+	assertCredential(t, pod, "analyzer", volumeDockerConfig)
 	assertCredential(t, pod, "exporter", volumeDockerConfig)
 
 	// And the clone, which needs neither.
@@ -131,6 +144,105 @@ func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T
 	if exporter.Name != "exporter" {
 		t.Fatalf("the pod's container is %q, not the phase that pushes", exporter.Name)
 	}
+}
+
+// #534: the analyzer holds the credential that can push, because the CNB
+// lifecycle's analyze phase is handed the output tag and verifies read *and*
+// write access to it before the build starts. Giving it the read-only one
+// failed every buildpacks build in its first phase — and only on the
+// installations that had supplied a read-only credential, which is what kept
+// it out of CI.
+//
+// The credentials here are resolved the way a build resolves them rather than
+// written down: the `-read` Secret is created beside the Connection's own, so
+// that what makes the assertion meaningful — scoped() being true — is the
+// Secret existing, exactly as it is on an installation.
+func TestBuildpacksPodGivesTheAnalyzerTheCredentialItValidatesTheTagWith(t *testing.T) {
+	// A connection of its own, so that the two Secret names this resolves to
+	// are spelled nowhere else in the package and the assertion below is
+	// against these two objects rather than against a name that happens to
+	// be right.
+	const (
+		connectionName     = "bpnode"
+		platformCredential = "bpnode-registry"
+		appPush            = "kitchen-registry-bpnode"
+		appRead            = "kitchen-registry-bpnode-read"
+	)
+	project, build := buildFixtures()
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	secret := func(name string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: PlatformNamespace},
+			Type:       corev1.SecretTypeDockerConfigJson,
+			Data:       map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)},
+		}
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		secret(platformCredential),
+		// The whole of what an operator does to narrow the credential: a
+		// second Secret, named by the convention readCredentialSecretName
+		// spells. Without it credentialsWithRead falls back to Read == Push
+		// and nothing below can tell the two apart.
+		secret(readCredentialSecretName(platformCredential)),
+	).Build()
+	reconciler := &BuildReconciler{Client: client, Scheme: scheme}
+
+	connection := &kitchenv1alpha1.Connection{
+		ObjectMeta: metav1.ObjectMeta{Name: connectionName, Namespace: PlatformNamespace},
+		Spec: kitchenv1alpha1.ConnectionSpec{
+			Provider:             registryProviderName,
+			CredentialsSecretRef: kitchenv1alpha1.CredentialsReference{Name: platformCredential},
+		},
+	}
+	appNS := appNamespace(project.Name)
+	ctx := context.Background()
+	push, err := reconciler.syncRegistrySecret(ctx, connection, PlatformNamespace, appNS)
+	if err != nil {
+		t.Fatalf("syncing the registry credential: %v", err)
+	}
+	read, err := reconciler.syncRegistryReadSecret(ctx, connection, PlatformNamespace, appNS)
+	if err != nil {
+		t.Fatalf("syncing the read-only credential: %v", err)
+	}
+	credentials := credentialsWithRead(push, read)
+	if credentials.Push != appPush || credentials.Read != appRead {
+		t.Fatalf("the build resolved %+v", credentials)
+	}
+	if !credentials.scoped() {
+		t.Fatal("a `-read` Secret exists and the build did not resolve a narrower credential")
+	}
+
+	pod := buildpacksPod(project, build, testWebPlan(project, build), nil, credentials, "").Spec
+
+	// The assertion #534 is about, made twice: the volume the analyzer
+	// mounts, and the Secret behind it. The second is what the phase
+	// actually authenticates with, and it is not the read-only one.
+	assertCredential(t, pod, "analyzer", volumeDockerConfig)
+	analyzer := containerNamed(t, pod, "analyzer")
+	if mountsVolume(analyzer, volumeDockerConfigRead) {
+		t.Error("the analyzer mounts the credential that cannot push, which is what denied every build")
+	}
+	for name, want := range map[string]string{
+		volumeDockerConfig:     appPush,
+		volumeDockerConfigRead: appRead,
+	} {
+		if got := volumeSecret(t, pod, name); got != want {
+			t.Errorf("volume %q names %q, want %q", name, got, want)
+		}
+	}
+
+	// And the property the five-phase split was protecting, which the fix
+	// leaves exactly where it was: the two phases that run the repository's
+	// own build hold nothing at all.
+	assertCredential(t, pod, "detector", "")
+	assertCredential(t, pod, "builder", "")
 }
 
 // A registry that issues no read-only credential is not a build that fails:

@@ -117,8 +117,8 @@ jobs:
   # pod spec — so a phase that cannot resolve its inputs is green everywhere
   # until here.
   #
-  # Two pieces of scaffolding make that possible on kind, and both are the test
-  # cluster's rather than the platform's:
+  # Three pieces of scaffolding make that possible on kind, and all three are
+  # the test cluster's rather than the platform's:
   #
   #   - **The registry speaks plain HTTP.** A registry with a private
   #     certificate would need its CA in the builder, in the node's container
@@ -133,6 +133,14 @@ jobs:
   #     project points at this repository at the pull request's head commit.
   #     That is why the job does not run for a pull request from a fork: the
   #     head commit is not in this repository, and there is nothing to fetch.
+  #   - **The registry issues an account that cannot push.** A plain
+  #     `registry:2` has one account or none, and with one the platform's
+  #     read-only credential falls back to the credential builds push with —
+  #     so a build phase holding the wrong one is green here and denied on any
+  #     installation that supplied a narrower credential, which is what #534
+  #     was. A read-only front end in front of the same storage is what makes
+  #     that difference visible; only the buildpacks project below goes
+  #     through it.
   #
   # The job's token is read-only on purpose and not merely by hygiene. The
   # operator registers a git webhook on the repository it is pointed at and
@@ -163,6 +171,11 @@ jobs:
       BP_PROJECT: bpnode
       BP_APP_NS: kitchen-bpnode
       BP_FIXTURE: test/fixtures/buildpacks-node
+      # Its own registry Connection, and the only one in this job with a
+      # read-only credential beside its own (#534). It points at the account
+      # in front of the registry that cannot push, so the analyze phase is
+      # denied its blob upload unless it holds the credential that can.
+      BP_REGISTRY: e2e-registry-ro
       # The third project, and the one that is about the *default* path: a
       # stock Nuxt application with a deploy task and a postgres claim, no
       # Dockerfile and no workaround anywhere in it (#468). It is the only
@@ -302,6 +315,161 @@ jobs:
 
           echo "REGISTRY_ADDR=${addr}" >> "$GITHUB_ENV"
 
+      # The one thing a plain `registry:2` cannot do for itself, and the whole
+      # of what #534 needs in order to be reproducible: issue a credential
+      # that can pull and not push. distribution's own htpasswd authentication
+      # is all-or-nothing — every account it admits can also push — so the
+      # read-only half is put in front of it: nginx on the same docker
+      # network, basic auth over two accounts, and the writer's file alone
+      # accepted for any method that is not a GET or a HEAD. The reader's blob
+      # upload is refused before it reaches the registry, which is exactly the
+      # `POST /v2/<name>/blobs/uploads/` the analyze phase makes.
+      #
+      # It is a second address in front of the same storage rather than a
+      # second registry, so nothing that already pushes to REGISTRY_ADDR
+      # changes. Only the buildpacks project below is pointed at it; the
+      # stock-Nuxt project further down builds with buildpacks too and keeps
+      # the connection with no read-only credential beside it, which is the
+      # fallback (`Read == Push`) and is the only thing CI could see before.
+      #
+      # That fallback is why this job was green on 0.38.0 while no buildpacks
+      # build anywhere could push: with one account the analyzer holds a
+      # credential that can write whatever the platform decided to hand it.
+      - name: Put a read-only account in front of the registry
+        run: |
+          set -euo pipefail
+          pull() {
+            for attempt in 1 2 3; do
+              docker pull "$1" && return 0
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+          # Google's Docker Hub mirror first, for the reason every other pull
+          # in this job takes it: an anonymous rate limit failing this job
+          # would say nothing about the change under test.
+          image=mirror.gcr.io/library/nginx:1-alpine
+          pull "${image}" || { image=nginx:1-alpine; pull "${image}"; }
+
+          # apr1 rather than bcrypt because `openssl` is what the runner has
+          # and nginx reads both. The two files are the whole of the
+          # authorization model: one holds both accounts, the other holds the
+          # account allowed to write.
+          mkdir -p /tmp/kitchen-registry-ro
+          writer="$(openssl passwd -apr1 kitchenpush)"
+          reader="$(openssl passwd -apr1 kitchenpull)"
+          printf 'kitchen:%s\nreader:%s\n' "${writer}" "${reader}" \
+            > /tmp/kitchen-registry-ro/htpasswd
+          printf 'kitchen:%s\n' "${writer}" > /tmp/kitchen-registry-ro/htpasswd-writers
+
+          cat > /tmp/kitchen-registry-ro/nginx.conf <<'EOF'
+          user nginx;
+          events {}
+          http {
+            # A registry moves blobs through this: nginx must neither cap them
+            # nor spool them to a disk it may not be able to write to.
+            client_max_body_size 0;
+            proxy_request_buffering off;
+            proxy_buffering off;
+            proxy_http_version 1.1;
+            server {
+              listen 5000;
+              location / {
+                auth_basic "kitchen e2e registry";
+                auth_basic_user_file /etc/nginx/htpasswd;
+                # Read-only is enforced by method. limit_except names the
+                # methods the block does *not* apply to, so everything that is
+                # not a GET or a HEAD is re-checked against the file holding
+                # the writer alone.
+                limit_except GET HEAD {
+                  auth_basic "kitchen e2e registry (write)";
+                  auth_basic_user_file /etc/nginx/htpasswd-writers;
+                }
+                proxy_pass http://KITCHEN_REGISTRY_UPSTREAM;
+                proxy_set_header Host $http_host;
+              }
+            }
+          }
+          EOF
+          sed -i "s|KITCHEN_REGISTRY_UPSTREAM|${REGISTRY_ADDR}|" /tmp/kitchen-registry-ro/nginx.conf
+
+          docker run --detach --name kitchen-e2e-registry-ro --network kind \
+            --volume /tmp/kitchen-registry-ro/nginx.conf:/etc/nginx/nginx.conf:ro \
+            --volume /tmp/kitchen-registry-ro/htpasswd:/etc/nginx/htpasswd:ro \
+            --volume /tmp/kitchen-registry-ro/htpasswd-writers:/etc/nginx/htpasswd-writers:ro \
+            "${image}"
+          addr="$(docker inspect \
+            --format '{{ (index .NetworkSettings.Networks "kind").IPAddress }}' \
+            kitchen-e2e-registry-ro):5000"
+          echo "the same registry with two accounts is at ${addr}"
+
+          for _ in $(seq 60); do
+            curl --fail --silent --output /dev/null --user kitchen:kitchenpush \
+              "http://${addr}/v2/" && break
+            sleep 1
+          done
+
+          # Both halves proved here rather than discovered as a build failure
+          # twenty minutes from now, and the second is the one that matters:
+          # a reader who can push makes the whole case below vacuous.
+          curl --fail --silent --output /dev/null --user kitchen:kitchenpush "http://${addr}/v2/" || {
+            echo "::error::the read-only front end never answered /v2/ for the account that pushes"
+            docker logs kitchen-e2e-registry-ro
+            exit 1
+          }
+          curl --fail --silent --output /dev/null --user reader:kitchenpull "http://${addr}/v2/" || {
+            echo "::error::the read-only account cannot read, so it is not a read-only account"
+            docker logs kitchen-e2e-registry-ro
+            exit 1
+          }
+          code() { # code <user:password> — what a blob upload is answered with
+            curl --silent --output /dev/null --write-out '%{http_code}' \
+              --user "$1" --request POST "http://${addr}/v2/probe/blobs/uploads/"
+          }
+          [ "$(code kitchen:kitchenpush)" = 202 ] || {
+            echo "::error::the account that pushes was answered $(code kitchen:kitchenpush)" \
+                 "for a blob upload, so nothing here can push"
+            docker logs kitchen-e2e-registry-ro
+            exit 1
+          }
+          denied="$(code reader:kitchenpull)"
+          case "${denied}" in
+            401|403) ;;
+            *)
+              echo "::error::the read-only account was answered ${denied} for a blob upload." \
+                   "It can push, and the buildpacks case below would pass with the analyzer" \
+                   "holding either credential."
+              docker logs kitchen-e2e-registry-ro
+              exit 1
+              ;;
+          esac
+          echo "the read-only account is answered ${denied} for the upload the analyzer starts"
+
+          # The node pulls the buildpacks project's image through this address,
+          # so containerd needs the same plain-HTTP entry it has for the
+          # registry itself. The credential comes from the imagePullSecret the
+          # platform names on the Deployment.
+          docker exec kind-control-plane mkdir -p "/etc/containerd/certs.d/${addr}"
+          docker exec --interactive kind-control-plane \
+            sh -c "cat > /etc/containerd/certs.d/${addr}/hosts.toml" <<EOF
+          server = "http://${addr}"
+
+          [host."http://${addr}"]
+            capabilities = ["pull", "resolve"]
+          EOF
+          if docker exec kind-control-plane crictl pull "${addr}/absent:1" > /tmp/ro-pull-probe.log 2>&1; then
+            echo "::error::the read-only front end answered for an image it cannot have"
+            exit 1
+          fi
+          cat /tmp/ro-pull-probe.log
+          if grep -qiE 'https|tls|certificate|x509' /tmp/ro-pull-probe.log; then
+            echo "::error::the node reached ${addr} over HTTPS. containerd was not told that it" \
+                 "speaks plain HTTP."
+            exit 1
+          fi
+
+          echo "RO_REGISTRY_ADDR=${addr}" >> "$GITHUB_ENV"
+
       - name: Teach the builder that the test registry speaks plain HTTP
         run: |
           set -euo pipefail
@@ -358,7 +526,8 @@ jobs:
       #     `CNB_INSECURE_REGISTRIES`, which is a platform API 0.13 input read
       #     from its environment — so it is baked into the image the node runs,
       #     exactly as buildkitd.toml is above, and the pod spec the operator
-      #     writes is untouched.
+      #     writes is untouched. Both addresses are named: the registry itself,
+      #     and the read-only front end the buildpacks project pushes through.
       #   - **Its run image is pulled from inside the build pod.** The image the
       #     application is built onto is fetched by the lifecycle itself, on
       #     every build, anonymously. `CNB_RUN_IMAGE` points that at Google's
@@ -428,7 +597,7 @@ jobs:
           mkdir -p /tmp/kitchen-lifecycle
           cat > /tmp/kitchen-lifecycle/Dockerfile <<EOF
           FROM ${builder}
-          ENV CNB_INSECURE_REGISTRIES=${REGISTRY_ADDR}
+          ENV CNB_INSECURE_REGISTRIES=${REGISTRY_ADDR},${RO_REGISTRY_ADDR}
           ENV CNB_RUN_IMAGE=${mirrored_run}
           EOF
           docker build --tag "${builder}" /tmp/kitchen-lifecycle
@@ -1750,14 +1919,46 @@ jobs:
       #
       # What the case asserts is the split the credential fix made (#424): the
       # lifecycle runs as five containers, the two that run the repository's
-      # own build hold no registry credential at all, only the phase that
-      # pushes holds the one that can, and the image still comes back with the
-      # digest the exporter reported — which is the whole of what the
+      # own build hold no registry credential at all, the phases that write to
+      # the registry hold the one that can, and the image still comes back
+      # with the digest the exporter reported — which is the whole of what the
       # termination-message path does for this strategy.
-      - name: A project with no Dockerfile builds with buildpacks, and only its push holds the credential
+      #
+      # It is also the only build in the tree that runs against a registry
+      # issuing a credential narrower than the connection's own (#534). That
+      # is what makes the split assertable at all: with one account every
+      # container holds something that can push, the analyze phase's up-front
+      # write check passes whichever credential it was handed, and the case
+      # is green on a platform where no buildpacks build can publish. So this
+      # project has a registry Connection of its own, with a `-read` Secret
+      # beside its credential — the convention readCredentialSecretName
+      # spells, and the whole of what an operator does to narrow this.
+      - name: A project with no Dockerfile builds with buildpacks, and its analyzer can validate the tag
         run: |
           set -euo pipefail
+          # Two accounts on one registry: the connection's own, which pushes,
+          # and the read-only one the platform picks up by name. Neither is
+          # checked by the registry this job started — they are checked by the
+          # front end it is reached through.
+          kubectl -n kitchen-system create secret docker-registry "${BP_REGISTRY}" \
+            --docker-server="${RO_REGISTRY_ADDR}" \
+            --docker-username=kitchen --docker-password=kitchenpush
+          kubectl -n kitchen-system create secret docker-registry "${BP_REGISTRY}-read" \
+            --docker-server="${RO_REGISTRY_ADDR}" \
+            --docker-username=reader --docker-password=kitchenpull
+
           kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Connection
+          metadata:
+            name: ${BP_REGISTRY}
+            namespace: kitchen-system
+          spec:
+            provider: dockerRegistry
+            credentialsSecretRef: {name: ${BP_REGISTRY}}
+            config:
+              url: http://${RO_REGISTRY_ADDR}
+          ---
           apiVersion: kitchen.bermos.dev/v1alpha1
           kind: Project
           metadata:
@@ -1773,7 +1974,7 @@ jobs:
               strategy: buildpacks
               rootDirectory: ${BP_FIXTURE}
             registry:
-              connectionRef: {name: e2e-registry}
+              connectionRef: {name: ${BP_REGISTRY}}
             previews:
               protected: false
           EOF
@@ -1806,13 +2007,18 @@ jobs:
             sleep 10
           done
           [ "${phase}" = Succeeded ] || {
-            echo "::error::the buildpacks build ended ${phase}"
+            echo "::error::the buildpacks build ended ${phase}. A phase denied a blob upload" \
+                 "against ${RO_REGISTRY_ADDR} is #534: the analyze phase is handed the output" \
+                 "tag and validates write access to it, so it holds the credential that can push."
             kubectl -n kitchen-system get build "${build}" -o yaml
             kubectl -n "${BP_APP_NS}" get jobs,pods -o wide
             for pod in $(kubectl -n "${BP_APP_NS}" get pods -o name); do
               echo "--- ${pod}"
               kubectl -n "${BP_APP_NS}" logs "${pod}" --all-containers --tail=300 || true
             done
+            # Which account was refused what, from the front end's own side.
+            echo "--- the read-only front end"
+            docker logs --tail=100 kitchen-e2e-registry-ro
             exit 1
           }
 
@@ -1859,18 +2065,22 @@ jobs:
               exit 1
             }
           done
-          [ "$(held exporter)" = docker-config ] || {
-            echo "::error::the phase that pushes mounts '$(held exporter)'"
-            exit 1
-          }
-          for container in analyzer restorer; do
-            [ "$(held "${container}")" = docker-config-read ] || {
-              echo "::error::${container} only reads the registry and mounts" \
+          # export pushes; analyze is handed the output tag and validates
+          # read *and* write access to it before anything else runs, which is
+          # the fail-fast the lifecycle offers and what #534 was. Both hold
+          # the credential that can write. restore only reads.
+          for container in analyzer exporter; do
+            [ "$(held "${container}")" = docker-config ] || {
+              echo "::error::${container} writes to the registry and mounts" \
                    "'$(held "${container}")'"
               exit 1
             }
           done
-          echo "only the exporter holds the credential that can push"
+          [ "$(held restorer)" = docker-config-read ] || {
+            echo "::error::restore only reads the registry and mounts '$(held restorer)'"
+            exit 1
+          }
+          echo "no phase that runs the repository's own code holds any credential at all"
 
           # And the platform directory, which is the other thing that is not
           # the same in every phase: the two that run buildpacks read it, and
@@ -1899,13 +2109,32 @@ jobs:
           done
           echo "only the two phases that run buildpacks read the platform directory"
 
-          # This installation's registry connection is an ordinary one with no
-          # read-only credential beside it, so the two volumes name the same
-          # Secret — the fallback the Connection's status reports, proved here
-          # rather than assumed.
+          # And the premise every assertion above rests on: this project's
+          # registry issued a credential narrower than the connection's own,
+          # so the two volumes name two different Secrets. Where they name
+          # one — which is every other project in this job, and was every
+          # project in this job before #534 — `Read == Push` and a pod whose
+          # every container can push satisfies all of it.
           secrets="$(jq -r '.spec.volumes | map(select(.name | startswith("docker-config")))
             | map(.secret.secretName) | unique | join(",")' /tmp/buildpacks-pod.json)"
           echo "the pod's docker configs come from ${secrets}"
+          want="kitchen-registry-${BP_REGISTRY},kitchen-registry-${BP_REGISTRY}-read"
+          [ "${secrets}" = "${want}" ] || {
+            echo "::error::the build resolved '${secrets}', want '${want}'. Without two" \
+                 "credentials the analyzer holds one that can push whichever volume it" \
+                 "mounts, and this case proves nothing."
+            exit 1
+          }
+          # The platform's own account of the same fact, which is what an
+          # operator reads before believing any of it.
+          scoped="$(kubectl -n kitchen-system get connection "${BP_REGISTRY}" \
+            -o jsonpath='{.status.registry.scopedCredentials}')"
+          [ "${scoped}" = true ] || {
+            echo "::error::the registry connection reports scopedCredentials='${scoped}'"
+            kubectl -n kitchen-system get connection "${BP_REGISTRY}" -o yaml
+            exit 1
+          }
+          echo "the analyzer validated write access to the tag with the credential that has it"
 
           # And it runs. An image that says `buildpacks` cannot have come from
           # the other strategy: there is no Dockerfile in that directory.

@@ -484,9 +484,11 @@ container of its own and cannot see the daemon's mounts.
 
 **A buildpacks build splits the registry credential the same way** (#424): the
 `detector` and `builder` phases run the buildpacks, which run the repository's
-own build, and mount no registry credential at all; `analyzer` and `restorer`
-mount one that cannot push where the registry issues one; only `exporter`, the
-phase that pushes, holds the credential that can. See
+own build, and mount no registry credential at all. `restorer` only reads, so
+it mounts one that cannot push where the registry issues one. `exporter` and
+`analyzer` hold the credential that can — `exporter` because it pushes, and
+`analyzer` because the lifecycle hands it the output tag and has it verify
+write access to that tag before the build starts (#534). See
 [connections](connections.md) for how a registry says whether it can issue the
 read-only one.
 

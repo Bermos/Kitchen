@@ -56,10 +56,19 @@ where a **read-only** credential exists, that is the one those containers get
 | Pod | What holds the connection's credential | What holds a credential that cannot push |
 |---|---|---|
 | Dockerfile build | `buildkit` — the daemon, not the `RUN` steps, which never see it | — |
-| Buildpacks build | `exporter`, the phase that pushes | `analyzer` and `restorer`; `detector` and `builder`, which run the repository's own build, mount **no** credential at all |
+| Buildpacks build | `exporter`, which pushes, and `analyzer`, which validates write access to the tag | `restorer`; `detector` and `builder`, which run the repository's own build, mount **no** credential at all |
 | Quality gate | `publish`, which writes the findings back | `gate` |
 | Vulnerability rescan | `sbom` and `publish` | `scan` |
 | Vendored SBOM | `publish` | `sbom`, the generator |
+
+**The line is what a container does to the registry, not which one is "the
+push".** The buildpacks `analyzer` phase is handed the output tag and verifies
+read *and* write access to it before the build starts — deliberately, so that
+a build that cannot publish fails in seconds rather than after the whole
+build — so it holds the credential that can push, alongside `exporter` (#534).
+What the split protects is narrower than "one pushing container" and is
+untouched by that: no phase that runs the repository's own code holds any
+credential at all.
 
 The bundled registry issues one: the chart creates a second account
 (`registry.auth.readUsername`, `kitchen-read` by default) whose access control
