@@ -26,11 +26,16 @@ import WrittenVolumesPanel from "../components/WrittenVolumesPanel.vue";
 // operator's and already emitted as evidence, so the merge is into an
 // occupied address rather than a move into a free one.
 //
-// The store's numbers come from the same query the `store.disk` rule fires on,
-// so the bar on this screen and the finding on the problems list cannot
-// disagree about how full it is. And `flows` is here as well as on the ingest
-// reading because losing rows before they are written and running out of disk
-// to write them to are the same problem seen from two ends.
+// The store's fill comes from the same reading the `store.disk` rule fires on —
+// the kubelet's stats for the store's own claim — so the bar on this screen and
+// the finding on the problems list cannot disagree about how full it is. It is
+// the whole disk rather than the store's own tables, and the two are shown
+// separately: the volume filled with something else is exactly the case where
+// the database's size said everything was fine (#531).
+//
+// And `flows` is here as well as on the ingest reading because losing rows
+// before they are written and running out of disk to write them to are the same
+// problem seen from two ends.
 
 const route = useRoute();
 /** Where `pvc.pending` and `pvc.filling` evidence lands. */
@@ -47,6 +52,22 @@ const volumes = computed(() => data.value?.items ?? []);
 const usageMessage = computed(() => data.value?.usageMessage ?? "");
 const store = computed(() => data.value?.store);
 const flows = computed(() => data.value?.flows);
+
+/** What the store's bar says in place of a fill it has not got. An external
+ * store is a disk the platform does not own and has no business judging; a
+ * volume of the platform's own that nothing measured is a gap, and the API says
+ * which by sending a message with it. A store that could not answer for itself
+ * has its own line above this one, so the bar says only what it adds. */
+const storeUnmeasured = computed(() => {
+  const health = store.value;
+  if (!health) return "—";
+  if (health.usageMessage) return health.usageMessage;
+  if (!health.claim && !health.message) {
+    return `${formatBytes(health.bytesOnDisk)} on a volume the platform does not own`;
+  }
+  if (health.message) return "and how full its disk is was not read either";
+  return "how full this volume is was not read";
+});
 
 /** The ledger's verdict, decided where `ingest.flows-lost` decides it. A
  * handful of dropped events is a momentary buffer overrun that no total will
@@ -212,20 +233,35 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
         <div>
           <h2 class="text-sm font-medium text-highlighted mb-2">The telemetry store</h2>
           <div class="rounded-md border border-default px-4 py-3 space-y-2">
+            <!-- The store's own reading and its disk's fail apart: the fill
+                 comes from the kubelet, so a store that cannot answer for
+                 itself has not stopped anyone measuring its volume, and a full
+                 disk is the thing worth saying while it is unreachable. -->
             <p v-if="store?.message" class="text-xs text-warning">{{ store.message }}</p>
-            <template v-else-if="store">
+            <template v-if="store">
+              <!-- Two numbers, and they answer two questions. The bar is how
+                   full the disk is, which is everything written to it; the
+                   telemetry's own size below is how much of that is ours, and
+                   the one retention governs. -->
               <FillBar
-                :fraction="store.capacityBytes ? (store.usedFraction ?? 0) : null"
+                :fraction="store.usage?.usedFraction ?? null"
                 :caption="
-                  store.capacityBytes
-                    ? `${formatBytes(store.bytesOnDisk)} of ${formatBytes(store.capacityBytes)}`
+                  store.usage
+                    ? `${formatBytes(store.usage.usedBytes)} of ${formatBytes(store.usage.capacityBytes)} used`
                     : undefined
                 "
-                :unmeasured="`${formatBytes(store.bytesOnDisk)} on a volume the platform does not own`"
+                :unmeasured="storeUnmeasured"
                 width="w-40"
               />
               <div class="grid grid-cols-2 gap-3 text-xs pt-1">
-                <div>
+                <!-- Both of these are the store's own account of itself, and
+                     are left out rather than shown as zero when it could not
+                     give one. -->
+                <div v-if="!store.message">
+                  <p class="text-[11px] text-muted">Telemetry on it</p>
+                  <p class="font-mono text-toned">{{ formatBytes(store.bytesOnDisk) }}</p>
+                </div>
+                <div v-if="!store.message">
                   <p class="text-[11px] text-muted">Ingest</p>
                   <p class="font-mono" :class="store.rowsPerSecond > 0 ? 'text-toned' : 'text-warning'">
                     {{ store.rowsPerSecond.toFixed(store.rowsPerSecond < 10 ? 1 : 0) }} rows/s
@@ -237,14 +273,15 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
                     {{ store.retentionDays ? `${store.retentionDays} days` : "—" }}
                   </p>
                 </div>
-                <div class="col-span-2">
+                <div>
                   <p class="text-[11px] text-muted">Volume</p>
                   <p class="font-mono text-toned break-all">{{ store.claim || "external" }}</p>
                 </div>
               </div>
-              <p class="text-[11px] text-dimmed">
-                Retention is the one knob every table's TTL is derived from — the horizon past which the store
-                deliberately holds nothing.
+              <p v-if="!store.message" class="text-[11px] text-dimmed">
+                The bar is the whole disk, as the kubelet measures it; the telemetry is what the store's own tables
+                occupy, and it is the part retention governs — the horizon past which the store deliberately holds
+                nothing. The rest of the disk belongs to whatever else writes there.
               </p>
             </template>
             <p v-else class="text-xs text-muted">{{ loading ? "Loading…" : "No telemetry store on this installation." }}</p>

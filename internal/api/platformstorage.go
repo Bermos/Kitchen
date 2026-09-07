@@ -101,7 +101,7 @@ func (s *Server) platformStorage(w http.ResponseWriter, req *http.Request) {
 		return body.Items[i].Name < body.Items[j].Name
 	})
 
-	body.Store = s.storeHealth(ctx, claims.Items)
+	body.Store = s.storeHealth(ctx, claims.Items, usage, unmeasured)
 	body.Flows = s.flowLoss()
 	writeJSON(w, http.StatusOK, body)
 }
@@ -197,14 +197,36 @@ func (s *Server) volumeUsage(ctx context.Context) (map[string]*volumeUsageView, 
 }
 
 // storeHealthView is the telemetry store's own state.
+//
+// Two numbers, and they answer two questions: how full the disk is, and how
+// much of that is the telemetry's. They used to be one — the database's own
+// parts over the claim's nominal capacity — which is a fraction of two
+// different things, and it read 8.4% on a volume that was 89% full (#531).
 type storeHealthView struct {
-	// BytesOnDisk is what its active parts occupy, and CapacityBytes the size
-	// of the volume underneath. Capacity is zero for an external store, where
-	// the platform does not own the disk and has no business judging it.
-	BytesOnDisk   uint64  `json:"bytesOnDisk"`
-	CapacityBytes uint64  `json:"capacityBytes,omitempty"`
-	UsedFraction  float64 `json:"usedFraction,omitempty"`
-	Claim         string  `json:"claim,omitempty"`
+	// BytesOnDisk is what the telemetry itself occupies: the store's active
+	// parts, which is the number retention governs. It is not the fill level —
+	// anything else on the same volume is in neither it nor CapacityBytes.
+	BytesOnDisk uint64 `json:"bytesOnDisk"`
+	// CapacityBytes is the nominal size of the volume underneath, as the claim
+	// reports it. Zero for an external store, where the platform does not own
+	// the disk and has no business judging it.
+	CapacityBytes uint64 `json:"capacityBytes,omitempty"`
+	// Usage is how full that volume actually is, from the same kubelet stats
+	// the table above draws — everything written to it, and the number
+	// `store.disk` fires on. Absent, with UsageMessage saying why, where
+	// nothing measured it.
+	Usage *volumeUsageView `json:"usage,omitempty"`
+	// UsageMessage says why Usage is missing, and is empty when it is not or
+	// when there is no volume of the platform's to measure.
+	UsageMessage string `json:"usageMessage,omitempty"`
+	// UsedFraction is Usage.UsedFraction, kept flat because it is the field
+	// this endpoint has always had and a reader of it should keep working. Its
+	// *meaning* moved with this fix: it is how full the volume is, and no
+	// longer the store's own parts over the claim's capacity. Absent, like
+	// Usage, where nothing measured the disk — so a zero here is a measured
+	// zero.
+	UsedFraction float64 `json:"usedFraction,omitempty"`
+	Claim        string  `json:"claim,omitempty"`
 	// RowsPerSecond is the recent ingest rate across the tables the operator
 	// writes and the collector fills. Zero while pods run is the store's own
 	// stalled-ingest symptom.
@@ -270,18 +292,50 @@ func volumeMounts(pods []corev1.Pod) map[string][]string {
 	return mounts
 }
 
-// storeHealth reads the telemetry store's own size and ingest rate, and the
-// size of the volume it writes to — which comes from the API server, because
-// ClickHouse knows how much it has written and nothing about the disk
-// underneath.
+// storeHealth reads the telemetry store's own size and ingest rate, and how
+// full the volume it writes to is.
+//
+// The size is the store's own account of its active parts; the fill is the
+// kubelet's account of the disk, the same reading every row of the table above
+// carries, matched here to the store's claim. They are two numbers because the
+// store is not the only thing that can fill that volume, and dividing the one
+// by the other described neither (#531). The claim's nominal capacity comes
+// from the API server, because ClickHouse knows how much it has written and
+// nothing about the disk underneath.
 //
 // A failure here is a section with a message rather than a failed request: the
 // claims above are the API server's and are still worth reading, and the store
 // being unreachable is precisely when somebody opens this screen.
-func (s *Server) storeHealth(ctx context.Context, claims []corev1.PersistentVolumeClaim) storeHealthView {
+func (s *Server) storeHealth(
+	ctx context.Context,
+	claims []corev1.PersistentVolumeClaim,
+	usage map[string]*volumeUsageView,
+	unmeasured string,
+) storeHealthView {
 	view := storeHealthView{}
-	if capacity, name := storeClaim(claims); capacity > 0 {
+	// A claim of the platform's own that has not bound is named with no
+	// capacity: an unbound claim and a store on somebody else's disk are
+	// different answers, and only the second is an external store.
+	switch capacity, name := storeClaim(claims); {
+	case name == "":
+	case capacity == 0:
+		view.Claim = name
+		view.UsageMessage = "this claim is not bound, so there is no volume to measure yet"
+	default:
 		view.CapacityBytes, view.Claim = capacity, name
+		view.Usage = usage[controller.PlatformNamespace+"/"+name]
+		if view.Usage != nil {
+			view.UsedFraction = view.Usage.UsedFraction
+		} else {
+			// The same distinction the table draws: nothing measured this is
+			// not the same claim as nothing is on it, and the two must not
+			// render as one bar.
+			view.UsageMessage = unmeasured
+			if view.UsageMessage == "" {
+				view.UsageMessage = "the kubelet has reported no volume stats for this claim, " +
+					"so how full the disk is is unknown rather than zero"
+			}
+		}
 	}
 	kitchen := &kitchenv1alpha1.Kitchen{}
 	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err == nil {
@@ -309,15 +363,16 @@ func (s *Server) storeHealth(ctx context.Context, claims []corev1.PersistentVolu
 	}
 	view.BytesOnDisk = stats.BytesOnDisk
 	view.RowsPerSecond = stats.RowsPerSecond
-	if view.CapacityBytes > 0 {
-		view.UsedFraction = float64(view.BytesOnDisk) / float64(view.CapacityBytes)
-	}
 	return view
 }
 
 // storeClaim finds the claim the bundled store writes to, and how big it is. An
-// external store has no claim here, and answering zero is what tells the screen
-// not to judge a disk the platform does not own.
+// external store has no claim here at all, and answering no name is what tells
+// the screen not to judge a disk the platform does not own.
+//
+// A claim that has not bound is still named, with a capacity of zero — the
+// volume does not exist yet, which is not the same as the disk being somebody
+// else's.
 func storeClaim(claims []corev1.PersistentVolumeClaim) (uint64, string) {
 	var largest uint64
 	var name string
@@ -327,7 +382,7 @@ func storeClaim(claims []corev1.PersistentVolumeClaim) (uint64, string) {
 			!strings.Contains(claim.Name, storeClaimMarker) {
 			continue
 		}
-		if capacity := quantityValue(claim.Status.Capacity.Storage()); capacity > largest {
+		if capacity := quantityValue(claim.Status.Capacity.Storage()); name == "" || capacity > largest {
 			largest, name = capacity, claim.Name
 		}
 	}

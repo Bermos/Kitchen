@@ -44,12 +44,23 @@ const ingest = (over: Partial<PlatformIngest> = {}): PlatformIngest => ({
   ...over,
 });
 
+/** The claim the bundled store writes to. Its presence is what tells a volume
+ * of the platform's own from an external store's disk. */
+const storeClaim = "data-kitchen-clickhouse-0";
+
 const storage = (over: Partial<PlatformStorage> = {}): PlatformStorage => ({
   items: [],
   volumes: 1,
   unbound: 0,
   filling: 0,
-  store: { bytesOnDisk: 5_000_000_000, capacityBytes: 50_000_000_000, usedFraction: 0.1, rowsPerSecond: 42, retentionDays: 30 },
+  store: {
+    bytesOnDisk: 5_000_000_000,
+    capacityBytes: 50_000_000_000,
+    claim: storeClaim,
+    usage: { usedBytes: 5_000_000_000, capacityBytes: 50_000_000_000, usedFraction: 0.1 },
+    rowsPerSecond: 42,
+    retentionDays: 30,
+  },
   ...over,
 });
 
@@ -277,11 +288,78 @@ describe("storeTile", () => {
   it("is green under the threshold and names it over", () => {
     expect(storeTile(storage()).state).toBe("ok");
     const full = storeTile(
-      storage({ store: { bytesOnDisk: 46_000_000_000, capacityBytes: 50_000_000_000, usedFraction: 0.92, rowsPerSecond: 4 } }),
+      storage({
+        store: {
+          bytesOnDisk: 46_000_000_000,
+          capacityBytes: 50_000_000_000,
+          claim: storeClaim,
+          usage: { usedBytes: 46_000_000_000, capacityBytes: 50_000_000_000, usedFraction: 0.92 },
+          rowsPerSecond: 4,
+        },
+      }),
     );
     expect(full.state).toBe("problem");
     expect(full.tone).toBe("error");
     expect(full.detail).toContain("past the point");
+  });
+
+  // The bug the two numbers exist for: the disk is 89% full and the telemetry
+  // on it is a fraction of that, because something else is the rest. The tile
+  // reads the disk, and says how much of it is ours.
+  it("judges the disk rather than the database on it", () => {
+    const tile = storeTile(
+      storage({
+        store: {
+          bytesOnDisk: 1_800_000_000,
+          capacityBytes: 21_000_000_000,
+          claim: storeClaim,
+          usage: { usedBytes: 18_700_000_000, capacityBytes: 21_000_000_000, usedFraction: 0.89 },
+          rowsPerSecond: 4,
+        },
+      }),
+    );
+    expect(tile.state).toBe("problem");
+    expect(tile.value).toBe("89%");
+    expect(tile.detail).toContain("of it is telemetry");
+  });
+
+  // The store's own reading and its disk's fail apart: a store that could not
+  // answer for itself has not stopped anyone measuring its volume, and a full
+  // disk is the thing worth saying while it is unreachable.
+  it("still draws the disk when the store could not answer for itself", () => {
+    const tile = storeTile(
+      storage({
+        store: {
+          bytesOnDisk: 0,
+          capacityBytes: 21_000_000_000,
+          claim: storeClaim,
+          usage: { usedBytes: 18_700_000_000, capacityBytes: 21_000_000_000, usedFraction: 0.89 },
+          rowsPerSecond: 0,
+          message: "the store's own size could not be read",
+        },
+      }),
+    );
+    expect(tile.state).toBe("problem");
+    expect(tile.value).toBe("89%");
+    expect(tile.detail).toContain("could not be read");
+  });
+
+  // A disk nothing measured is not an empty disk, and a green tile over it
+  // would be the one lie this strip must not tell.
+  it("is unknown where nothing measured the volume", () => {
+    const tile = storeTile(
+      storage({
+        store: {
+          bytesOnDisk: 1_800_000_000,
+          capacityBytes: 21_000_000_000,
+          claim: storeClaim,
+          usageMessage: "how full each volume is could not be read",
+          rowsPerSecond: 4,
+        },
+      }),
+    );
+    expect(tile.state).toBe("unknown");
+    expect(tile.detail).toContain("could not be read");
   });
 
   it("passes no judgement on a disk the platform does not own", () => {

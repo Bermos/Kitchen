@@ -354,24 +354,46 @@ function flowLossDetail(flows: FlowLoss): string {
 export function storeTile(storage: PlatformStorage | null): HealthTile {
   if (!storage) return unknownTile("store", "Store", "the telemetry store's health could not be read");
   const store = storage.store;
-  if (store.message) return unknownTile("store", "Store", store.message);
 
-  // An external store is a disk the platform does not own and has no business
-  // judging: it gets its size and no verdict.
-  if (!store.capacityBytes) {
-    return {
-      key: "store",
-      label: "Store",
-      value: formatBytes(store.bytesOnDisk),
-      state: "ok",
-      tone: "success",
-      detail: `on a volume the platform does not own${store.retentionDays ? `, ${store.retentionDays} days retained` : ""}`,
-      to: "/platform/storage",
-    };
+  // How full the disk is is the kubelet's reading of the whole volume, not the
+  // store's reading of itself: everything else written there — ClickHouse's own
+  // system tables above all — is in neither the store's size nor the claim's
+  // capacity, and dividing the one by the other read 8.4% on a volume that was
+  // 89% full. The two readings also fail apart, which is why the fill is drawn
+  // before the store is asked about anything: a store that could not answer for
+  // itself has not stopped anyone measuring its disk, and a full disk is the
+  // one thing on this tile worth saying while it is unreachable.
+  if (!store.usage) {
+    if (store.message) return unknownTile("store", "Store", store.message);
+
+    // An external store is a disk the platform does not own and has no business
+    // judging: it gets its size and no verdict. It is told apart by having no
+    // claim of ours at all — a claim that has not bound has a name and no
+    // capacity, and is a volume that does not exist yet rather than one of
+    // somebody else's.
+    if (!store.claim) {
+      return {
+        key: "store",
+        label: "Store",
+        value: formatBytes(store.bytesOnDisk),
+        state: "ok",
+        tone: "success",
+        detail: `on a volume the platform does not own${store.retentionDays ? `, ${store.retentionDays} days retained` : ""}`,
+        to: "/platform/storage",
+      };
+    }
+    return unknownTile(
+      "store",
+      "Store",
+      store.usageMessage || "how full the telemetry store's volume is could not be read",
+    );
   }
 
-  const fraction = store.usedFraction ?? 0;
+  const fraction = store.usage.usedFraction;
   const full = fraction >= VOLUME_FULL_FRACTION;
+  const share = store.message
+    ? "how much of it is telemetry could not be read"
+    : `${formatBytes(store.bytesOnDisk)} of it is telemetry`;
   return {
     key: "store",
     label: "Store",
@@ -379,8 +401,8 @@ export function storeTile(storage: PlatformStorage | null): HealthTile {
     state: full ? "problem" : "ok",
     tone: fillTone(fraction),
     detail: full
-      ? `${formatBytes(store.bytesOnDisk)} of ${formatBytes(store.capacityBytes)} used — past the point the platform reports a filling volume`
-      : `${formatBytes(store.bytesOnDisk)} of ${formatBytes(store.capacityBytes)}${store.retentionDays ? `, ${store.retentionDays} days retained` : ""}`,
+      ? `${formatBytes(store.usage.usedBytes)} of ${formatBytes(store.usage.capacityBytes)} used — past the point the platform reports a filling volume; ${share}`
+      : `${formatBytes(store.usage.usedBytes)} of ${formatBytes(store.usage.capacityBytes)} used, ${share}${store.retentionDays ? `, ${store.retentionDays} days retained` : ""}`,
     to: "/platform/storage",
   };
 }

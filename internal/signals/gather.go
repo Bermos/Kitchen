@@ -466,7 +466,8 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 	if sources.Store == nil {
 		for _, input := range []Input{
 			InputRawRequests, InputRequests, InputResources,
-			InputClusterEvents, InputFreshness, InputStore, InputAudit,
+			InputClusterEvents, InputFreshness, InputStore, InputStoreVolume,
+			InputAudit,
 		} {
 			snapshot.MarkNotApplicable(input, "no telemetry store is configured")
 		}
@@ -663,15 +664,17 @@ func gatherFreshness(ctx context.Context, store Store, snapshot *Snapshot) {
 	}
 }
 
-// gatherStoreHealth reads the store's own size, and the size of the volume it
-// writes to — which comes from the API server, because ClickHouse knows how
-// much it has written and nothing about the disk underneath.
+// gatherStoreHealth reads the store's own size and ingest rate, and finds the
+// claim it writes to — which comes from the API server, because ClickHouse
+// knows how much it has written and nothing about the disk underneath.
 //
-// It asks for exactly those two numbers. This runs on every evaluation of the
-// catalogue, which is every platform screen and every environment's diagnostics
-// strip, so a read that also aggregated a day of logs and events here would be
-// work the whole platform paid for and nothing read.
+// It asks the store for exactly those two numbers. This runs on every
+// evaluation of the catalogue, which is every platform screen and every
+// environment's diagnostics strip, so a read that also aggregated a day of logs
+// and events here would be work the whole platform paid for and nothing read.
 func gatherStoreHealth(ctx context.Context, store Store, snapshot *Snapshot) {
+	gatherStoreVolume(snapshot)
+
 	stats, err := store.StoreStats(ctx)
 	if err != nil {
 		snapshot.MarkUnreadable(InputStore, err.Error())
@@ -679,25 +682,104 @@ func gatherStoreHealth(ctx context.Context, store Store, snapshot *Snapshot) {
 	}
 	snapshot.Store.BytesOnDisk = stats.BytesOnDisk
 	snapshot.Store.RowsPerSecond = stats.RowsPerSecond
-	snapshot.Store.CapacityBytes = storeCapacity(snapshot)
 }
 
-// storeCapacity finds the claim the bundled ClickHouse writes to. An external
-// store has no claim here, and its capacity stays zero — which store.disk
-// reads as "not the platform's disk to judge".
-func storeCapacity(snapshot *Snapshot) uint64 {
+// gatherStoreVolume matches the kubelet's volume stats to the claim the bundled
+// store writes to, which is how full that disk actually is.
+//
+// It is matched here rather than in the rule so that failing to see it is an
+// input failure like every other: [StoreHealth.BytesOnDisk] is the `kitchen`
+// database's own active parts, and everything else on the same volume —
+// ClickHouse's own system tables above all — is in neither it nor the claim's
+// nominal capacity. Dividing the one by the other read 8.4% on a volume that
+// was 89% full, so store.disk reports that it could not see the disk rather
+// than falling back to that ratio (#531).
+func gatherStoreVolume(snapshot *Snapshot) {
+	// A claim list that could not be read makes a bundled store look exactly
+	// like an external one, which is the difference between "not this
+	// platform's disk" and "this platform's disk, unseen".
+	if state, reason := snapshot.inputState(InputClaims); state == inputUnreadable {
+		snapshot.MarkUnreadable(InputStoreVolume, reason)
+		return
+	}
+	capacity, name := storeClaim(snapshot)
+	snapshot.Store.CapacityBytes, snapshot.Store.Claim = capacity, name
+	switch {
+	case name == "":
+		// An external store's disk is not the platform's to judge.
+		snapshot.MarkNotApplicable(InputStoreVolume,
+			"the telemetry store writes to no claim of this platform's")
+		return
+	case capacity == 0:
+		// The claim exists and has no volume behind it yet. That is not a
+		// disk on somebody else's cluster and it is not a measurement that
+		// failed — there is nothing there to measure, and the claim being
+		// unbound is pvc.pending's to report, in those words.
+		snapshot.MarkNotApplicable(InputStoreVolume,
+			fmt.Sprintf("claim %s is not bound, so there is no volume to measure yet", name))
+		return
+	}
+	for i := range snapshot.VolumeUsage {
+		volume := snapshot.VolumeUsage[i]
+		if volume.Namespace == controller.PlatformNamespace && volume.Claim == name {
+			snapshot.Store.Volume = &volume
+			return
+		}
+	}
+	markStoreVolumeUnseen(snapshot, name)
+}
+
+// markStoreVolumeUnseen says why the store's claim has no fill reading, and the
+// distinction it draws is between a measurement that is switched off and one
+// that failed.
+//
+// Nothing measuring volumes at all — no source wired, or the collector's
+// kubelet group turned off, which is an empty group rather than an error — is
+// not-applicable, exactly as it is for pvc.filling: a rule dark because nobody
+// is collecting its input is a gap in the installation, not a fault in it, and
+// a permanent unknown condition over a deliberate setting is noise. A group
+// that is being collected and could not be read, or that answered for other
+// volumes and not for this one, is unreadable, and store.disk then says it
+// could not see the disk rather than falling back to the ratio that missed a
+// volume 89% full (#531).
+func markStoreVolumeUnseen(snapshot *Snapshot, claim string) {
+	switch state, reason := snapshot.inputState(InputVolumeStats); {
+	case state == inputNotApplicable:
+		snapshot.MarkNotApplicable(InputStoreVolume, reason)
+	case state == inputUnreadable:
+		snapshot.MarkUnreadable(InputStoreVolume, reason)
+	case len(snapshot.VolumeUsage) == 0:
+		snapshot.MarkNotApplicable(InputStoreVolume,
+			"no volume on this platform has a fill reading, so the kubelet's volume stats "+
+				"are not being collected")
+	default:
+		snapshot.MarkUnreadable(InputStoreVolume,
+			fmt.Sprintf("the kubelet reported volume stats, and none for claim %s", claim))
+	}
+}
+
+// storeClaim finds the claim the bundled ClickHouse writes to, and how big it
+// is. An external store has no claim here at all, and answering no name is what
+// tells store.disk this is not the platform's disk to judge.
+//
+// A claim that has not bound is still named, with a capacity of zero: an
+// unbound claim and a store on somebody else's disk are different answers, and
+// reporting the first as the second is how a volume that does not exist yet
+// came to read as a volume that is not ours.
+func storeClaim(snapshot *Snapshot) (uint64, string) {
 	var largest uint64
+	var name string
 	for i := range snapshot.Claims {
 		claim := &snapshot.Claims[i]
 		if claim.Namespace != controller.PlatformNamespace ||
 			!strings.Contains(claim.Name, storeClaimMarker) {
 			continue
 		}
-		if capacity := quantityValue(claim.Status.Capacity.Storage()); capacity > largest {
-			largest = capacity
+		if capacity := quantityValue(claim.Status.Capacity.Storage()); name == "" || capacity > largest {
+			largest, name = capacity, claim.Name
 		}
 	}
-	return largest
+	return largest, name
 }
 
 // quantityValue reads a claim's reported capacity, which is absent until the

@@ -127,10 +127,14 @@ func brokenSnapshotAt(now time.Time) *Snapshot {
 	snapshot.Freshness[testOtherNode] = now.Add(-time.Minute)
 	snapshot.NodeUsage[testOtherNode] = shiftUsage(usageOf(testOtherNode, flat(0.97), flat(0.5)), shift)
 	snapshot.Claims = []corev1.PersistentVolumeClaim{
-		claim(controller.PlatformNamespace, "data-kitchen-clickhouse-0", corev1.ClaimPending),
+		claim(controller.PlatformNamespace, testStoreClaim, corev1.ClaimPending),
 	}
+	// The store's disk, as the kubelet measured it: what store.disk judges is
+	// the volume, and the database's own size is what says whether retention
+	// is the lever.
 	snapshot.Store = StoreHealth{
-		BytesOnDisk: 95 << 30, CapacityBytes: 100 << 30, NewestRow: now.Add(-time.Minute),
+		BytesOnDisk: 40 << 30, CapacityBytes: 100 << 30, Claim: testStoreClaim,
+		Volume: storeVolume(100<<30, 95<<30), NewestRow: now.Add(-time.Minute),
 	}
 
 	// The edge: an unprogrammed Gateway, a certificate that will not renew, a
