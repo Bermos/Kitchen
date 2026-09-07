@@ -338,6 +338,27 @@ func (s *Server) routes() []route {
 		{"DELETE /api/v1/projects/{name}/members", s.removeMember,
 			onProject(access.ProjectAdmin, ofProject, "removing somebody from a project")},
 
+		// Binding requests (#495): who has asked to bind this project's
+		// offerings, and this project's answer to each.
+		//
+		// **Both are the *providing* project's**, which is what puts them
+		// under its path, and **both are `admin`** — the queue is the
+		// deciders' inbox rather than a fact about the project. Deciding is
+		// admin because it is the same grant an offering's visibility is,
+		// made one consumer at a time instead of for every project on the
+		// platform, and that is set by an admin here. Reading is admin for a
+		// reason of its own: **an identity crosses**. A row carries the name
+		// of the project that asked, the claim it asked with, and the
+		// account that asked — `requestedBy`, which is the consuming
+		// project's developer by email — because a decision made without
+		// knowing who is asking is not a decision. That is somebody else's
+		// person answered to this project, and it is answered to the people
+		// who have to act on it and to nobody else.
+		{"GET /api/v1/projects/{name}/requests", s.listBindingRequests,
+			onProject(access.ProjectAdmin, ofProject, "reading what other projects have asked to bind")},
+		{"PATCH /api/v1/projects/{name}/requests/{claim}", s.decideBindingRequest,
+			onProject(access.ProjectAdmin, ofProject, "admitting another project to an offering")},
+
 		// CI keys. A key is a member of the project — a machine account with a
 		// grant in the same `spec.access` (keys.go) — so issuing one is adding
 		// a member, and adding a member is admin's. The list follows the
@@ -846,6 +867,12 @@ func (s *Server) routes() []route {
 		{"GET /api/v1/claims/{name}", s.getClaim, onProject(access.ProjectViewer, ofClaim, "reading a resource claim")},
 		{"DELETE /api/v1/claims/{name}", s.deleteClaim,
 			onProject(access.ProjectDeveloper, ofClaim, "deleting a resource claim")},
+		// Asking again for a binding another project refused (#495). It is
+		// the consumer's own developers' write and the same bar that wrote
+		// the claim: it changes nothing but whose turn it is, and the answer
+		// is still the providing project's alone.
+		{"POST /api/v1/claims/{name}/request", s.requestBinding,
+			onProject(access.ProjectDeveloper, ofClaim, "asking again to bind an offering")},
 
 		// Point-in-time recovery (#247), where the provider can do it. The
 		// two verbs are two different blast radii and so two different

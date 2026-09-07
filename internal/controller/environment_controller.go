@@ -161,6 +161,25 @@ const (
 	// ReasonInternalProject is a project that asked not to be published.
 	ReasonInternalProject = "InternalProject"
 
+	// ConditionClaimsBound and the two reasons below are exported for the
+	// same reason, and they are the two halves of one question: a binding to
+	// another project's offering that this environment reads none of.
+	// ReasonNotAdmittedHere is the providing project's environment owners
+	// declining this class of consumer (#494); ReasonAwaitingApproval is a
+	// request that project has not answered yet (#495). Neither is a fault
+	// of this environment's — it deploys, carrying the claim's own sentence
+	// — and the difference between "no" and "not yet" is what the reader
+	// needs. The API classifies both as information; without that, an
+	// environment whose request is waiting is drawn red for being polite.
+	// See internal/api/conditions.go.
+	ConditionClaimsBound = condClaimsBound
+	// ReasonNotAdmittedHere is a binding no environment of the providing
+	// project admits a consumer of this class to.
+	ReasonNotAdmittedHere = "NotAdmittedHere"
+	// ReasonAwaitingApproval is a binding waiting for the providing project
+	// to answer the request.
+	ReasonAwaitingApproval = "AwaitingApproval"
+
 	// ConditionReady and ReasonAwaitingDeployment are exported for the same
 	// reason: an Environment declared through the API before anything
 	// deployed into it (#491) is not running a release, and that is the
@@ -762,6 +781,13 @@ type claimEffects struct {
 	// refused a binding just as squarely — so it is said about every
 	// environment.
 	unboundHere []string
+	// awaitingHere is how many of those bind nothing because the *providing*
+	// project has not answered the request yet (#495), rather than because
+	// it refused one. The sentence the environment carries is the claim's
+	// either way; what differs is whose turn it is, and that is what the
+	// condition's reason says — an environment waiting on a person is not a
+	// broken environment.
+	awaitingHere int
 	// cas is the certificate authority each claim this environment reads
 	// hands it, if any, and the binding Secret it is projected from. Every
 	// workload the claim's variables reach mounts all of them; see
@@ -802,11 +828,12 @@ func (r *EnvironmentReconciler) resolveEnv(
 	// They are the claims' rather than the Release's: where somebody else's
 	// environment answers is a fact about the platform now rather than about
 	// this commit, so a rollback calls the same offering (#493).
-	out, unbound, err := serviceBindingEnv(ctx, r.Client, env, env.Spec.ProjectRef.Name, appNS)
+	out, unbound, awaiting, err := serviceBindingEnv(ctx, r.Client, env, env.Spec.ProjectRef.Name, appNS)
 	if err != nil {
 		return nil, effects, false, err
 	}
 	effects.unboundHere = unbound
+	effects.awaitingHere = awaiting
 	seen := map[string]bool{}
 	// Separate from seen, which is settled before the preview switch below
 	// has decided which binding this environment actually reads — and the
@@ -859,6 +886,9 @@ func (r *EnvironmentReconciler) resolveEnv(
 					note := claim.Name + ": " + refusal
 					if !slices.Contains(effects.unboundHere, note) {
 						effects.unboundHere = append(effects.unboundHere, note)
+						if awaitingApproval(claim) {
+							effects.awaitingHere++
+						}
 					}
 					continue
 				}
@@ -1798,7 +1828,15 @@ func recordClaimsBound(env *kitchenv1alpha1.Environment, effects claimEffects) {
 	}
 	reason := "NothingForPreviews"
 	if !previews {
-		reason = "NotAdmittedHere"
+		// Refused, or merely not answered yet. The two are one sentence to
+		// the reader and two different things to whoever has to act: a
+		// request nobody has answered is somebody's turn rather than a
+		// refusal, and the screens draw it as such off exactly this reason
+		// (#495).
+		reason = ReasonNotAdmittedHere
+		if effects.awaitingHere > 0 && effects.awaitingHere == len(effects.unboundHere) {
+			reason = ReasonAwaitingApproval
+		}
 	}
 	meta.SetStatusCondition(&env.Status.Conditions, metav1.Condition{
 		Type:               condClaimsBound,

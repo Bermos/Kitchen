@@ -998,16 +998,18 @@ what they mean:**
 | The claim names | What happens |
 |---|---|
 | a project that does not exist, or an offering it does not make | `Failed`, naming it — and naming what the project *does* offer. Nothing appears on a timer that would make the name right |
-| an offering that admits consumers by request | `Failed`. `visibility: request` is the default, and the flow that turns a request into a grant is not built: until it is, an offering admits a consumer only when its project opens it to every project on the platform |
+| an offering that admits consumers by request | `PendingApproval` — not a refusal. The claim *is* the request; see [Asking to bind, and being answered](#asking-to-bind-and-being-answered) below |
 | a workload nothing addresses — a worker, a scheduled job | `Failed`. There is no Service in front of one, so there is no address to hand over |
 | a workload the offering's environment is not running | `Failed`, naming what it *is* running. The offering is resolved against that environment's release, which is where a workload declared in the repository lives |
 | an environment the providing project has not deployed into yet | `Pending`. That one *does* come right on its own: the environment appears when something is deployed there, or when its owners declare it |
 | an offering no environment of the provider admits *any* class of this consumer's environments | `Failed`, naming what each of the provider's environments does serve and how its owners would open one. A binding nothing admits is refused rather than quietly sent to production |
 
-The API makes the first two checks at the door as well, so a claim that could
-not bind is refused with a `400` rather than created and left failing. The
-reconciler makes them again, because an offering can be closed or withdrawn
-after a claim was written.
+The API makes the first check at the door as well, so a claim naming a project
+or an offering that is not there is refused with a `400` rather than created
+and left failing. The reconciler makes it again, because an offering can be
+withdrawn after a claim was written. Whether the offering *admits* this
+consumer is deliberately not checked at the door: on a `request` offering the
+claim is how the consumer asks.
 
 A preview of the consumer calls whichever environment of the provider admits
 previews, which is what `shared` means here and what the claim's preview mode
@@ -1025,6 +1027,84 @@ default-allow — so the first binding on the platform would cut off every
 caller nobody had declared, the Gateway included.
 
 The CLI reaches this through `kitchen api` like every other claim type.
+
+## Asking to bind, and being answered
+
+An offering whose `visibility` is `request` — the default — admits nobody
+until the project that makes it says so. **The claim is the request.** A
+consumer writes the ordinary service claim it would write anyway; it is
+created, it provisions nothing, and it sits in phase `PendingApproval` until
+an admin of the *providing* project answers it. There is no request object and
+no second approval system beside `Exception`: approval is a transition of the
+claim that is waiting for it.
+
+While it waits, nothing exists — no binding Secret for any class, no
+`KITCHEN_SERVICE_<NAME>` variable, no address anywhere. The consumer's
+environments deploy without it and carry the reason on their `ClaimsBound`
+condition, exactly as they do for a class no environment admits.
+
+The answer is on the claim, under `service.grant`:
+
+```json
+"service": {
+  "project": "pricing", "offering": "pricing-api", "bindings": [],
+  "grant": {
+    "state": "denied",
+    "requestedBy": "ada@example.com", "requestedAt": "2026-09-07T09:00:00Z",
+    "decidedBy": "grace@example.com", "decidedAt": "2026-09-07T10:12:00Z",
+    "reason": "this offering is being retired — use pricing-api-v2"
+  }
+}
+```
+
+| `state` | What it means |
+|---|---|
+| `requested` | Waiting. The claim is `PendingApproval` and binds nothing |
+| `approved` | Admitted. The claim binds on its next reconcile, through the same path an `open` offering binds by |
+| `denied` | Refused, or an approval withdrawn — one state, because they are one fact, and `reason` says which. The claim is `Failed`, and every binding Secret it had is removed |
+
+`open: true` on an approval marks a binding **nobody was asked about**: the
+offering was open to every project on the platform when it bound. That record
+is what makes closing an offering safe — see below.
+
+**The provider decides, and does so on its own project's routes:**
+[`GET /projects/{name}/requests`](projects.md#who-has-asked-to-bind-this-projects-offerings)
+lists what has been asked of it, and
+[`PATCH /projects/{name}/requests/{claim}`](projects.md#admitting-a-consumer-or-withdrawing-one)
+answers one. Both are that project's, because the grant is: reading is its
+viewers', deciding is its admins'.
+
+**The consumer may ask again**, without deleting the claim:
+
+```http
+POST /api/v1/claims/{name}/request
+```
+
+It takes no body, needs `developer` on the claim's own project — the same bar
+that wrote the claim — and puts a `denied` binding back in front of the
+provider as `requested`. Deleting the claim and writing it afresh would work
+too, and would throw away who asked for what and who refused it. It answers
+`409` for a binding that is already waiting or already admitted, and for an
+offering that is `open`, where there is nothing to ask for.
+
+**Closing an offering freezes new consumers; it does not break the ones it
+has.** Moving `visibility` from `open` to `request` leaves every binding that
+already resolved binding, because each carries a grant recorded when it bound
+(`open: true`) and nobody on the consumer's side did anything. Consumers that
+arrive after the change wait for an answer like any other. To withdraw one
+that is already through the door, refuse it — that takes the address back and
+its environments roll without the variables.
+
+**Opening one erases a standing refusal, and that is what `open` means.**
+Moving `visibility` the other way — `request` to `open` — admits every
+project on the platform, including one this project refused: the claim binds
+on its next reconcile and its grant is rewritten as `approved` with
+`open: true`, so the words of the refusal are replaced by the record of the
+open door. Closing the offering again therefore leaves that consumer *bound*,
+like every other one that came through while it was open, and refusing it is
+a decision to make a second time. An offering that is opened for one consumer
+is opened for all of them, which is the whole of the difference between the
+two visibilities.
 
 ## Destroying the data is the admin's
 

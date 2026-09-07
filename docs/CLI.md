@@ -919,7 +919,8 @@ which is a decision and not an omission: the commands for this are
 `kitchen services`, `kitchen bind` and `kitchen topology`, and they are
 designed together with the catalogue and the observed graph
 ([#501](https://github.com/Bermos/Kitchen/issues/501)) rather than one at a
-time.
+time. The same holds for asking to bind and answering a request — `kitchen
+bind` is the front of that whole exchange, not of the claim alone.
 
 ```sh
 # The provider: what this project answers to, and who may bind
@@ -932,6 +933,25 @@ kitchen api GET /offerings --json | jq '.items[] | select(.visibility=="open")'
 # The consumer: a binding, by name
 kitchen api POST /claims --data '{"name":"prices","project":"checkout","type":"service",
   "service":{"project":"pricing","offering":"pricing-api"}}'
+```
+
+An offering whose `visibility` is `request` — the default — admits nobody
+until the providing project says so, and the claim above *is* the request: it
+is written, it provisions nothing, and it waits in phase `PendingApproval`.
+The three routes that carry the exchange are `kitchen api`'s too, for the same
+reason and with the same decision recorded against them:
+
+```sh
+# The provider: what has been asked of this project's offerings
+kitchen api GET /projects/pricing/requests?state=requested
+
+# Admitting one consumer, or withdrawing one — the providing project's admins'
+kitchen api PATCH /projects/pricing/requests/prices --data '{"decision":"approved"}'
+kitchen api PATCH /projects/pricing/requests/prices \
+  --data '{"decision":"denied","reason":"this offering is being retired"}'
+
+# The consumer: asking again after a refusal, on the same claim
+kitchen api POST /claims/prices/request
 ```
 
 The application then reads `KITCHEN_SERVICE_PRICES`, with `_HOST` and `_PORT`
@@ -1742,7 +1762,7 @@ cannot write it carries on and exchanges every time.
 | A project's settings | No command; `kitchen api PATCH /projects/{name}` | One JSON body written occasionally by an admin — a port, a replica count, a health check, a security posture, arguments, a classification, the Dockerfile stage to ship (which `projects create` does carry, since the first build starts with the project). A flag per field would be a second surface to keep in step with the first, and a list of records with commands and schedules in it has no flag-shaped spelling worth having |
 | The platform commands | Declared the dashboard's for now, in `--help`, in `kitchen schema` and in a refusal that names the screen | A key is a role on one project and those routes need the operator role, so no credential this CLI can store runs them — and `kitchen api` carries the same token, so it is no way round a *role*. Shipping them published and silently unrunnable was the state [#208](https://github.com/Bermos/Kitchen/issues/208) found; a platform-scoped key is the real answer and is [#349](https://github.com/Bermos/Kitchen/issues/349), designed with [#318](https://github.com/Bermos/Kitchen/issues/318) because both decide what a key is |
 | Notification subscriptions | No command; `kitchen api` for all of it, including the dead letters | A subscription is written once and then read when something is wrong, which is a screen's shape rather than a command's — and the one write carries a signing key, which is precisely the value not to have in a shell history when the same key is already being pasted into the receiver. What *is* worth reaching from a terminal is the dead-letter list on the morning a relay was down, and that is one `kitchen api GET /notifications/deliveries?phase=DeadLettered` away, with `POST /notifications/deliveries/{name}/retry` beside it |
-| Offering a service, and binding to one | No command; `kitchen api` for the offering, the catalogue and the claim | The commands this wants — a catalogue to browse, a binding to ask for, a topology to pipe — are one design and not three ([#501](https://github.com/Bermos/Kitchen/issues/501)): `kitchen topology --json` is an edge list, which is the one of them worth designing rather than deriving, and `kitchen bind` is the front of an approval flow that does not exist yet. Shipping one of them now would fix the shape of the other two before the questions they answer are built. What is reachable meanwhile is everything: the offering is a field of `PATCH /projects/{name}`, the catalogue is `GET /offerings`, and the binding is one `POST /claims` |
+| Offering a service, and binding to one | No command; `kitchen api` for the offering, the catalogue, the claim, and the request and its answer | The commands this wants — a catalogue to browse, a binding to ask for, a topology to pipe — are one design and not three ([#501](https://github.com/Bermos/Kitchen/issues/501)): `kitchen topology --json` is an edge list, which is the one of them worth designing rather than deriving, and `kitchen bind` is the front of the whole exchange rather than of the claim alone. Shipping one of them now would fix the shape of the other two before the questions they answer are built. What is reachable meanwhile is everything: the offering is a field of `PATCH /projects/{name}`, the catalogue is `GET /offerings`, the binding is one `POST /claims` — which on a `request` offering *is* the request — and the answer is `GET`/`PATCH /projects/{name}/requests`, with `POST /claims/{name}/request` to ask again |
 | Account management | No command, and none possible | Changing a password, or ending a session, is done at the identity provider against its session cookie — and this CLI holds a key, never a session. It is not an endpoint `kitchen api` reaches either, because that reaches the operator API and these are not on it ([AUTH.md](AUTH.md), "Managing an account") |
 
 ## Open

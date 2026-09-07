@@ -961,6 +961,10 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 		WithRuntimeObjects(objects...).
 		WithStatusSubresource(&kitchenv1alpha1.Build{}, &kitchenv1alpha1.Environment{},
 			&kitchenv1alpha1.Exception{}, &kitchenv1alpha1.AccessReview{},
+			// A claim carries one too, and deciding a binding request
+			// writes it (#495): without this the fake client answers a
+			// status write with a not-found the real API server would not.
+			&kitchenv1alpha1.ResourceClaim{},
 			// The notification kinds carry one too, and retrying a dead letter
 			// writes it: without this the fake client answers a status write
 			// with the not-found the real API server would not.

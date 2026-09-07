@@ -1174,8 +1174,12 @@ jobs:
               -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
               | awk '$2 == "True" { print $1; exit }'
           }
-          told() { # told <pod>
-            kubectl -n "${CONSUMER_APP_NS}" exec "$1" -- sh -c "printenv ${variable}" 2>/dev/null || true
+          told() { # told <pod> — the address that pod was handed, empty for none
+            # The `|| true` is *inside* the container, so an unset variable is
+            # an empty answer while a failed exec is still a failed command:
+            # swallowing kubectl's own exit code here would let every negative
+            # assertion below pass against a container nothing reached.
+            kubectl -n "${CONSUMER_APP_NS}" exec "$1" -- sh -c "printenv ${variable} || true"
           }
 
           # Production reaches the environment the offering names. A preview
@@ -1238,8 +1242,11 @@ jobs:
           # says why on its ClaimsBound condition.
           pod="$(preview_web_pod)"
           [ -n "${pod}" ] || { echo "::error::the consumer's preview has no ready web pod"; exit 1; }
-          [ -z "$(told "${pod}")" ] || {
-            echo "::error::the consumer's preview was handed ${variable}=$(told "${pod}")," \
+          # Captured rather than tested inside `[ ]`: an assignment carries the
+          # command's failure under `set -e`, where a condition swallows it.
+          address="$(told "${pod}")"
+          [ -z "${address}" ] || {
+            echo "::error::the consumer's preview was handed ${variable}=${address}," \
                  "and no environment of ${PROJECT} admits a preview"
             exit 1
           }
@@ -1364,6 +1371,219 @@ jobs:
           # exist decides where a binding lands — so they go with it rather
           # than being inherited by whatever runs next.
           kubectl -n kitchen-system delete environment "${stage}" "${consumer_preview}" --wait=false
+
+      # #495, end to end: an offering that admits consumers by request binds
+      # nobody until the project that makes it says so, and the answer reaches
+      # the consumer's pods either way.
+      #
+      # **The decision is written the way the API writes it** — the grant on
+      # the claim's own status — rather than through the route, because this
+      # job installs no identity provider (`auth.enabled=false`), so there is
+      # no token any API call here could carry. What the two routes do with a
+      # request is internal/api's tests; what only a cluster can prove is
+      # what this asserts: that nothing is provisioned while a request waits,
+      # that an approval reaches a running pod, and that a withdrawal takes
+      # the address back out of one.
+      - name: A binding is requested, approved, and withdrawn
+        run: |
+          set -euo pipefail
+          asked="${BINDING}-asked"
+          variable="KITCHEN_SERVICE_$(echo "${asked}" | tr 'a-z-' 'A-Z_')"
+          claim() { # claim <claim> <jsonpath>
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "$1" -o jsonpath="{$2}"
+          }
+          await() { # await <claim> <phase>
+            for _ in $(seq 60); do
+              [ "$(claim "$1" .status.phase)" = "$2" ] && return 0
+              sleep 5
+            done
+            echo "::error::claim $1 is $(claim "$1" .status.phase), and this case wants $2"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "$1" -o yaml
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=200
+            exit 1
+          }
+          decide() { # decide <state> <reason> — what the providing project's
+                     # admins write through PATCH /projects/{name}/requests/{claim}
+            kubectl -n kitchen-system patch resourceclaims.kitchen.bermos.dev "${asked}" \
+              --subresource=status --type merge -p \
+              "{\"status\":{\"service\":{\"grant\":{\"state\":\"$1\",\"decidedBy\":\"e2e@example.com\",\"reason\":\"$2\"}}}}"
+          }
+          web_pod() {
+            kubectl -n "${CONSUMER_APP_NS}" get pod \
+              -l "kitchen.bermos.dev/environment=${CONSUMER}-production,kitchen.bermos.dev/component=web" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              | awk '$2 == "True" { print $1; exit }'
+          }
+          told() { # told <pod> — the address that pod was handed, empty for none
+            # The `|| true` is *inside* the container, so an unset variable is
+            # an empty answer while a failed exec is still a failed command:
+            # swallowing kubectl's own exit code here would let every negative
+            # assertion below pass against a container nothing reached.
+            kubectl -n "${CONSUMER_APP_NS}" exec "$1" -- sh -c "printenv ${variable} || true"
+          }
+
+          # The offering stops admitting every project on the platform. The
+          # consumer already bound to it does **not** lose its binding: the
+          # claim carries the grant recorded when it bound, marked as one
+          # nobody was asked about, and closing the door freezes new consumers
+          # rather than cutting off the ones already through.
+          kubectl -n kitchen-system patch project "${PROJECT}" --type merge -p \
+            "{\"spec\":{\"offers\":[{\"name\":\"${OFFERING}\",\"process\":\"api\",\"protocol\":\"http\",\"visibility\":\"request\"}]}}"
+          [ "$(claim "${BINDING}" .status.service.grant.open)" = true ] || {
+            echo "::error::the binding that was admitted while the offering was open records no such grant"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o yaml
+            exit 1
+          }
+          sleep 30
+          [ "$(claim "${BINDING}" .status.phase)" = Bound ] || {
+            echo "::error::closing the offering unbound ${BINDING}, which was already through the door"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o yaml
+            exit 1
+          }
+          echo "the consumer already bound is still Bound"
+
+          # A consumer arriving after the door closed. The claim *is* the
+          # request: it is written, it waits, and it provisions nothing.
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: ResourceClaim
+          metadata:
+            name: ${asked}
+            namespace: kitchen-system
+            annotations:
+              kitchen.bermos.dev/requested-by: ada@example.com
+          spec:
+            projectRef: {name: ${CONSUMER}}
+            type: service
+            config:
+              service:
+                project: ${PROJECT}
+                offering: ${OFFERING}
+          EOF
+          await "${asked}" PendingApproval
+          waiting="$(claim "${asked}" '.status.conditions[?(@.type=="Ready")].message')"
+          echo "the request says: ${waiting}"
+          case "${waiting}" in
+            *"waiting for an admin of ${PROJECT}"*) ;;
+            *)
+              echo "::error::the claim does not say who it is waiting for: ${waiting}"
+              exit 1
+              ;;
+          esac
+          [ "$(claim "${asked}" .status.service.grant.requestedBy)" = ada@example.com ] || {
+            echo "::error::the request does not record who asked"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${asked}" -o yaml
+            exit 1
+          }
+          # Nothing provisioned: no Secret for any class, and no variable in
+          # the consumer's running pod.
+          for suffix in "" -stage -preview; do
+            if kubectl -n "${CONSUMER_APP_NS}" get secret "${asked}-binding${suffix}" >/dev/null 2>&1; then
+              echo "::error::a request that is waiting wrote ${asked}-binding${suffix}"
+              exit 1
+            fi
+          done
+          pod="$(web_pod)"
+          [ -n "${pod}" ] || { echo "::error::the consumer has no ready web pod"; exit 1; }
+          # Captured rather than tested inside `[ ]`, so that an exec that
+          # never reached the container fails this step instead of reading as
+          # "the pod has no address".
+          address="$(told "${pod}")"
+          [ -z "${address}" ] || {
+            echo "::error::a request that is waiting handed the consumer ${variable}=${address}"
+            exit 1
+          }
+          echo "nothing is provisioned while the request waits"
+
+          # Admitted. The claim binds on its own — the grant is all the API
+          # writes — and the address reaches the consumer's pods.
+          decide approved "the unit team said yes"
+          await "${asked}" Bound
+          secret="$(claim "${asked}" .status.secretName)"
+          host="$(kubectl -n "${CONSUMER_APP_NS}" get secret "${secret}" -o jsonpath='{.data.host}' | base64 -d)"
+          echo "the approved binding carries ${host}"
+          [ "${host}" = "${PROJECT}-production-api.${APP_NS}.svc.cluster.local" ] || {
+            echo "::error::the binding names ${host}, which is not the offering's api workload"
+            exit 1
+          }
+          kubectl -n "${CONSUMER_APP_NS}" rollout status "deploy/${CONSUMER}-production" --timeout=5m
+          for _ in $(seq 60); do
+            pod="$(web_pod)"
+            [ -n "${pod}" ] && [ -n "$(told "${pod}")" ] && break
+            sleep 5
+          done
+          pod="$(web_pod)"
+          address="$(told "${pod}")"
+          echo "the consumer is told ${variable}=${address}"
+          case "${address}" in
+            *"${PROJECT}-production-api.${APP_NS}.svc.cluster.local"*) ;;
+            *)
+              echo "::error::the consumer is told '${address}', and the binding says ${host}"
+              kubectl -n "${CONSUMER_APP_NS}" get deploy "${CONSUMER}-production" \
+                -o jsonpath='{.spec.template.spec.containers[0].env}' | tr ',' '\n'
+              exit 1
+              ;;
+          esac
+          served="$(kubectl -n "${CONSUMER_APP_NS}" exec "${pod}" \
+            -- sh -c "wget -q -O - \"\${${variable}}/host.txt\"" 2>/dev/null || true)"
+          echo "the consumer was answered by ${served}"
+          case "${served}" in
+            "${PROJECT}-production-api-"*) ;;
+            *)
+              echo "::error::the approved binding was answered by '${served}', which is not one of" \
+                   "the provider's production api pods"
+              exit 1
+              ;;
+          esac
+
+          # Withdrawn. A refusal and a withdrawal are one state, and the
+          # address goes: the Secret is removed and the consumer's
+          # environments roll without the variable.
+          decide denied "the unit team is retiring this offering"
+          await "${asked}" Failed
+          refusal="$(claim "${asked}" '.status.conditions[?(@.type=="Ready")].message')"
+          echo "the withdrawal says: ${refusal}"
+          case "${refusal}" in
+            *"retiring this offering"*) ;;
+            *)
+              echo "::error::the refusal does not carry the provider's own words: ${refusal}"
+              exit 1
+              ;;
+          esac
+          if kubectl -n "${CONSUMER_APP_NS}" get secret "${secret}" >/dev/null 2>&1; then
+            echo "::error::the withdrawn binding left ${secret} behind"
+            exit 1
+          fi
+          kubectl -n "${CONSUMER_APP_NS}" rollout status "deploy/${CONSUMER}-production" --timeout=5m
+          for _ in $(seq 60); do
+            pod="$(web_pod)"
+            [ -n "${pod}" ] && [ -z "$(told "${pod}")" ] && break
+            sleep 5
+          done
+          pod="$(web_pod)"
+          address="$(told "${pod}")"
+          [ -z "${address}" ] || {
+            echo "::error::the consumer still has ${variable}=${address} after the binding was withdrawn"
+            kubectl -n "${CONSUMER_APP_NS}" get deploy "${CONSUMER}-production" \
+              -o jsonpath='{.spec.template.spec.containers[0].env}' | tr ',' '\n'
+            exit 1
+          }
+          echo "the address was taken back out of the running pod"
+
+          # And asking again is the same claim, not a new one: what
+          # POST /claims/{name}/request writes puts it back in front of the
+          # provider.
+          kubectl -n kitchen-system patch resourceclaims.kitchen.bermos.dev "${asked}" \
+            --subresource=status --type merge -p \
+            '{"status":{"service":{"grant":{"state":"requested","decidedBy":"","decidedAt":null,"reason":""}}}}'
+          await "${asked}" PendingApproval
+          echo "the same claim is waiting again"
+
+          # This step's own objects, and the offering it closed: later steps
+          # read the project's offerings and the consumer's environment.
+          kubectl -n kitchen-system delete resourceclaims.kitchen.bermos.dev "${asked}" --wait=false
+          kubectl -n kitchen-system patch project "${PROJECT}" --type merge -p \
+            "{\"spec\":{\"offers\":[{\"name\":\"${OFFERING}\",\"process\":\"api\",\"protocol\":\"http\",\"visibility\":\"open\"}]}}"
 
       # #301's third criterion. Two releases of the same images, applied by
       # hand: what differs between them is the frozen configuration the deploy

@@ -285,6 +285,48 @@ export function claimRefusal(claim: Claim): string {
 }
 
 /**
+ * What a binding is waiting for, or was refused with (#495), and "" for a
+ * binding nobody has to answer for.
+ *
+ * The reason a refusal is worth rendering at all is that this is the only
+ * place the consumer can read it: the grant belongs to the providing
+ * project's admins, and this reader holds no role there — a call to that
+ * project would be answered `403`. So the sentence is a statement of fact
+ * about what happened, never an instruction to somebody who cannot act on it,
+ * and the one act this side has is asking again.
+ */
+export function bindingRequestSentence(claim: Claim): string {
+  const grant = claim.service?.grant;
+  if (!grant) return "";
+  const offering = `${claim.service?.project}/${claim.service?.offering}`;
+  if (grant.state === "denied") {
+    const words = grant.reason || "no reason was given";
+    return `${claim.service?.project} did not admit this binding to ${offering}: ${words}`;
+  }
+  if (grant.state === "requested") {
+    return `waiting for ${claim.service?.project} to answer this request to bind ${offering}`;
+  }
+  return "";
+}
+
+/**
+ * Whether this claim's story belongs to its binding request rather than to the
+ * platform (#495): it is waiting for the providing project, or that project
+ * refused it.
+ *
+ * It exists so that a screen says it **once**. A refused binding is a claim in
+ * phase `Failed`, so a table drawing every failed claim's refusal and every
+ * request's sentence draws this one twice — in two tones, saying the same
+ * thing in different words. The rule is the same one the cautions follow: a
+ * claim that failed is left to the row that can explain it, and this is the
+ * row that can, because it is the only one with the provider's words and the
+ * one act this side has.
+ */
+export function isBindingRequest(claim: Claim): boolean {
+  return bindingRequestSentence(claim) !== "";
+}
+
+/**
  * What deleting this claim does, in one line for the row and at length for the
  * confirmation.
  *

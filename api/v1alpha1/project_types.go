@@ -818,8 +818,9 @@ type ProjectSpec struct {
 	// bind to it is a grant, and a grant anybody with push access could
 	// widen is not a grant — so it is written here through the API by a
 	// project admin, and a file that declares one fails the build saying
-	// why. An offering nobody has opened is `request`, which admits nobody
-	// until the request flow (#495) lands.
+	// why. An offering nobody has opened is `request`, which admits a
+	// consumer only when this project has answered its request (#495) —
+	// one at a time, rather than every project on the platform at once.
 	//
 	// Entries merge per name rather than by position (listType=map), so two
 	// people adding two offerings do not drop each other's.

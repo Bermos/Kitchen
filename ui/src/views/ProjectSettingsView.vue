@@ -19,6 +19,8 @@ import {
   claimRecoveryPoint,
   claimRefusal,
   claimRequirements,
+  bindingRequestSentence,
+  isBindingRequest,
   deletionGatedByName,
   destroysData,
   destroysDataRefusal,
@@ -568,7 +570,47 @@ async function saveSettings() {
 
 // ── Claims ──────────────────────────────────────────────────────────────────
 
-const refusedClaims = computed(() => claims.value.filter((claim) => claim.phase === "Failed"));
+// A binding the providing project refused is `Failed` too, and it is left to
+// the request row below for the reason the cautions are kept off a failed
+// claim: one row per thing to say. That row has the provider's own words and
+// the one act this side has (#495).
+const refusedClaims = computed(() =>
+  claims.value.filter((claim) => claim.phase === "Failed" && !isBindingRequest(claim)),
+);
+
+// What this project asked another project for and has not been given: waiting
+// for an answer, or refused with that project's words. It is here as well as
+// on the project's own screen because this is where claims are asked for and
+// given up, and a denial with no sentence and no button is where somebody
+// would otherwise delete the claim and write it again — losing the record of
+// who asked and who refused.
+const askedFor = computed(() => claims.value.filter(isBindingRequest));
+const mayAskAgain = computed(() => may("POST /api/v1/claims/{name}/request", caller.value));
+const asking = ref("");
+
+async function askAgain(claim: Claim) {
+  if (asking.value) return;
+  asking.value = claim.name;
+  try {
+    await api.requestBinding(claim.name);
+    toast.add({
+      title: `${claim.service?.project} has been asked again`,
+      description: "Nothing binds until they answer it.",
+      color: "success",
+      icon: "i-lucide-check",
+    });
+    await refresh();
+  } catch (err) {
+    toast.add({
+      title: err instanceof Error ? err.message : String(err),
+      color: "warning",
+      icon: "i-lucide-info",
+    });
+  } finally {
+    asking.value = "";
+  }
+}
+
 // The cautions a bound claim carries — lib/claims.ts says what counts as one
 // and why. They are drawn next to the rows they are about, on the same footing
 // as a refusal, and a claim that failed is left to the refusal above rather
@@ -1069,6 +1111,31 @@ async function deleteProject() {
                   >
                     <td colspan="8" class="px-3 py-2 text-xs text-error">
                       <span class="font-mono">{{ claim.name }}</span> — {{ claimRefusal(claim) }}
+                    </td>
+                  </tr>
+                  <!-- And a binding another project has not given this one.
+                       It is not this project's failure and there is nothing
+                       here to fix — the grant is the other project's admins'
+                       — so it says what is true and offers the one act this
+                       side has, which is asking again. -->
+                  <tr v-for="claim in askedFor" :key="`${claim.name}-asked`" class="border-b border-muted last:border-0">
+                    <td colspan="8" class="px-3 py-2 text-xs">
+                      <div class="flex items-start justify-between gap-4">
+                        <p class="text-muted">
+                          <span class="font-mono">{{ claim.name }}</span> — {{ bindingRequestSentence(claim) }}
+                        </p>
+                        <UButton
+                          v-if="mayAskAgain && claim.service?.grant?.state === 'denied'"
+                          color="neutral"
+                          variant="link"
+                          size="xs"
+                          class="px-0 shrink-0"
+                          :loading="asking === claim.name"
+                          @click="askAgain(claim)"
+                        >
+                          Ask again
+                        </UButton>
+                      </div>
                     </td>
                   </tr>
                   <!-- And what a bound claim is quietly not doing. An inngest

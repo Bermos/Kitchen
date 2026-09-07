@@ -96,11 +96,15 @@ type OfferingVisibility string
 
 const (
 	// OfferingRequest is the default, and it is the safe one: the offering
-	// is visible in the catalogue and a claim on it is refused until the
-	// providing project has approved the consumer. The approval flow is
-	// #495; until it lands a request-visibility offering binds nothing, and
-	// the refusal says exactly that rather than binding on the strength of
-	// an approval nothing recorded.
+	// is visible in the catalogue and a claim on it binds nothing until the
+	// providing project has admitted that consumer. The claim itself is the
+	// request — it waits in phase PendingApproval, provisioning nothing —
+	// and an admin of the providing project answers it (#495).
+	//
+	// Moving an offering here from OfferingOpen freezes *new* consumers: a
+	// binding that already resolved carries a grant recorded when it bound,
+	// and nobody on the consumer's side did anything to lose it. Withdrawing
+	// one is a decision of its own, one consumer at a time.
 	OfferingRequest OfferingVisibility = "request"
 	// OfferingOpen admits any project on the platform. It is a grant the
 	// providing project makes once, deliberately, through the API.

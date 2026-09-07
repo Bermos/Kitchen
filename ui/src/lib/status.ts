@@ -27,6 +27,11 @@ const phaseTones: Record<string, Tone> = {
   Terminating: "neutral",
   // ResourceClaim
   Bound: "success",
+  // A binding waiting for the project that makes the offering to answer it
+  // (#495). `info` rather than `warning`: nothing is wrong, and the thing it
+  // waits for is a person on the other side of a grant rather than anything
+  // this project's reader can fix.
+  PendingApproval: "info",
 };
 
 export function phaseTone(phase: string | undefined): Tone {

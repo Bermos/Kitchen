@@ -46,6 +46,10 @@ var _ = Describe("ResourceClaim of type service", func() {
 		prodEnv   = provider + "-production"
 	)
 
+	// decider is the admin of the providing project whose decisions the
+	// assertions below read back.
+	const decider = "grace@example.com"
+
 	ctx := context.Background()
 	consumerNS := "kitchen-" + consumer
 
@@ -164,6 +168,36 @@ var _ = Describe("ResourceClaim of type service", func() {
 		return kitchenv1alpha1.ClaimServiceBinding{}
 	}
 
+	// decide is what an admin of the providing project does through
+	// PATCH /projects/{name}/requests/{claim}: it writes the grant onto the
+	// claim's status and nothing else, because binding is the reconciler's.
+	decide := func(name string, state kitchenv1alpha1.ServiceGrantState, reason string) {
+		claim := getClaim(name)
+		if claim.Status.Service == nil {
+			claim.Status.Service = &kitchenv1alpha1.ClaimServiceStatus{}
+		}
+		now := metav1.Now()
+		claim.Status.Service.Grant = &kitchenv1alpha1.ClaimServiceGrant{
+			State:     state,
+			DecidedBy: decider,
+			DecidedAt: &now,
+			Reason:    reason,
+		}
+		ExpectWithOffset(1, k8sClient.Status().Update(ctx, claim)).To(Succeed())
+	}
+
+	// request is the consumer asking again after a refusal, which is what
+	// POST /claims/{name}/request writes.
+	request := func(name string) {
+		claim := getClaim(name)
+		claim.Status.Service.Grant = &kitchenv1alpha1.ClaimServiceGrant{
+			State:       kitchenv1alpha1.ServiceGrantRequested,
+			RequestedBy: "ada@example.com",
+			RequestedAt: metav1.Now(),
+		}
+		ExpectWithOffset(1, k8sClient.Status().Update(ctx, claim)).To(Succeed())
+	}
+
 	BeforeEach(func() {
 		reconciler = &ResourceClaimReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
@@ -246,7 +280,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 				Type:       kitchenv1alpha1.EnvironmentProduction,
 			},
 		}
-		vars, unbound, err := serviceBindingEnv(ctx, k8sClient, env, consumer, consumerNS)
+		vars, unbound, _, err := serviceBindingEnv(ctx, k8sClient, env, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(unbound).To(BeEmpty())
 		names := make([]string, 0, len(vars))
@@ -382,7 +416,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 				Type:       kitchenv1alpha1.EnvironmentProduction,
 			},
 		}
-		vars, unbound, err := serviceBindingEnv(ctx, k8sClient, env, consumer, consumerNS)
+		vars, unbound, _, err := serviceBindingEnv(ctx, k8sClient, env, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(unbound).To(BeEmpty())
 		names := make([]string, 0, len(vars))
@@ -411,15 +445,159 @@ var _ = Describe("ResourceClaim of type service", func() {
 			"the refusal says what the project does offer")
 	})
 
-	It("refuses an offering that admits consumers by request, and binds once it is opened", func() {
+	// #495: requesting a binding, and approving it.
+	//
+	// The claim is the request, and the decision is a transition of it. What
+	// these assert is the pair of properties the whole feature rests on: a
+	// request provisions *nothing* while it waits, and a decision reaches
+	// the consumer's workloads on the pass that follows it.
+
+	It("leaves a claim on a request offering waiting, and provisions nothing while it waits", func() {
 		offer(kitchenv1alpha1.ServiceOffering{Name: "pricing-api"})
 		const name = "by-request"
 		createClaim(name, `{"service": {"project": "pricing", "offering": "pricing-api"}}`)
 		reconcileOnce(name)
 
+		claim := getClaim(name)
+		Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimPendingApproval))
+		Expect(readyCondition(name).Reason).To(Equal("AwaitingApproval"))
+		Expect(readyCondition(name).Message).To(ContainSubstring(consumer))
+		Expect(readyCondition(name).Message).To(ContainSubstring("waiting for an admin of " + provider))
+
+		grant := claim.ServiceGrant()
+		Expect(grant).NotTo(BeNil())
+		Expect(grant.State).To(Equal(kitchenv1alpha1.ServiceGrantRequested))
+		Expect(grant.RequestedAt.IsZero()).To(BeFalse())
+
+		// Nothing anywhere: no Secret, no binding row, no name of one.
+		Expect(claim.Status.SecretName).To(BeEmpty())
+		Expect(claim.Status.Service.Bindings).To(BeEmpty())
+		for _, class := range kitchenv1alpha1.EnvironmentTypes() {
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: serviceBindingSecretName(name, class), Namespace: consumerNS}, &corev1.Secret{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"a request that is waiting has written no address for a "+string(class)+" consumer")
+		}
+
+		// And the consumer's own environments deploy without it, carrying
+		// the reason rather than waiting behind it.
+		env := &kitchenv1alpha1.Environment{
+			ObjectMeta: metav1.ObjectMeta{Name: consumer + "-production", Namespace: namespace},
+			Spec: kitchenv1alpha1.EnvironmentSpec{
+				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: consumer},
+				Type:       kitchenv1alpha1.EnvironmentProduction,
+			},
+		}
+		vars, unbound, awaiting, err := serviceBindingEnv(ctx, k8sClient, env, consumer, consumerNS)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(vars).To(BeEmpty())
+		Expect(unbound).To(HaveLen(1))
+		Expect(unbound[0]).To(ContainSubstring("waiting for an admin of " + provider))
+		// And it is counted as a request waiting rather than a refusal,
+		// which is what the environment's ClaimsBound reason is drawn from:
+		// an environment being polite is not an environment in trouble.
+		Expect(awaiting).To(Equal(1))
+	})
+
+	It("binds once the offering's project approves, and takes the address back when it is withdrawn", func() {
+		offer(kitchenv1alpha1.ServiceOffering{Name: "pricing-api"})
+		const name = "approved"
+		createClaim(name, `{"service": {"project": "pricing", "offering": "pricing-api"}}`)
+		reconcileOnce(name)
+		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimPendingApproval))
+
+		decide(name, kitchenv1alpha1.ServiceGrantApproved, "the pricing team said yes")
+		reconcileOnce(name)
+		claim := getClaim(name)
+		Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+		Expect(claim.Status.SecretName).NotTo(BeEmpty())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: claim.Status.SecretName, Namespace: consumerNS}, &corev1.Secret{})).To(Succeed())
+		// The approval survives the reconcile that acts on it: the grant is
+		// the only thing on this status the reconciler did not work out for
+		// itself, so a pass that replaced the status whole would revoke
+		// every approval on the platform.
+		Expect(claim.ServiceGrant().State).To(Equal(kitchenv1alpha1.ServiceGrantApproved))
+		Expect(claim.ServiceGrant().DecidedBy).To(Equal(decider))
+
+		// Withdrawn: every class's Secret goes, and the consumer's
+		// environments roll without the variables.
+		decide(name, kitchenv1alpha1.ServiceGrantDenied, "we are retiring this offering")
+		reconcileOnce(name)
+		claim = getClaim(name)
+		Expect(claim.Status.Phase).To(Equal(kitchenv1alpha1.ClaimFailed))
+		Expect(readyCondition(name).Reason).To(Equal("BindingDenied"))
+		Expect(readyCondition(name).Message).To(ContainSubstring("we are retiring this offering"))
+		Expect(claim.Status.SecretName).To(BeEmpty())
+		Expect(claim.Status.Service.Bindings).To(BeEmpty())
+		for _, class := range kitchenv1alpha1.EnvironmentTypes() {
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: serviceBindingSecretName(name, class), Namespace: consumerNS}, &corev1.Secret{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"a withdrawn binding leaves no address for a "+string(class)+" consumer")
+		}
+
+		env := &kitchenv1alpha1.Environment{
+			ObjectMeta: metav1.ObjectMeta{Name: consumer + "-production", Namespace: namespace},
+			Spec: kitchenv1alpha1.EnvironmentSpec{
+				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: consumer},
+				Type:       kitchenv1alpha1.EnvironmentProduction,
+			},
+		}
+		vars, unbound, awaiting, err := serviceBindingEnv(ctx, k8sClient, env, consumer, consumerNS)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(vars).To(BeEmpty())
+		Expect(unbound).To(HaveLen(1))
+		Expect(unbound[0]).To(ContainSubstring("we are retiring this offering"))
+		Expect(awaiting).To(BeZero(), "a refusal is not a request waiting for anybody")
+
+		// Asked for again on the same claim, which is what the consumer's
+		// own route does: back in front of the provider, still bound to
+		// nothing.
+		request(name)
+		reconcileOnce(name)
+		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimPendingApproval))
+	})
+
+	It("leaves the consumers of an offering closed to new ones binding", func() {
+		// Open when it bound, which is recorded on the claim — so closing
+		// the offering afterwards freezes new consumers rather than cutting
+		// this one off. Nobody on this side did anything.
+		const name = "already-bound"
+		createClaim(name, `{"service": {"project": "pricing", "offering": "pricing-api"}}`)
+		reconcileOnce(name)
+		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+		grant := getClaim(name).ServiceGrant()
+		Expect(grant).NotTo(BeNil())
+		Expect(grant.State).To(Equal(kitchenv1alpha1.ServiceGrantApproved))
+		Expect(grant.Open).To(BeTrue())
+
+		offer(kitchenv1alpha1.ServiceOffering{Name: "pricing-api"})
+		reconcileOnce(name)
+		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound),
+			"an offering that stops admitting new consumers keeps the ones it has")
+
+		// A consumer that arrives after the door closed waits, in the same
+		// project and on the same offering.
+		const late = "arrived-late"
+		createClaim(late, `{"service": {"project": "pricing", "offering": "pricing-api"}}`)
+		reconcileOnce(late)
+		Expect(getClaim(late).Status.Phase).To(Equal(kitchenv1alpha1.ClaimPendingApproval))
+	})
+
+	It("admits a consumer it had refused when the offering is opened to everybody", func() {
+		// `open` means open, including to the project this one refused while
+		// the door was shut — so the refusal is replaced by the record of
+		// the open door rather than standing as a block the visibility does
+		// not have. Closing it again then leaves this consumer bound, and
+		// withdrawing it is a second decision.
+		offer(kitchenv1alpha1.ServiceOffering{Name: "pricing-api"})
+		const name = "refused-then-open"
+		createClaim(name, `{"service": {"project": "pricing", "offering": "pricing-api"}}`)
+		reconcileOnce(name)
+		decide(name, kitchenv1alpha1.ServiceGrantDenied, "not while we are rewriting it")
+		reconcileOnce(name)
 		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimFailed))
-		Expect(readyCondition(name).Reason).To(Equal("NotGranted"))
-		Expect(readyCondition(name).Message).To(ContainSubstring("checkout"))
 
 		offer(kitchenv1alpha1.ServiceOffering{
 			Name:      "pricing-api",
@@ -427,6 +605,92 @@ var _ = Describe("ResourceClaim of type service", func() {
 		})
 		reconcileOnce(name)
 		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+		grant := getClaim(name).ServiceGrant()
+		Expect(grant.State).To(Equal(kitchenv1alpha1.ServiceGrantApproved))
+		Expect(grant.Open).To(BeTrue())
+		Expect(grant.Reason).NotTo(ContainSubstring("rewriting"),
+			"the refusal it replaced is not still standing")
+
+		// And closing it again leaves this one bound, like every other
+		// consumer that came through while it was open.
+		offer(kitchenv1alpha1.ServiceOffering{Name: "pricing-api"})
+		reconcileOnce(name)
+		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+	})
+
+	// The reason the environment carries, which is what the dashboard draws
+	// the binding's state from: "not yet" and "no" are one sentence to the
+	// reader and two different things to whoever has to act, and only one of
+	// them is anybody's problem here.
+	It("says on the environment whether a binding is refused or merely unanswered", func() {
+		env := &kitchenv1alpha1.Environment{
+			ObjectMeta: metav1.ObjectMeta{Name: consumer + "-production", Namespace: namespace},
+			Spec: kitchenv1alpha1.EnvironmentSpec{
+				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: consumer},
+				Type:       kitchenv1alpha1.EnvironmentProduction,
+			},
+		}
+		reasonOf := func(effects claimEffects) string {
+			recordClaimsBound(env, effects)
+			condition := meta.FindStatusCondition(env.Status.Conditions, condClaimsBound)
+			ExpectWithOffset(1, condition).NotTo(BeNil())
+			return condition.Reason
+		}
+
+		Expect(reasonOf(claimEffects{
+			unboundHere:  []string{"prices: the request to bind offering pricing/pricing-api is waiting"},
+			awaitingHere: 1,
+		})).To(Equal(ReasonAwaitingApproval))
+		Expect(reasonOf(claimEffects{
+			unboundHere: []string{"prices: project pricing refused this binding"},
+		})).To(Equal(ReasonNotAdmittedHere))
+		// One of each is not "waiting": something here was refused, and the
+		// worse of the two is what the environment reports.
+		Expect(reasonOf(claimEffects{
+			unboundHere:  []string{"prices: waiting", "rates: refused"},
+			awaitingHere: 1,
+		})).To(Equal(ReasonNotAdmittedHere))
+	})
+
+	It("keeps a binding an older operator resolved, on an offering since closed", func() {
+		// The grant is recorded when a claim binds under an open offering,
+		// and an operator older than this one recorded none — so a claim it
+		// bound would otherwise lose its address the moment somebody closed
+		// the offering, for a decision nobody on this side took. Nothing but
+		// an open offering could have resolved it, so it is recorded as one.
+		const name = "older-operator"
+		createClaim(name, `{"service": {"project": "pricing", "offering": "pricing-api"}}`)
+		reconcileOnce(name)
+		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+
+		claim := getClaim(name)
+		claim.Status.Service.Grant = nil
+		Expect(k8sClient.Status().Update(ctx, claim)).To(Succeed())
+
+		offer(kitchenv1alpha1.ServiceOffering{Name: "pricing-api"})
+		reconcileOnce(name)
+		Expect(getClaim(name).Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+		grant := getClaim(name).ServiceGrant()
+		Expect(grant).NotTo(BeNil())
+		Expect(grant.Open).To(BeTrue())
+	})
+
+	It("needs nobody's approval for a project binding its own offering", func() {
+		offer(kitchenv1alpha1.ServiceOffering{Name: "pricing-api"})
+		claim := &kitchenv1alpha1.ResourceClaim{
+			ObjectMeta: metav1.ObjectMeta{Name: "own-offering", Namespace: namespace},
+			Spec: kitchenv1alpha1.ResourceClaimSpec{
+				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: provider},
+				Type:       kitchenv1alpha1.ClaimTypeService,
+				Config: &runtime.RawExtension{
+					Raw: []byte(`{"service": {"project": "pricing", "offering": "pricing-api"}}`)},
+			},
+		}
+		Expect(k8sClient.Create(ctx, claim)).To(Succeed())
+		reconcileOnce("own-offering")
+		Expect(getClaim("own-offering").Status.Phase).To(Equal(kitchenv1alpha1.ClaimBound))
+		Expect(getClaim("own-offering").ServiceGrant()).To(BeNil(),
+			"a project binding its own offering asks nobody, so there is nothing to record")
 	})
 
 	It("waits for an environment the provider has not deployed into yet", func() {
@@ -479,7 +743,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 			},
 		}
-		vars, unbound, err := serviceBindingEnv(ctx, k8sClient, previewEnv, consumer, consumerNS)
+		vars, unbound, _, err := serviceBindingEnv(ctx, k8sClient, previewEnv, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(vars).To(BeEmpty())
 		Expect(unbound).To(HaveLen(1))
@@ -492,7 +756,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 				Type:       kitchenv1alpha1.EnvironmentProduction,
 			},
 		}
-		vars, unbound, err = serviceBindingEnv(ctx, k8sClient, prod, consumer, consumerNS)
+		vars, unbound, _, err = serviceBindingEnv(ctx, k8sClient, prod, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(unbound).To(BeEmpty())
 		Expect(vars).NotTo(BeEmpty())
@@ -528,7 +792,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 				Type:       kitchenv1alpha1.EnvironmentPreview,
 			},
 		}
-		vars, unbound, err := serviceBindingEnv(ctx, k8sClient, previewEnv, consumer, consumerNS)
+		vars, unbound, _, err := serviceBindingEnv(ctx, k8sClient, previewEnv, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(unbound).To(BeEmpty())
 		Expect(vars).NotTo(BeEmpty())
@@ -614,7 +878,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 				DataClass:  kitchenv1alpha1.DataClassConfidential,
 			},
 		}
-		vars, unbound, err := serviceBindingEnv(ctx, k8sClient, classified, consumer, consumerNS)
+		vars, unbound, _, err := serviceBindingEnv(ctx, k8sClient, classified, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(vars).To(BeEmpty())
 		Expect(unbound).To(HaveLen(1))
@@ -622,7 +886,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 
 		// An environment at or below the rating reads it, unchanged.
 		classified.Spec.DataClass = kitchenv1alpha1.DataClassPublic
-		vars, unbound, err = serviceBindingEnv(ctx, k8sClient, classified, consumer, consumerNS)
+		vars, unbound, _, err = serviceBindingEnv(ctx, k8sClient, classified, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(unbound).To(BeEmpty())
 		Expect(vars).NotTo(BeEmpty())
@@ -720,7 +984,7 @@ var _ = Describe("ResourceClaim of type service", func() {
 				Type:       kitchenv1alpha1.EnvironmentProduction,
 			},
 		}
-		vars, unbound, err := serviceBindingEnv(ctx, k8sClient, prod, consumer, consumerNS)
+		vars, unbound, _, err := serviceBindingEnv(ctx, k8sClient, prod, consumer, consumerNS)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(vars).To(BeEmpty())
 		Expect(unbound).To(HaveLen(1))

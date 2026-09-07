@@ -76,6 +76,8 @@ export type Route =
   | "POST /api/v1/projects/{name}/members"
   | "PATCH /api/v1/projects/{name}/members"
   | "DELETE /api/v1/projects/{name}/members"
+  | "GET /api/v1/projects/{name}/requests"
+  | "PATCH /api/v1/projects/{name}/requests/{claim}"
   | "GET /api/v1/projects/{name}/keys"
   | "POST /api/v1/projects/{name}/keys"
   | "DELETE /api/v1/projects/{name}/keys/{key}"
@@ -211,6 +213,7 @@ export type Route =
   | "POST /api/v1/claims"
   | "GET /api/v1/claims/{name}"
   | "DELETE /api/v1/claims/{name}"
+  | "POST /api/v1/claims/{name}/request"
   | "GET /api/v1/claims/{name}/recoveries"
   | "POST /api/v1/claims/{name}/recoveries"
   | "POST /api/v1/claims/{name}/recoveries/{recovery}/promote"
@@ -244,6 +247,8 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "adding somebody to a project" },
   "PATCH /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "changing somebody's role on a project" },
   "DELETE /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "removing somebody from a project" },
+  "GET /api/v1/projects/{name}/requests": { kind: "projectRole", role: "admin", doing: "reading what other projects have asked to bind" },
+  "PATCH /api/v1/projects/{name}/requests/{claim}": { kind: "projectRole", role: "admin", doing: "admitting another project to an offering" },
   "GET /api/v1/projects/{name}/keys": { kind: "projectRole", role: "viewer", doing: "reading a project's CI keys" },
   "POST /api/v1/projects/{name}/keys": { kind: "projectRole", role: "admin", doing: "issuing a CI key for a project" },
   "DELETE /api/v1/projects/{name}/keys/{key}": { kind: "projectRole", role: "admin", doing: "revoking a project's CI key" },
@@ -379,6 +384,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/claims": { kind: "projectRole", role: "developer", doing: "claiming a resource" },
   "GET /api/v1/claims/{name}": { kind: "projectRole", role: "viewer", doing: "reading a resource claim" },
   "DELETE /api/v1/claims/{name}": { kind: "projectRole", role: "developer", doing: "deleting a resource claim" },
+  "POST /api/v1/claims/{name}/request": { kind: "projectRole", role: "developer", doing: "asking again to bind an offering" },
   "GET /api/v1/claims/{name}/recoveries": { kind: "projectRole", role: "viewer", doing: "reading what a claim can be recovered to" },
   "POST /api/v1/claims/{name}/recoveries": { kind: "projectRole", role: "developer", doing: "recovering a claim to a point in time" },
   "POST /api/v1/claims/{name}/recoveries/{recovery}/promote": { kind: "projectRole", role: "developer", doing: "promoting a recovery" },

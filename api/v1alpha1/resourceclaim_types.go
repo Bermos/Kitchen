@@ -1002,6 +1002,106 @@ type ClaimServiceStatus struct {
 	// platform's own order.
 	// +optional
 	Bindings []ClaimServiceBinding `json:"bindings,omitempty"`
+
+	// Grant is the providing project's answer to this claim: whether it may
+	// bind at all (#495).
+	//
+	// Absent on a claim nobody has had to answer for and that bound nothing
+	// on the strength of an open door either: a project binding its own
+	// `request` offering, which asks nobody, and a claim written before this
+	// operator. A claim on an **open** offering does carry one — recorded
+	// with Open set the moment it binds, including a project's own — because
+	// that record is what keeps it binding if the offering is closed later.
+	// +optional
+	Grant *ClaimServiceGrant `json:"grant,omitempty"`
+}
+
+// ServiceGrantState is where the providing project's answer to one claim has
+// got to.
+//
+// It is three words rather than a bool because "not yet" and "no" are
+// different things to the consumer, to the screen and to the reconciler: a
+// requested binding is waiting for a person and provisions nothing, while a
+// denied one is a decision somebody made and carries their words.
+// +kubebuilder:validation:Enum=requested;approved;denied
+type ServiceGrantState string
+
+const (
+	// ServiceGrantRequested is a request nobody has answered.
+	ServiceGrantRequested ServiceGrantState = "requested"
+	// ServiceGrantApproved is a request the providing project's admins
+	// approved — or, with Open set, a binding that needed no approval
+	// because the offering was open to every project when it bound.
+	ServiceGrantApproved ServiceGrantState = "approved"
+	// ServiceGrantDenied is a request refused, or an approval withdrawn.
+	// The two are one state because they are one fact — this consumer is
+	// not admitted — and Reason carries which of them it was in the
+	// provider's own words.
+	ServiceGrantDenied ServiceGrantState = "denied"
+)
+
+// ClaimServiceGrant is the providing project's answer to this claim: who
+// asked, who decided, when, and why (#495).
+//
+// It lives on the *consumer's* claim rather than on the provider's project
+// because the grant is per binding and not per project — approving checkout
+// for `pricing-api` says nothing about approving it for anything else — and
+// because approval is a transition of the claim, which is the object that is
+// waiting for it. A claim deleted and written again is a new request, which
+// is the correct reading of somebody asking twice.
+type ClaimServiceGrant struct {
+	// State is requested, approved or denied.
+	State ServiceGrantState `json:"state"`
+
+	// RequestedBy is the account whose claim asked, as the API knew them,
+	// and RequestedAt is when they last asked — a denied request asked
+	// again moves both.
+	// +optional
+	RequestedBy string `json:"requestedBy,omitempty"`
+	// +optional
+	RequestedAt metav1.Time `json:"requestedAt,omitempty"`
+
+	// DecidedBy is the admin of the *providing* project who approved or
+	// denied it, and DecidedAt is when. Both are empty on a request nobody
+	// has answered, and on an approval Open explains instead.
+	// +optional
+	DecidedBy string `json:"decidedBy,omitempty"`
+	// +optional
+	DecidedAt *metav1.Time `json:"decidedAt,omitempty"`
+
+	// Reason is the decision's own words, required of a denial because a
+	// refusal the consumer cannot account for is a support ticket. Empty on
+	// a request nobody has answered.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Open records an approval nobody made: the offering was open to every
+	// project on the platform when this claim bound, so no request was ever
+	// put to anybody.
+	//
+	// It is written down rather than inferred because of what happens next.
+	// An offering moved from `open` to `request` must not break the
+	// bindings it already has — the projects reading it did nothing — so
+	// this is the record that says the binding was admitted before the door
+	// closed. Closing it freezes *new* consumers; the ones already through
+	// are withdrawn one at a time, deliberately, by denying them.
+	// +optional
+	Open bool `json:"open,omitempty"`
+}
+
+// ServiceGrant is the providing project's answer to this claim, or nil where
+// it has never needed one.
+func (c *ResourceClaim) ServiceGrant() *ClaimServiceGrant {
+	if c.Status.Service == nil {
+		return nil
+	}
+	return c.Status.Service.Grant
+}
+
+// Admitted reports whether this grant lets the claim bind. A nil grant does
+// not: a claim that has never been answered is not one that was approved.
+func (g *ClaimServiceGrant) Admitted() bool {
+	return g != nil && g.State == ServiceGrantApproved
 }
 
 // ServiceBinding is what an environment of class `consumer` reaches through
@@ -1019,13 +1119,21 @@ func (c *ResourceClaim) ServiceBinding(consumer EnvironmentType) (ClaimServiceBi
 }
 
 // ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
-// +kubebuilder:validation:Enum=Pending;Bound;Failed
+// +kubebuilder:validation:Enum=Pending;PendingApproval;Bound;Failed
 type ClaimPhase string
 
 const (
 	ClaimPending ClaimPhase = "Pending"
-	ClaimBound   ClaimPhase = "Bound"
-	ClaimFailed  ClaimPhase = "Failed"
+	// ClaimPendingApproval is a binding waiting for the *providing*
+	// project to approve it (#495). It is its own phase rather than a
+	// reason on Pending because the two wait for different things: an
+	// ordinary Pending resolves on a timer — an environment appears, a
+	// provider finishes — while this one resolves only when a person acts,
+	// and the screen that lists what is waiting for a person filters on
+	// exactly this.
+	ClaimPendingApproval ClaimPhase = "PendingApproval"
+	ClaimBound           ClaimPhase = "Bound"
+	ClaimFailed          ClaimPhase = "Failed"
 )
 
 // ClaimBranch records one provider-side resource the claim created for a

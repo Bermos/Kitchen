@@ -234,9 +234,11 @@ func TestAServiceClaimBindsAnOffering(t *testing.T) {
 }
 
 func TestAServiceClaimIsRefusedWhatItCannotBind(t *testing.T) {
-	// Two offerings: one that admits by request — which is what the third
-	// case is about — and one that is open, so the refusals that come after
-	// the grant check have something to reach.
+	// Two offerings, one of each visibility. Neither visibility is a
+	// refusal at the door any more (#495): a claim on an offering that
+	// admits by request is *created* and waits for the providing project to
+	// answer it, which is what TestABindingOnARequestOfferingIsWrittenAndWaits
+	// covers.
 	provider := pricingProject(
 		kitchenv1alpha1.ServiceOffering{Name: openOfferingName},
 		kitchenv1alpha1.ServiceOffering{Name: "open-api", VisibleTo: kitchenv1alpha1.OfferingOpen},
@@ -264,11 +266,6 @@ func TestAServiceClaimIsRefusedWhatItCannotBind(t *testing.T) {
 			`{"name": "prices", "project": "shop", "type": "service",
 				"service": {"project": "pricing", "offering": "rates"}}`,
 			"makes no offering named",
-		},
-		"an offering that admits by request": {
-			`{"name": "prices", "project": "shop", "type": "service",
-				"service": {"project": "pricing", "offering": "pricing-api"}}`,
-			"admits consumers by request",
 		},
 		"a connection": {
 			`{"name": "prices", "project": "shop", "type": "service", "connection": "gh",

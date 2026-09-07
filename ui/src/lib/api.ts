@@ -391,11 +391,11 @@ export interface Promotion {
  * may bind to it.
  *
  * `visibility` is the half of it the platform owns. `open` admits every
- * project; `request` admits the ones the providing project has approved, and
- * approving is not built yet — so a `request` offering is listed and binds
- * nobody. Everything else may also be declared in the repository's
- * kitchen.json, which is why an offering can arrive here without anybody
- * having filled this form in. */
+ * project; `request` admits the ones the providing project has admitted, one
+ * at a time — a claim on such an offering is the request, and waits.
+ * Everything else may also be declared in the repository's kitchen.json,
+ * which is why an offering can arrive here without anybody having filled this
+ * form in. */
 export interface Offering {
   /** The project that makes the offering. */
   project: string;
@@ -2490,6 +2490,52 @@ export interface ServiceBinding {
   reason?: string;
 }
 
+/** The providing project's answer to one binding (#495).
+ *
+ * An offering whose visibility is `request` admits nobody until that project
+ * says so, and the claim is the request: it waits in phase
+ * `PendingApproval`, provisioning nothing, until an admin of the providing
+ * project answers it. `open` marks a binding nobody was asked about, because
+ * the offering was open to every project when it bound — closing the offering
+ * afterwards leaves it binding. */
+export interface ServiceGrant {
+  /** "requested", "approved" or "denied". */
+  state: string;
+  requestedBy?: string;
+  requestedAt?: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  /** The decision's own words. Required of a refusal, because the consumer
+   * reads it here and nowhere else. */
+  reason?: string;
+  open?: boolean;
+}
+
+/** One project's request to bind one offering, as the *providing* project
+ * reads it: who asked, for what, and what was decided. */
+export interface BindingRequest {
+  /** The consumer's claim, which is what a decision addresses. */
+  claim: string;
+  /** The project that asked. */
+  project: string;
+  offering: string;
+  /** That offering's visibility as it stands now. An offering that is `open`
+   * admits everybody by its own terms, so there is nothing to decide about
+   * one; an offering since withdrawn carries none. */
+  visibility?: string;
+  state: string;
+  /** The claim's own phase, which is what the request came to in the end. */
+  phase?: string;
+  requestedBy?: string;
+  requestedAt?: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  reason?: string;
+  /** Admitted because the offering was open when it bound, rather than by
+   * anybody's decision. */
+  open?: boolean;
+}
+
 export interface Claim {
   name: string;
   project: string;
@@ -2505,6 +2551,12 @@ export interface Claim {
      * that name what would permit it. Empty on a claim that has not resolved
      * yet. */
     bindings: ServiceBinding[];
+    /** The providing project's answer to this binding: waiting, admitted, or
+     * refused with the words that say why. Absent on a binding nobody had to
+     * answer for and that no open door admitted either — a project binding
+     * its own `request` offering, and one made before the operator recorded
+     * grants. A claim on an `open` offering carries one with `open: true`. */
+    grant?: ServiceGrant;
   };
   /** The claim's declared sensitivity class — never above its project's,
    * which the create refuses. Absent means unclassified. */
@@ -5337,6 +5389,31 @@ export const api = {
     request<Domain>("POST", "/domains", domain),
   deleteDomain: (name: string) => request<Domain>("DELETE", `/domains/${name}`),
   claims: list<Claim>("/claims"),
+  // What other projects have asked to bind of this one's offerings (#495),
+  // and this project's answer. Both are the *providing* project's: reading
+  // is its viewers', deciding is its admins', and it is the same grant the
+  // offering's own visibility is — one consumer at a time.
+  bindingRequests: (project: string, state?: string) =>
+    list<BindingRequest>(`/projects/${encodeURIComponent(project)}/requests`)(
+      state ? { state } : undefined,
+    ),
+  decideBindingRequest: (
+    project: string,
+    claim: string,
+    decision: { decision: string; reason?: string },
+  ) =>
+    request<BindingRequest>(
+      "PATCH",
+      `/projects/${encodeURIComponent(project)}/requests/${encodeURIComponent(claim)}`,
+      decision,
+    ),
+  // Asking again for a binding that was refused, on the same claim: the
+  // consumer's own write, and the record of who asked and who refused stays.
+  requestBinding: (claim: string) =>
+    request<BindingRequest>(
+      "POST",
+      `/claims/${encodeURIComponent(claim)}/request`,
+    ),
   // The offering catalogue: what the projects on this platform offer each
   // other. It answers about projects this account holds no role on, which is
   // the grant doing what it says — an offering nobody can find is one nobody

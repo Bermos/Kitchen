@@ -909,8 +909,9 @@ spec:
                                         # or tcp, the host and the port alone
       auth: none                        # the only rung built; a gate and per-consumer OIDC
                                         # identities are a later issue
-      visibility: open                  # request (default) admits only approved consumers, and
-                                        # approving is not built yet; open admits every project
+      visibility: open                  # request (default) admits only the consumers this
+                                        # project has admitted, one at a time; open admits every
+                                        # project on the platform
       environment: my-shop-production   # which environment serves it; empty is production
 status:
   conditions: [...]                     # Ready, Previews, PreviewCapacity, SourceConnected,
@@ -2242,7 +2243,9 @@ spec:
         size: 40Gi
         storageClass: fast-ssd
 status:
-  phase: Bound                          # Pending | Bound | Failed
+  phase: Bound                          # Pending | PendingApproval | Bound | Failed.
+                                        # PendingApproval is a service binding waiting for the
+                                        # project that makes the offering to answer it (#495)
   secretName: shop-db-binding           # binding keys: url, host, port, user, password, database,
                                         # and ca where the platform runs the database itself —
                                         # mounted at /var/run/kitchen/claims/<claim>/ca.crt, which
@@ -2870,6 +2873,15 @@ status:
         environment: pricing-staging    # a stage whose owners opened it to previews
         secretName: prices-binding-preview
         host: pricing-staging.kitchen-pricing.svc.cluster.local
+    grant:                              # the PROVIDING project's answer to this binding (#495).
+      state: approved                   # requested | approved | denied. Absent where nobody had to
+      decidedBy: grace@example.com      # answer and no door was open either — a project binding
+                                        # its own REQUEST offering. An open one records the grant
+                                        # below whoever binds it, its own project included
+      decidedAt: "2026-09-07T10:12:00Z"
+      reason: "same team"               # required of a refusal: the consumer reads it here
+      # open: true                      # admitted because the offering was open when it bound,
+                                        # rather than by anybody's decision
 ```
 
 The provider side is [`Project.spec.offers`](#project-namespaced-kitchen-system):
@@ -2897,12 +2909,39 @@ then deploy without the binding's variables and say so on their `ClaimsBound`
 condition.
 
 **What is Failed and what is Pending.** A project that does not exist, an
-offering it does not make, an offering that admits consumers by request, a
-workload nothing addresses, and an offering no environment of the provider
-admits any class of this consumer are all `Failed` with the name in the
-message: nothing appears on a timer that would make any of them right. An
-environment the providing project has not deployed into yet is `Pending`,
-because that one does.
+offering it does not make, a workload nothing addresses, an offering no
+environment of the provider admits any class of this consumer, and a binding
+the providing project refused are all `Failed` with the name in the message:
+nothing appears on a timer that would make any of them right. An environment
+the providing project has not deployed into yet is `Pending`, because that one
+does.
+
+**A binding waiting to be admitted is `PendingApproval`.** An offering whose
+`visibility` is `request` — the default — admits nobody until the providing
+project says so, and the claim is the request: it provisions nothing, writes
+no Secret and hands out no variable while it waits. The answer is
+`status.service.grant`, written by that project's admins through
+[`PATCH /projects/{name}/requests/{claim}`](api/projects.md#admitting-a-consumer-or-withdrawing-one):
+
+```yaml
+status:
+  phase: PendingApproval
+  service:
+    grant:
+      state: requested          # requested | approved | denied
+      requestedBy: ada@example.com
+      requestedAt: "2026-09-07T09:00:00Z"
+      # once answered:
+      # decidedBy, decidedAt, reason — and `open: true` on a binding nobody
+      # was asked about, because the offering was open when it bound
+```
+
+It is the one thing on this status the reconciler does not work out for
+itself, so every pass carries it forward. `open: true` is what makes closing
+an offering safe: moving `visibility` from `open` to `request` freezes new
+consumers and leaves the ones already bound binding — each is withdrawn on its
+own, by refusing it, which removes its Secrets and rolls the consumer's
+environments without the variables.
 
 **Deleting the claim takes back the Secret and nothing else** — the offering
 carries on being offered. Deleting the *providing project* is refused while

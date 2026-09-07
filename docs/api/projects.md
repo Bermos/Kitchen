@@ -410,7 +410,7 @@ end of it, which is why the dashboard names them beside each row.
 | `process` | The workload that answers: `web`, or one of the project's `service` workloads. Empty is `web`. A worker or a scheduled job the project declares is refused here — nothing addresses one, so there is no address to hand a consumer. A name the project does not declare is admitted, because a repository's `kitchen.json` replaces the workload list at every build: what a consumer's claim resolves the offering against is the release the environment is running, and a name no release ever had is reported on the consumer's claim |
 | `protocol` | `http`, handed to a consumer as a URL as well as a host and a port, or `tcp`, handed over as the host and the port alone. Empty is `http` |
 | `auth` | What a consumer has to do to be admitted by the application itself. `none` is the only rung built, and it is not the weak rung it reads as — what admits a consumer is the grant below, and reachability once policy between application namespaces lands. A forward-auth gate and per-consumer OIDC identities are their own issue |
-| `visibility` | `request` (the default) admits only consumers this project has approved, and approving is not built yet — so a `request` offering binds nobody. `open` admits every project on the platform |
+| `visibility` | `request` (the default) admits only the consumers this project has admitted, one at a time, through the requests below. `open` admits every project on the platform |
 | `environment` | Which environment of *this* project serves it. Empty is the project's production environment. It is the offering's default and not the consumer's choice |
 
 **The shape may come from `kitchen.json`; the grant may not.** Which workload
@@ -431,6 +431,76 @@ no role on. That is the offering doing what it says rather than a hole in the
 scope rule: an `open` offering admits any project, so its name is already
 knowable by anybody who could write the claim. Nothing else about the project
 is on that row.
+
+### Who has asked to bind this project's offerings
+
+An offering whose `visibility` is `request` admits nobody until this project
+says so, and a consumer asks by writing its
+[claim](claims.md#asking-to-bind-and-being-answered), which then waits.
+
+```http
+GET /api/v1/projects/{name}/requests
+```
+
+answers every binding another project has asked of this one — waiting,
+admitted or refused — oldest request first, because a queue is answered from
+the top. `?state=requested`, `?state=approved` or `?state=denied` narrows it;
+anything else is a `400`.
+
+```json
+{"items": [
+  {"claim": "prices", "project": "checkout", "offering": "pricing-api",
+   "visibility": "request", "state": "requested", "phase": "PendingApproval",
+   "requestedBy": "ada@example.com", "requestedAt": "2026-09-07T09:00:00Z"}
+]}
+```
+
+The row names the project that asked, the claim it asked with, and
+`requestedBy` — **the account that asked**, by the name the platform knows
+them under. That is somebody else's person answered to this project, and it is
+why the queue needs `admin` on **this** project rather than `viewer`: it is
+the deciders' inbox, and a decision made without knowing who is asking is not
+a decision. Nothing beyond those three crosses — not the consumer's
+repository, its members, its environments or its addresses.
+
+The decided ones stay in the list rather than dropping out of it, because this
+is also where a grant is withdrawn: one nobody can find again is one nobody
+can take back. `open: true` marks a consumer an `open` offering let in without
+anybody being asked.
+
+### Admitting a consumer, or withdrawing one
+
+```http
+PATCH /api/v1/projects/{name}/requests/{claim}
+{"decision": "approved"}
+{"decision": "denied", "reason": "this offering is being retired — use pricing-api-v2"}
+```
+
+`admin` on **this** project — the providing one. It is the same grant
+`visibility` is, made one consumer at a time rather than for every project on
+the platform, and that is set by an admin here too.
+
+- **Approving writes the grant and nothing else.** The consumer's claim
+  resolves the address on its next reconcile, through the same path an `open`
+  offering binds by — one bind path, not two.
+- **Refusing and withdrawing are one decision**, `denied`, because they are
+  one fact: this project is not admitted. `reason` is **required**, because
+  the consumer reads it on its own claim and nowhere else — it holds no role
+  here, and a refusal it cannot account for is a support ticket rather than a
+  decision. Withdrawing an approval takes the address back: the binding
+  Secrets are removed and the consumer's environments roll without the
+  variables.
+- A decision on an offering that is `open` is a `409` saying so: it admits
+  every project by its own terms, so nothing here would change what it does.
+  Set its `visibility` to `request` first — the projects already bound stay
+  bound, and each is then withdrawn on its own.
+- Deciding the same way twice is a `409`; a claim that is not a request of
+  this project's offerings is a `404`.
+
+The decision is recorded in **this** project's audit log — its admins
+exercising its grant — classified `access`, naming the consumer, the claim,
+the offering and the words. The consumer's own activity feed carries the
+answer, because that is where the people waiting for it are looking.
 
 ### The preview ceiling
 

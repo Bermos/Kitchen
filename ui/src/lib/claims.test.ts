@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  bindingRequestSentence,
   claimCautions,
+  isBindingRequest,
   claimCertificateBadge,
   claimDeletionOutcome,
   claimDeletionWarning,
@@ -231,5 +233,75 @@ describe("claimCertificateBadge", () => {
   it("says nothing about a claim whose provider does not say", () => {
     expect(claimCertificateBadge({})).toBeNull();
     expect(claimCertificateBadge({ conditions: [] })).toBeNull();
+  });
+});
+
+// Asking to bind, and being answered (#495). The sentence is read on the
+// *consumer's* screen, where the person reading it cannot act on it — the
+// grant is the providing project's — so each of these is a statement of fact
+// rather than an instruction.
+describe("what a binding is waiting for", () => {
+  const claim = (state: string, reason?: string): Claim => ({
+    name: "prices",
+    project: "shop",
+    connection: "",
+    type: "service",
+    createdAt: "2026-09-07T00:00:00Z",
+    service: {
+      project: "pricing",
+      offering: "pricing-api",
+      bindings: [],
+      grant: { state, ...(reason ? { reason } : {}) },
+    },
+  });
+
+  it("says who has not answered yet", () => {
+    const said = bindingRequestSentence(claim("requested"));
+    expect(said).toContain("pricing");
+    expect(said).toContain("pricing/pricing-api");
+    expect(said).toContain("waiting");
+  });
+
+  it("carries the refusal in the provider's own words", () => {
+    expect(bindingRequestSentence(claim("denied", "we are retiring this offering"))).toContain(
+      "we are retiring this offering",
+    );
+  });
+
+  it("says so when a refusal came with none", () => {
+    expect(bindingRequestSentence(claim("denied"))).toContain("no reason was given");
+  });
+
+  // The rule the two claim tables follow: a refused binding is `Failed`, so
+  // without this it would draw twice — once as a refusal of the platform's
+  // and once as the provider's answer.
+  it("is the row a waiting or refused binding belongs to, and nothing else's", () => {
+    expect(isBindingRequest(claim("requested"))).toBe(true);
+    expect(isBindingRequest(claim("denied", "not yet"))).toBe(true);
+    expect(isBindingRequest(claim("approved"))).toBe(false);
+    expect(
+      isBindingRequest({
+        name: "shop-db",
+        project: "shop",
+        connection: "postgres",
+        type: "postgres",
+        createdAt: "2026-09-07T00:00:00Z",
+        phase: "Failed",
+      }),
+    ).toBe(false);
+  });
+
+  it("says nothing about a binding nobody had to answer for", () => {
+    expect(bindingRequestSentence(claim("approved"))).toBe("");
+    expect(
+      bindingRequestSentence({
+        name: "prices",
+        project: "shop",
+        connection: "",
+        type: "service",
+        createdAt: "2026-09-07T00:00:00Z",
+        service: { project: "pricing", offering: "pricing-api", bindings: [] },
+      }),
+    ).toBe("");
   });
 });

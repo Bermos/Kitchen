@@ -77,10 +77,10 @@ func serviceBindingEnv(
 	env *kitchenv1alpha1.Environment,
 	projectName string,
 	appNS string,
-) ([]corev1.EnvVar, []string, error) {
+) ([]corev1.EnvVar, []string, int, error) {
 	claims := &kitchenv1alpha1.ResourceClaimList{}
 	if err := c.List(ctx, claims, client.InNamespace(env.Namespace)); err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	bound := make([]*kitchenv1alpha1.ResourceClaim, 0, len(claims.Items))
 	for i := range claims.Items {
@@ -105,10 +105,18 @@ func serviceBindingEnv(
 
 	vars := make([]corev1.EnvVar, 0, len(bound)*3)
 	var unbound []string
+	// How many of those are waiting for a person rather than refused by
+	// one. The environment says the same sentence either way, but what it
+	// *is* differs — a request nobody has answered is not a refusal — and
+	// the condition's reason is what the screens read that off (#495).
+	awaiting := 0
 	for _, claim := range bound {
 		secretName, refusal := bindingForEnvironment(claim, env)
 		if refusal != "" {
 			unbound = append(unbound, claim.Name+": "+refusal)
+			if awaitingApproval(claim) {
+				awaiting++
+			}
 			continue
 		}
 		secret := &corev1.Secret{}
@@ -124,7 +132,7 @@ func serviceBindingEnv(
 					"claim", claim.Name, "secret", secretName, "environment", env.Name)
 				continue
 			}
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
 		prefix := kitchenv1alpha1.ServiceEnvPrefix(claim.Name)
 		// The URL is the one key that can be absent: an offering that speaks
@@ -139,7 +147,16 @@ func serviceBindingEnv(
 			bindingVar(prefix+"_PORT", secretName, service.BindingKeyPort),
 		)
 	}
-	return vars, unbound, nil
+	return vars, unbound, awaiting, nil
+}
+
+// awaitingApproval reports whether this claim binds nothing here because the
+// providing project has not answered its request yet (#495) — which is a
+// person's turn to act rather than a refusal, and is why the environment's
+// condition carries a reason of its own for it.
+func awaitingApproval(claim *kitchenv1alpha1.ResourceClaim) bool {
+	grant := claim.ServiceGrant()
+	return grant != nil && grant.State == kitchenv1alpha1.ServiceGrantRequested
 }
 
 // bindingForEnvironment is the Secret this environment reads a claim's
@@ -174,6 +191,13 @@ func bindingForEnvironment(
 		// down for a fact about the platform.
 		return claim.Status.SecretName, ""
 	}
+	// The providing project's answer comes before anything about classes of
+	// environment: a binding nobody has admitted reaches nothing anywhere,
+	// and the environment says so in the same words the claim does rather
+	// than in the ones about who serves whom (#495).
+	if reason := serviceGrantReason(claim); reason != "" {
+		return "", reason
+	}
 	binding, ok := claim.ServiceBinding(env.Spec.Type)
 	if !ok {
 		return "", serviceBindingReason(claim, env.Spec.Type)
@@ -186,6 +210,28 @@ func bindingForEnvironment(
 		return binding.SecretName, ""
 	}
 	return "", refusal
+}
+
+// serviceGrantReason is why a claim the providing project has not admitted
+// reaches nothing here, and "" for one it has — including every claim on an
+// open offering and every project binding its own.
+//
+// Both sentences are the claim's own, from the one place they are written
+// (grantAwaited and grantRefused), because this reader and the reader of the
+// claim's status are looking at one fact and must not be told it two ways.
+// Like every other sentence a service binding writes it is a **statement of
+// fact rather than an instruction**: the reader is the consumer, and the acts
+// it names belong to the providing project's admins.
+func serviceGrantReason(claim *kitchenv1alpha1.ResourceClaim) string {
+	grant := claim.ServiceGrant()
+	if grant == nil || grant.Admitted() {
+		return ""
+	}
+	cfg := claim.Service()
+	if grant.State == kitchenv1alpha1.ServiceGrantDenied {
+		return grantRefused(cfg.Project, cfg.Offering, grant)
+	}
+	return grantAwaited(cfg.Project, cfg.Offering)
 }
 
 // serviceBindingReason is the claim's own words about why this class of
