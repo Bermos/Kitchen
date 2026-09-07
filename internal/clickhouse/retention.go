@@ -93,6 +93,11 @@ var retentionTargets = []retentionTarget{
 	// about: an open condition is kept for as long as it is open, and
 	// measuring it against the horizon would report the platform holding
 	// data past its date every time an outage outlasted the retention.
+	//
+	// The mitigation records answer to the same class and carry its plain
+	// TTL. They are not the principal table: "how far back does the signal
+	// history go" is answered by the conditions rather than by the decisions
+	// about them, and the durable copy of every decision is the audit log.
 	{retention.ClassSignals, SignalTransitionsTable, timeColumnKitchen, resolvedTransitionsCondition},
 	{retention.ClassActivity, EventsTable, timeColumnKitchen, ""},
 	{retention.ClassAudit, AuditTable, timeColumnKitchen, ""},

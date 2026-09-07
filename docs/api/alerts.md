@@ -237,6 +237,31 @@ lives on the subscription: what kind of thing a condition is, and what a reader
 is meant to do about it, is catalogue knowledge versioned with the catalogue;
 which of them reach a given relay is an installation's preference.
 
+## From the terminal
+
+There is no `kitchen alerts` command yet, and that is a decision rather than an
+omission. The CLI's shape is *one directory, one project, the deploy in front
+of you* — link, deploy, follow, logs, env, rollback — and triage across an
+estate is the shape of a screen: the list is read, scanned and sorted before
+anything is done to one row of it. A command would be a table printed once,
+and the useful half of it is the sorting.
+
+`kitchen api` reaches all five routes authenticated, which is what makes them
+scriptable today:
+
+```sh
+kitchen api GET /alerts | jq '.items[] | select(.tier == "page")'
+kitchen api POST /alerts/ack \
+  -d '{"fingerprint": "workload.crashloop/shop/shop-production/web", "audience": "developer"}'
+```
+
+The case that would change this is the one the CLI is already built for: a
+pipeline that wants to acknowledge what it is about to fix. That case is
+already covered without a command of its own — `kitchen redeploy` and
+`kitchen rollback` call the two routes that record an implicit
+acknowledgement, so a fix started from a terminal stops the escalation clock
+exactly as one started from the dashboard does. See [the CLI](../CLI.md).
+
 ## Route reference
 
 | Method | Path | What | Role |

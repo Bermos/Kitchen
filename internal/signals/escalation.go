@@ -120,6 +120,15 @@ type Alert struct {
 	// `shop / production · unmitigated 4h 12m · nobody has acknowledged`.
 	Note string
 
+	// Owner marks the row belonging to whoever has to fix the condition, as
+	// opposed to the copy somebody else is being kept informed by.
+	//
+	// It is on the row because two rows of one condition can both be
+	// [Alert.Untended] — the bystander's is marked from the owner's clock —
+	// and a list of untended *incidents* is one line per condition rather
+	// than one per delivery.
+	Owner bool
+
 	// Symptom marks the derived row a project reads about a platform
 	// condition degrading it. Nothing on it is actionable and nothing about
 	// it is recorded — see [Symptoms].
@@ -214,6 +223,7 @@ func assessOwner(transition Transition, state MitigationState, now time.Time) Al
 		Tier:       transition.Tier,
 		Mitigation: state,
 		OpenedAt:   transition.OpenedAt,
+		Owner:      true,
 		Actionable: true,
 	}
 

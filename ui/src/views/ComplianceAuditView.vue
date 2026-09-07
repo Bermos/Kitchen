@@ -103,6 +103,11 @@ const mayVerify = computed(() => may("GET /api/v1/audit/verify", callerFor()));
 const mayExportPack = computed(() => may("GET /api/v1/projects/{name}/audit-pack", callerFor()));
 const mayReview = computed(() => may("GET /api/v1/access/reviews", callerFor()));
 const compliance = useAsync(() => api.compliance(), { immediate: mayReadPosture.value });
+/** The conditions nobody has tended to, worst first. The API answers with
+ * `untended: []` and a message where it cannot say — an installation with
+ * nothing recording cannot answer how long anybody has been not looking, and
+ * an empty list rendered as "all clear" would be that mistake in one word. */
+const untended = computed(() => compliance.data.value?.incidents?.untended ?? []);
 // The classification inventory: one request, exportable as it is.
 const inventory = useAsync(() => api.complianceInventory());
 
@@ -303,6 +308,39 @@ const note = computed(() => anchorNote(verification.value));
         timer, because it is a scan and because a number that changes on its own invites nobody to check it.
       </p>
     </div>
+
+    <!-- The escalation ladder's last rung, reported here rather than only on
+         the alerts screen. An outage nobody has looked at for hours is not a
+         louder alert — nothing is more broken at hour four than at hour one —
+         it is a fact about the institution, and this is where facts about the
+         institution are reported, with names on them. -->
+    <div
+      v-if="mayReadPosture && untended.length"
+      class="rounded-md border border-error/40 px-4 py-3 space-y-2"
+    >
+      <p class="text-sm text-highlighted font-medium">Untended incidents</p>
+      <p class="text-xs text-muted">
+        {{ untended.length }} condition{{ untended.length === 1 ? "" : "s" }} open long past the point where somebody
+        should have looked. Each was delivered, escalated and still acknowledged by nobody.
+      </p>
+      <ul class="space-y-1">
+        <li v-for="incident in untended" :key="`${incident.fingerprint}#${incident.audience}`" class="text-xs">
+          <RouterLink
+            :to="incident.project ? { name: 'project-alerts', params: { name: incident.project } } : '/alerts'"
+            class="text-error hover:underline"
+          >
+            {{ incident.title }}
+          </RouterLink>
+          <span class="text-muted"> — {{ incident.note || incident.signal }}</span>
+        </li>
+      </ul>
+    </div>
+    <p
+      v-else-if="mayReadPosture && compliance.data.value?.incidents?.message"
+      class="text-xs text-warning"
+    >
+      {{ compliance.data.value.incidents.message }}
+    </p>
 
     <div v-if="chips.length" class="flex items-center gap-2 flex-wrap text-[11px]">
       <button

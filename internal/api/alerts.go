@@ -247,13 +247,13 @@ func (s *Server) alertRound(ctx context.Context) (alertRound, error) {
 	round := alertRound{now: now}
 
 	store, storeErr := s.logStore(ctx)
-	if recorded, ok := s.recordedSignals(ctx); ok && storeErr == nil {
+	if status, ok := s.currentRound(ctx); ok && storeErr == nil {
 		rows, err := store.OpenSignalTransitions(ctx)
 		if err != nil {
 			return alertRound{}, err
 		}
 		round.open = signals.TransitionsFrom(rows)
-		round.at = recorded.at
+		round.at = status.LastEvaluated.Time
 		round.source = sourceRecorded
 	} else {
 		snapshot := signals.Gather(ctx, s.signalSources(ctx), signals.Options{})
@@ -283,6 +283,14 @@ func (s *Server) alertRound(ctx context.Context) (alertRound, error) {
 	}
 
 	round.alerts = signals.Assess(round.open, states, now)
+	if round.source != sourceRecorded {
+		// Nothing on an evaluated round can be acted on, and the rows say so
+		// themselves rather than only in the message above them: a client
+		// that offered a button here would be offering one the write refuses.
+		for i := range round.alerts {
+			round.alerts[i].Actionable = false
+		}
+	}
 	return round, nil
 }
 
@@ -476,7 +484,7 @@ func (s *Server) openDelivery(
 ) (signals.Transition, bool) {
 	ctx := req.Context()
 
-	if _, current := s.recordedSignals(ctx); !current {
+	if _, current := s.currentRound(ctx); !current {
 		writeJSON(w, http.StatusConflict, errorBody{
 			Error: "nothing is recording what the catalogue finds, so there is no delivery to " +
 				"record this against: switch background evaluation on " +
@@ -647,7 +655,9 @@ func (s *Server) mitigationSubject(ctx context.Context, project string) *kitchen
 	// object is only what it is attributed to.
 	found.Name = project
 	if found.Name == "" {
-		found.Name = "platform"
+		// The same word every other scope-less record here uses, for the same
+		// reason: a condition about nobody's project is the platform's.
+		found.Name = subscriptionScopePlatform
 	}
 	return found
 }
@@ -669,7 +679,7 @@ func (s *Server) ackByAction(ctx context.Context, project, environment, doing st
 	if project == "" {
 		return
 	}
-	if _, current := s.recordedSignals(ctx); !current {
+	if _, current := s.currentRound(ctx); !current {
 		return
 	}
 	store, err := s.logStore(ctx)
@@ -742,7 +752,11 @@ func (s *Server) ackByAction(ctx context.Context, project, environment, doing st
 func untendedIncidents(alerts []signals.Alert) []untendedIncident {
 	incidents := make([]untendedIncident, 0, 4)
 	for _, alert := range alerts {
-		if !alert.Untended || alert.Symptom {
+		// The owner's row alone. A condition past the window marks both of
+		// its deliveries — that is what "adds the operator as a ticket"
+		// means — and an untended *incident* is one thing that happened,
+		// not two rows about it.
+		if !alert.Untended || alert.Symptom || !alert.Owner {
 			continue
 		}
 		incidents = append(incidents, untendedIncident{
@@ -771,7 +785,7 @@ func untendedIncidents(alerts []signals.Alert) []untendedIncident {
 // an installation with nothing recording has no untended incidents rather than
 // none it can see, and the message says which.
 func (s *Server) untendedFromHistory(ctx context.Context) ([]untendedIncident, string) {
-	if _, current := s.recordedSignals(ctx); !current {
+	if _, current := s.currentRound(ctx); !current {
 		return nil, "background evaluation is not recording, so how long a condition has gone " +
 			"unacknowledged is not a question this installation can answer"
 	}
@@ -783,13 +797,12 @@ func (s *Server) untendedFromHistory(ctx context.Context) ([]untendedIncident, s
 	if err != nil {
 		return nil, "the signal history could not be read"
 	}
-	states := map[signals.TransitionKey]signals.MitigationState{}
 	records, err := store.SignalMitigations(ctx)
 	if err != nil {
 		return nil, "what people have done about these conditions could not be read, so nothing " +
 			"here can be said to be untended"
 	}
-	states = signals.FoldMitigations(signals.MitigationsFrom(records))
+	states := signals.FoldMitigations(signals.MitigationsFrom(records))
 	return untendedIncidents(signals.Assess(signals.TransitionsFrom(rows), states, time.Now().UTC())), ""
 }
 
