@@ -43,7 +43,11 @@ import (
 // and every finding records the numbers it was evaluated against so that
 // `v1 @ correlatedProjects=2` and `v1 @ correlatedProjects=3` are
 // distinguishable years later. That is [Policy.Provenance], and an audit pack
-// that could not say what the floor was at the time would not be evidence.
+// that could not say what the numbers were at the time would not be evidence.
+//
+// The set is installation-wide and applies to every project. #472 argues a
+// project should be able to tighten its own — which would make these a floor
+// rather than the whole answer — and that half is #519, not this.
 
 // Policy is the bounded set of thresholds an installation may set.
 //
@@ -278,6 +282,10 @@ func (p Policy) UntendedAfter() time.Duration {
 // ticket: the base tier is catalogue knowledge (#471, decision 4), and a
 // policy that could rewrite it would be the configurable-rules door this
 // package spent §9 keeping shut.
+// It is applied where a delivery is *read* and never where a finding is
+// stamped: a recorded transition carries the tier the rule declared, so
+// changing the policy re-reads every condition already open instead of leaving
+// them at whatever was in force when they opened.
 func (p Policy) Deliver(tier Tier) Tier {
 	if tier == TierPage && !p.Paging {
 		return TierTicket
@@ -301,8 +309,8 @@ func (p Policy) Matches(name PresetName) bool {
 //
 // It is one string rather than six columns because of what it is for. Nobody
 // queries on the escalation window; somebody reads a finding from eight months
-// ago and asks what the floor was when it fired, and an audit pack quotes the
-// answer. A single field also means a threshold added later widens the string
+// ago and asks what this installation counted as worth hearing when it fired,
+// and an audit pack quotes the answer. A single field also means a threshold added later widens the string
 // rather than migrating the table.
 //
 // The order is fixed and the spelling is durations, not seconds, because this

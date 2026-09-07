@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 var alertNow = time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
@@ -365,5 +367,72 @@ func TestMitigationRecordsFold(t *testing.T) {
 	})
 	if !states[key].Silenced(alertNow) {
 		t.Errorf("the newest silence stands whatever order it arrived in: %+v", states[key])
+	}
+}
+
+// A recorded transition carries the tier the *rule* declared, and what this
+// installation does with it is applied when the row is read.
+//
+// The failure this pins: the policy used to be applied where a finding was
+// stamped, so a condition that opened while the homelab preset was in force
+// recorded `ticket` and stayed a ticket after somebody moved the installation
+// to `balanced` — until it happened to resolve and reopen. A policy that only
+// governs what breaks next is not a policy.
+func TestTheRecordedTierIsTheRulesAndThePolicyIsAppliedOnReading(t *testing.T) {
+	homelab, _ := Preset(PresetHomelab)
+	snapshot := newSnapshot()
+	snapshot.Policy = homelab
+	snapshot.Pods = []corev1.Pod{waitingPod("CrashLoopBackOff", "back-off 5m0s")}
+
+	round := Catalogue().Evaluate(snapshot)
+	recorded := NewTracker(Catalogue()).Observe(round, snapshot.Now)
+
+	var opened *Transition
+	for i := range recorded {
+		if recorded[i].Signal == SignalCrashLoop && recorded[i].Audience == AudienceDeveloper {
+			opened = &recorded[i]
+		}
+	}
+	if opened == nil {
+		t.Fatalf("no crash loop was recorded: %+v", recorded)
+	}
+	if opened.Tier != TierPage {
+		t.Fatalf("the history recorded %q, not the tier the rule declares — so the row remembers "+
+			"a setting rather than a condition", opened.Tier)
+	}
+
+	// Read under each policy: the same recorded row, two answers.
+	quiet := Assess(recorded, nil, homelab, snapshot.Now)
+	loud := Assess(recorded, nil, DefaultPolicy(), snapshot.Now)
+	for _, alert := range quiet {
+		if alert.Finding.Signal == SignalCrashLoop && alert.Tier == TierPage {
+			t.Error("a page reached a reader on an installation with paging off")
+		}
+	}
+	paged := false
+	for _, alert := range loud {
+		if alert.Finding.Signal == SignalCrashLoop && alert.Tier == TierPage {
+			paged = true
+		}
+	}
+	if !paged {
+		t.Error("moving off homelab left a condition that was already open at the lower tier")
+	}
+}
+
+// A rule that lowers its own tier lowers it on both rows of the condition: an
+// instance is not milder for one reader and louder for the other.
+func TestALoweredTierReachesBothDeliveries(t *testing.T) {
+	scope := Scope{Kind: ScopeEnvironment, Project: testProject, Environment: testEnvironment}
+	finding := fire(SignalPVCFilling, SeverityWarning, scope, alertNow.Add(-time.Hour),
+		"a volume is filling", "88% of 10Gi used", "")
+	finding.Audience = AudienceDeveloper
+	finding.Tier = TierLog
+
+	for _, transition := range NewTracker(Catalogue()).Observe(Findings{finding}, alertNow) {
+		if transition.Tier != TierLog {
+			t.Errorf("the %s delivery recorded %q, not the tier the rule answered with",
+				transition.Audience, transition.Tier)
+		}
 	}
 }

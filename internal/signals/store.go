@@ -58,6 +58,9 @@ type Store interface {
 	// enough to be worth saying: the ladder is the one rule whose subject is
 	// the history, because "did these begin together" is a question no
 	// snapshot of the estate can answer. See [Snapshot.OpenedAt].
+	//
+	// It is the expensive way to get that answer and the fallback rather than
+	// the path — see [StartsSource].
 	OpenSignalTransitions(ctx context.Context) ([]clickhouse.SignalTransition, error)
 	// TelemetryFreshness is when each node's collector last shipped anything.
 	// A node absent from the answer reported nothing within the lookback,
@@ -106,6 +109,78 @@ type VolumeUsageSource interface {
 // stays quiet until something does.
 type IngestAccounting interface {
 	IngestHealth(ctx context.Context) (IngestHealth, error)
+}
+
+// StartsSource is where the correlation ladder's clock comes from: when this
+// platform first saw each condition that is currently open.
+//
+// It is an interface with two implementations for one reason, and it is a cost
+// reason. The background loop already holds every open condition and its
+// opening instant in memory — that is what [Tracker] *is* — so asking it costs
+// nothing, and asking the store instead would add an unbounded `GROUP BY` over
+// the whole transitions table to every round, for ever, to learn something the
+// process had already. [StoreStarts] is the answer for a caller with no
+// tracker: the API's evaluate-on-request path, which runs only when the loop is
+// off or behind, and pays the query once per screen rather than once a minute.
+type StartsSource interface {
+	SignalStarts(ctx context.Context) (map[string]time.Time, error)
+}
+
+// SignalStarts makes a [Tracker] a [StartsSource]. It reads process memory, so
+// it never fails and never queries anything.
+// A nil tracker answers "nothing known" rather than panicking: it reaches this
+// as a typed nil through the [StartsSource] interface, where a nil check at the
+// call site cannot see it, and a round is not worth an operator restart.
+func (t *Tracker) SignalStarts(context.Context) (map[string]time.Time, error) {
+	if t == nil {
+		return nil, nil
+	}
+	starts := make(map[string]time.Time, len(t.open))
+	for key, episode := range t.open {
+		if episode.openedAt.IsZero() {
+			continue
+		}
+		// One condition is up to two deliveries and they open together; the
+		// earliest is the condition's own start either way.
+		if was, seen := starts[key.Fingerprint]; !seen || episode.openedAt.Before(was) {
+			starts[key.Fingerprint] = episode.openedAt.UTC()
+		}
+	}
+	return starts, nil
+}
+
+// StoreStarts is the same answer read back out of the history, for a caller
+// that holds no tracker.
+func StoreStarts(store Store) StartsSource {
+	if store == nil {
+		return nil
+	}
+	return storeStarts{store: store}
+}
+
+type storeStarts struct {
+	store Store
+}
+
+func (s storeStarts) SignalStarts(ctx context.Context) (map[string]time.Time, error) {
+	open, err := s.store.OpenSignalTransitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	starts := make(map[string]time.Time, len(open))
+	for _, row := range open {
+		opened := row.OpenedAt
+		if opened.IsZero() {
+			opened = row.At
+		}
+		if opened.IsZero() {
+			continue
+		}
+		if was, seen := starts[row.Fingerprint]; !seen || opened.Before(was) {
+			starts[row.Fingerprint] = opened.UTC()
+		}
+	}
+	return starts, nil
 }
 
 // Resolver is how dns.mismatch resolves a name. It is an interface so that the

@@ -331,8 +331,16 @@ func (l *Loop) notify(ctx context.Context, rows []clickhouse.SignalTransition) {
 // with one difference: the client is cached. See [Loop.Client].
 func (l *Loop) sources(store Store) signals.Sources {
 	sources := signals.Sources{
-		Client:      l.Client,
-		Store:       store,
+		Client: l.Client,
+		Store:  store,
+		// The correlation ladder's clock, out of process memory rather than
+		// out of the store. The tracker already holds every open condition and
+		// when it opened — that is what seeding it is for — so asking the
+		// store instead would add an unbounded GROUP BY over the whole
+		// transitions table to every round to learn what this process has
+		// already. It is the previous round's answer, which is the right one:
+		// a condition this round has only just seen has no start yet.
+		Starts:      l.tracker,
 		HostMetrics: signals.StoreHostMetrics(store),
 		VolumeUsage: signals.StoreVolumeUsage(store),
 		Resolver:    l.Resolver,

@@ -293,12 +293,11 @@ func (t *Tracker) transition(
 	// developer's own copy is a page.
 	tier, _ := t.tiers[finding.Signal].For(key.Audience)
 	// A rule that lowered its own tier for this finding keeps the lower one,
-	// but only on the row it is about: the finding carries one audience's
-	// answer, and applying it to the *other* audience's delivery would be
-	// reinterpreting a decision nobody made about that reader. See [lowered].
-	if key.Audience == finding.Audience {
-		tier = lowered(tier, finding.Tier)
-	}
+	// on *both* rows of the condition. The lowering is a statement about this
+	// instance — "three volumes filling is milder than the kind in general" —
+	// and an instance is not milder for one reader and not the other. Each
+	// row's own declaration is still the ceiling, so this only ever lowers.
+	tier = lowered(tier, finding.Tier)
 	return Transition{
 		At:          now,
 		State:       state,

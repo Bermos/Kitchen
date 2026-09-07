@@ -627,3 +627,55 @@ func TestGatherReadsWhenEachConditionWasFirstSeen(t *testing.T) {
 		t.Error("the history was read and still reports unavailable")
 	}
 }
+
+// The correlation ladder's clock comes from the tracker where there is one,
+// and the store is the fallback.
+//
+// It is a cost property, and it is the reason [StartsSource] exists: the
+// background loop evaluates every minute and already holds every open
+// condition with the instant it opened, while the store's answer is an
+// unbounded GROUP BY over the whole transitions table. A round that asked the
+// store would pay that for ever to learn what the process had already.
+func TestTheLaddersClockPrefersTheTrackerOverTheStore(t *testing.T) {
+	tracker := NewTracker(Catalogue())
+	tracker.Restore([]Transition{{
+		Signal: SignalCrashLoop, Fingerprint: "workload.crashloop/shop/pr-41/web",
+		Audience: AudienceOperator, OpenedAt: testNow.Add(-3 * time.Hour),
+	}})
+
+	// The store would answer something else entirely, and is not asked.
+	store := &stubStore{openTransitions: []clickhouse.SignalTransition{{
+		Fingerprint: "workload.crashloop/shop/pr-41/web", OpenedAt: testNow,
+	}}}
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Store:  store,
+		Starts: tracker,
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+
+	want := testNow.Add(-3 * time.Hour)
+	if got := snapshot.OpenedAt["workload.crashloop/shop/pr-41/web"]; !got.Equal(want) {
+		t.Fatalf("the start came back as %s, want the tracker's %s", got, want)
+	}
+
+	// A caller with no tracker gets the store's answer rather than nothing.
+	fallback := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Store:  store,
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+	if got := fallback.OpenedAt["workload.crashloop/shop/pr-41/web"]; !got.Equal(testNow) {
+		t.Fatalf("without a tracker the start came back as %s, want the store's %s", got, testNow)
+	}
+
+	// And a caller with neither says so rather than reporting no condition has
+	// a start, which would read as "none of these began together".
+	none := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+	if none.Available(InputHistory) {
+		t.Error("an installation recording nothing reports a readable history")
+	}
+}

@@ -317,6 +317,16 @@ type Rung struct {
 	// Change is the platform's own change that preceded it, at rung 3.
 	Change *PlatformChange
 
+	// Searched is how far back rung 3 actually looked for a change of the
+	// platform's own, which is the *narrower* of the correlation window and
+	// the span the timeline is gathered over. Both bound it and neither is
+	// always the smaller: `balanced` looks back fifteen minutes into an hour
+	// of data, and a four-hour window looks back one hour because that is all
+	// there is. The sentence quotes this rather than either input, because
+	// "no change in the last hour" after searching fifteen minutes is the
+	// finding claiming three quarters of an hour it never looked at.
+	Searched time.Duration
+
 	// Unchecked names the inputs this ladder could not read, and it is the
 	// difference between "there is no shared cause" and "we did not look".
 	//
@@ -342,6 +352,7 @@ func (s *Snapshot) Ladder(projects []string, since time.Time) Rung {
 		Projects:   projects,
 		Shared:     s.sharedDependencies(projects),
 		Unchecked:  s.uncheckedByTheLadder(),
+		Searched:   s.searched(),
 	}
 	if len(rung.Shared) > 0 {
 		rung.Confidence = ConfidenceDependency
@@ -357,6 +368,12 @@ func (s *Snapshot) Ladder(projects []string, since time.Time) Rung {
 // They are listed rather than derived because the list *is* the claim rung 1
 // makes: these are the things checked before saying nothing explains it.
 var ladderInputs = []Input{
+	// The history first, because it is the one rung *one* depends on: without
+	// it most conditions have no known start, so the affected set is whatever
+	// happened to carry its own `since` and the count in the headline is not
+	// the number of projects failing. A correlation that says "firing in 3"
+	// while six could not be dated has to say which read it lost.
+	InputHistory,
 	InputPods, InputNodes, InputClaims, InputGateways, InputRoutes, InputResourceClaims,
 	InputPlatformChanges, InputClusterEvents, InputAudit,
 }
@@ -438,7 +455,8 @@ func (r Rung) explanation() string {
 			return "nothing here explains it, and this evaluation could not look everywhere: " + note
 		}
 		return fmt.Sprintf("nothing explains it yet: no shared node, no shared dependency, and no "+
-			"change of ours in the %s before it — which is worth knowing on its own", ChangeHorizon)
+			"change of ours in the %s before it — which is worth knowing on its own",
+			duration(r.Searched))
 	}
 }
 
@@ -664,14 +682,7 @@ func oneCommon(projects []string, of func(string) map[string]bool) string {
 // finds several — a release is a node drain is a Gateway reprogramming — and
 // the nearest one is the one an operator looks at first.
 func (s *Snapshot) changeBefore(since time.Time) *PlatformChange {
-	from := since.Add(-s.Policy.CorrelationWindow)
-	// The timeline is gathered over a fixed span, so a correlation window
-	// wider than it would have this searching a stretch nothing was read for
-	// and reporting the silence as "no change". Clamping says only what the
-	// data covers; [Rung.explanation] names the span for the same reason.
-	if horizon := s.Now.Add(-ChangeHorizon); from.Before(horizon) {
-		from = horizon
-	}
+	from := since.Add(-s.searched())
 	var nearest *PlatformChange
 	for i := range s.PlatformChanges {
 		change := &s.PlatformChanges[i]
@@ -687,6 +698,18 @@ func (s *Snapshot) changeBefore(since time.Time) *PlatformChange {
 	}
 	copied := *nearest
 	return &copied
+}
+
+// searched is how far back rung 3 looks, and the one place the two bounds on
+// it are combined: the correlation window says how far back a *cause* may be,
+// and [ChangeHorizon] says how far back the timeline was gathered. Whichever
+// is narrower is the whole of what "no change of ours" is a claim about, which
+// is why [Rung.Searched] carries it onto the finding rather than either input.
+func (s *Snapshot) searched() time.Duration {
+	if window := s.Policy.CorrelationWindow; window > 0 && window < ChangeHorizon {
+		return window
+	}
+	return ChangeHorizon
 }
 
 // ChangeHorizon is how far back rung 3's timeline is gathered, and so how far

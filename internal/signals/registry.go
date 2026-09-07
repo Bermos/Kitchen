@@ -197,6 +197,15 @@ func (r *Registry) pass(snapshot *Snapshot, correlating bool) Findings {
 // [Finding.Tier] is the third and rides on the second: the tier is declared per
 // audience, so the tier a finding carries is the one for the audience it was
 // just stamped with.
+// The tier here is the *rule's* answer and never the installation's. What this
+// platform does with it — holding a page down to a ticket where paging is off
+// — is applied when a delivery is read, in [Assess], because that is the only
+// place that can be re-read: a policy applied here would be baked into the
+// recorded transition, and moving off the homelab preset would leave every
+// condition that was already open a ticket until it happened to reopen.
+// [Transition.Tier] is documented as the tier the rule declared, and this is
+// what makes that true.
+//
 // [Finding.Policy] is the fourth, and it is stamped on every finding rather
 // than on the ones whose rule read a configurable number: what a finding was
 // evaluated against is a property of the round, and a provenance that appeared
@@ -209,7 +218,7 @@ func stamped(findings []Finding, signal Signal, snapshot *Snapshot) []Finding {
 		}
 		findings[i].Audience = signal.Audience
 		declared, _ := signal.Tiers.For(signal.Audience)
-		findings[i].Tier = snapshot.Policy.Deliver(lowered(declared, findings[i].Tier))
+		findings[i].Tier = lowered(declared, findings[i].Tier)
 		findings[i].Policy = provenance
 	}
 	return findings
@@ -261,8 +270,7 @@ func unevaluable(signal Signal, snapshot *Snapshot) (*Finding, bool) {
 			// A rule that could not be evaluated carries its own tier, not a
 			// lower one: "I cannot see whether production is serving" is the
 			// same claim on the reader's attention as the rule it replaced.
-			tier, _ := signal.Tiers.For(signal.Audience)
-			finding.Tier = snapshot.Policy.Deliver(tier)
+			finding.Tier, _ = signal.Tiers.For(signal.Audience)
 			finding.Policy = snapshot.Policy.Provenance()
 			return &finding, true
 		}

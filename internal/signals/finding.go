@@ -172,6 +172,11 @@ type Finding struct {
 	// developer condition is a row of its own (see [Deliveries]) and carries
 	// the operator's tier; only a recorded [Transition] can hold both, because
 	// only a recorded round has two rows.
+	//
+	// It is the *rule's* answer and never the installation's. What this
+	// platform does with a page where paging is off is applied when a delivery
+	// is read — [Assess] — so that changing the policy changes what is already
+	// open rather than only what breaks next.
 	Tier Tier `json:"tier,omitempty"`
 
 	// Fingerprint identifies the condition across evaluations. Two rounds that
@@ -240,8 +245,9 @@ type Finding struct {
 	// what a rule *is*, and the moment the clock became configuration a
 	// version stopped being enough to reproduce a finding. Recording the
 	// values makes `v1 @ correlatedProjects=2` and `v1 @ correlatedProjects=3`
-	// distinguishable after the fact, which a compliance posture that reads
-	// *the floor* needs and an audit pack cannot be evidence without.
+	// distinguishable after the fact, which a compliance posture reading this
+	// installation's numbers needs and an audit pack cannot be evidence
+	// without.
 	Policy string `json:"policy,omitempty"`
 }
 

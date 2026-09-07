@@ -900,7 +900,9 @@ be louder or surer than the evidence:
   three volumes that began filling in March, June and September "firing at
   once". The start comes from the recorded history — when the platform first
   saw the condition, which is what #473 built — and where there is none, the
-  finding is left out.
+  finding is left out. The background loop answers it from the tracker it
+  already holds rather than from the store, so the clock costs a round
+  nothing; a screen evaluating on request reads it back instead.
 - **Rung 2 says nothing about a cluster of one.** On a single-node cluster
   every project shares the only node, and on a single-StorageClass cluster
   every claim is on the only class — the ordinary shape, and the homelab
@@ -908,11 +910,20 @@ be louder or surer than the evidence:
   incident, so each is reported only where the cluster has more than one, which
   is the rule the Gateway leg already followed.
 
-And rung 1's sentence is a claim about what was *checked*: where the reads
-behind rungs 2 and 3 failed, it names them rather than saying nothing explains
-it — the same ethic as a rule that could not be evaluated. An input that does
-not arise is not a blind spot; an installation that keeps no audit log has none
-to correlate against and is not asked.
+And rung 1's sentence is a claim about what was *checked*, in two ways. Where
+the reads behind the rungs failed — the history included, which is the one rung
+1's own count depends on — it names them rather than saying nothing explains
+it, the same ethic as a rule that could not be evaluated. An input that does
+not arise is not a blind spot: an installation that keeps no audit log has none
+to correlate against and is not asked. And it names the span it *searched* for
+a change, which is the narrower of the correlation window and the hour the
+timeline is gathered over — quoting either alone would claim a stretch it never
+looked at.
+
+The tier a condition is recorded at is the rule's, never the installation's:
+what a policy does with a page is applied when the row is *read*, so turning
+paging back on re-reads every condition already open rather than only the ones
+that break next.
 
 `platform.correlated` is rung 1 widened past HTTP. It reads the round rather
 than the estate — the one rule in the catalogue whose subject is the

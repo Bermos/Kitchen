@@ -516,3 +516,52 @@ func TestRungOneAdmitsWhatItCouldNotCheck(t *testing.T) {
 		t.Errorf("a not-applicable input is reported as unchecked: %s", got.Detail)
 	}
 }
+
+// Rung 1 names the span it actually searched, which is the narrower of the
+// correlation window and the span the timeline was gathered over.
+//
+// On `balanced` those differ — a fifteen-minute window inside an hour of data
+// — and the sentence used to quote the hour. A change thirty-five minutes
+// before the failures is outside the window and correctly not found; a row
+// that then said "no change of ours in the 1h0m0s before it" would be claiming
+// three quarters of an hour it never looked at.
+func TestRungOneNamesTheSpanItSearched(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Round = roundOf(correlatedSet, 5*time.Minute)
+	snapshot.PlatformChanges = []PlatformChange{{
+		At:      testNow.Add(-35 * time.Minute),
+		Kind:    "release",
+		Summary: "this platform was upgraded to 0.38.0 (succeeded)",
+	}}
+
+	finding := expectOne(t, correlateOnly(t, snapshot))
+	if finding.Confidence != ConfidenceCoincidence {
+		t.Fatalf("a change outside the window reached %q", finding.Confidence)
+	}
+	expectDetail(t, finding, "in the 15m before it")
+	if strings.Contains(finding.Detail, "1h") {
+		t.Errorf("the sentence claims an hour it did not search: %s", finding.Detail)
+	}
+
+	// A window wider than the gathered timeline is clamped the other way, and
+	// the sentence says the hour because that is all there was to search.
+	wide := newSnapshot()
+	wide.Policy = DefaultPolicy()
+	wide.Policy.CorrelationWindow = 4 * time.Hour
+	wide.Round = roundOf(correlatedSet, 5*time.Minute)
+	expectDetail(t, expectOne(t, correlateOnly(t, wide)), "in the 1h before it")
+}
+
+// The history is the input rung 1's own count depends on: without it most
+// conditions have no known start, so the affected set is whatever happened to
+// carry its own `since` and "firing in 3" is not the number of projects
+// failing. A row that lost that read has to say so.
+func TestRungOneAdmitsItCouldNotReadTheHistory(t *testing.T) {
+	snapshot := newSnapshot()
+	snapshot.Round = roundOf(correlatedSet, 5*time.Minute)
+	snapshot.MarkUnreadable(InputHistory, "the store is down")
+
+	finding := expectOne(t, correlateOnly(t, snapshot))
+	expectDetail(t, finding, "could not check")
+	expectDetail(t, finding, string(InputHistory))
+}

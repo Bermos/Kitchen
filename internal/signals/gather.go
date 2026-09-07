@@ -76,6 +76,12 @@ type Sources struct {
 	VolumeUsage VolumeUsageSource
 	Ingest      IngestAccounting
 
+	// Starts is when this platform first saw each open condition, which is
+	// the correlation ladder's clock. Nil falls back to reading it out of the
+	// store — see [StartsSource], where the difference is a query per round
+	// against a map the caller may already hold.
+	Starts StartsSource
+
 	// Resolver resolves published names for dns.mismatch. Nil means no
 	// probing, which is not a fault.
 	Resolver Resolver
@@ -101,6 +107,19 @@ type Options struct {
 	// Concurrency bounds the per-environment store reads. Zero takes the
 	// default.
 	Concurrency int
+}
+
+// starts resolves where the correlation ladder's clock comes from: whatever
+// the caller supplied, and otherwise the store — which is the expensive way
+// and the reason the loop supplies its tracker instead.
+func (s Sources) starts() StartsSource {
+	if s.Starts != nil {
+		return s.Starts
+	}
+	if s.Store == nil {
+		return nil
+	}
+	return StoreStarts(s.Store)
 }
 
 // defaultConcurrency is how many per-environment store reads run at once. Four
@@ -132,6 +151,9 @@ func Gather(ctx context.Context, sources Sources, options Options) *Snapshot {
 
 	gatherCluster(ctx, sources, snapshot)
 	gatherStore(ctx, sources, snapshot, options)
+	// Outside gatherStore because it is not always a store read: a caller
+	// holding a tracker answers it from memory. See [Sources.Starts].
+	gatherHistory(ctx, sources.starts(), snapshot)
 	gatherDNS(ctx, sources, snapshot)
 	// The timeline is joined from four sources that are read in three places,
 	// so it is ordered once here rather than by whichever leg wrote last.
@@ -444,7 +466,7 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 	if sources.Store == nil {
 		for _, input := range []Input{
 			InputRawRequests, InputRequests, InputResources,
-			InputClusterEvents, InputFreshness, InputStore, InputAudit, InputHistory,
+			InputClusterEvents, InputFreshness, InputStore, InputAudit,
 		} {
 			snapshot.MarkNotApplicable(input, "no telemetry store is configured")
 		}
@@ -453,7 +475,6 @@ func gatherStore(ctx context.Context, sources Sources, snapshot *Snapshot, optio
 
 	gatherClusterEvents(ctx, sources.Store, snapshot)
 	gatherAuditChanges(ctx, sources.Store, snapshot)
-	gatherHistory(ctx, sources.Store, snapshot)
 	gatherFreshness(ctx, sources.Store, snapshot)
 	gatherStoreHealth(ctx, sources.Store, snapshot)
 	gatherTraffic(ctx, sources.Store, snapshot, options)
@@ -607,8 +628,13 @@ func gatherAuditChanges(ctx context.Context, store Store, snapshot *Snapshot) {
 // blind, it is early. Anything else is a read that failed, and the ladder
 // says so rather than treating a round's worth of identically stamped
 // findings as simultaneous.
-func gatherHistory(ctx context.Context, store Store, snapshot *Snapshot) {
-	open, err := store.OpenSignalTransitions(ctx)
+func gatherHistory(ctx context.Context, starts StartsSource, snapshot *Snapshot) {
+	if starts == nil {
+		snapshot.MarkNotApplicable(InputHistory,
+			"nothing is recording, so no condition has a start this platform knows")
+		return
+	}
+	opened, err := starts.SignalStarts(ctx)
 	if err != nil {
 		if clickhouse.IsUnknownTable(err) {
 			snapshot.MarkNotApplicable(InputHistory,
@@ -618,19 +644,8 @@ func gatherHistory(ctx context.Context, store Store, snapshot *Snapshot) {
 		snapshot.MarkUnreadable(InputHistory, err.Error())
 		return
 	}
-	for _, row := range open {
-		opened := row.OpenedAt
-		if opened.IsZero() {
-			opened = row.At
-		}
-		if opened.IsZero() {
-			continue
-		}
-		// One condition is up to two rows and they open together; the
-		// earliest is the condition's own start either way.
-		if was, seen := snapshot.OpenedAt[row.Fingerprint]; !seen || opened.Before(was) {
-			snapshot.OpenedAt[row.Fingerprint] = opened.UTC()
-		}
+	for fingerprint, at := range opened {
+		snapshot.OpenedAt[fingerprint] = at
 	}
 }
 
