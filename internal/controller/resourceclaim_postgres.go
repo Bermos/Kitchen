@@ -67,6 +67,32 @@ const (
 	databaseTokenKey = "token"
 
 	condBranchesReady = "PreviewBranchesReady"
+
+	// condServerCertificate says which authority signed the database this
+	// claim binds, so that "one CA, and inject it" is a fact an operator can
+	// read off the claim rather than one they have to go and check a Cluster
+	// for (#443, #468 step 5a).
+	//
+	// True means the platform's own internal CA — the same root that signs
+	// the telemetry store, the identity provider's database and the object
+	// store — so a workload trusting one authority trusts everything Kitchen
+	// runs. False is not a fault and is classified as such: the connection is
+	// still `verify-full` against a certificate the binding carries, and what
+	// differs is only who vouches for it.
+	condServerCertificate = "ServerCertificate"
+)
+
+// ConditionServerCertificate and the two reasons it carries are exported
+// because the API classifies them; see internal/api/conditions.go.
+const (
+	// ConditionServerCertificate is condServerCertificate, for that table.
+	ConditionServerCertificate = condServerCertificate
+	// ReasonPlatformCA is a database on the platform's own internal CA.
+	ReasonPlatformCA = "PlatformCA"
+	// ReasonProviderCA is one on an authority its own operator generated,
+	// which is where an installation with no platform CA — no cert-manager,
+	// or one that has not issued yet — stays.
+	ReasonProviderCA = "ProviderCA"
 )
 
 // The self-hosted database provider: CloudNativePG's Clusters are what a
@@ -308,6 +334,7 @@ func (r *ResourceClaimReconciler) provision(
 	// engine and the inventory read them as such rather than guessing.
 	claim.Status.DataProvenance = string(instance.Provenance)
 	claim.Status.Residency = instance.Region
+	setServerCertificateCondition(claim, instance.CertificateAuthority)
 	setClaimCondition(claim, condProvisioned, metav1.ConditionTrue, "Provisioned",
 		fmt.Sprintf("%s provisioned as %s", claim.Spec.Type, instance.ID))
 	return ctrl.Result{}, false, nil
@@ -340,6 +367,37 @@ func provisionInstance(
 			database.ErrUnsatisfiable, claim.Connection(), database.ProviderCNPG)
 	}
 	return capable.ProvisionWith(ctx, resource, requirements)
+}
+
+// setServerCertificateCondition records which authority signed the database
+// this claim binds, and removes the condition for a provider that does not
+// say — a hosted database, whose certificate a public root already vouches
+// for and about which the platform has no opinion to offer.
+//
+// It is written on every reconcile rather than once, because it is the one
+// place an operator sees a migration land: a database provisioned before the
+// platform had a CA stays on its own until the reconcile that patches the
+// certificates block onto it, and the condition flips with the Cluster.
+func setServerCertificateCondition(
+	claim *kitchenv1alpha1.ResourceClaim,
+	authority database.CertificateAuthority,
+) {
+	switch authority {
+	case database.CAPlatform:
+		setClaimCondition(claim, condServerCertificate, metav1.ConditionTrue, ReasonPlatformCA,
+			"the database serves a certificate issued by the platform's internal CA "+
+				"("+InternalCACertificateName+"), which is the one authority everything "+
+				"Kitchen runs is signed by; the binding carries it and connects verify-full")
+	case database.CAProvider:
+		setClaimCondition(claim, condServerCertificate, metav1.ConditionFalse, ReasonProviderCA,
+			"the database serves a certificate signed by an authority its own operator "+
+				"generated for it, because the platform has no internal CA to issue from — "+
+				"cert-manager is not serving, or has not issued "+InternalCACertificateName+
+				" yet. The connection is still verify-full against the certificate the "+
+				"binding carries; what differs is who vouches for it")
+	default:
+		meta.RemoveStatusCondition(&claim.Status.Conditions, condServerCertificate)
+	}
 }
 
 // claimRequirements reads the claim's spec.config into what the provisioner
@@ -806,6 +864,12 @@ func (r *ResourceClaimReconciler) provisionerFor(ctx context.Context, conn *kitc
 		Token:      token,
 		Cluster:    r.Client,
 		Namespace:  r.databaseNamespace(ctx),
+		// The platform's own CA, for the one provider that provisions into
+		// this cluster. It is named unconditionally: whether it is there is
+		// the provisioner's to find out, and an installation whose CA has not
+		// issued yet is a state it handles rather than one this has to
+		// predict. See internal/provider/database/cnpg_tls.go.
+		ServerCAIssuer: InternalCAClusterIssuerName,
 	})
 }
 

@@ -76,7 +76,14 @@ The platform namespace is **not** in that list — the chart creates and labels
 cert-manager is **not** in that list either: the chart ships it as a sub-chart
 (`cert-manager.enabled`, on by default), because Kitchen owns the cluster it is
 installed into. Set `cert-manager.enabled=false` for a cluster that already
-runs one.
+runs one — and if you do, that installation needs
+`--cluster-resource-namespace=kitchen-system`. cert-manager resolves a
+`ClusterIssuer`'s Secrets out of that one namespace, and two of the platform's
+issuers are ClusterIssuers: the ACME one, whose Cloudflare token you create in
+`kitchen-system`, and `kitchen-internal-ca`, which signs the databases a
+`postgres` claim provisions. The bundled cert-manager needs nothing here — it
+is a sub-chart of this release, so the flag already defaults to
+`kitchen-system`.
 
 Two optional features add a dependency, and both are the same arrangement.
 **KEDA and its HTTP add-on**, if you want `scaleToZero.enabled`: they cannot be
@@ -2033,7 +2040,7 @@ kubectl delete namespace kitchen-system
 | `kitchen.tls.acme.server` | Let's Encrypt production | ACME directory URL. Use the staging directory while setting up. |
 | `kitchen.tls.acme.dns01.cloudflare.apiTokenSecretName` | `""` | Secret holding a Cloudflare API token (`Zone:DNS:Edit` + `Zone:Zone:Read`). Required in `acme` mode. |
 | `kitchen.tls.acme.dns01.cloudflare.apiTokenSecretKey` | `api-token` | Key inside that secret. |
-| `cert-manager.enabled` | `true` | Install cert-manager with the platform. Disable if the cluster already runs one. |
+| `cert-manager.enabled` | `true` | Install cert-manager with the platform. Disable if the cluster already runs one — that installation then needs `--cluster-resource-namespace=kitchen-system`, since the ACME and internal-CA ClusterIssuers resolve their Secrets from there. |
 | `cert-manager.crds.enabled` / `.keep` | `true` / `true` | Install cert-manager's CRDs, and keep them on uninstall. |
 | `cert-manager.resources` / `.webhook.resources` / `.cainjector.resources` / `.startupapicheck.resources` | 10m/32–128Mi → 128–512Mi | cert-manager's own chart ships none, so every one of its pods would be BestEffort — first evicted when a node runs short, for the component that renews the wildcard certificate every published URL rides on. |
 | `cert-manager.config.gatewayAPI.enabled` | `true` | Solve HTTP-01 challenges as HTTPRoutes on the shared Gateway — what issues custom-domain certificates. A cluster that runs its own cert-manager needs the same switch on it. |

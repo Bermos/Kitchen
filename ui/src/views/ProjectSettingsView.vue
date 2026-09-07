@@ -12,6 +12,7 @@ import {
 } from "../lib/api";
 import {
   claimBackupBadge,
+  claimCertificateBadge,
   claimCautions,
   claimDeletionOutcome,
   claimDeletionWarning,
@@ -937,6 +938,21 @@ async function deleteProject() {
                         :title="claimBackupBadge(claim)!.title"
                       >
                         {{ claimBackupBadge(claim)!.label }}
+                      </UBadge>
+                      <!-- Who signed the database this binds. Beside the
+                           backup badge because both are facts about the
+                           resource rather than about what was asked for, and
+                           both are read the same way: the label is the state,
+                           the title is the platform's sentence about it. -->
+                      <UBadge
+                        v-if="claimCertificateBadge(claim)"
+                        :color="claimCertificateBadge(claim)!.color"
+                        variant="subtle"
+                        size="sm"
+                        class="ml-1"
+                        :title="claimCertificateBadge(claim)!.title"
+                      >
+                        {{ claimCertificateBadge(claim)!.label }}
                       </UBadge>
                       <UBadge
                         v-for="requirement in claimRequirements(claim)"

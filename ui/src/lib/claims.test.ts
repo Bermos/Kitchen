@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   claimCautions,
+  claimCertificateBadge,
   claimDeletionOutcome,
   claimDeletionWarning,
   deletionGatedByName,
@@ -198,5 +199,37 @@ describe("deleting a binding to another project's offering", () => {
     const warning = claimDeletionWarning(binding);
     expect(warning).toContain("pricing/pricing-api");
     expect(warning).not.toContain("DATA");
+  });
+});
+
+describe("claimCertificateBadge", () => {
+  const condition = (status: "True" | "False", reason: string) => ({
+    type: "ServerCertificate",
+    status,
+    reason,
+    severity: status === "True" ? ("none" as const) : ("info" as const),
+    message: `signed by ${reason}`,
+    lastTransitionTime: "2026-09-07T00:00:00Z",
+  });
+
+  it("says the platform's own CA signed it", () => {
+    expect(claimCertificateBadge({ conditions: [condition("True", "PlatformCA")] })).toEqual({
+      label: "TLS: platform CA",
+      color: "neutral",
+      title: "signed by PlatformCA",
+    });
+  });
+
+  it("marks a database still on an authority of its own", () => {
+    expect(claimCertificateBadge({ conditions: [condition("False", "ProviderCA")] })).toEqual({
+      label: "TLS: its own CA",
+      color: "warning",
+      title: "signed by ProviderCA",
+    });
+  });
+
+  it("says nothing about a claim whose provider does not say", () => {
+    expect(claimCertificateBadge({})).toBeNull();
+    expect(claimCertificateBadge({ conditions: [] })).toBeNull();
   });
 });
