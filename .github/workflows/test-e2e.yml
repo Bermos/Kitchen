@@ -1207,6 +1207,33 @@ jobs:
           done
           echo "only the exporter holds the credential that can push"
 
+          # And the platform directory, which is the other thing that is not
+          # the same in every phase: the two that run buildpacks read it, and
+          # the three that run only the lifecycle neither mount it nor are
+          # pointed at it — `-platform` is a flag only detect and build
+          # define (#468).
+          reads() { # reads <container> — where it mounts the platform directory
+            jq -r --arg c "$1" '[.spec.initContainers[], .spec.containers[]]
+              | map(select(.name == $c))[0].volumeMounts
+              | map(select(.name == "platform-env"))[0].mountPath // ""' \
+              /tmp/buildpacks-pod.json
+          }
+          for container in detector builder; do
+            [ "$(reads "${container}")" = /kitchen/platform/env ] || {
+              echo "::error::${container} runs buildpacks and reads their configuration from" \
+                   "'$(reads "${container}")'"
+              exit 1
+            }
+          done
+          for container in clone analyzer restorer exporter; do
+            [ -z "$(reads "${container}")" ] || {
+              echo "::error::${container} runs no buildpack and mounts the platform directory" \
+                   "at '$(reads "${container}")'"
+              exit 1
+            }
+          done
+          echo "only the two phases that run buildpacks read the platform directory"
+
           # This installation's registry connection is an ordinary one with no
           # read-only credential beside it, so the two volumes name the same
           # Secret — the fallback the Connection's status reports, proved here
@@ -1324,23 +1351,35 @@ jobs:
 
           # The database and the build come up in parallel; neither waits for
           # the other, and the environment waits for both.
+          #
+          # The kind: is spelled in full everywhere below, because `kubectl get
+          # resourceclaim` does not mean this one. Kubernetes serves its own
+          # `resource.k8s.io` ResourceClaim — dynamic resource allocation —
+          # from 1.34, and a built-in group wins the short name over a CRD's,
+          # so the unqualified form answers `resourceclaims.resource.k8s.io
+          # "appdb" not found` however healthy the claim is. It did exactly
+          # that on every run of this case since it was written: the loop hid
+          # it behind `|| true` for its whole fifteen minutes and the read
+          # after it failed the step, while the claim underneath had bound and
+          # the application had deployed against it.
+          claim="resourceclaims.kitchen.bermos.dev"
           for _ in $(seq 90); do
-            phase="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
+            phase="$(kubectl -n kitchen-system get "${claim}" "${NUXT_CLAIM}" \
               -o jsonpath='{.status.phase}' 2>/dev/null || true)"
             [ "${phase}" = Bound ] && break
             [ "${phase}" = Failed ] && break
             sleep 10
           done
-          claim_phase="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
+          claim_phase="$(kubectl -n kitchen-system get "${claim}" "${NUXT_CLAIM}" \
             -o jsonpath='{.status.phase}')"
           [ "${claim_phase}" = Bound ] || {
             echo "::error::the postgres claim is ${claim_phase}"
-            kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" -o yaml
+            kubectl -n kitchen-system get "${claim}" "${NUXT_CLAIM}" -o yaml
             kubectl -n kitchen-databases get clusters,pods -o wide || true
             kubectl -n cnpg-system logs -l app.kubernetes.io/name=cloudnative-pg --tail=100 || true
             exit 1
           }
-          echo "the claim bound to $(kubectl -n kitchen-system get resourceclaim \
+          echo "the claim bound to $(kubectl -n kitchen-system get "${claim}" \
             "${NUXT_CLAIM}" -o jsonpath='{.status.instanceName}')"
 
           build=""
@@ -1391,23 +1430,45 @@ jobs:
             exit 1
           }
 
-          # What the lifecycle was told about the repository, read off the pod
-          # that actually ran. Three variables, and every one of them was
-          # missing: the build script the framework compiles itself with, the
-          # runtime version the manifest asks for, and the heap ceiling — 75%
-          # of the platform's build ceiling, because V8 sizes its old space
-          # from the machine rather than from the cgroup it is in.
+          # What the buildpacks were told about the repository, read out of
+          # the platform directory the build actually mounted. Five
+          # variables, and every one of them was missing: the build script
+          # the framework compiles itself with, the runtime version the
+          # manifest asks for, the heap ceiling — 75% of the platform's build
+          # ceiling, because V8 sizes its old space from the machine rather
+          # than from the cgroup it is in — and the file the framework's own
+          # start command runs, which is what makes the node-start buildpack
+          # take part. Without that last pair the group stops at
+          # node-run-script, node-engine keeps its layer for the build alone,
+          # and the image is exported with no `node` in it: the build
+          # succeeds, the deploy task dies on `node: command not found` and
+          # the web process never starts (#468).
+          #
+          # It is read off the ConfigMap rather than off the container,
+          # because a container variable is exactly what does not arrive: the
+          # lifecycle rebuilds a buildpack's environment from its own include
+          # list and keeps only `<platform>/env` on top of it.
           pod="$(kubectl -n "${NUXT_APP_NS}" get pods -l "kitchen.bermos.dev/build=${build}" \
             -o jsonpath='{.items[0].metadata.name}')"
           kubectl -n "${NUXT_APP_NS}" get pod "${pod}" -o json > /tmp/nuxt-build-pod.json
-          told() { # told <variable> — its value in the builder phase
-            jq -r --arg v "$1" '[.spec.initContainers[], .spec.containers[]]
-              | map(select(.name == "builder"))[0].env
-              | map(select(.name == $v))[0].value // ""' /tmp/nuxt-build-pod.json
+          platform="$(jq -r '.spec.volumes | map(select(.name == "platform-env"))[0]
+            .configMap.name // ""' /tmp/nuxt-build-pod.json)"
+          [ -n "${platform}" ] || {
+            echo "::error::the build pod mounts no platform directory, so no BP_ variable" \
+                 "the platform sets can reach a buildpack"
+            jq -r '.spec.volumes' /tmp/nuxt-build-pod.json
+            exit 1
+          }
+          echo "the buildpacks were configured from ${platform}"
+          kubectl -n "${NUXT_APP_NS}" get configmap "${platform}" -o json > /tmp/nuxt-platform-env.json
+          told() { # told <variable> — its file in the platform directory
+            jq -r --arg v "$1" '.data[$v] // ""' /tmp/nuxt-platform-env.json
           }
           for pair in \
             "BP_NODE_RUN_SCRIPTS=build" \
             "BP_NODE_VERSION=22.x" \
+            "BP_LAUNCHPOINT=.output/server/index.mjs" \
+            "BP_VERIFY_LAUNCHPOINT=false" \
             "NODE_OPTIONS=--max-old-space-size=${NUXT_BUILD_HEAP_MIB}"; do
             name="${pair%%=*}"
             want="${pair#*=}"
@@ -1484,8 +1545,8 @@ jobs:
               /tmp/nuxt-deploy.json
             exit 1
           }
-          secret="$(kubectl -n kitchen-system get resourceclaim "${NUXT_CLAIM}" \
-            -o jsonpath='{.status.secretName}')"
+          secret="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev \
+            "${NUXT_CLAIM}" -o jsonpath='{.status.secretName}')"
           dsn="$(kubectl -n "${NUXT_APP_NS}" get secret "${secret}" \
             -o jsonpath='{.data.url}' | base64 -d)"
           # Printed without its credentials: this is a log anybody can read.
@@ -1536,7 +1597,7 @@ jobs:
           kubectl -n "${APP_NS}" get events --sort-by=.lastTimestamp || true
           kubectl -n "${BP_APP_NS}" get events --sort-by=.lastTimestamp || true
           kubectl -n "${NUXT_APP_NS}" get events --sort-by=.lastTimestamp || true
-          kubectl -n kitchen-system get resourceclaims -o wide || true
+          kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev -o wide || true
           kubectl -n kitchen-databases get clusters,pods,pvc -o wide || true
           df -h / || true
           kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=400 || true

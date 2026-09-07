@@ -1623,8 +1623,24 @@ other channel to say any of it:
 |---|---|---|
 | `BP_NODE_RUN_SCRIPTS` | every Node framework whose manifest has a `build` script | run it — without it the repository's own build never runs at all |
 | `BP_NODE_VERSION` | every Node framework whose manifest names `engines.node` | build and run under that range, rather than under whatever is newest that day |
+| `BP_LAUNCHPOINT`, `BP_VERIFY_LAUNCHPOINT` | the frameworks that build a server of their own into a directory — Nuxt, SvelteKit, NestJS, Astro with the Node adapter | start *that* file, and do not look for it before the build has written it — which is what puts a Node runtime and the launch `node_modules` in the image at all (see below) |
 | `BP_WEB_SERVER`, `BP_WEB_SERVER_ROOT`, `BP_WEB_SERVER_ENABLE_PUSH_STATE` | the frameworks with no server of their own — a Vite or create-react-app bundle, an Astro site with no adapter, a directory that is already a website | serve that directory with NGINX on `$PORT`, answering every path with `index.html` where the application routes in the browser |
 | `NODE_OPTIONS=--max-old-space-size=…` | every framework whose *build* runs under Node, the static ones included | hold the heap to three quarters of `Kitchen.spec.builds.resources.memory` — V8 sizes its old space from the machine rather than from the cgroup, so an uncapped front-end build grows past the limit and is killed with exit 137 and no explanation |
+
+They reach the buildpacks as **files**, not as variables on the build pod. The
+lifecycle rebuilds the environment it runs each buildpack in from an include list of
+its own — `CNB_STACK_ID`, `HOSTNAME`, `HOME`, the proxy variables — and drops
+everything else it inherited; what it adds back is one file per variable out of the
+*platform directory* it was pointed at, named for the variable and containing its
+value. So the operator writes a ConfigMap beside each buildpacks build Job, one key
+per variable, and mounts it at `/kitchen/platform/env` in the two lifecycle phases
+that run buildpacks — `detector` and `builder`, the only two that accept `-platform`
+and the only two that read it. The ConfigMap is named `<job>-platform` and is owned by
+the Job, so the build's TTL takes it away with the rest of the build. A
+variable set on the phase container instead reaches the lifecycle's own binary and no
+buildpack at all, which is how the web-server configuration detection has set since
+#69, and the build script, runtime version and heap cap #485 added, came to be
+written into every build pod and delivered to nothing (#468).
 
 A detected framework also answers **how the image is started**, and it is the same
 precedence `port` has: the commit's own `kitchen.json` wins, then `spec.runtime.command`,
@@ -1632,7 +1648,9 @@ then the framework's. It exists because a buildpacks image is not guaranteed to
 declare anything to start — a process type comes from a `start` script, a `server.js`
 or a `main` that exists, or a `Procfile`, and a framework that writes its server into a
 directory that does not exist until *after* the build satisfies none of them, so the
-lifecycle exports `processes: []` and the workload cannot run. Nuxt starts with
+lifecycle exports `processes: []` — and, worse, an image with no Node in it, because
+the node-engine buildpack keeps its layer for launch only where a start buildpack asked
+for one. Nuxt starts with
 `node .output/server/index.mjs`, SvelteKit with `node build`, NestJS with
 `node dist/main`, Astro's Node adapter with `node ./dist/server/entry.mjs`, and Next.js
 and Remix with `npm start` — each the framework's own documented command. Plain Node
@@ -1641,6 +1659,16 @@ that turn those into a process type read the same signals, so a command here wou
 the platform guessing between them. Whatever the command turns out to be, it is frozen
 into the Release and handed to the buildpacks launcher rather than replacing the image's
 entrypoint — see [what `command` means under each strategy](CONFIG.md#what-command-means-under-each-strategy).
+
+The four that run `node <file>` name that same file to the builder as well, as
+`BP_LAUNCHPOINT`, with `BP_VERIFY_LAUNCHPOINT=false` beside it because the file does not
+exist yet while the buildpacks are deciding. That is what makes the `node-start`
+buildpack take part, and taking part is what pulls the Node runtime and the launch
+`node_modules` into the exported image — without it the command the platform hands the
+launcher answers `node: command not found`, and a deploy task cannot resolve its own
+imports. The two are derived from the command rather than written beside it, so the file
+the image is built to start is always the file the platform starts. `npm start` is not
+one: it is the manifest's own script, which the `npm-start` buildpack reads for itself.
 
 Two things do not happen. A repository nothing matches **fails the build** with *"no
 Dockerfile and no framework detected"* rather than handing a builder a repository it
@@ -2418,7 +2446,7 @@ Two consequences worth knowing:
   by naming it on the claim:
 
   ```sh
-  kubectl annotate resourceclaim <claim> -n kitchen-system \
+  kubectl annotate resourceclaims.kitchen.bermos.dev <claim> -n kitchen-system \
     kitchen.bermos.dev/adopt-instance=<the object's name>
   ```
 

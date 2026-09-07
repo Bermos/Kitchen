@@ -22,7 +22,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
-	"github.com/Bermos/Kitchen/internal/framework"
 )
 
 // Which credential each container of a build or a scan pod holds (#424).
@@ -99,8 +98,8 @@ func assertCredential(t *testing.T, spec corev1.PodSpec, container, wantVolume s
 
 func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("kitchen-registry-registry", "kitchen-registry-registry-read"), "", 0).Spec
+	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
+		credentialsWithRead("kitchen-registry-registry", "kitchen-registry-registry-read"), "").Spec
 
 	// detect and build run the buildpacks, which run the repository's own
 	// build: `npm install` and whatever its lifecycle scripts do. Neither
@@ -138,8 +137,8 @@ func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T
 // every phase reads with the connection's own, which is what it did before.
 func TestBuildpacksPodFallsBackToTheConnectionsOwnCredential(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("kitchen-registry-ghcr", ""), "", 0).Spec
+	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
+		credentialsWithRead("kitchen-registry-ghcr", ""), "").Spec
 
 	for _, volume := range []string{volumeDockerConfig, volumeDockerConfigRead} {
 		if got := volumeSecret(t, pod, volume); got != "kitchen-registry-ghcr" {

@@ -543,6 +543,29 @@ var _ = Describe("Build Controller", func() {
 				}), phase.Name)
 			}
 
+			// The two phases that run buildpacks read their configuration
+			// out of a platform directory, because a variable on the
+			// container never reaches a buildpack (#468). It is a ConfigMap
+			// beside the Job, owned by it so the build's TTL takes it away.
+			for _, phase := range pod.InitContainers[1:] {
+				mounted := phase.Name == "detector" || phase.Name == "builder"
+				matcher := ContainElement(HaveField("Name", volumePlatformEnv))
+				if !mounted {
+					Expect(phase.VolumeMounts).NotTo(matcher, phase.Name)
+					continue
+				}
+				Expect(phase.VolumeMounts).To(matcher, phase.Name)
+				Expect(phase.Args).To(ContainElement("-platform="+buildpacksPlatformDir), phase.Name)
+			}
+			Expect(exporter.VolumeMounts).NotTo(ContainElement(HaveField("Name", volumePlatformEnv)))
+			files := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: jobKey.Namespace, Name: buildPlatformEnvName(jobKey.Name),
+			}, files)).To(Succeed())
+			Expect(files.OwnerReferences).To(HaveLen(1))
+			Expect(files.OwnerReferences[0].Name).To(Equal(job.Name))
+			Expect(files.OwnerReferences[0].UID).To(Equal(job.UID))
+
 			// The lifecycle needs none of the privileges BuildKit does: it
 			// enters as the builder image's own unprivileged user and stays
 			// there.
@@ -610,13 +633,21 @@ var _ = Describe("Build Controller", func() {
 
 			job := &batchv1.Job{}
 			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
-			creator := job.Spec.Template.Spec.Containers[0]
-			Expect(creator.Image).To(Equal(BuildpacksBuilderImage))
+			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildpacksBuilderImage))
+
 			// Without these the lifecycle builds an image with nothing to
-			// start: a Vite project has no server of its own.
-			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "BP_WEB_SERVER", Value: "nginx"}))
-			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "BP_WEB_SERVER_ROOT", Value: "dist"}))
-			Expect(creator.Env).To(ContainElement(corev1.EnvVar{Name: "BP_NODE_RUN_SCRIPTS", Value: "build"}))
+			// start: a Vite project has no server of its own. They are
+			// asserted on the platform directory rather than on the phase
+			// containers because that is the only place a buildpack reads
+			// them from — the same assertion made against the container env
+			// passed for months while nothing was delivered (#468).
+			files := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: jobKey.Namespace, Name: buildPlatformEnvName(jobKey.Name),
+			}, files)).To(Succeed())
+			Expect(files.Data).To(HaveKeyWithValue("BP_WEB_SERVER", "nginx"))
+			Expect(files.Data).To(HaveKeyWithValue("BP_WEB_SERVER_ROOT", "dist"))
+			Expect(files.Data).To(HaveKeyWithValue("BP_NODE_RUN_SCRIPTS", "build"))
 		})
 
 		It("detects from the project's root directory in a monorepo", func() {
@@ -2136,8 +2167,8 @@ func mountsBuildContext(mounts []corev1.VolumeMount, readOnly bool) bool {
 
 func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("creds", ""), "kitchen-git-gh", 0)
+	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
+		credentialsWithRead("creds", ""), "kitchen-git-gh")
 	clone := pod.Spec.InitContainers[0]
 
 	// The clone reads the token out of the mounted file through an askpass
@@ -2168,8 +2199,8 @@ func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 
 func TestBuildpacksPodClonesAnonymouslyWithoutAToken(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
-		credentialsWithRead("creds", ""), "", 0)
+	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
+		credentialsWithRead("creds", ""), "")
 	clone := pod.Spec.InitContainers[0]
 
 	if envValue(clone.Env, "KITCHEN_GIT_TOKEN_FILE") != "" {

@@ -1339,7 +1339,7 @@ Nothing is created and nothing is destroyed. An operator who knows whose it is
 hands it over by naming it on the claim:
 
 ```sh
-kubectl annotate resourceclaim <claim> -n kitchen-system \
+kubectl annotate resourceclaims.kitchen.bermos.dev <claim> -n kitchen-system \
   kitchen.bermos.dev/adopt-instance=<the object's name>
 ```
 

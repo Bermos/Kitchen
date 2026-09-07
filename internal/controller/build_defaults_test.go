@@ -18,10 +18,9 @@ package controller
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"testing"
-
-	corev1 "k8s.io/api/core/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/framework"
@@ -108,10 +107,11 @@ func TestRuntimeForDoesNotShareTheCatalogueSlice(t *testing.T) {
 	}
 }
 
-// What the lifecycle is told, per framework: the buildpacks' own
-// configuration as detection sorted it, and the platform's heap cap for every
-// framework whose build runs under Node.
-func TestFrameworkEnv(t *testing.T) {
+// What the buildpacks are told, per framework: their own configuration as
+// detection found it, and the platform's heap cap for every framework whose
+// build runs under Node. It is the content of the platform directory the two
+// buildpack-running phases mount, one key per file.
+func TestBuildPlatformEnv(t *testing.T) {
 	nuxt, _ := framework.Detect(framework.Signals{
 		Files:       []string{"package.json"},
 		PackageJSON: []byte(`{"dependencies":{"nuxt":"3.14.0"},"scripts":{"build":"nuxt build"}}`),
@@ -122,33 +122,39 @@ func TestFrameworkEnv(t *testing.T) {
 		detected framework.Framework
 		heapMiB  int64
 
-		want []corev1.EnvVar
+		want map[string]string
 	}{
-		"a node framework is capped, and the cap leads": {
+		"a node framework is capped": {
 			detected: nuxt,
 			heapMiB:  3072,
-			want: []corev1.EnvVar{
-				{Name: "NODE_OPTIONS", Value: "--max-old-space-size=3072"},
-				{Name: "BP_NODE_RUN_SCRIPTS", Value: "build"},
+			want: map[string]string{
+				"NODE_OPTIONS":          "--max-old-space-size=3072",
+				"BP_LAUNCHPOINT":        ".output/server/index.mjs",
+				"BP_NODE_RUN_SCRIPTS":   "build",
+				"BP_VERIFY_LAUNCHPOINT": "false",
 			},
 		},
 		"an installation with no ceiling caps nothing": {
 			detected: nuxt,
-			want:     []corev1.EnvVar{{Name: "BP_NODE_RUN_SCRIPTS", Value: "build"}},
+			want: map[string]string{
+				"BP_LAUNCHPOINT":        ".output/server/index.mjs",
+				"BP_NODE_RUN_SCRIPTS":   "build",
+				"BP_VERIFY_LAUNCHPOINT": "false",
+			},
 		},
 		"a framework that does not run node is not capped": {
 			detected: python,
 			heapMiB:  3072,
-			want:     []corev1.EnvVar{},
+			want:     map[string]string{},
 		},
 		"a build with no framework at all is told nothing": {
 			heapMiB: 3072,
-			want:    []corev1.EnvVar{},
+			want:    map[string]string{},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := frameworkEnv(tc.detected, tc.heapMiB)
-			if !slices.Equal(got, tc.want) {
+			got := buildPlatformEnv(tc.detected, tc.heapMiB)
+			if !maps.Equal(got, tc.want) {
 				t.Errorf("env = %v, want %v", got, tc.want)
 			}
 		})

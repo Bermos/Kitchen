@@ -211,14 +211,37 @@ func TestDetectBuildEnv(t *testing.T) {
 				Files:       []string{"package.json"},
 				PackageJSON: []byte(`{"dependencies":{"next":"15.0.0"},"scripts":{"build":"next build"}}`),
 			},
+			// Next.js starts with `npm start`, which is the manifest's own
+			// script: `npm-start` fires on it, so there is no launch point
+			// for the platform to name.
 			want: map[string]string{"BP_NODE_RUN_SCRIPTS": "build"},
 		},
-		"nuxt is told to run its build": {
+		// #468: the runtime image carried no Node at all. node-engine marks
+		// its layer for launch only where a start buildpack requires node at
+		// launch, and a stock Nuxt manifest fires none of them — so the
+		// platform names the file its own start command runs, and tells
+		// node-start not to look for it before the build has written it.
+		"nuxt is told to run its build, and where its server will be": {
 			signals: Signals{
 				Files:       []string{"package.json"},
 				PackageJSON: []byte(`{"dependencies":{"nuxt":"3.14.0"},"scripts":{"build":"nuxt build"}}`),
 			},
-			want: map[string]string{"BP_NODE_RUN_SCRIPTS": "build"},
+			want: map[string]string{
+				"BP_NODE_RUN_SCRIPTS":   "build",
+				"BP_LAUNCHPOINT":        ".output/server/index.mjs",
+				"BP_VERIFY_LAUNCHPOINT": "false",
+			},
+		},
+		"so are the other three frameworks that build their own server": {
+			signals: Signals{
+				Files:       []string{"package.json"},
+				PackageJSON: []byte(`{"dependencies":{"@nestjs/core":"10.4.0"},"scripts":{"build":"nest build"}}`),
+			},
+			want: map[string]string{
+				"BP_NODE_RUN_SCRIPTS":   "build",
+				"BP_LAUNCHPOINT":        "dist/main",
+				"BP_VERIFY_LAUNCHPOINT": "false",
+			},
 		},
 		// The manifest is the only place a repository says which runtime it
 		// wants. Without this the node-engine buildpack reports no version
@@ -230,8 +253,10 @@ func TestDetectBuildEnv(t *testing.T) {
 					`"scripts":{"build":"nuxt build"},"engines":{"node":">=22.0.0"}}`),
 			},
 			want: map[string]string{
-				"BP_NODE_RUN_SCRIPTS": "build",
-				"BP_NODE_VERSION":     ">=22.0.0",
+				"BP_NODE_RUN_SCRIPTS":   "build",
+				"BP_NODE_VERSION":       ">=22.0.0",
+				"BP_LAUNCHPOINT":        ".output/server/index.mjs",
+				"BP_VERIFY_LAUNCHPOINT": "false",
 			},
 		},
 		"a static framework is told both as well": {
@@ -340,9 +365,9 @@ func TestCatalogueIsConsistent(t *testing.T) {
 // The four commands here are the whole of #440's default path: their servers
 // are written by the build into a directory that does not exist while the
 // buildpacks are deciding what to run, so `npm-start`, `node-start` and the
-// Procfile buildpack all pass and the lifecycle exports an image declaring no
-// process at all. The two that name `npm start` are the frameworks whose
-// stock manifest binds that script to their own CLI.
+// Procfile buildpack all fail to detect and the lifecycle exports an image
+// declaring no process at all. The two that name `npm start` are the
+// frameworks whose stock manifest binds that script to their own CLI.
 func TestFrameworkCommands(t *testing.T) {
 	for name, want := range map[string][]string{
 		Nuxt:      {"node", ".output/server/index.mjs"},
@@ -394,5 +419,79 @@ func TestFrameworksThatRunNode(t *testing.T) {
 		if f.RunsNode != node[name] {
 			t.Errorf("framework %q RunsNode = %v, want %v", name, f.RunsNode, node[name])
 		}
+	}
+}
+
+// The launch point, which is the same file the command names — and has to
+// be, or the image is built to start one program and the platform starts
+// another (#468).
+//
+// Only a `node <file>` command has one. `npm start` is the repository's own
+// script, and the buildpack that reads it needs no help from the platform;
+// a framework with no command at all is started by a buildpack that declares
+// a process of its own.
+func TestFrameworkLaunchPoints(t *testing.T) {
+	want := map[string]string{
+		Nuxt:      ".output/server/index.mjs",
+		SvelteKit: "build",
+		NestJS:    "dist/main",
+		Astro:     "./dist/server/entry.mjs",
+	}
+	for name, f := range catalogue {
+		got, ok := launchPoint(f.Command)
+		if got != want[name] {
+			t.Errorf("%s launches %q, want %q", name, got, want[name])
+		}
+		if ok != (want[name] != "") {
+			t.Errorf("%s has a launch point = %v, want %v", name, ok, want[name] != "")
+		}
+		if !ok {
+			continue
+		}
+		// And it is the command's own second word, not a copy of it that
+		// could be edited on its own.
+		if got != f.Command[1] {
+			t.Errorf("%s starts %q and is built to start %q", name, f.Command[1], got)
+		}
+	}
+}
+
+// A launch point the platform names is always accompanied by the flag that
+// stops node-start looking for it: the file is written by the build, so at
+// detect time it is never there, and BP_LAUNCHPOINT alone fails the detect
+// it was meant to pass.
+func TestLaunchPointIsAlwaysUnverified(t *testing.T) {
+	for name := range catalogue {
+		env := map[string]string{}
+		for _, v := range launchPointEnv(catalogue[name]) {
+			env[v.Name] = v.Value
+		}
+		if _, named := env["BP_LAUNCHPOINT"]; !named {
+			if len(env) != 0 {
+				t.Errorf("%s is told %v without naming a launch point", name, env)
+			}
+			continue
+		}
+		if env["BP_VERIFY_LAUNCHPOINT"] != "false" {
+			t.Errorf("%s names a launch point and verifies it: %v", name, env)
+		}
+	}
+}
+
+// A command that is not exactly `node <file>` is not a launch point: giving
+// one to node-start would have it run `node <the whole command>`.
+func TestLaunchPointRefusesEverythingElse(t *testing.T) {
+	for name, command := range map[string][]string{
+		"nothing at all":            nil,
+		"a package manager script":  {"npm", "start"},
+		"a bare program":            {"node"},
+		"a program with flags":      {"node", "--enable-source-maps", "server.js"},
+		"another runtime's program": {"python", "app.py"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if file, ok := launchPoint(command); ok {
+				t.Errorf("launchPoint(%q) = %q, want none", command, file)
+			}
+		})
 	}
 }
