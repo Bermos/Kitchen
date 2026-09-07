@@ -29,6 +29,59 @@ that exists to be called by other applications should never have been on the
 internet at all — not even for the minute between creating it and remembering
 to change it. See [An internal project](#an-internal-project).
 
+### What the institution declares about it
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" \
+  -d '{"name": "shop", "repo": "acme/shop", "connection": "gh", "registry": "harbor",
+       "dataClass": "confidential", "criticality": "important", "rto": "4h", "rpo": "30m"}' \
+  https://kitchen.apps.example.com/api/v1/projects
+```
+
+`dataClass`, `criticality`, `rto` and `rpo` are the same four fields the
+[settings PATCH](#changing-a-projects-settings) carries, with the same
+vocabulary and the same refusals — they are on the create for a reason of a
+different kind from `rootDirectory` and `dockerfilePath`. Those are here so
+that the first build works; these are here so that a project is never
+classified by nobody having been asked.
+
+**Kitchen decides none of them.** No route refuses anything on them, no
+deployment is gated behind one, and none of them is defaulted to a value: a
+class the platform picked would be a class nobody decided. What they change is
+what an attached resource may hold (a claim's class may not exceed the
+project's), what a promotion into an environment rated below the class is
+allowed to do, what
+[`GET /compliance/criticality`](criticality.md) maps onto the function, and how
+loudly the project's production environments alert.
+
+**The three states of each field are the point.** A field left out is the
+caller saying nothing about it — unclassified, undesignated, no tolerance
+recorded, exactly as before this existed. An **empty string** is an answer:
+"unclassified" and "undesignated" are decisions, recorded as such. A word is
+the designation. That distinction is what the dashboard's create screen is
+built on — it will not create a project until both classifications have been
+answered, and offers "unclassified" and "undesignated" as answers rather than
+as the silence somebody scrolled past.
+
+The create's audit record is marked `privileged` and carries whatever was
+declared, the way the settings route's is: a class and a designation decide
+what a policy may demand, so the moment they were set has to be readable — and
+for a project that declares them at creation, that moment is this one.
+
+`rto` and `rpo` are durations of whole hours and minutes — `"4h"`, `"30m"`,
+`"1h30m"` — and mean nothing without a designation, so declaring them beside an
+undesignated project records two tolerances against a function nobody has
+designated. The dashboard asks for them only once a criticality has been
+chosen; the API takes them either way, because refusing an order of declaration
+would be Kitchen having an opinion about the institution's process.
+
+### The name `new` is reserved
+
+The dashboard's create screen is at `/projects/new`, so a project of that name
+would be legal everywhere and unreachable in the one place every project is
+reached from. It is refused at the name for the reason a name matching the
+platform's own hostnames is, and the refusal says which address is taken.
+
 A project reads back with `repositoryUrl` beside `repo`: where that repository
 is on the provider's own site, composed by the API from the connection because
 the host is the connection's — see

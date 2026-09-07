@@ -276,6 +276,25 @@ export const routes: RouteRecordRaw[] = [
     scope: "project",
     picker: { name: "project" },
   }),
+  screen({
+    // Creating a project, which used to be a dialog over whatever screen you
+    // happened to be on. A project is the largest object this platform has —
+    // a source, a build context, a name, an exposure, and the institution's
+    // own declarations about it — and a dialog is a viewport-height box with
+    // a scrolling body, so on a narrow screen the form was read through a
+    // letterbox with its Create button below the fold.
+    //
+    // It is in the Project scope rather than the Fleet one because it is the
+    // first screen of a project's life, and `/projects` is where the scope
+    // begins. It is declared *before* `/projects/:name` so the static segment
+    // wins; the API refuses `new` as a project name for the same reason, so
+    // there is no project this address could be hiding.
+    path: "/projects/new",
+    name: "project-new",
+    view: "NewProjectView.vue",
+    scope: "project",
+    requires: "POST /api/v1/projects",
+  }),
   // The six screens the project scope is made of. They were one file and nine
   // tabs — health, releases, builds, previews, domains, claims, variables,
   // people and eleven cards of settings, mounted together so that opening the

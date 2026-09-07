@@ -30,7 +30,7 @@ at that commit.
 That is also why the file **cannot set the root directory**. The platform has
 to know where the project is before it can read anything, so a file that moved
 the directory it was read from would have to be read before it could say where
-to read it. It stays on the project, where the new-project form already asks
+to read it. It stays on the project, where the New project screen already asks
 for it — and putting a project's own file next to its own code is what a
 monorepo wants anyway.
 

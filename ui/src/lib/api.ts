@@ -546,6 +546,19 @@ export interface NewProject {
    * because creating one starts a build and a build of the wrong stage
    * succeeds. */
   dockerfileTarget?: string;
+  /** What the institution declares about this project: the class of data it
+   * handles, how much its function matters, and the tolerances that come with
+   * a designation.
+   *
+   * The empty string is a value here rather than an omission — it is
+   * "unclassified" and "undesignated", which are answers somebody gave — and
+   * leaving a field out is the caller saying nothing at all. The create screen
+   * always sends all four, because a classification the platform chose by
+   * being silent is the thing that must never happen. */
+  dataClass?: string;
+  criticality?: string;
+  rto?: string;
+  rpo?: string;
 }
 
 export interface Revision {
