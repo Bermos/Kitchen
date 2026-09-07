@@ -56,6 +56,18 @@ Update it at every release cut, not at every event.
 
 ## 2. Dispatch an implementer
 
+**Before dispatching the next issue, run `/usage`.** If usage is at or above 75% of
+the window, do not dispatch: checkpoint and end the session, so other sessions and
+chats keep headroom. A checkpoint is (1) every in-flight branch pushed as it stands,
+committed or not (`git stash` is not a checkpoint; a WIP commit on the branch is),
+(2) a short status note at `.claude/orchestrate-status.md` on the orchestration
+branch — what landed, what is open with its PR and head, what is running on which
+worktree, the decisions list, and the next issue in order — committed and pushed,
+and (3) any check-in timers cancelled. Whoever or whatever resumes reads that note
+first and deletes it once the state is back in the plan. If `/usage` cannot be run
+from where you are, ask the maintainer for the figure at each wave boundary rather
+than guessing, and treat "unknown" as above the line.
+
 One `implementer` per issue, in the background, with a prompt that carries exactly:
 
 - the issue number and its parent, and which merged PRs it builds on;
@@ -178,6 +190,10 @@ not verify. When they ask "anything else since yesterday", answer from the plan 
 the decisions list, most consequential first, and stop.
 
 ## 8. Before ending a run
+
+Whether the run ends because the batch is done or because the usage guard in
+section 2 stopped it, the same things are true afterwards: nothing unpushed, nothing
+running that nobody will collect, and a note or an updated plan that says so.
 
 Every implementer's memory, the reviewer's and the mapper's should have grown by
 what this batch taught. Skim the three `MEMORY.md` files, merge duplicates, and add
