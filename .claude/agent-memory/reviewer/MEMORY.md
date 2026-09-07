@@ -29,6 +29,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-07: A new per-class refusal re-spelled the platform's one data-class refusal (`DataClassRefusal`) with its own `fmt.Sprintf`, sharing only the `Exceeds` comparison — two wordings of one rule that can now drift, on a criterion that asked for the existing engine. Ask: is the refusal *sentence* shared too, or only the comparison behind it?
 
+- 2026-09-07: A new claim state was given a UI tone of `info` ("nothing is wrong") while the condition it writes stays `Status: False` with an unclassified reason, which `conditionSeverityOf` defaults to `severityError` — so the badge is blue and the condition row red on one object. Ask: is the new reason in `internal/api/conditions.go`'s table, and does `TestEveryExportedReasonIsClassified` even see it (it only covers *exported* `Reason…` constants, and claim/environment reasons are string literals)?
+- 2026-09-07: A "waiting for another team" state was routed into an existing refusal condition whose reason word says something else (`ClaimsBound`/`NotAdmittedHere`, about the provider's *environment owners*), so a request nobody has answered reads as a refusal somebody made. Ask: when a new state reuses an old condition, does the old reason still describe it?
+
 ## Chain links that were missed
 
 - 2026-09-06: A route landed without its `docs/API.md` row; a field landed without `docs/CRDS.md`; a chart value landed without its README row. The tests cover policy, schema and the dashboard's policy copy; the docs rows and the screen are what they cannot.
@@ -41,6 +44,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-07: A new owner-declared field was drawn in the panel for every environment class, including the one the API refuses it for outright (a preview) — no `v-if` on `environment.type`, and `design.test.ts` cannot see it. Ask: is this control drawn only for the classes the route accepts it for?
 
+- 2026-09-07: One screen gained a new explanatory row for a claim state without excluding it from the existing `phase === "Failed"` refusal row, so a denied claim was drawn twice, in two wordings, in one table — while the sibling screen carried a comment saying exactly this must not happen. Ask: does the new row's filter overlap any filter already rendering the same objects?
+- 2026-09-07: The one act a refused reader has ("ask again") was put on the Overview while the pane where claims are asked for and given up is on Settings, which shows the same refusal with no button. Ask: is the action on the screen where the object is managed, or only where it happens to be listed?
+
 ## Decisions that should have been surfaced
 
 - 2026-09-07: A stage environment stopped inheriting the project's criticality; a default that changes behaviour for existing installations must be in the PR body and the changelog.
@@ -52,6 +58,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-07: A screen, a CRD godoc, a docs page and an API-served preset description all stated a per-project override as fact while it was deferred to a follow-up issue. Ask: does the copy describe the platform that exists, or the one the design intends?
 - 2026-09-07: `Closes #<issue>` on a branch that names one of the issue's own normative sentences as unbuilt. Ask: does the issue text treat the deferred criterion as required, and should this be `Refs` plus a maintainer decision?
+
+- 2026-09-07: A route's role was justified in its own policy comment and docs by "nothing else about the consumer crosses" while the row it answers carries the requesting developer's email address. Ask: does the payload match the sentence that argues for the role, field by field?
+- 2026-09-07: Dropping a create-time refusal turned a claim into a cross-project *write*: any developer on any project can now put a row in another project's queue and an entry in its activity feed. That is the feature, but it is a new unsolicited cross-project surface and belongs in the blast radius. Ask: what can a stranger now write into somebody else's project?
 
 ## Commit and title
 
