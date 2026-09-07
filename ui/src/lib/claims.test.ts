@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   claimCautions,
+  claimDeletionOutcome,
+  claimDeletionWarning,
   deletionGatedByName,
   destroysData,
   destroysDataRefusal,
@@ -8,6 +10,7 @@ import {
   mayPromoteRecovery,
   promoteRefusal,
 } from "./claims";
+import type { Claim } from "./api";
 import type { Caller } from "./policy";
 
 // The one escalation on the claims surface (#320): `deletionPolicy: Delete`
@@ -171,5 +174,29 @@ describe("the cautions a bound claim carries", () => {
 
   it("says nothing about a claim with no conditions at all", () => {
     expect(claimCautions([{ name: "shop-cache" }])).toEqual([]);
+  });
+});
+
+// A binding to another project's offering provisions nothing, so both
+// sentences about deleting one have to say that rather than falling through
+// to the database's, which would tell somebody their data was about to go.
+describe("deleting a binding to another project's offering", () => {
+  const binding: Claim = {
+    name: "prices",
+    project: "checkout",
+    connection: "",
+    type: "service",
+    createdAt: "2026-09-07T00:00:00Z",
+    service: { project: "pricing", offering: "pricing-api" },
+  };
+
+  it("says the offering carries on being offered", () => {
+    expect(claimDeletionOutcome(binding)).toContain("carries on being offered");
+  });
+
+  it("names what it binds, and promises nothing about data", () => {
+    const warning = claimDeletionWarning(binding);
+    expect(warning).toContain("pricing/pricing-api");
+    expect(warning).not.toContain("DATA");
   });
 });

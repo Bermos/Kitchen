@@ -131,9 +131,52 @@
       "type": "array",
       "description": "The persistent volumes this commit needs: which resource claim, mounted where, by which process. They are a requirement rather than a request — a volume claim is the project asking the platform for storage, and for a bound volume for storage the platform did not create and does not own, which is the project's standing rather than a fact about the code. This file is committed, so anybody who can open a pull request writes it. So the file declares what the code needs and the build checks it: a declaration the project has no claim for fails the build naming the claim to make, and one whose process, mount path, source or access mode disagrees with the claim fails naming both. That catches the failure this is for — the code writes to /data, the claim mounts /var/data, and everything is green until the first restart.",
       "items": { "$ref": "#/$defs/volume" }
+    },
+    "offers": {
+      "type": "array",
+      "description": "The services this commit says the project offers other projects: which workload answers each one, and what it speaks. They are a declaration rather than a grant. Which workload serves an offering and what protocol it speaks are facts about the code and belong here; who may bind to it is the project's standing, and this file is committed to a repository anybody who can open a pull request may write — so visibility is refused here, and the build checks what is left against the offerings the project actually makes. That catches the failure this is for: the code serves the offering from the api workload, the project offers the web one, and every consumer is bound to an address that answers with the wrong application.",
+      "items": { "$ref": "#/$defs/offering" }
     }
   },
   "$defs": {
+    "offering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "description": "One offering the commit makes, as the commit understands it. The project has to make an offering of the same name already, or the build fails saying so — an offering is added on the project's Offerings pane, or with `kitchen api PATCH /projects/<name>`.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 40,
+          "description": "The offering's name, which is what ties this declaration to the one the project makes and what a consumer's claim names.",
+          "examples": ["pricing-api", "tiles"]
+        },
+        "process": {
+          "type": "string",
+          "description": "The workload that answers it: \"web\" for the web process, or the name of a declared service workload. Leaving it out declares no opinion and matches whatever the project says; a value that disagrees fails the build, because an offering served by the wrong workload answers with the wrong application.",
+          "examples": ["web", "api"]
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["http", "tcp"],
+          "description": "What the offering speaks. http is handed to a consumer as a URL as well as a host and a port; tcp is handed over as the host and the port alone, because a URL for a wire protocol would be the platform inventing a scheme it was never told. Leaving it out declares no opinion; a value that disagrees with the project's fails the build."
+        },
+        "auth": {
+          "type": "string",
+          "enum": ["none"],
+          "description": "What a consumer has to do to be admitted by the application itself. none is the only rung built: what admits a consumer today is the grant on the offering. Leaving it out declares no opinion."
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Refused here, and described so that the refusal is findable rather than arriving as an unknown field. Who may bind to an offering is a grant, and a grant anybody with push access could widen is not a grant — open the offering in the dashboard or with `kitchen api PATCH /projects/<name>`."
+        },
+        "environment": {
+          "type": "string",
+          "description": "Refused here, for the reason visibility is: which of the project's environments serves an offering is a fact about its deployments rather than about this commit, and moving it would repoint every consumer. Set it on the project."
+        }
+      }
+    },
     "volume": {
       "type": "object",
       "additionalProperties": false,
@@ -443,7 +486,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["repository"],
-      "description": "An image this platform did not build, and the third answer to the question build asks: a repository somebody else publishes and a tag or a digest of it. It excludes build \u2014 a workload is built here or published elsewhere, never both \u2014 and a unit may mix the two, shipping an upstream image beside a sidecar built from this repository in one release.",
+      "description": "An image this platform did not build, and the third answer to the question build asks: a repository somebody else publishes and a tag or a digest of it. It excludes build — a workload is built here or published elsewhere, never both — and a unit may mix the two, shipping an upstream image beside a sidecar built from this repository in one release.",
       "properties": {
         "repository": {
           "type": "string",

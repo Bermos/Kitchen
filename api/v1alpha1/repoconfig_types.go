@@ -120,6 +120,59 @@ type RepoConfig struct {
 	// +listType=map
 	// +listMapKey=name
 	Volumes []RepoVolume `json:"volumes,omitempty"`
+
+	// Offers are the services this commit says the project offers other
+	// projects: which workload answers, and what it speaks.
+	//
+	// **They are a declaration, not a grant**, and the split is the same one
+	// the volumes draw. Which workload serves an offering and what protocol
+	// it speaks are facts about the code and belong in this file with the
+	// rest of them; *who may bind* is the project's standing, and this file
+	// is written by anybody who can open a pull request — so `visibility` is
+	// refused here by name, and the build checks what is left against the
+	// project's own offerings rather than writing them.
+	//
+	// What that catches is the failure the declaration is for: the code
+	// serves the offering from the `api` workload and the project offers the
+	// web one, which binds every consumer to an address that answers with
+	// the wrong application.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Offers []RepoOffering `json:"offers,omitempty"`
+}
+
+// RepoOffering is one entry of kitchen.json's `offers`: an offering as the
+// commit understands it.
+//
+// It is deliberately not [ServiceOffering]: that type carries `visibility`
+// and `environment`, which are the two halves of an offering a repository
+// may not decide — who may bind, and which of the project's environments
+// serves it.
+type RepoOffering struct {
+	// Name is the offering's, which is what ties the declaration to the one
+	// the project actually makes.
+	Name string `json:"name"`
+
+	// Process is the workload the commit expects to serve it; empty
+	// declares no opinion and matches whatever the project says.
+	// +optional
+	Process string `json:"process,omitempty"`
+
+	// Speaks is the protocol the commit expects to be handed over as —
+	// `protocol` in the file. Empty declares no opinion; a value that
+	// disagrees with the project's fails the build, because an offering
+	// handed over as a URL and one handed over as a host and a port are
+	// two different things to whoever is writing the client.
+	// +kubebuilder:validation:Enum=http;tcp
+	// +optional
+	Speaks OfferingProtocol `json:"protocol,omitempty"`
+
+	// Authorization is the rung of the ladder the commit expects —
+	// `auth` in the file. Empty declares no opinion.
+	// +kubebuilder:validation:Enum=none
+	// +optional
+	Authorization OfferingAuth `json:"auth,omitempty"`
 }
 
 // RepoVolume is one entry of kitchen.json's `volumes`: a volume claim the
@@ -335,6 +388,11 @@ func (c *RepoConfig) Declares() []string {
 	for _, vol := range c.Volumes {
 		fields = append(fields, "volumes."+vol.Name)
 	}
+	// An offering is named one by one for the volume's reason: each is a
+	// declaration checked against one of the project's own.
+	for _, offering := range c.Offers {
+		fields = append(fields, "offers."+offering.Name)
+	}
 	if len(c.Processes) > 0 {
 		fields = append(fields, "processes")
 	}
@@ -370,6 +428,16 @@ func (c *RepoConfig) DeclaresVolume(name string) bool {
 		return false
 	}
 	return slices.ContainsFunc(c.Volumes, func(v RepoVolume) bool { return v.Name == name })
+}
+
+// DeclaresOffering reports whether the file declared the named offering,
+// which is what the dashboard reads to mark one as the repository's rather
+// than one somebody added by hand.
+func (c *RepoConfig) DeclaresOffering(name string) bool {
+	if c == nil {
+		return false
+	}
+	return slices.ContainsFunc(c.Offers, func(o RepoOffering) bool { return o.Name == name })
 }
 
 // String names the file and what it set, for a log line or an audit detail.

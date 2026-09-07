@@ -606,6 +606,43 @@ restart takes the data with it.
 Make the claim in the dashboard or with `kitchen api POST /claims`, and name
 it here.
 
+### `offers`
+
+What this commit says the project offers the other projects on the platform:
+which workload answers each offering, and what it speaks.
+
+```json
+{
+  "offers": [
+    { "name": "pricing-api", "process": "api", "protocol": "http" },
+    { "name": "tiles" }
+  ]
+}
+```
+
+**It declares the shape and never the grant**, which is the same split
+[`volumes`](#volumes) draws one entry up. Which workload serves an offering
+and what protocol it speaks are facts about the code; *who may bind to it* is
+the project's standing, and this file is written by anybody who can open a
+pull request — so `visibility` and `environment` are refused here **by name**
+rather than arriving as unknown fields.
+
+What the file declares, the build checks against the project's own offerings,
+and each disagreement fails the build with what to change:
+
+| The file says | The build says |
+|---|---|
+| an offering the project does not make | the offerings it does make, and where one is added |
+| a `process` the project serves it from something else | both — an offering answered by the wrong workload answers with the wrong application |
+| a `process` no release of the project runs | the consumer's claim says so, not the build: which workloads an environment runs is a fact about its release, and this file is what declares them |
+| a `protocol` the project offers it as something else | both — an offering handed over as a URL and one handed over as a host and a port are two different things to whoever is writing the client |
+
+`process`, `protocol` and `auth` are optional and declare no opinion when left
+out. Add the offering on the project's Offerings pane, or with
+`kitchen api PATCH /projects/<name>`, and declare it here;
+[docs/api/projects.md](api/projects.md#what-this-project-offers-other-projects)
+is the whole of what an offering is.
+
 ## What it cannot set
 
 The file lives in a repository, and **a preview builds a commit from a pull
@@ -644,6 +681,13 @@ the project's standing in the platform.
   rather than a fact about the code, and the declaration would be a claim a
   pull request got to make. A secret file is declared in the dashboard or with
   `kitchen files set --secret`.
+- **Not who may bind to what this project offers.** [`offers`](#offers)
+  declares the offerings this commit serves and the build checks them; it
+  cannot say `visibility`, which is who may bind, or `environment`, which is
+  where the offering is served from. Both are refused by name. A grant
+  anybody with push access could widen is not a grant, and a commit that could
+  move which environment serves an offering would repoint every consumer of
+  it.
 - **No asking for storage.** [`volumes`](#volumes) declares the volumes the
   code needs and the build checks them; it cannot ask for one to be cut, and
   it cannot name somebody's existing volume — `size`, `storageClass` and
@@ -670,7 +714,9 @@ maps the two onto each other field by field. The traffic runs the other way
 once: `build.rootDirectory` is the API's and not the file's, for the reason in
 [Where it goes](#where-it-goes). And [`volumes`](#volumes) sets nothing at
 all — it declares what the code needs and the build holds it against the
-claims `POST /claims` made, which is the route behind it.
+claims `POST /claims` made, which is the route behind it. [`offers`](#offers)
+is the same shape: the declaration is the commit's, the offering itself is
+`PATCH /projects/{name}`.
 
 ## What a bad file does
 

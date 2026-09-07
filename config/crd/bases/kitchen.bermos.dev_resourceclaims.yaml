@@ -363,6 +363,7 @@ spec:
                 - volume
                 - inngest
                 - redis
+                - service
                 type: string
                 x-kubernetes-validations:
                 - message: 'type is immutable: delete the claim and ask for the other
@@ -378,15 +379,17 @@ spec:
                 one.'
               messageExpression: '''connectionRef is required: it names the Connection
                 that provisions a '' + self.type + '' claim. Only a claim of a type
-                the platform provisions itself (oidcClient, volume) goes without one.'''
-              rule: self.type in ['oidcClient', 'volume'] || has(self.connectionRef)
+                the platform provisions itself (oidcClient, volume, service) goes
+                without one.'''
+              rule: self.type in ['oidcClient', 'volume', 'service'] || has(self.connectionRef)
             - message: 'this claim type takes no connectionRef: the platform provisions
                 it itself, and a Connection here would name a provider nothing would
                 ask.'
               messageExpression: '''a '' + self.type + '' claim takes no connectionRef:
                 the platform provisions it itself, and a Connection here would name
                 a provider nothing would ask.'''
-              rule: '!(self.type in [''oidcClient'', ''volume'']) || !has(self.connectionRef)'
+              rule: '!(self.type in [''oidcClient'', ''volume'', ''service'']) ||
+                !has(self.connectionRef)'
             - message: spec.backup belongs to a claim whose resource this platform
                 runs and can configure backups for, which is postgres alone. A resource
                 somebody else runs is backed up by whoever runs it.

@@ -263,6 +263,9 @@ export function claimRefusal(claim: Claim): string {
  * no policy — it always goes, which is the whole point of deleting the claim.
  */
 export function claimDeletionOutcome(claim: Claim): string {
+  if (claim.type === "service") {
+    return "The binding is removed; the offering carries on being offered.";
+  }
   if (claim.type === "oidcClient") {
     return "The OAuth client is deregistered: nothing can be signed in with it again.";
   }
@@ -302,6 +305,9 @@ export function claimDeletionOutcome(claim: Claim): string {
 /** The confirmation's own sentence, which says what the policy does to the
  * data before asking for the click — for the kind of resource this claim is. */
 export function claimDeletionWarning(claim: Claim): string {
+  if (claim.type === "service") {
+    return `This claim is a binding to ${claim.service?.project}/${claim.service?.offering}, and nothing else: deleting it removes the address this project was handed. Nothing of the offering's is touched, and the workloads that read the variable deploy without it.`;
+  }
   if (claim.type === "volume") {
     if (claim.volume?.source === "bind") {
       return "This claim binds storage the platform did not create: deleting it unmounts the storage and leaves every byte where it is. The process that mounted it deploys without it, and any other project holding the same storage is unaffected.";

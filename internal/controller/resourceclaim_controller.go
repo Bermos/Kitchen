@@ -398,7 +398,47 @@ func (r *ResourceClaimReconciler) mapEnvironmentToClaims(ctx context.Context, ob
 	if !ok {
 		return nil
 	}
-	return r.claimsOfProject(ctx, env.Namespace, env.Spec.ProjectRef.Name)
+	requests := r.claimsOfProject(ctx, env.Namespace, env.Spec.ProjectRef.Name)
+	// And every claim of *another* project that binds an offering served by
+	// this environment (#493). A service claim waits on an environment its
+	// own project does not own — the offering names one of the provider's —
+	// so without this the consumer would learn that the provider had
+	// deployed only on the next requeue.
+	return append(requests, r.serviceClaimsOn(ctx, env.Namespace, env.Spec.ProjectRef.Name)...)
+}
+
+// mapProjectToServiceClaims enqueues every claim binding an offering of this
+// project, so that an offering added, opened or taken away reaches its
+// consumers at once rather than up to a requeue later. It is the one map
+// function that crosses from one project to another, which is what a service
+// claim is.
+func (r *ResourceClaimReconciler) mapProjectToServiceClaims(ctx context.Context, obj client.Object) []ctrl.Request {
+	project, ok := obj.(*kitchenv1alpha1.Project)
+	if !ok {
+		return nil
+	}
+	return r.serviceClaimsOn(ctx, project.Namespace, project.Name)
+}
+
+// serviceClaimsOn is every service claim, of any project, that binds an
+// offering of the named one.
+func (r *ResourceClaimReconciler) serviceClaimsOn(ctx context.Context, namespace, provider string) []ctrl.Request {
+	claims := &kitchenv1alpha1.ResourceClaimList{}
+	if err := r.List(ctx, claims, client.InNamespace(namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "could not list claims after a provider project changed")
+		return nil
+	}
+	requests := make([]ctrl.Request, 0, len(claims.Items))
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		if claim.Spec.Type != kitchenv1alpha1.ClaimTypeService || claim.Service().Project != provider {
+			continue
+		}
+		requests = append(requests, ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: claim.Namespace, Name: claim.Name,
+		}})
+	}
+	return requests
 }
 
 // mapDomainToClaims enqueues the claims of the project a custom Domain
@@ -483,6 +523,10 @@ func (r *ResourceClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kitchenv1alpha1.ResourceClaim{}).
 		Watches(&kitchenv1alpha1.Environment{}, handler.EnqueueRequestsFromMapFunc(r.mapEnvironmentToClaims)).
+		// A Project, because a service claim binds an offering another
+		// project makes: adding one, opening one, or taking one away is what
+		// moves that claim.
+		Watches(&kitchenv1alpha1.Project{}, handler.EnqueueRequestsFromMapFunc(r.mapProjectToServiceClaims)).
 		Watches(&kitchenv1alpha1.Connection{}, handler.EnqueueRequestsFromMapFunc(r.mapConnectionToClaims)).
 		Watches(&kitchenv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(r.mapDomainToClaims)).
 		// A volume claim's PVC binding is what records the PersistentVolume

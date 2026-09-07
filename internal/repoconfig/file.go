@@ -47,6 +47,31 @@ type File struct {
 	Processes  []appconfig.Process `json:"processes,omitempty"`
 	Files      []FileConfigFile    `json:"files,omitempty"`
 	Volumes    []FileVolume        `json:"volumes,omitempty"`
+	Offers     []FileOffering      `json:"offers,omitempty"`
+}
+
+// FileOffering is one entry of `offers`: a service this commit says the
+// project offers other projects (#493).
+//
+// It declares the shape and never the grant. Which workload answers and what
+// it speaks are facts about the code; who may bind to it is the project's
+// standing, and this file is committed to a repository anybody who can open
+// a pull request may write — so `visibility` is here only to be refused by
+// name, the way `build.rootDirectory` is. "Unknown field" would be a true
+// answer that explains nothing, and the thing it would fail to explain is
+// the one line in this file that would have widened a grant.
+type FileOffering struct {
+	Name     string `json:"name"`
+	Process  string `json:"process,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Auth     string `json:"auth,omitempty"`
+
+	Visibility *string `json:"visibility,omitempty"`
+	// Environment is refused for the neighbouring reason: which of the
+	// project's environments serves an offering is a fact about the
+	// platform's deployments rather than about the code, and a commit that
+	// could move it would repoint every consumer of the offering.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // FileVolume is one entry of `volumes`: a volume claim the commit says it
@@ -220,6 +245,12 @@ func (f File) config() (*kitchenv1alpha1.RepoConfig, error) {
 	}
 	config.Volumes = volumes
 
+	offers, err := f.offersConfig()
+	if err != nil {
+		return nil, err
+	}
+	config.Offers = offers
+
 	return config, nil
 }
 
@@ -295,6 +326,68 @@ func (f File) volumesConfig() ([]kitchenv1alpha1.RepoVolume, error) {
 		})
 	}
 	return volumes, nil
+}
+
+// offersConfig validates the `offers` list: every entry names an offering
+// the project makes, declares the shape of it and nothing about the grant.
+//
+// Whether the project actually makes the offering is checked at the build,
+// where the project can be read; this layer checks that the declaration is
+// one the platform could act on at all — and refuses the two fields that are
+// the platform's rather than the code's, by name.
+func (f File) offersConfig() ([]kitchenv1alpha1.RepoOffering, error) {
+	if len(f.Offers) == 0 {
+		return nil, nil
+	}
+	offers := make([]kitchenv1alpha1.RepoOffering, 0, len(f.Offers))
+	seen := map[string]bool{}
+	for _, declared := range f.Offers {
+		name := strings.TrimSpace(declared.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%w: every entry of offers names the offering it is about, and one of "+
+				"them names none", ErrInvalid)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("%w: offers[%q] is declared twice — one name is one offering",
+				ErrInvalid, name)
+		}
+		seen[name] = true
+		if declared.Visibility != nil {
+			return nil, fmt.Errorf(
+				"%w: offers[%q] sets visibility — %s declares what this commit serves and never who may bind "+
+					"to it. Who may is a grant, this file is committed to a repository anybody who can open "+
+					"a pull request may write, and a grant they could widen is not a grant. Open the "+
+					"offering in the dashboard or with `kitchen api PATCH /projects/<name>`, and declare "+
+					"the shape of it here",
+				ErrInvalid, name, FileName)
+		}
+		if declared.Environment != nil {
+			return nil, fmt.Errorf(
+				"%w: offers[%q] sets environment — which of the project's environments serves an offering is "+
+					"a fact about its deployments rather than about this commit, and moving it would "+
+					"repoint every consumer. Set it on the project",
+				ErrInvalid, name)
+		}
+		offering := kitchenv1alpha1.RepoOffering{Name: name, Process: strings.TrimSpace(declared.Process)}
+		switch protocol := kitchenv1alpha1.OfferingProtocol(strings.TrimSpace(declared.Protocol)); protocol {
+		case "":
+		case kitchenv1alpha1.OfferingHTTP, kitchenv1alpha1.OfferingTCP:
+			offering.Speaks = protocol
+		default:
+			return nil, fmt.Errorf("%w: offers[%q] sets protocol %q, which is neither %s nor %s",
+				ErrInvalid, name, declared.Protocol, kitchenv1alpha1.OfferingHTTP, kitchenv1alpha1.OfferingTCP)
+		}
+		switch auth := kitchenv1alpha1.OfferingAuth(strings.TrimSpace(declared.Auth)); auth {
+		case "", kitchenv1alpha1.OfferingAuthNone:
+			offering.Authorization = auth
+		default:
+			return nil, fmt.Errorf("%w: offers[%q] sets auth %q, and the only rung built is %s — a "+
+				"forward-auth gate and per-consumer identities are a later issue",
+				ErrInvalid, name, declared.Auth, kitchenv1alpha1.OfferingAuthNone)
+		}
+		offers = append(offers, offering)
+	}
+	return offers, nil
 }
 
 // missingOf names which of the two required halves of a volume declaration

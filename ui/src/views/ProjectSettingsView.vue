@@ -45,6 +45,7 @@ import NotificationsPanel from "../components/NotificationsPanel.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PageSection from "../components/PageSection.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
+import OfferingsPanel from "../components/OfferingsPanel.vue";
 import ProjectFilesPanel from "../components/ProjectFilesPanel.vue";
 import ProjectSecretsPanel from "../components/ProjectSecretsPanel.vue";
 import ProjectWorkloadsPanel from "../components/ProjectWorkloadsPanel.vue";
@@ -83,18 +84,30 @@ const { data, error, loading, refresh } = useAsync(async () => {
     api.project(name.value),
     api.projectEnvironments(name.value),
     api.projectBuilds(name.value),
-    api.claims({ project: name.value }),
+    // Every claim this account can see, not only this project's: the
+    // offerings pane names the projects binding to what this one offers, and
+    // those claims belong to them.
+    api.claims(),
     api.domains(),
   ]);
   // Domains attach to environments; the project's are the ones pointing at one
   // of its environments.
   const mine = new Set(environments.map((environment) => environment.name));
-  return { project, builds, claims, domains: allDomains.filter((domain) => mine.has(domain.environment)) };
+  return {
+    project,
+    builds,
+    claims: claims.filter((claim) => claim.project === project.name),
+    bindings: claims.filter((claim) => claim.type === "service"),
+    domains: allDomains.filter((domain) => mine.has(domain.environment)),
+  };
 });
 watch(name, () => void refresh());
 
 const project = computed(() => data.value?.project);
 const claims = computed(() => data.value?.claims ?? []);
+// Every service claim in view, which is how the offerings pane says who binds
+// to each of this project's offerings.
+const bindings = computed(() => data.value?.bindings ?? []);
 
 // What this account may do here, keyed to the role that arrived on this
 // project's own payload. A viewer gets the same screen with the write controls
@@ -178,6 +191,7 @@ const SECTION_FIELDS: Record<string, (field: string) => boolean> = {
   variables: (field) => field.startsWith("env."),
   files: (field) => field.startsWith("files."),
   resources: (field) => field.startsWith("volumes."),
+  offerings: (field) => field.startsWith("offers."),
   processes: (field) => field === "processes",
 };
 const declaredHere = computed(() => {
@@ -188,6 +202,12 @@ const declaredHere = computed(() => {
 // they merge onto the project's by name rather than replacing the list.
 const repoFiles = computed(() =>
   declares.value.filter((field) => field.startsWith("files.")).map((field) => field.slice("files.".length)),
+);
+// And so are offerings, for the same reason: the file declares the shape of
+// one and the project keeps the grant, so the row has to say which of the two
+// the next build will set back.
+const repoOffers = computed(() =>
+  declares.value.filter((field) => field.startsWith("offers.")).map((field) => field.slice("offers.".length)),
 );
 
 // ── The form ────────────────────────────────────────────────────────────────
@@ -987,6 +1007,10 @@ async function deleteProject() {
                     </td>
                     <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">
                       <template v-if="claim.type === 'oidcClient'">on delete: deregister the client</template>
+                      <!-- A binding provisions nothing, so there is no policy
+                           and nothing for one to keep: the row says what
+                           deleting it actually does. -->
+                      <template v-else-if="claim.type === 'service'">on delete: the offering stays offered</template>
                       <!-- An Inngest Cloud claim carries a policy the API
                            refuses to set: the app and the keys are the
                            account's, so the row says what actually happens. -->
@@ -1063,6 +1087,18 @@ async function deleteProject() {
             :processes="project.processes"
             :declared-in="config?.path"
             :declared-names="repoFiles"
+            @saved="refresh"
+          />
+          <!-- ── Offerings ──────────────────────────────────────────────── -->
+          <OfferingsPanel
+            v-else-if="current.id === 'offerings'"
+            :project="project.name"
+            :role="project.role"
+            :offers="project.offers"
+            :processes="project.processes"
+            :claims="bindings"
+            :declared-in="config?.path"
+            :declared-names="repoOffers"
             @saved="refresh"
           />
           <ProjectSecretsPanel

@@ -224,6 +224,12 @@ do to make that go well, in order of how often it is the problem:
    environment is published. A preview's hostname carries a pull request
    number nothing in the repository has heard of, so this is the only way an
    application can know its own address.
+7. **`KITCHEN_SERVICE_<NAME>`** is where something else answers, with `_HOST`
+   and `_PORT` beside it. `<NAME>` is one of this project's own service
+   workloads, or a binding to something another project offers — from inside
+   the application the two are the same thing, an address it did not have to
+   work out. Never write an address down: the one for a preview is not the one
+   for production.
 
 ## The commands you will actually use
 

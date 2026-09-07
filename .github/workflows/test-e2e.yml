@@ -170,6 +170,15 @@ jobs:
       # start command, the build environment and the build's heap ceiling —
       # every one of which was missing when a real Nuxt deployment could not
       # be made to work at all.
+      # The fourth project, and the only one that binds to another (#493): a
+      # consumer of the unit's `api` workload, running the unit's own image
+      # through `source.image` so that the case costs no fourth build. What it
+      # needs of an application is an HTTP client and a hostname, which the
+      # fixture already answers with.
+      CONSUMER: bindshop
+      CONSUMER_APP_NS: kitchen-bindshop
+      OFFERING: unit-api
+      BINDING: prices
       NUXT_PROJECT: nuxtapp
       NUXT_APP_NS: kitchen-nuxtapp
       NUXT_FIXTURE: test/fixtures/nuxt-stock
@@ -919,6 +928,211 @@ jobs:
             echo "::error::the address resolved to a workload that says it is '${role}'"
             exit 1
           }
+
+      # #493's whole claim, end to end: one project offers something, another
+      # claims it, and the consumer's application reaches the provider through
+      # the address the binding carried. Every assertion below is about a pod
+      # rather than about an object — an address that reads correctly and
+      # resolves nowhere would pass a status check.
+      #
+      # The consumer runs the **same image** through `source.image`, so this
+      # case costs no fourth build: what it needs of the application is an
+      # HTTP client and a hostname, which the fixture already answers with.
+      - name: A project binds to another project's offering
+        run: |
+          set -euo pipefail
+          # The provider offers its api workload to every project on the
+          # platform. `visibility: open` is the grant, and it is the one part
+          # of an offering a repository may not declare.
+          kubectl -n kitchen-system patch project "${PROJECT}" --type merge -p \
+            "{\"spec\":{\"offers\":[{\"name\":\"${OFFERING}\",\"process\":\"api\",\"protocol\":\"http\",\"visibility\":\"open\"}]}}"
+
+          # The release froze `<host>/<name>:<tag>@<digest>`, and an image
+          # source names the parts separately. The digest is what pins, so the
+          # tag is dropped: what is left is the repository, which is
+          # everything before the tag's colon — unless taking that away leaves
+          # no repository at all, which is a reference carrying the registry's
+          # port and no tag.
+          ref="${WEB_IMAGE%@*}"
+          image_repository="${ref%:*}"
+          case "${image_repository}" in
+            */*) ;;
+            *) image_repository="${ref}" ;;
+          esac
+          echo "the consumer runs ${image_repository} at ${WEB_IMAGE#*@}"
+
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: Project
+          metadata:
+            name: ${CONSUMER}
+            namespace: kitchen-system
+          spec:
+            source:
+              image:
+                repository: ${image_repository}
+                digest: ${WEB_IMAGE#*@}
+                connectionRef: {name: e2e-registry}
+            runtime:
+              port: 8080
+          ---
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: ResourceClaim
+          metadata:
+            name: ${BINDING}
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: ${CONSUMER}}
+            type: service
+            config:
+              service:
+                project: ${PROJECT}
+                offering: ${OFFERING}
+          EOF
+
+          # The long name, deliberately: Kubernetes 1.34 serves a
+          # `resourceclaims.resource.k8s.io` of its own for dynamic resource
+          # allocation, and `kubectl get resourceclaim` on a recent kind
+          # resolves to that one and answers "not found" about an object that
+          # is right there.
+          for _ in $(seq 60); do
+            phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            [ "${phase}" = Bound ] && break
+            sleep 5
+          done
+          phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o jsonpath='{.status.phase}')"
+          [ "${phase}" = Bound ] || {
+            echo "::error::the binding ended ${phase}"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o yaml
+            kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=200
+            exit 1
+          }
+
+          # The binding carries an address and no credential, and it is in the
+          # *consumer's* namespace.
+          secret="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" \
+            -o jsonpath='{.status.secretName}')"
+          key() { # key <name>
+            kubectl -n "${CONSUMER_APP_NS}" get secret "${secret}" \
+              -o jsonpath="{.data.$1}" | base64 -d
+          }
+          host="$(key host)"
+          port="$(key port)"
+          url="$(key url)"
+          echo "the binding carries ${url} (host ${host}, port ${port})"
+          [ "${host}" = "${PROJECT}-production-api.${APP_NS}.svc.cluster.local" ] || {
+            echo "::error::the binding names ${host}, which is not the offering's api workload" \
+                 "in the provider's production environment"
+            exit 1
+          }
+          [ "${port}" = 9000 ] || {
+            echo "::error::the binding names port ${port}, and the api workload answers on 9000"
+            exit 1
+          }
+          [ "$(key environment)" = "${PROJECT}-production" ] || {
+            echo "::error::the binding resolved to environment $(key environment)"
+            exit 1
+          }
+
+          # The consumer deploys the image it names — no build, and no
+          # repository — and its web process is handed the offering's address
+          # under the same prefix a sibling workload's arrives in.
+          for _ in $(seq 90); do
+            kubectl -n "${CONSUMER_APP_NS}" get deploy "${CONSUMER}-production" >/dev/null 2>&1 && break
+            sleep 5
+          done
+          kubectl -n "${CONSUMER_APP_NS}" rollout status "deploy/${CONSUMER}-production" --timeout=5m || {
+            echo "::error::the consumer never came up"
+            kubectl -n kitchen-system get project "${CONSUMER}" -o yaml
+            kubectl -n kitchen-system get builds,releases,environments -o wide
+            kubectl -n "${CONSUMER_APP_NS}" get pods -o wide
+            exit 1
+          }
+
+          web_pod="$(kubectl -n "${CONSUMER_APP_NS}" get pod \
+            -l "kitchen.bermos.dev/environment=${CONSUMER}-production,kitchen.bermos.dev/component=web" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+            | awk '$2 == "True" { print $1; exit }')"
+          [ -n "${web_pod}" ] || {
+            echo "::error::the consumer has no ready web pod to ask"
+            kubectl -n "${CONSUMER_APP_NS}" get pods -o wide
+            exit 1
+          }
+
+          variable="KITCHEN_SERVICE_$(echo "${BINDING}" | tr 'a-z-' 'A-Z_')"
+          told="$(kubectl -n "${CONSUMER_APP_NS}" exec "${web_pod}" \
+            -- sh -c "printenv ${variable}" 2>/dev/null || true)"
+          echo "the consumer is told ${variable}=${told}"
+          [ "${told}" = "${url}" ] || {
+            echo "::error::the consumer's ${variable} is '${told}', and the binding says '${url}'"
+            kubectl -n "${CONSUMER_APP_NS}" get deploy "${CONSUMER}-production" \
+              -o jsonpath='{.spec.template.spec.containers[0].env}' | tr ',' '\n'
+            exit 1
+          }
+
+          # And it actually reaches it: the answer says which workload of
+          # which project served it, which is the whole claim.
+          served="$(kubectl -n "${CONSUMER_APP_NS}" exec "${web_pod}" \
+            -- sh -c "wget -q -O - \"\${${variable}}/host.txt\"" 2>/dev/null || true)"
+          role="$(kubectl -n "${CONSUMER_APP_NS}" exec "${web_pod}" \
+            -- sh -c "wget -q -O - \"\${${variable}}/process.txt\"" 2>/dev/null || true)"
+          echo "the consumer was answered by ${served}, which says it is '${role}'"
+          case "${served}" in
+            "${PROJECT}-production-api-"*) ;;
+            *)
+              echo "::error::the consumer was answered by '${served}', which is not one of the" \
+                   "provider's production api pods"
+              exit 1
+              ;;
+          esac
+          [ "${role}" = api ] || {
+            echo "::error::the address resolved to a workload that says it is '${role}'"
+            exit 1
+          }
+
+          # An offering that is not there is Failed with the name in it, and
+          # never Pending: nothing appears on a timer that would make it
+          # right.
+          kubectl apply -f - <<EOF
+          apiVersion: kitchen.bermos.dev/v1alpha1
+          kind: ResourceClaim
+          metadata:
+            name: ${BINDING}-absent
+            namespace: kitchen-system
+          spec:
+            projectRef: {name: ${CONSUMER}}
+            type: service
+            config:
+              service:
+                project: ${PROJECT}
+                offering: not-offered
+          EOF
+          for _ in $(seq 30); do
+            phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            [ -n "${phase}" ] && [ "${phase}" != Pending ] && break
+            sleep 5
+          done
+          phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" \
+            -o jsonpath='{.status.phase}')"
+          reason="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}')"
+          echo "a claim on an offering nobody makes is ${phase}: ${reason}"
+          [ "${phase}" = Failed ] || {
+            echo "::error::a claim naming an offering that does not exist is ${phase}"
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" -o yaml
+            exit 1
+          }
+          case "${reason}" in
+            *not-offered*"${OFFERING}"*) ;;
+            *)
+              echo "::error::the refusal does not name the offering that was asked for" \
+                   "and the ones the project makes: ${reason}"
+              exit 1
+              ;;
+          esac
+          kubectl -n kitchen-system delete resourceclaims.kitchen.bermos.dev "${BINDING}-absent" --wait=false
 
       # #301's third criterion. Two releases of the same images, applied by
       # hand: what differs between them is the frozen configuration the deploy

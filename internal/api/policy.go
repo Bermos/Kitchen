@@ -813,6 +813,21 @@ func (s *Server) routes() []route {
 		// volume another project holds is listed as held, and the claim
 		// holding it is named only where that claim was readable anyway.
 		{"GET /api/v1/claim-volumes", s.listBindableVolumes, acrossProjects()},
+		// The offering catalogue (#493): what the projects on this platform
+		// offer each other, which is what a developer writing a service
+		// claim picks from.
+		//
+		// **It is a read over every project, and it answers about projects
+		// this caller holds no role on.** That is the offering doing what it
+		// says rather than a hole in the scope rule: an `open` offering
+		// admits any project on the platform, so its name — and the name of
+		// the project making it — is already knowable by anyone who could
+		// write the claim, and an offering nobody can find is one nobody
+		// binds to. What the row carries is the offering and nothing else:
+		// no repository, no environments, no members, no address. The
+		// `mine` flag is the part that *is* scoped, and it comes from the
+		// caller's own project list.
+		{"GET /api/v1/offerings", s.listOfferings, acrossProjects()},
 		{"GET /api/v1/claims", s.listClaims, acrossProjects()},
 		{"POST /api/v1/claims", s.createClaim,
 			onProject(access.ProjectDeveloper, ofProjectInBody, "claiming a resource")},

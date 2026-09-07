@@ -823,6 +823,75 @@ spec:
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
+                  offers:
+                    description: |-
+                      Offers are the services this commit says the project offers other
+                      projects: which workload answers, and what it speaks.
+
+                      **They are a declaration, not a grant**, and the split is the same one
+                      the volumes draw. Which workload serves an offering and what protocol
+                      it speaks are facts about the code and belong in this file with the
+                      rest of them; *who may bind* is the project's standing, and this file
+                      is written by anybody who can open a pull request — so `visibility` is
+                      refused here by name, and the build checks what is left against the
+                      project's own offerings rather than writing them.
+
+                      What that catches is the failure the declaration is for: the code
+                      serves the offering from the `api` workload and the project offers the
+                      web one, which binds every consumer to an address that answers with
+                      the wrong application.
+                    items:
+                      description: |-
+                        RepoOffering is one entry of kitchen.json's `offers`: an offering as the
+                        commit understands it.
+
+                        It is deliberately not [ServiceOffering]: that type carries `visibility`
+                        and `environment`, which are the two halves of an offering a repository
+                        may not decide — who may bind, and which of the project's environments
+                        serves it.
+                      properties:
+                        auth:
+                          allOf:
+                          - enum:
+                            - none
+                          - enum:
+                            - none
+                          description: |-
+                            Authorization is the rung of the ladder the commit expects —
+                            `auth` in the file. Empty declares no opinion.
+                          type: string
+                        name:
+                          description: |-
+                            Name is the offering's, which is what ties the declaration to the one
+                            the project actually makes.
+                          type: string
+                        process:
+                          description: |-
+                            Process is the workload the commit expects to serve it; empty
+                            declares no opinion and matches whatever the project says.
+                          type: string
+                        protocol:
+                          allOf:
+                          - enum:
+                            - http
+                            - tcp
+                          - enum:
+                            - http
+                            - tcp
+                          description: |-
+                            Speaks is the protocol the commit expects to be handed over as —
+                            `protocol` in the file. Empty declares no opinion; a value that
+                            disagrees with the project's fails the build, because an offering
+                            handed over as a URL and one handed over as a host and a port are
+                            two different things to whoever is writing the client.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   path:
                     description: |-
                       Path the file was read from, relative to the repository root — the

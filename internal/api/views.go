@@ -261,6 +261,11 @@ type projectView struct {
 	// project, since the list would otherwise read a Secret per project to
 	// answer a field a list does not show.
 	Files []configFileView `json:"files,omitempty"`
+	// Offers are the services this project makes available to other
+	// projects (#493): which workload answers, what it speaks, which
+	// environment serves it, and who may bind. Absent when the project
+	// offers nothing, which is almost all of them.
+	Offers []offeringView `json:"offers,omitempty"`
 	// DataClass is the sensitivity classification of the data this project
 	// handles. Absent means unclassified — a state the screens show as such,
 	// never a default.
@@ -371,6 +376,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole, l
 	// and its digest is filled in by the routes that answer one project —
 	// see withFileContent.
 	view.Files = configFileViews(project.Spec.Files, nil)
+	view.Offers = offeringViews(project)
 	view.DataClass = string(project.Spec.DataClass)
 	view.Criticality = string(project.Spec.Criticality)
 	view.RTO = string(project.Spec.RTO)
@@ -1754,6 +1760,12 @@ type claimView struct {
 	// defaults filled in. Whether a worker has connected yet is the
 	// AppConnected condition.
 	Inngest *claimInngestView `json:"inngest,omitempty"`
+
+	// Service is the offering a service claim binds: the project that makes
+	// it and its name. Where it resolved to — which environment, at what
+	// address — is on the claim's Provisioned condition, because it is what
+	// the reconciler worked out rather than what the claim asked for.
+	Service *claimServiceView `json:"service,omitempty"`
 }
 
 // newClaimView is the claim as the API answers it. The fields every type
