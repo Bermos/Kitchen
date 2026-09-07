@@ -504,6 +504,62 @@ jobs:
             exit 1
           fi
 
+      - name: Check nothing is mounted over the telemetry store's config.d
+        run: |
+          set -euo pipefail
+          # #529: clickhouse.extraConfig was mounted as a directory over
+          # /etc/clickhouse-server/config.d. That hides the image's own
+          # config.d — which is where `listen_host` comes from, so the store
+          # answers on localhost alone and nothing in the cluster can reach it
+          # — and with TLS on, which is the default, it also makes the
+          # kitchen-tls.xml bind-mount into that path impossible: the pod never
+          # starts ("not a directory"), and recovering needs a rollback *and* a
+          # manual pod delete, because the StatefulSet controller leaves the
+          # crashlooping pod on the old revision. Every file goes in by
+          # subPath, and so does anything the chart adds to config.d later.
+          store() {
+            helm template kitchen charts/kitchen --namespace kitchen-system \
+              ${CHART_BASE} ${CHART_ACME} -s templates/clickhouse/statefulset.yaml "$@"
+          }
+          extra_config='clickhouse.extraConfig.logger\.xml=<clickhouse><logger><level>debug</level></logger></clickhouse>'
+          store > /tmp/ch-tls.yaml
+          store --set "${extra_config}" > /tmp/ch-tls-extra.yaml
+          store --set clickhouse.tls.enabled=false > /tmp/ch-plain.yaml
+          store --set clickhouse.tls.enabled=false --set "${extra_config}" > /tmp/ch-plain-extra.yaml
+          python3 <<'CHECK'
+          import sys, yaml
+
+          CONFIG_D = "/etc/clickhouse-server/config.d"
+          # rendered file -> the files that must be in config.d, each by subPath
+          cases = {
+              "/tmp/ch-tls.yaml": ["kitchen-tls.xml"],
+              "/tmp/ch-tls-extra.yaml": ["kitchen-tls.xml", "logger.xml"],
+              "/tmp/ch-plain.yaml": [],
+              "/tmp/ch-plain-extra.yaml": ["logger.xml"],
+          }
+          for path, expected in cases.items():
+              documents = [d for d in yaml.safe_load_all(open(path)) if d]
+              statefulset = next(d for d in documents if d["kind"] == "StatefulSet")
+              mounts = statefulset["spec"]["template"]["spec"]["containers"][0]["volumeMounts"]
+              seen = []
+              for mount in mounts:
+                  target = mount["mountPath"].rstrip("/")
+                  if target == CONFIG_D and not mount.get("subPath"):
+                      sys.exit(f"::error::{path}: volume {mount['name']!r} is mounted as a "
+                               f"directory over {CONFIG_D}. That hides the image's own config.d "
+                               "(listen_host), and with TLS on the pod cannot start at all. "
+                               "Mount each file by subPath instead.")
+                  if target.startswith(CONFIG_D + "/"):
+                      if not mount.get("subPath"):
+                          sys.exit(f"::error::{path}: {target} is mounted without a subPath, so "
+                                   "the whole volume lands there as a directory.")
+                      seen.append(target[len(CONFIG_D) + 1:])
+              if sorted(seen) != sorted(expected):
+                  sys.exit(f"::error::{path}: config.d carries {sorted(seen)}, expected "
+                           f"{sorted(expected)}.")
+              print(f"{path}: config.d is never mounted over; {sorted(seen)} by subPath")
+          CHECK
+
       - name: Check the accounts database does not answer in plaintext
         run: |
           set -euo pipefail
@@ -1085,7 +1141,14 @@ jobs:
         include:
           - cni: kindnet
             label: kind
-            values: ""
+            # The telemetry store's extra configuration, because the mount it
+            # arrives by is a thing only a kubelet does: it goes into config.d
+            # by subPath beside the platform's own TLS file, and the release
+            # the ConfigMap was mounted over that directory instead never got
+            # a pod at all (#529). `--wait` below is the assertion.
+            values: >-
+              --set
+              clickhouse.extraConfig.kitchen-ci\.xml=<clickhouse><logger><level>information</level></logger></clickhouse>
           - cni: cilium
             label: Cilium
             # The object store is the only rule in the policy file that admits

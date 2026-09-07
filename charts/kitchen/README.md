@@ -1710,9 +1710,11 @@ What happens when the button is pressed:
   `self-update`.
 
 It cannot rescue an installation that needs manual steps first: read
-[Upgrading to a chart that owns the namespace](#upgrading-to-a-chart-that-owns-the-namespace)
+[Upgrading to a chart that owns the namespace](#upgrading-to-a-chart-that-owns-the-namespace),
+[Upgrading an installation that set `clickhouse.extraConfig`](#upgrading-an-installation-that-set-clickhouseextraconfig)
 and [Upgrading from 0.1.0](#upgrading-from-010) below, which are exactly the
-cases where a `helm upgrade` fails part-way and leaves the release mixed.
+cases where a `helm upgrade` fails part-way, hangs, or leaves the release
+mixed.
 
 ### Backup and restore
 
@@ -1892,6 +1894,34 @@ claims guide](../../docs/api/claims.md#objectstore) for both keys.
 
 `--set objectStore.tls.enabled=false` on the upgrade puts it back the way it
 was, in the clear, and the bindings follow it back on the next reconcile.
+
+### Upgrading an installation that set `clickhouse.extraConfig`
+
+Before this release, any `clickhouse.extraConfig` value mounted the whole
+ConfigMap over `/etc/clickhouse-server/config.d`. With `clickhouse.tls.enabled`
+— the default — `kitchen-clickhouse-0` never started at all:
+
+```
+error mounting ".../volume-subpaths/tls-config/clickhouse/5" to rootfs at
+"/etc/clickhouse-server/config.d/kitchen-tls.xml": not a directory
+```
+
+This release mounts each file on its own, which fixes it — but the upgrade
+that carries the fix cannot reach a store that is already stuck. The
+StatefulSet's default `OrderedReady` policy waits for pod 0 to be Running and
+Ready *before* it applies the new pod template, and that pod never will be, so
+`helm upgrade --wait` hangs until it times out and the new template is never
+written. Delete the pod once, by hand, and the StatefulSet recreates it from
+the new template:
+
+```sh
+kubectl -n kitchen-system delete pod kitchen-clickhouse-0
+```
+
+Nothing is lost by it: the data is on the PersistentVolumeClaim, which the
+delete does not touch, and a pod that never started has nothing in flight. An
+installation whose store is healthy — `extraConfig` unset, or TLS off — needs
+none of this and rolls normally.
 
 ### Upgrading from 0.1.0
 
@@ -2118,7 +2148,7 @@ kubectl delete namespace kitchen-system
 | `clickhouse.persistence.size` / `.storageClass` / `.accessModes` | `20Gi` / cluster default / `[ReadWriteOnce]` | |
 | `clickhouse.resources` | 200m/1Gi → 4Gi | |
 | `clickhouse.podSecurityContext` / `.securityContext` | restricted PSS | Non-root as the image's uid 101, no capabilities, and a read-only root filesystem: the data directory, `users.d`, `/tmp` and the server's log directory are volumes, so nothing writes to the image. |
-| `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. |
+| `clickhouse.extraConfig` | `{}` | Filename → XML for `config.d`, passed through `tpl`. Each key is mounted as its own file, beside the image's own configuration and the platform's TLS file. |
 | `clickhouse.external.host` / `.httpPort` / `.nativePort` | `""` / `8123` / `9000` | Point at an existing ClickHouse. |
 | `clickhouse.external.tls` | `false` | That store serves TLS, verified against the host's roots. The operator issues nothing for it. |
 | `clickhouse.acknowledgeNoStore` | `false` | Install with no telemetry store at all. |
