@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Bermos/Kitchen/internal/cli/tui"
 )
 
 // The Server-Sent Events decoder is the one piece of wire format the CLI
@@ -306,5 +308,32 @@ func TestLogLineNamesTheWorkloadThatWroteIt(t *testing.T) {
 				t.Errorf("workload() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// An environment of an internal project has no URL and never will, so the
+// column says which of the two blanks it is: the project's own setting, or a
+// route that has not arrived yet (#492).
+func TestTheURLColumnTellsInternalFromNotYetPublished(t *testing.T) {
+	styles := tui.New(false)
+
+	table := renderEnvironments(styles, []environment{
+		{Name: "shop-production", Type: "production", Phase: "Live", Release: "rel-1",
+			URL: "https://shop.apps.example.com", Exposure: "public"},
+		{Name: "duckdb-production", Type: "production", Phase: "Live", Release: "rel-1",
+			Exposure: "internal"},
+		{Name: "shop-pr-9", Type: "preview", Phase: "Pending", Release: "rel-2", Exposure: "public"},
+	})
+
+	if !strings.Contains(table, "https://shop.apps.example.com") {
+		t.Fatalf("a published environment still shows its address:\n%s", table)
+	}
+	if !strings.Contains(table, "internal") {
+		t.Fatalf("an internal project's environment says so where its address would be:\n%s", table)
+	}
+	// The third row is neither: it has no URL yet and no setting to explain
+	// it, and inventing a word for it would be the CLI claiming to know why.
+	if strings.Count(table, "internal") != 1 {
+		t.Fatalf("only the internal environment says internal:\n%s", table)
 	}
 }

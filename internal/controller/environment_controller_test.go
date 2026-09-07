@@ -453,6 +453,86 @@ var _ = Describe("Environment Controller", func() {
 				&appsv1.Deployment{})).To(Succeed())
 		})
 
+		// An internal project is one that exists to be called by other
+		// applications: it keeps its workload and its Service and loses every
+		// part of being on the internet (#492).
+		It("publishes nothing for an internal project, and keeps it running", func() {
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: projectName, Namespace: namespace,
+			}, project)).To(Succeed())
+			project.Spec.Exposure = kitchenv1alpha1.ExposureInternal
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			reconcileOnce()
+			reconcileOnce()
+
+			By("writing no route at all")
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, &gatewayv1.HTTPRoute{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			By("keeping the workload and the address something in the cluster reaches it at")
+			deploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, deploy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: envName, Namespace: appNS,
+			}, &corev1.Service{})).To(Succeed())
+
+			By("telling the application it has no public address rather than an unreachable one")
+			names := map[string]string{}
+			for _, v := range deploy.Spec.Template.Spec.Containers[0].Env {
+				names[v.Name] = v.Value
+			}
+			Expect(names).NotTo(HaveKey("KITCHEN_URL"))
+
+			By("saying so on the Environment")
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.URL).To(BeEmpty())
+			cond := meta.FindStatusCondition(env.Status.Conditions, condRouteProgrammed)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(ReasonInternalProject))
+			Expect(cond.Message).To(ContainSubstring("spec.exposure"),
+				"the setting behind it has to be nameable from the message")
+		})
+
+		It("takes the route away when a project turns internal, previews included", func() {
+			By("starting from a published preview")
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.Type = kitchenv1alpha1.EnvironmentPreview
+			env.Spec.Preview = &kitchenv1alpha1.PreviewInfo{PullRequest: 42, Branch: "feat/checkout"}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+			reconcileOnce()
+			reconcileOnce()
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, route)).To(Succeed())
+			Expect(string(route.Spec.Rules[0].BackendRefs[0].Name)).To(Equal(PreviewGateName),
+				"the preview is gated before the project turns internal")
+
+			By("turning the project internal underneath it")
+			project := &kitchenv1alpha1.Project{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: projectName, Namespace: namespace,
+			}, project)).To(Succeed())
+			project.Spec.Exposure = kitchenv1alpha1.ExposureInternal
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			reconcileOnce()
+
+			By("deleting the route rather than leaving the hostname the setting takes away")
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: envName, Namespace: appNS}, &gatewayv1.HTTPRoute{})
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			By("asking nothing about a gate for a preview nobody can reach")
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.URL).To(BeEmpty())
+			Expect(meta.FindStatusCondition(env.Status.Conditions, condPreviewProtected)).To(BeNil())
+			Expect(meta.FindStatusCondition(env.Status.Conditions, condRouteProgrammed).Reason).
+				To(Equal(ReasonInternalProject))
+		})
+
 		It("never gates a production environment", func() {
 			reconcileOnce()
 			reconcileOnce()

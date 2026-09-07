@@ -734,6 +734,11 @@ spec:
                                         # branch, secrets included. Bounded by previews.forksMax on the
                                         # platform
     ttlAfterClosed: 1h                  # grace period before teardown
+  exposure: public                      # public (default) | internal — whether this project is on the
+                                        # internet at all. internal publishes no environment: no
+                                        # HTTPRoute, no hostname, no certificate and no preview gate.
+                                        # The environments still run and are still reachable inside
+                                        # the cluster at their own Service
   dataClass: confidential               # public | internal | confidential | strictlyConfidential;
                                         # absent = unclassified, shown as such and never defaulted.
                                         # Claims narrow it, environments must be rated at least it
@@ -1121,6 +1126,38 @@ project's, so every declaration written before it keeps meaning what it means.
 Until such a signal exists only the web process's copy could be honoured,
 which is what the Project's own field already says — so it is a sketch here
 and not a field (#303).
+
+**`exposure` is whether this project is on the internet at all.** `public` is
+the default and is what every project was before the field existed: each
+environment is published at a generated hostname on the shared Gateway, behind
+the platform's wildcard certificate. `internal` publishes none of them — no
+HTTPRoute, no hostname, no certificate, and no preview gate, because a gate
+stands in front of a route there is none of. The environments still run and
+still have their in-cluster Service, which is how something else in the
+cluster calls them; what they lose is an address anyone outside can use.
+
+It is the project's rather than each environment's because it is a statement
+about what the software *is*: a project that exists to be called by other
+applications is not public in production and not public in a preview either.
+An environment cannot opt out of it and cannot opt into it, and it is an
+admin's setting for the reason `previews.forks` is — a developer changing it
+would be a developer publishing a service somebody deliberately kept off the
+internet. It is written through the API (`POST /projects`, `PATCH
+/projects/{name}`) and never from `kitchen.json`: the repository says what the
+application is, the platform says who may reach it.
+
+Three things follow, and each is a refusal rather than a surprise. An
+`oidcClient` claim on an internal project is refused, because its redirect
+URIs are built from addresses that do not exist. A `Domain` on one is refused,
+because a custom hostname rides the environment's own route. And **an internal
+environment does not idle**: the KEDA interceptor routes on the visitor's
+`Host` header, and only a request that came through the Gateway carries one,
+so a consumer connecting straight to the Service never crosses the interceptor
+and a parked internal environment would have nothing to wake it. It keeps its
+pods and says so on its `ScaleToZero` condition. `KITCHEN_URL` and
+`status.url` are empty for the same reason they are empty on a preview the
+platform will not publish: there is no address the application can send anyone
+to. The in-cluster address is what a consumer's binding carries.
 
 `runtime.singleton` is the *web* workload two of which must never run at once.
 It becomes `strategy: Recreate` on the Deployment — the old pod stops before the
@@ -1781,6 +1818,9 @@ spec:
 status:
   phase: Live                           # Pending | Deploying | Live | Degraded | Terminating
   url: https://my-shop-pr-42.apps.example.com
+                                        # empty exactly when the environment has no public address:
+                                        # a preview the platform refused to publish, or any
+                                        # environment of a project whose spec.exposure is internal
   observedRelease: my-shop-rel-000042
   idle: true                            # parked: allowed to scale to zero, and scaled to zero. It is
                                         # observed from the Deployment the autoscaler moves, not decided

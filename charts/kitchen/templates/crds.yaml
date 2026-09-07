@@ -8810,6 +8810,34 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              exposure:
+                default: public
+                description: |-
+                  Exposure says whether this project is on the internet. `public` is the
+                  default and is what every project was before the field existed: every
+                  environment is published at a generated hostname on the shared
+                  Gateway, and in `tls.mode: acme` behind a publicly trusted
+                  certificate. `internal` publishes none of them — no HTTPRoute, no
+                  hostname, no certificate, and no preview gate, since there is nothing
+                  in front of to gate.
+
+                  It is the project's rather than each environment's because it is a
+                  statement about what the software *is*: a project that exists to be
+                  called by other applications is not public in production and not
+                  public in a preview either. An environment cannot opt out of it and
+                  cannot opt into it.
+
+                  An internal project's environments keep their in-cluster Service and
+                  are reachable at it, which is how a consumer inside the cluster
+                  reaches them. What they lose besides the route is idling: the KEDA
+                  interceptor routes on the visitor's Host header and only traffic
+                  through the Gateway carries one, so a parked internal environment has
+                  nothing that could wake it. Every environment of an internal project
+                  therefore keeps its pods and says so on its ScaleToZero condition.
+                enum:
+                - public
+                - internal
+                type: string
               files:
                 description: |-
                   Files are the configuration files this project's workloads are handed

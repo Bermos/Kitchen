@@ -134,12 +134,16 @@ type project struct {
 	Repo string `json:"repo"`
 	// RepositoryURL is where that repository is on the provider's own site,
 	// composed by the API from the connection (#435).
-	RepositoryURL         string      `json:"repositoryUrl,omitempty"`
-	Connection            string      `json:"connection"`
-	Registry              string      `json:"registry"`
-	ProductionBranch      string      `json:"productionBranch"`
-	RequirePullRequest    bool        `json:"requirePullRequest"`
-	Previews              bool        `json:"previews"`
+	RepositoryURL      string `json:"repositoryUrl,omitempty"`
+	Connection         string `json:"connection"`
+	Registry           string `json:"registry"`
+	ProductionBranch   string `json:"productionBranch"`
+	RequirePullRequest bool   `json:"requirePullRequest"`
+	Previews           bool   `json:"previews"`
+	// Exposure is whether this project is on the internet: `public`, every
+	// environment published at a generated hostname, or `internal`, none of
+	// them published at all.
+	Exposure              string      `json:"exposure,omitempty"`
 	PreviewsProtected     bool        `json:"previewsProtected"`
 	BuildStrategy         string      `json:"buildStrategy,omitempty"`
 	Env                   []envVar    `json:"env,omitempty"`
@@ -936,14 +940,18 @@ type releaseHistory struct {
 // environment is `GET /environments/{name}`. Phase is one of Pending,
 // Deploying, Live, Degraded or Terminating.
 type environment struct {
-	Name            string   `json:"name"`
-	Project         string   `json:"project"`
-	Type            string   `json:"type"`
-	Release         string   `json:"release"`
-	ObservedRelease string   `json:"observedRelease,omitempty"`
-	Phase           string   `json:"phase,omitempty"`
-	URL             string   `json:"url,omitempty"`
-	Preview         *preview `json:"preview,omitempty"`
+	Name            string `json:"name"`
+	Project         string `json:"project"`
+	Type            string `json:"type"`
+	Release         string `json:"release"`
+	ObservedRelease string `json:"observedRelease,omitempty"`
+	Phase           string `json:"phase,omitempty"`
+	URL             string `json:"url,omitempty"`
+	// Exposure is the project's, mirrored onto every environment of it: an
+	// environment with no URL is either one of an internal project or one
+	// waiting on a route, and only the second is worth looking into.
+	Exposure string   `json:"exposure,omitempty"`
+	Preview  *preview `json:"preview,omitempty"`
 	// Git is the commit this environment is currently running, on the single
 	// environment read alone (#435).
 	Git        *revision        `json:"git,omitempty"`
@@ -1337,6 +1345,11 @@ type detectTarget struct {
 	DockerfilePath string `json:"dockerfilePath,omitempty"`
 }
 
+// exposureInternal is a project published nowhere: the one value of the
+// project's `exposure` the CLI has anything to say about, since the other is
+// every project that ever existed.
+const exposureInternal = "internal"
+
 // newProject is POST /projects. Previews is a pointer so that not passing
 // --previews leaves the platform's default alone rather than turning them off.
 type newProject struct {
@@ -1346,8 +1359,11 @@ type newProject struct {
 	Registry         string `json:"registry"`
 	ProductionBranch string `json:"productionBranch,omitempty"`
 	Previews         *bool  `json:"previews,omitempty"`
-	RootDirectory    string `json:"rootDirectory,omitempty"`
-	DockerfilePath   string `json:"dockerfilePath,omitempty"`
+	// Exposure is "internal" for a project nothing outside the cluster
+	// reaches, and empty for the platform's default, which is public.
+	Exposure       string `json:"exposure,omitempty"`
+	RootDirectory  string `json:"rootDirectory,omitempty"`
+	DockerfilePath string `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship, sent
 	// with the project for the reason the two paths are: creating one starts
 	// a build, and a build that shipped the wrong stage reports success.

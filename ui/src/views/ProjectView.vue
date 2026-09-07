@@ -220,6 +220,16 @@ async function acquire() {
             class="font-mono text-primary hover:underline"
             >{{ host(production.url) }}</a
           >
+          <!-- No address, and not because something failed to publish one:
+               this project asked for none. Said here, where the address would
+               have been, rather than left as a gap. -->
+          <span
+            v-else-if="project.exposure === 'internal'"
+            class="inline-flex items-center gap-1"
+            title="This project is internal: no environment of it has a hostname or a certificate. They are reachable from the other applications on this platform."
+          >
+            <UIcon name="i-lucide-shield" class="size-3" />internal
+          </span>
           <span v-if="framework && builtHere" class="inline-flex items-center gap-1">
             <UIcon name="i-lucide-sparkles" class="size-3" />{{ framework }}, detected
           </span>

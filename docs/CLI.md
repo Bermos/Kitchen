@@ -433,12 +433,22 @@ file declares, so naming one it has none of is the third question the command
 asks — `--yes` answers that one too, because the person may be naming a stage
 the change they are about to push adds.
 
+`--internal` creates a project nothing outside the cluster reaches: no
+environment of it is published — no hostname, no certificate and no preview
+gate, previews included — and each one is reachable inside the cluster at its
+own Service. It is a flag on the create rather than a change made afterwards
+because a project that exists to be called by other applications should never
+have been on the internet at all, not even for the minute in between. It can
+be changed later with `kitchen api PATCH /projects/{name} -d
+'{"exposure":"public"}'`, which is where every other project setting is
+changed too.
+
 The preflight is advice, so a platform that cannot reach the provider to give
 any is reported on stderr and the project is still created. The flags are
 `--repo`, `--connection`, `--registry`, `--production-branch`, `--previews`,
-`--root-directory`, `--dockerfile`, `--dockerfile-target`, `--link` (on by
-default) and `--yes`; leaving `--previews` off leaves the platform's default
-alone rather than turning previews off.
+`--internal`, `--root-directory`, `--dockerfile`, `--dockerfile-target`,
+`--link` (on by default) and `--yes`; leaving `--previews` off leaves the
+platform's default alone rather than turning previews off.
 
 There is no repository picker. The command takes `owner/name` from the checkout
 or from `--repo`, which is why `GET /connections/{name}/repositories` has no

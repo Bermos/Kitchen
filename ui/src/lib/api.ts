@@ -238,6 +238,11 @@ export interface Project {
    * (a fork is treated as the project's own branch, secrets included).
    * Always one of the three words. */
   previewsForks: ForkPolicy;
+  /** Whether this project is on the internet: `public`, every environment
+   * published at a generated hostname, or `internal`, none of them published
+   * at all. Always one of the two words rather than absent — a screen showing
+   * no URL has to be able to tell "internal" from "not deployed yet". */
+  exposure: Exposure;
   /** The ceiling as the operator last measured it, absent until a reconcile
    * has looked. */
   previewCapacity?: PreviewCapacity;
@@ -388,6 +393,11 @@ export interface ProjectSettings {
    * platform's `previewsForksMax` is the most it may be set to; asking for
    * more is refused with a `400` rather than clamped. */
   previewsForks?: ForkPolicy;
+  /** Whether this project is on the internet. Turning it internal takes every
+   * environment's route, hostname and certificate away on the next reconcile,
+   * previews included; turning it back gives them back, because the address is
+   * generated from the project's name. */
+  exposure?: Exposure;
   buildStrategy?: string;
   dockerfilePath?: string;
   /** The stage of a multi-stage Dockerfile to ship; an empty string clears it,
@@ -464,6 +474,11 @@ export interface NewProject {
   image?: NewImageSource;
   productionBranch?: string;
   previews?: boolean;
+  /** Whether the project is on the internet. It is on the create as well as on
+   * the settings PATCH because a project that exists to be called by other
+   * applications should never have been on the internet at all — not even for
+   * the minute between creating it and remembering to change it. */
+  exposure?: Exposure;
   /** The build context, when the preflight showed it was wrong and somebody
    * corrected it on the form rather than after a failed build. */
   rootDirectory?: string;
@@ -1443,6 +1458,11 @@ export interface Environment {
   observedRelease?: string;
   phase?: string;
   url?: string;
+  /** The project's exposure, mirrored onto every environment of it because
+   * this is where it is read: a row with no `url` is either an environment of
+   * an internal project or one that has not been published yet, and only one
+   * of those is a fault. */
+  exposure: Exposure;
   preview?: Preview;
   /** The commit this environment is currently running — the answer to "what
    *  is actually deployed here", which was a release name and no commit at
@@ -2606,6 +2626,13 @@ export interface NewClaim {
  *  the commit and publishes no environment, `full` treats it as the project's
  *  own branch. */
 export type ForkPolicy = "none" | "build" | "full";
+
+/** Whether a project is on the internet at all. `public` is the default and
+ *  what every project was before the field existed: every environment is
+ *  published at a generated hostname on the shared Gateway. `internal`
+ *  publishes none of them — no route, no hostname, no certificate — and leaves
+ *  them reachable inside the cluster at their own Service. */
+export type Exposure = "public" | "internal";
 
 /** What the preview ceiling is doing to one project: how many previews are
  * live, the ceiling in force (`0` is none), and the pull requests refused one

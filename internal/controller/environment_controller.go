@@ -149,6 +149,18 @@ const (
 	// ReasonPreviewPublic is a preview nobody asked to gate.
 	ReasonPreviewPublic = "Public"
 
+	// ConditionRouteProgrammed and ReasonInternalProject are exported for the
+	// same reason: an environment of a project whose `spec.exposure` is
+	// `internal` has no route and never will, which is the setting working
+	// rather than the platform failing to publish it. It reaches two
+	// conditions — RouteProgrammed, which is False because there is no route,
+	// and ScaleToZero, which is False because nothing could wake a parked
+	// environment nothing routes to — and the API classifies both as
+	// information. See internal/api/conditions.go.
+	ConditionRouteProgrammed = condRouteProgrammed
+	// ReasonInternalProject is a project that asked not to be published.
+	ReasonInternalProject = "InternalProject"
+
 	// reasonReservedHostname is the name of a project that would publish a
 	// hostname the platform already serves, or one another project's preview
 	// already has (#423). The API refuses such a name outright, so this only
@@ -288,6 +300,11 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	labels := childLabels(project.Name, env)
 	host := hostname(project.Name, env, kitchen.Spec.BaseDomain)
 
+	// An internal project is published nowhere: no route, no hostname, no
+	// certificate, and no gate, because a gate stands in front of a route
+	// there is none of. It is read here, once, and every decision below that
+	// is about the address rather than about the workload asks it.
+	internal := project.Spec.Exposure.IsInternal()
 	protected, gate, refusal := gatingFor(env, project, kitchen)
 
 	podEnv, effects, requeue, err := r.resolveEnv(ctx, env, release, appNS)
@@ -334,10 +351,17 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// The address is passed in rather than read off the status, because the
 	// status is written at the end of this reconcile: an environment would
 	// otherwise spend its first deployment not knowing its own URL and roll
-	// again once it did. It is empty exactly when the environment gets no
-	// route, which is a preview the platform will not publish.
+	// again once it did.
+	//
+	// It is empty exactly when the environment has no public address, which
+	// is two things: a preview the platform will not publish, and every
+	// environment of an internal project. The second is not unreachable — a
+	// consumer inside the cluster reaches it at its Service, and that address
+	// is what a binding carries — but it is not somewhere the application can
+	// tell anyone to go, so the variable says nothing rather than saying an
+	// address that answers only from inside. docs/CRDS.md, `spec.exposure`.
 	publicURL := ""
-	if refusal == nil {
+	if refusal == nil && !internal {
 		publicURL = fmt.Sprintf("%s://%s", platformScheme(kitchen), host)
 	}
 	// The addresses of this environment's own service workloads go in with
@@ -431,20 +455,44 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.unpublished(ctx, env, refusal)
 	}
 
-	// Verified custom domains ride this environment's route; see
-	// domainRoutingFor. The Domain reconciler owns everything else about them.
-	domains, err := domainRoutingFor(ctx, r.Client, env, kitchen)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if err := r.applyHTTPRoute(ctx, env, appNS, labels, host, gate, idle, gatewaySection(kitchen), domains); err != nil {
+	if err := r.route(ctx, env, kitchen, appNS, labels, host, gate, idle, internal); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	log.Info("reconciled environment", "namespace", appNS, "host", host,
-		"protected", protected, "idlesToZero", idle != nil)
-	return r.updateStatus(ctx, env, project, release, kitchen, appNS, host, protected, idleCond)
+		"protected", protected, "internal", internal, "idlesToZero", idle != nil)
+	return r.updateStatus(ctx, env, project, release, kitchen, appNS, host, protected, internal, idleCond)
+}
+
+// route puts this environment on the shared Gateway, or takes it off.
+//
+// An internal project is published nowhere, so its route is *deleted* rather
+// than merely not written: a project made internal after it was published has
+// one, and leaving it would keep the hostname the setting exists to take away.
+// The custom domains are not consulted at all there — the API refuses one on
+// an internal project, and one attached before the project turned internal
+// joins a route that no longer exists.
+func (r *EnvironmentReconciler) route(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	kitchen *kitchenv1alpha1.Kitchen,
+	appNS string,
+	labels map[string]string,
+	host string,
+	gate *previewGateBackend,
+	idle *idleBackend,
+	internal bool,
+) error {
+	if internal {
+		return r.deleteRoute(ctx, appNS, env.Name)
+	}
+	// Verified custom domains ride this environment's route; see
+	// domainRoutingFor. The Domain reconciler owns everything else about them.
+	domains, err := domainRoutingFor(ctx, r.Client, env, kitchen)
+	if err != nil {
+		return err
+	}
+	return r.applyHTTPRoute(ctx, env, appNS, labels, host, gate, idle, gatewaySection(kitchen), domains)
 }
 
 // finalize deletes the Environment's children and releases the finalizer. The
@@ -471,6 +519,11 @@ type publishRefusal struct {
 // gated at all, the gate to route through, and whether the platform will
 // publish it at all.
 //
+// An internal project answers all three at once: nothing is published, so
+// there is no route to gate and no publishing decision left to make. It is
+// not a refusal — a refusal is the platform withholding an address somebody
+// asked for, and this is the project asking for no address.
+//
 // Only previews are ever gated: a production environment is the application's
 // public address. A preview asked to be protected on a platform with no gate
 // gets no route at all — publishing it anyway would be the one outcome the
@@ -482,6 +535,9 @@ func gatingFor(
 	project *kitchenv1alpha1.Project,
 	kitchen *kitchenv1alpha1.Kitchen,
 ) (protected bool, gate *previewGateBackend, refusal *publishRefusal) {
+	if project.Spec.Exposure.IsInternal() {
+		return false, nil, nil
+	}
 	protected = env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && project.Spec.Previews.IsProtected()
 	gate = previewGate(kitchen)
 	unprotectable := protected && gate == nil
@@ -1341,6 +1397,11 @@ func (r *EnvironmentReconciler) updateStatus(
 	appNS string,
 	host string,
 	protected bool,
+	// internal is a project published nowhere. The environment is otherwise
+	// an ordinary one — it deploys, it becomes available, it is Ready — and
+	// what changes here is the address: there is none, and the route
+	// condition says why rather than reporting a route that failed.
+	internal bool,
 	// idleCond is the ScaleToZero condition to record, or nil on a platform
 	// that idles nothing — where the condition would be the same line on every
 	// Environment and say nothing.
@@ -1383,7 +1444,14 @@ func (r *EnvironmentReconciler) updateStatus(
 		env.RecordReleaseMove(outgoing, kitchenv1alpha1.ReleaseMoveSuperseded, "")
 	}
 
-	env.Status.URL = fmt.Sprintf("%s://%s", scheme, host)
+	// Empty for an internal project, which is published at no address at all
+	// — the same emptiness a refused preview's status carries, and read the
+	// same way by everything downstream: the git report, the dashboard and
+	// `kitchen envs` each say what the blank means rather than showing one.
+	env.Status.URL = ""
+	if !internal {
+		env.Status.URL = fmt.Sprintf("%s://%s", scheme, host)
+	}
 	env.Status.ObservedRelease = release.Name
 	// Live is the Deployment's availability, which is its ready replicas,
 	// which is the readiness probe applyDeployment writes. That chain is why
@@ -1404,9 +1472,22 @@ func (r *EnvironmentReconciler) updateStatus(
 			ObservedGeneration: env.Generation,
 		})
 	}
-	setCond(condRouteProgrammed, metav1.ConditionTrue, "Applied", "HTTPRoute applied")
+	if internal {
+		setCond(condRouteProgrammed, metav1.ConditionFalse, ReasonInternalProject,
+			"this project's spec.exposure is internal: no route, no hostname and no certificate. "+
+				"The environment runs and is reachable inside the cluster at its own Service; "+
+				"set the project's exposure to public to publish it")
+	} else {
+		setCond(condRouteProgrammed, metav1.ConditionTrue, "Applied", "HTTPRoute applied")
+	}
 	recordScaleToZero(env, idleCond)
 	switch {
+	// A preview of an internal project is not published, so it is neither
+	// gated nor open — the condition would answer a question nobody can ask
+	// of it, and "anyone with the URL can reach this preview" would be a
+	// sentence about a URL that does not exist.
+	case internal:
+		meta.RemoveStatusCondition(&env.Status.Conditions, condPreviewProtected)
 	case protected:
 		setCond(condPreviewProtected, metav1.ConditionTrue, "GatedByPlatformLogin",
 			fmt.Sprintf("requests are gated behind platform login at %s", previewGateHost(kitchen)))

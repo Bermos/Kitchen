@@ -360,6 +360,48 @@ var _ = Describe("Scale to zero", func() {
 			To(Equal("NotRequestDriven"))
 	})
 
+	// The one case where the environment runs perfectly normally and idling
+	// is off for good rather than for now: the interceptor routes on the
+	// visitor's Host header, and only a request through the Gateway carries
+	// one, so nothing could wake a parked internal environment (#492).
+	It("keeps an internal project's environments on their pods, and says why", func() {
+		reconcileOnce()
+		reconcileOnce()
+		Expect(scaledObject()).NotTo(BeNil(), "a preview idles by default")
+
+		project := &kitchenv1alpha1.Project{}
+		Expect(k8sClient.Get(ctx, projectKey, project)).To(Succeed())
+		project.Spec.Exposure = kitchenv1alpha1.ExposureInternal
+		Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+		reconcileOnce()
+
+		Expect(scaledObject()).To(BeNil(), "the scaled object goes with the route it autoscaled on")
+
+		env := &kitchenv1alpha1.Environment{}
+		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+		cond := meta.FindStatusCondition(env.Status.Conditions, condScaleToZero)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(ReasonInternalProject))
+		Expect(cond.Message).To(ContainSubstring("Service"),
+			"the reason a consumer cannot wake it is what the message has to carry")
+
+		By("outranking a policy that would otherwise idle everything")
+		setPolicy(kitchenv1alpha1.ScaleToZeroPolicy{Mode: kitchenv1alpha1.ScaleToZeroAlways})
+		reconcileOnce()
+
+		Expect(scaledObject()).To(BeNil())
+		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+		Expect(meta.FindStatusCondition(env.Status.Conditions, condScaleToZero).Reason).
+			To(Equal(ReasonInternalProject))
+
+		By("bringing the pods back rather than leaving them parked")
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, childKey, deploy)).To(Succeed())
+		Expect(*deploy.Spec.Replicas).To(BeNumerically(">", 0))
+	})
+
 	It("never lets the ceiling fall below the replicas the environment runs", func() {
 		env := &kitchenv1alpha1.Environment{}
 		Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())

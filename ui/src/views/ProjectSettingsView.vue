@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, CRITICALITIES, DATA_CLASSES, type Claim, type ForkPolicy, type Project } from "../lib/api";
+import {
+  api,
+  CRITICALITIES,
+  DATA_CLASSES,
+  type Claim,
+  type Exposure,
+  type ForkPolicy,
+  type Project,
+} from "../lib/api";
 import {
   claimBackupBadge,
   claimCautions,
@@ -19,7 +27,13 @@ import { timeAgo } from "../lib/format";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { environmentLink } from "../lib/links";
-import { SETTINGS_SECTIONS, settingsSection, type SettingsSection } from "../lib/project";
+import {
+  EXPOSURE_OPTIONS,
+  exposureNote,
+  SETTINGS_SECTIONS,
+  settingsSection,
+  type SettingsSection,
+} from "../lib/project";
 import { useAsync } from "../lib/useAsync";
 import { volumeInitDrafts, volumeInitProblems, volumeInitWrites, type VolumeInitDraft } from "../lib/workloads";
 import ClaimModal from "../components/ClaimModal.vue";
@@ -247,6 +261,11 @@ const settings = reactive({
   // Work nobody asked for. Idling is request-driven by construction, so an
   // application with a background loop is the one it silently breaks.
   notRequestDriven: false,
+  // Whether this project is on the internet at all. `public` is what every
+  // project was before the setting existed, and `internal` publishes none of
+  // its environments — the difference between a service other applications
+  // call and one anybody can.
+  exposure: "public" as Exposure,
   // "" is unclassified — a state shown as such, never a default.
   dataClass: "",
   // "" is undesignated, for the same reason: Kitchen does not decide what is
@@ -298,6 +317,7 @@ function loadSettings(from: Project) {
   settings.init = volumeInitDrafts(from.init);
   settings.singleton = from.singleton ?? false;
   settings.notRequestDriven = from.notRequestDriven ?? false;
+  settings.exposure = from.exposure ?? "public";
   settings.dataClass = from.dataClass ?? "";
   settings.criticality = from.criticality ?? "";
   settings.rto = from.rto ?? "";
@@ -366,6 +386,11 @@ const fsGroupChangePolicyOptions = [
   { label: "Always (every start)", value: "" },
   { label: "OnRootMismatch", value: "OnRootMismatch" },
 ];
+// The vocabulary and the sentence under it live in lib/project.ts, where
+// project.test.ts can hold them: the difference between the two words is the
+// difference between a service other applications call and one anybody can.
+const exposureLine = computed(() => exposureNote(settings.exposure));
+
 const criticalityOptions = [
   { label: "undesignated", value: "" },
   ...CRITICALITIES.map((value) => ({ label: value, value: value as string })),
@@ -489,6 +514,7 @@ async function saveSettings() {
       init: volumeInitWrites(settings.init),
       singleton: settings.singleton,
       notRequestDriven: settings.notRequestDriven,
+      exposure: settings.exposure,
       dataClass: settings.dataClass,
       criticality: settings.criticality,
       rto: settings.rto,
@@ -1033,6 +1059,18 @@ async function deleteProject() {
 
           <!-- ── Domains ────────────────────────────────────────────────── -->
           <PageSection v-else-if="current.id === 'domains'" :title="current.label" :description="current.description">
+            <!-- A hostname on an internal project is refused by the API, so the
+                 pane says why here rather than letting somebody meet the
+                 refusal on the environment screen. -->
+            <UAlert
+              v-if="project?.exposure === 'internal'"
+              class="mb-4"
+              color="info"
+              variant="subtle"
+              icon="i-lucide-shield"
+              title="This project is internal"
+              description="No environment of it is published, so there is no route for a custom hostname to ride and a new domain is refused. Set the exposure to public on the Runtime pane first."
+            />
             <div class="rounded-md border border-default overflow-x-auto">
               <table class="w-full min-w-[42rem] text-sm">
                 <tbody>
@@ -1087,6 +1125,21 @@ async function deleteProject() {
           <!-- ── Runtime ────────────────────────────────────────────────── -->
           <PageSection v-else-if="current.id === 'runtime'" :title="current.label" :description="current.description">
             <form class="space-y-6" @submit.prevent="saveSettings">
+              <!-- Whether anyone outside the cluster is sent to it at all. It
+                   comes before how much of it runs because it decides what the
+                   rest of this pane is for: an internal project has no address,
+                   no gate and no idling. -->
+              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+                <h3 class="text-xs font-medium text-highlighted">Who can reach it</h3>
+                <UFormField
+                  label="Exposure"
+                  help="A project that exists to be called by other applications does not need a hostname on the internet."
+                >
+                  <USelect v-model="settings.exposure" :items="EXPOSURE_OPTIONS" class="w-full" />
+                </UFormField>
+                <p class="text-xs text-muted">{{ exposureLine }}</p>
+              </div>
+
               <div class="rounded-md border border-default bg-muted p-5 space-y-4">
                 <h3 class="text-xs font-medium text-highlighted">How much of it runs</h3>
                 <div class="grid gap-4 sm:grid-cols-4">

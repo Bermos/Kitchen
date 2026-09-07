@@ -94,6 +94,13 @@ var conditionSeverities = map[conditionStatement]conditionSeverity{
 	{controller.ConditionServeCoverage, controller.ReasonServeCoversWebOnly}: severityWarning,
 	// A preview nobody asked to gate is open on purpose.
 	{controller.ConditionPreviewProtected, controller.ReasonPreviewPublic}: severityInfo,
+	// A project that asked not to be published has no route and never will,
+	// and cannot idle because nothing routes to it that could wake it. Both
+	// are `spec.exposure: internal` doing exactly what it says — an internal
+	// project drawn with a red dot for having no URL is the thing #436 is
+	// about, one setting further along.
+	{controller.ConditionRouteProgrammed, controller.ReasonInternalProject}: severityInfo,
+	{controller.ConditionScaleToZero, controller.ReasonInternalProject}:     severityInfo,
 	// A store left unencrypted is a choice this platform reports. The
 	// component survey already reads it that way (internalTLSComponent).
 	{controller.ConditionInternalCAReady, controller.ReasonStoreInTheClear}: severityInfo,

@@ -19,7 +19,11 @@ base domain are refused, because they are generated and routed already — and
 the environment it should reach. `tls` is optional: `acme`, `cloudflared` or
 `none`, inheriting the platform's mode when absent. The `name` defaults to
 the hostname with dots turned into dashes. A hostname already attached is a
-`409`; an environment that does not exist a `400`.
+`409`; an environment that does not exist a `400`. So is an environment of a
+project whose
+[`exposure` is `internal`](projects.md#an-internal-project): nothing of such a
+project is published, so there is no route for a custom hostname to ride, and
+creating the Domain would be the one route that setting exists to prevent.
 
 Answers `201`, but creating the object changes no traffic by itself: the
 domain has to be **verified** first, and the next move is the caller's. `GET

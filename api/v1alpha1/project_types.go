@@ -372,6 +372,40 @@ func (p PreviewsSpec) IsProtected() bool {
 	return p.Protected == nil || *p.Protected
 }
 
+// ProjectExposure says whether this Project is published on the platform's
+// shared Gateway at all.
+// +kubebuilder:validation:Enum=public;internal
+type ProjectExposure string
+
+const (
+	// ExposurePublic is the default: every environment of the project is
+	// published at a generated hostname under the platform's base domain,
+	// with the wildcard certificate in front of it.
+	ExposurePublic ProjectExposure = "public"
+	// ExposureInternal publishes nothing. The environments still run, still
+	// have their in-cluster Service, and are still reachable from inside the
+	// cluster; what they do not have is a route, a hostname or a
+	// certificate.
+	ExposureInternal ProjectExposure = "internal"
+)
+
+// Normalized reads the exposure of a Project written before the field
+// existed, which is what the platform did with it then: published.
+func (e ProjectExposure) Normalized() ProjectExposure {
+	if e == "" {
+		return ExposurePublic
+	}
+	return e
+}
+
+// IsInternal reports whether this project's environments are withheld from
+// the shared Gateway.
+func (e ProjectExposure) IsInternal() bool { return e.Normalized() == ExposureInternal }
+
+// ProjectExposures is the vocabulary, in the order a form should offer it:
+// the default first.
+func ProjectExposures() []ProjectExposure { return []ProjectExposure{ExposurePublic, ExposureInternal} }
+
 // ScaleToZeroMode says which of a Project's environments may idle down to no
 // pods at all.
 // +kubebuilder:validation:Enum=previews;always;never
@@ -581,6 +615,31 @@ type ProjectSpec struct {
 
 	// +optional
 	Previews PreviewsSpec `json:"previews,omitempty"`
+
+	// Exposure says whether this project is on the internet. `public` is the
+	// default and is what every project was before the field existed: every
+	// environment is published at a generated hostname on the shared
+	// Gateway, and in `tls.mode: acme` behind a publicly trusted
+	// certificate. `internal` publishes none of them — no HTTPRoute, no
+	// hostname, no certificate, and no preview gate, since there is nothing
+	// in front of to gate.
+	//
+	// It is the project's rather than each environment's because it is a
+	// statement about what the software *is*: a project that exists to be
+	// called by other applications is not public in production and not
+	// public in a preview either. An environment cannot opt out of it and
+	// cannot opt into it.
+	//
+	// An internal project's environments keep their in-cluster Service and
+	// are reachable at it, which is how a consumer inside the cluster
+	// reaches them. What they lose besides the route is idling: the KEDA
+	// interceptor routes on the visitor's Host header and only traffic
+	// through the Gateway carries one, so a parked internal environment has
+	// nothing that could wake it. Every environment of an internal project
+	// therefore keeps its pods and says so on its ScaleToZero condition.
+	// +kubebuilder:default=public
+	// +optional
+	Exposure ProjectExposure `json:"exposure,omitempty"`
 
 	// Promotion is the project's staged pipeline, absent for the default
 	// build-straight-to-production flow. The stages are topology — which

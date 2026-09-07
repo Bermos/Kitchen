@@ -338,6 +338,7 @@ func (g gitReporting) reportEnvironment(
 		Release:      env.Spec.ReleaseRef.Name,
 		Revision:     revision,
 		Protected:    protected,
+		Internal:     project.Spec.Exposure.IsInternal(),
 		DashboardURL: g.environmentPage(ctx, env),
 	}
 	id, err := reporter.UpsertComment(ctx, repo, gitprovider.Comment{
@@ -497,6 +498,11 @@ type previewComment struct {
 	// comment has to explain: a reviewer who is not a platform user meets a
 	// sign-in page and would otherwise read it as a broken link.
 	Protected bool
+	// Internal says the project is published nowhere, which the comment has
+	// to explain for the same reason: the row that carries the address is
+	// missing, and a comment that only left it out would read as a preview
+	// whose URL failed to appear.
+	Internal bool
 	// Removed turns the comment into the record of a preview that is gone.
 	Removed bool
 	// Refused turns it into the record of a preview the platform declined to
@@ -552,6 +558,11 @@ func (c previewComment) body() string {
 		fmt.Fprintf(&b, "| **Dashboard** | [%s](%s) |\n", c.Environment, c.DashboardURL)
 	}
 
+	if c.Internal {
+		b.WriteString("\nThis project is internal, so the preview has no address on the internet — " +
+			"it runs and is reachable inside the cluster, like every environment of the project. " +
+			"That is `exposure: internal` working, not a preview that failed to publish.\n")
+	}
 	if c.Protected {
 		b.WriteString("\nThis preview is gated behind Kitchen's login: an anonymous visitor is sent " +
 			"to sign in first. That is the gate working, not a broken link.\n")

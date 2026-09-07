@@ -64,6 +64,7 @@ func newProjectCreateCommand(r *Runtime) *cobra.Command {
 		registry   string
 		branch     string
 		previews   bool
+		internal   bool
 		root       string
 		dockerfile string
 		target     string
@@ -93,6 +94,12 @@ than set afterwards: a monorepo corrected by a later change is corrected one
 failed build too late, and a multi-stage Dockerfile whose last stage is not the
 runtime ships the wrong image and reports success.
 
+--internal creates a project nothing outside the cluster reaches: no
+environment of it is published, and each one is reachable inside the cluster at
+its own Service. It is asked here rather than changed afterwards because a
+project that exists to be called by other applications should never have been
+on the internet at all, not even for the minute in between.
+
 The link is written the way kitchen link writes it: a directory already
 deploying another project is asked about before that link is replaced — --yes
 answers that too, and --link=false writes no link at all.
@@ -111,6 +118,7 @@ with KITCHEN_API_KEY is refused, and says so.`),
 				root:       root,
 				dockerfile: dockerfile,
 				target:     target,
+				internal:   internal,
 				link:       link,
 				yes:        yes,
 			}
@@ -126,6 +134,8 @@ with KITCHEN_API_KEY is refused, and says so.`),
 	cmd.Flags().StringVar(&registry, "registry", "", "the connection to push images to")
 	cmd.Flags().StringVar(&branch, "production-branch", "", "the branch production deploys from")
 	cmd.Flags().BoolVar(&previews, "previews", false, "deploy a preview for every pull request")
+	cmd.Flags().BoolVar(&internal, "internal", false,
+		"publish no environment of it: no hostname, no certificate, reachable inside the cluster only")
 	cmd.Flags().StringVar(&root, "root-directory", "", "the directory within the repository to build")
 	cmd.Flags().StringVar(&dockerfile, "dockerfile", "", "a Dockerfile to build with, relative to the root directory")
 	cmd.Flags().StringVar(&target, "dockerfile-target", "",
@@ -163,11 +173,25 @@ type createOptions struct {
 	registry   string
 	branch     string
 	previews   *bool
+	// internal is a project nothing outside the cluster reaches. It is asked
+	// at create rather than left to a later change because a project that
+	// exists to be called by other applications should never have been
+	// published at all — not even for the minute in between.
+	internal   bool
 	root       string
 	dockerfile string
 	target     string
 	link       bool
 	yes        bool
+}
+
+// exposureOf is the create request's `exposure`: empty leaves the platform's
+// default alone, which is public, so only the flag that was asked for is sent.
+func exposureOf(internal bool) string {
+	if internal {
+		return exposureInternal
+	}
+	return ""
 }
 
 func createProject(parent context.Context, r *Runtime, options createOptions) error {
@@ -242,6 +266,7 @@ func createProject(parent context.Context, r *Runtime, options createOptions) er
 		Registry:         options.registry,
 		ProductionBranch: options.branch,
 		Previews:         options.previews,
+		Exposure:         exposureOf(options.internal),
 		RootDirectory:    options.root,
 		DockerfilePath:   options.dockerfile,
 		DockerfileTarget: options.target,

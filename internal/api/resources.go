@@ -137,8 +137,14 @@ type createProjectRequest struct {
 	Image            *appconfig.Image `json:"image,omitempty"`
 	ProductionBranch string           `json:"productionBranch,omitempty"`
 	Previews         *bool            `json:"previews,omitempty"`
-	RootDirectory    string           `json:"rootDirectory,omitempty"`
-	DockerfilePath   string           `json:"dockerfilePath,omitempty"`
+	// Exposure is `public` (the default) or `internal`. It is on the create
+	// request rather than only on the settings PATCH because a project that
+	// exists to be called by other applications should never have been on
+	// the internet at all — not even for the minute between creating it and
+	// remembering to change it.
+	Exposure       string `json:"exposure,omitempty"`
+	RootDirectory  string `json:"rootDirectory,omitempty"`
+	DockerfilePath string `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship. It
 	// is here for the reason the two paths are: the preflight lists the
 	// stages the file declares while the form is still open, and a project
@@ -391,6 +397,18 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 		}
 		previews = *body.Previews
 	}
+	// Absent leaves the CRD's default alone, which is public; anything else
+	// is validated before a project is written, since a project created
+	// public and corrected a minute later was on the internet for a minute.
+	var exposure kitchenv1alpha1.ProjectExposure
+	if strings.TrimSpace(body.Exposure) != "" {
+		validated, err := exposureFromRequest(body.Exposure)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		exposure = validated
+	}
 	var registry *kitchenv1alpha1.RegistrySpec
 	if source.HasRepository() {
 		registry = &kitchenv1alpha1.RegistrySpec{
@@ -409,6 +427,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			Source:   source,
 			Registry: registry,
 			Previews: kitchenv1alpha1.PreviewsSpec{Enabled: ptr.To(previews)},
+			Exposure: exposure,
 			Build: kitchenv1alpha1.ProjectBuildSpec{
 				RootDirectory:    body.RootDirectory,
 				DockerfilePath:   body.DockerfilePath,
@@ -436,6 +455,7 @@ func (s *Server) createProject(w http.ResponseWriter, req *http.Request) {
 			"productionBranch": branch,
 			"sourceConnection": body.Connection,
 			"registry":         body.Registry,
+			"exposure":         string(exposure.Normalized()),
 		},
 	}) {
 		return
@@ -535,7 +555,19 @@ type patchProjectRequest struct {
 	// admin's setting because it is a decision about who may run code with
 	// this project's secrets (#422), and the platform's
 	// `previewsForksMax` is the most it may be set to.
-	PreviewsForks  *string `json:"previewsForks,omitempty"`
+	PreviewsForks *string `json:"previewsForks,omitempty"`
+	// Exposure is whether this project is on the internet: `public`, or
+	// `internal` for one that exists to be called by other applications.
+	// Turning it internal takes every environment's route, hostname and
+	// certificate away on the next reconcile, previews included, and turning
+	// it back gives them back — the address is generated from the project's
+	// name, so nothing about it was lost.
+	//
+	// It is an admin's setting for the reason the fork policy is: it decides
+	// who can reach this project's code, and a developer changing it would
+	// be a developer publishing a service somebody deliberately kept off the
+	// internet.
+	Exposure       *string `json:"exposure,omitempty"`
 	BuildStrategy  *string `json:"buildStrategy,omitempty"`
 	DockerfilePath *string `json:"dockerfilePath,omitempty"`
 	// DockerfileTarget is the stage of a multi-stage Dockerfile to ship; an
@@ -742,6 +774,37 @@ func dataClassFromRequest(value string) (kitchenv1alpha1.DataClass, error) {
 			strings.Join(names, ", "), value)
 	}
 	return class, nil
+}
+
+// exposureFromRequest validates one exposure value. Only the two words are
+// accepted: a caller that means "leave it as it is" leaves the field out, and
+// an empty string is a value somebody did not mean rather than a third
+// setting. The refusal names the vocabulary and what each word does, because
+// the difference between the two is the whole of whether this project is on
+// the internet.
+func exposureFromRequest(value string) (kitchenv1alpha1.ProjectExposure, error) {
+	exposure := kitchenv1alpha1.ProjectExposure(strings.TrimSpace(value))
+	switch exposure {
+	case kitchenv1alpha1.ExposurePublic, kitchenv1alpha1.ExposureInternal:
+		return exposure, nil
+	default:
+		return "", fmt.Errorf(
+			"exposure must be public — every environment published at a generated hostname — or internal, "+
+				"which publishes none of them and leaves them reachable inside the cluster only (got %q)",
+			value)
+	}
+}
+
+// internalProjectRefusal is what an internal project answers to a request for
+// something that only means anything on a public address. Both callers name
+// the thing being asked for, so the sentence says what was refused and how to
+// stop it being refused.
+func internalProjectRefusal(project *kitchenv1alpha1.Project, asked string) string {
+	return fmt.Sprintf(
+		"%s: project %q is internal (spec.exposure), so none of its environments is published — no route, "+
+			"no hostname and no certificate. Set the project's exposure to public first if it should be "+
+			"on the internet",
+		asked, project.Name)
 }
 
 // promotionStageRequest is one rung of the pipeline as a PATCH names it.
@@ -1227,6 +1290,14 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	}
 	if !applyProjectPreviews(w, project, body, s.forksCeiling(ctx)) {
 		return
+	}
+	if body.Exposure != nil {
+		exposure, err := exposureFromRequest(*body.Exposure)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		project.Spec.Exposure = exposure
 	}
 	if err := applyProjectBuildAndRuntime(project, body); err != nil {
 		badRequest(w, "%s", err.Error())
@@ -1808,18 +1879,51 @@ func (s *Server) writeEnvironments(
 	environments []kitchenv1alpha1.Environment,
 ) {
 	linker := s.sourceLinker()
+	exposures := s.projectExposures()
 	views := make([]environmentView, 0, len(environments))
 	for i := range environments {
+		project := environments[i].Spec.ProjectRef.Name
 		views = append(views, newEnvironmentView(
-			&environments[i], linker.forProjectNamed(ctx, environments[i].Spec.ProjectRef.Name)))
+			&environments[i], linker.forProjectNamed(ctx, project), exposures.of(ctx, project)))
 	}
 	writeList(w, views)
+}
+
+// projectExposures answers whether a project is published, remembering what
+// it read: a listing of environments is a listing of one or a handful of
+// projects, and every row of each wants the same answer.
+//
+// A project that cannot be read answers `public`, which is the reading of an
+// absent value everywhere else — an environment is not reported as internal
+// because something failed.
+type projectExposures struct {
+	server *Server
+	known  map[string]kitchenv1alpha1.ProjectExposure
+}
+
+func (s *Server) projectExposures() *projectExposures {
+	return &projectExposures{server: s, known: map[string]kitchenv1alpha1.ProjectExposure{}}
+}
+
+func (e *projectExposures) of(ctx context.Context, name string) kitchenv1alpha1.ProjectExposure {
+	if cached, ok := e.known[name]; ok {
+		return cached
+	}
+	project := &kitchenv1alpha1.Project{}
+	exposure := kitchenv1alpha1.ExposurePublic
+	if err := e.server.get(ctx, name, project); err == nil {
+		exposure = project.Spec.Exposure.Normalized()
+	}
+	e.known[name] = exposure
+	return exposure
 }
 
 // environmentView is one environment with its source links resolved, which is
 // every place a single environment is answered with.
 func (s *Server) environmentView(ctx context.Context, env *kitchenv1alpha1.Environment) environmentView {
-	return newEnvironmentView(env, s.sourceLinker().forProjectNamed(ctx, env.Spec.ProjectRef.Name))
+	project := env.Spec.ProjectRef.Name
+	return newEnvironmentView(env,
+		s.sourceLinker().forProjectNamed(ctx, project), s.projectExposures().of(ctx, project))
 }
 
 func (s *Server) listEnvironments(w http.ResponseWriter, req *http.Request) {
@@ -1854,7 +1958,7 @@ func (s *Server) getEnvironment(w http.ResponseWriter, req *http.Request) {
 	}
 	linker := s.sourceLinker()
 	links := linker.forProjectNamed(ctx, env.Spec.ProjectRef.Name)
-	view := newEnvironmentView(env, links)
+	view := newEnvironmentView(env, links, s.projectExposures().of(ctx, env.Spec.ProjectRef.Name))
 	// What is actually running here, as a commit rather than as the name of a
 	// release. It is the environment's release, and then the build that
 	// release froze — two reads, which is why the single environment answers
@@ -2368,6 +2472,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"previewsProtected", body.PreviewsProtected != nil},
 		{"previewsMax", body.PreviewsMax != nil},
 		{"previewsForks", body.PreviewsForks != nil},
+		{"exposure", body.Exposure != nil},
 		{"buildStrategy", body.BuildStrategy != nil},
 		{"dockerfilePath", body.DockerfilePath != nil},
 		{"dockerfileTarget", body.DockerfileTarget != nil},

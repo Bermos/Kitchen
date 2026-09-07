@@ -16,7 +16,7 @@
  * artifact a process deploys, and what the auto-rollback column is actually
  * claiming.
  */
-import type { Artifact, Build, Claim, Environment, Exception, Process, Project, Promotion } from "./api";
+import type { Artifact, Build, Claim, Environment, Exception, Exposure, Process, Project, Promotion } from "./api";
 
 /**
  * What the platform calls a project's own image, and its own web process.
@@ -412,4 +412,33 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
  * bookmark to a pane that has been renamed opens Settings rather than nothing. */
 export function settingsSection(id: unknown): SettingsSection {
   return SETTINGS_SECTIONS.find((section) => section.id === id) ?? SETTINGS_SECTIONS[0];
+}
+
+/** Whether the project is on the internet, as the settings form offers it. The
+ * label says what the platform *does* with the project rather than repeating
+ * the value, because "internal" on its own does not tell an admin that every
+ * environment is about to lose its address. */
+export const EXPOSURE_OPTIONS: { label: string; value: Exposure }[] = [
+  { label: "public — every environment gets a hostname on the internet", value: "public" },
+  { label: "internal — nothing is published; reachable inside the cluster only", value: "internal" },
+];
+
+/** The sentence under that field: what the setting as it stands does, and what
+ * changing it would do. An internal project loses three things at once and
+ * each of them is somewhere somebody would otherwise go looking for a fault —
+ * the missing address, the refused domain, and the environment that stopped
+ * idling — so all three are named here rather than met one at a time. */
+export function exposureNote(exposure: Exposure): string {
+  if (exposure === "internal") {
+    return (
+      "No environment of this project is published: no hostname, no certificate and no preview gate, previews " +
+      "included. Each one still runs and is still reachable from the other applications on this platform, at the " +
+      "address their bindings carry — and none of them can idle, because nothing routes to them that could wake a " +
+      "parked one. A custom domain and an OIDC client claim are refused while this is set."
+    );
+  }
+  return (
+    "Every environment is published at a generated hostname, and previews are gated according to the preview " +
+    "settings. Turning this to internal takes those addresses away on the next reconcile."
+  );
 }

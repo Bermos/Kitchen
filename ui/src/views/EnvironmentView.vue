@@ -487,6 +487,12 @@ function historyBy(entry: { reason: string; by?: string }): string {
             class="font-mono text-sm text-primary hover:underline break-all"
             >{{ environment.url }}</a
           >
+          <!-- An internal project has no address by its own setting, which is
+               not the same fact as a route that has not been programmed — and
+               only the second one is worth reading the conditions over. -->
+          <p v-else-if="environment.exposure === 'internal'" class="text-sm text-muted">
+            internal — no hostname; reachable from the other applications here
+          </p>
           <p v-else class="text-sm text-dimmed">no route — see conditions</p>
         </div>
       </div>
