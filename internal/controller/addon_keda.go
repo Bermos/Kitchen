@@ -46,6 +46,16 @@ const (
 	// artifacts, so this is a repository URL and helm is given it with
 	// --repo, which needs no `helm repo add` and so no writable repository
 	// cache to add it to.
+	//
+	// Neither chart is run with --verify, and the reason is that there is
+	// nothing to verify against: as of September 2026 KEDA publishes no
+	// `.prov` beside either chart (#431). What bounds this install is the
+	// pinned version below, TLS to that repository, and an argv nothing from
+	// a request reaches. If KEDA starts signing, the keyring ships in the
+	// helm job's image rather than being fetched at install time — a key
+	// pulled over the same transport as the chart checks nothing. **A bump
+	// below re-asks that question**, and the answer is written down in
+	// docs/api/addons.md rather than in a commit message.
 	DefaultKedaChartRepository = "https://kedacore.github.io/charts"
 
 	// DefaultKedaChartVersion and DefaultKedaHTTPChartVersion are pinned, and

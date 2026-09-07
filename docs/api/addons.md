@@ -169,6 +169,46 @@ operator performs when an install job from before the version labels leaves the
 installed version unknown — its `from` carries the chart names with empty
 versions, which is the honest shape of "we do not know what was there".
 
+## What the install job trusts, and what it cannot
+
+The chart it installs is pulled by name and version from the publisher's own
+HTTPS repository, at install time, and run under an account bound to
+cluster-admin. Three things bound that, and one thing does not:
+
+- **The version is a compiled-in pin.** An Addon names an entry and a
+  namespace; the repository, the chart name and the version are the
+  operator's, not the request's, and KEDA's pair is pinned together because
+  the add-on's chart is what decides the interceptor's Service name and port.
+- **Nothing from a request reaches the argv.** The one value taken from the
+  singleton is the namespace, checked against a DNS label and passed as its
+  own argument; the job is two containers rather than an `sh -c`, so there is
+  no shell in it anywhere.
+- **The helm the job runs is pinned by digest**, which matters most here for
+  the same reason the self-update's is.
+- **What is missing is chart provenance.** Helm can check a chart's signature
+  with `--verify` against a keyring, and Kitchen does not, because as of
+  September 2026 there is nothing to check it against:
+
+  | Chart | Signed | Public key |
+  |---|---|---|
+  | `keda` | No `.prov` published beside the chart | — |
+  | `keda-add-ons-http` | No `.prov` published beside the chart | — |
+  | `cloudnative-pg` | **Yes** — a `.prov` beside every release asset, RSA key `E3C68F93B50C5EC0`, uid `helm-charts+no-reply@cloudnative-pg.io` | Not published anywhere a consumer can fetch it: no `KEYS` file in the repository or on the chart site, and the key is on neither keys.openpgp.org nor keyserver.ubuntu.com |
+
+  A signature is worth nothing without the signer's key from somewhere other
+  than the signer's own download server, so `--verify` here would be
+  ceremony. Fetching a key at install time would be worse than not verifying:
+  it would take the key from the same transport as the chart and read as
+  though it had checked something.
+
+  So the trust is TLS to the publisher's repository plus the pinned version,
+  and it is written down rather than assumed. If a keyring ever becomes
+  possible it ships **in the helm job's image**, next to helm, rather than
+  being fetched — and the pins move at the same time, since the check has to
+  be against the version the pin names. **Bumping a pin re-asks the question
+  in this table**, which is why the answer is here rather than in a commit
+  message.
+
 ## Asking for one, and changing your mind
 
 ```sh

@@ -248,6 +248,19 @@ reported as `requestedBy`.
 See [Letting the platform update itself](../../charts/kitchen/README.md#letting-the-platform-update-itself)
 for what enabling it grants.
 
+The chart the upgrade pulls is Kitchen's own, from the OCI registry the
+release published it to, at the version the request named — and it is **not**
+signature-verified either. Kitchen's publish workflow attests the two images
+it builds and does not sign the chart, so there is no `.prov` and no keyring
+for `helm --verify` to check one against; what the job has is TLS to the
+registry, a version this operator has already refused if it is a downgrade or
+an ungranted minor crossing, and a helm image pinned by digest. That last one
+carries the most weight here: this job rewrites every object the platform is
+made of under an account bound to cluster-admin, so an image that could be
+repointed under it is somebody else's code holding the cluster. The same
+question for the platform's *dependencies* is answered in
+[Addons](addons.md#what-the-install-job-trusts-and-what-it-cannot).
+
 ### An upgrade's output
 
 `GET /updates/{name}/logs` is helm's own output for one upgrade, out of the
