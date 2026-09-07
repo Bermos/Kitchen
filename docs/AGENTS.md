@@ -268,8 +268,10 @@ kitchen builds --json | jq '.items[0]'
 A failed build answers `failure` with the container that stopped it, its exit
 code, and the last of what it printed — the Job's own message is the same
 sentence for every build that ever failed, so use this. `phase` is `Queued`,
-`Running`, `Succeeded`, `Failed` or `Cancelled`; a build sitting in `Queued`
-has a reason on its Ready condition, and the common ones are:
+`Running`, `Succeeded`, `Failed`, `Cancelled` or `Skipped` — the last of which
+is not a failure but a commit that changed nothing under the project's root
+directory, so nothing was built and nothing was deployed; a build sitting in
+`Queued` has a reason on its Ready condition, and the common ones are:
 
 | Reason | What it is |
 |---|---|

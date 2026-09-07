@@ -23,11 +23,19 @@ the object fields name what the entry is about so a client can link to it,
 things the reconcilers decided on their own, and `value` carries the one
 number some events have (a finished build's duration in seconds, a scheduled
 run's). Types:
-`build.succeeded`, `build.failed`, `release.promoted`, `release.rolledBack`,
+`build.succeeded`, `build.failed`, `build.skipped`, `release.promoted`, `release.rolledBack`,
 `release.redeployed`, `preview.created`, `preview.removed`, `preview.refused`,
 `project.created`, `project.deleted`,
 `claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`,
 `run.started`, `run.succeeded`, `run.failed`, `secret.rotated`.
+
+`build.skipped` is a commit the platform read and had nothing to build for:
+its source at the project's build root was byte-identical to the last build's,
+which is [`skipUnchanged`](./projects.md#skipping-a-push-that-changed-nothing)
+doing what it was asked to. It is in the feed for the reason `preview.refused`
+is — the absence of a deploy is otherwise invisible — and it is its own type
+rather than a quiet success so that a reader can tell it from a deployment at a
+glance. It carries no `value`: nothing ran, so there is no duration.
 
 `preview.refused` carries both refusals, and its `message` says which: a
 project at its [preview ceiling](./projects.md#the-preview-ceiling), or a pull

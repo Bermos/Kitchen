@@ -95,6 +95,11 @@ func (s Styles) Phase(phase string) string {
 		return s.Bad.Render(phase)
 	case "Running", "Deploying", "Queued", "Pending", "Terminating":
 		return s.Warn.Render(phase)
+	case "Skipped":
+		// Neither good nor bad: a build the platform had nothing to do for.
+		// Painting it like a failure would make a monorepo's ordinary day
+		// read as seven broken builds.
+		return s.Subtle.Render(phase)
 	default:
 		return phase
 	}

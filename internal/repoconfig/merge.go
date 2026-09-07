@@ -70,6 +70,20 @@ func DockerfileTarget(config *kitchenv1alpha1.RepoConfig, projectTarget string) 
 	return config.Build.DockerfileTarget
 }
 
+// SkipUnchanged is whether a push that changed nothing under the build root
+// should be built for this commit: the file's answer, or the project's.
+//
+// The pointer is what makes the file able to say `false`. A repository that
+// has just moved shared code somewhere the tree object cannot see turns the
+// skip off in the same commit that moves it, and that has to be
+// distinguishable from a file that says nothing at all.
+func SkipUnchanged(config *kitchenv1alpha1.RepoConfig, projectSetting bool) bool {
+	if config == nil || config.Build == nil || config.Build.SkipUnchanged == nil {
+		return projectSetting
+	}
+	return *config.Build.SkipUnchanged
+}
+
 // Runtime overlays the file's runtime declarations onto the runtime the
 // project and the detected framework produced.
 //

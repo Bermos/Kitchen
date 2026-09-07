@@ -717,6 +717,16 @@ spec:
     rootDirectory: .                    # the build root: the directory that is built, and what
                                         # every path the project declares is relative to. Both
                                         # strategies mean the same directory by it
+    skipUnchanged: false                # (default false) do not build a push whose source at
+                                        # rootDirectory is byte-identical to the last build's —
+                                        # the git tree object at <commit>:<rootDirectory> decides,
+                                        # so it is exact and needs no path filter. The push
+                                        # produces a Build in the Skipped phase naming the tree
+                                        # and the build it matched, and no Job, no Release and no
+                                        # promotion. Leave it off for a repository whose services
+                                        # share code *outside* their root directories: a change
+                                        # there is a change to this project and leaves this tree
+                                        # untouched. A manual rebuild always builds
   registry:                             # where builds push. Required with source.git,
     connectionRef: { name: harbor }     # and refused with source.image, which builds nothing
   previews:
@@ -1416,7 +1426,13 @@ spec:
                                         # "whatever the reference names now", which is the seeding's case.
                                         # trigger: seed | poll | request
 status:
-  phase: Succeeded                      # Queued | Running | Succeeded | Failed | Cancelled
+  phase: Succeeded                      # Queued | Running | Succeeded | Failed | Cancelled | Skipped
+  sourceTree:                           # the identity of the source this build was made from,
+    object: 6f3c1a9d...                 # recorded on every build of a repository so the next push
+    path: services/api                  # has something to compare. Absent where the provider
+    matchedBuild: shop-bld-aaaa         # cannot name a tree. matchedBuild is set only on a
+                                        # Skipped build: this commit changed nothing here since
+                                        # that one
   acquisition:                          # what an acquisition resolved, from where and when. Absent on a
     reference: ghcr.io/vendor/app:stable  # build of a commit, whose answer to all of this is the commit
     image: ghcr.io/vendor/app@sha256:cd34...

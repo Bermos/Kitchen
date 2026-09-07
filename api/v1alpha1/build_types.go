@@ -316,7 +316,7 @@ func (b *Build) AcquisitionTriggeredBy() AcquisitionTrigger {
 func (b *Build) FromRepository() bool { return b.Spec.Git.SHA != "" }
 
 // BuildPhase is the coarse lifecycle summary of a Build.
-// +kubebuilder:validation:Enum=Queued;Running;Succeeded;Failed;Cancelled
+// +kubebuilder:validation:Enum=Queued;Running;Succeeded;Failed;Cancelled;Skipped
 type BuildPhase string
 
 const (
@@ -325,6 +325,17 @@ const (
 	BuildSucceeded BuildPhase = "Succeeded"
 	BuildFailed    BuildPhase = "Failed"
 	BuildCancelled BuildPhase = "Cancelled"
+
+	// BuildSkipped is a commit whose source at this project's build root is
+	// byte-identical to the one the last build used, on a project that asked
+	// for `spec.build.skipUnchanged` (#500).
+	//
+	// It is a fourth terminal phase rather than a success with nothing in it,
+	// because it asserts something different: not "an image was produced"
+	// but "this commit changed nothing here". Nothing is built, no Release is
+	// cut and nothing is promoted — status.sourceTree says which tree object
+	// it matched and which build it matched it against.
+	BuildSkipped BuildPhase = "Skipped"
 )
 
 // ArtifactSourceType is where an artifact's evidence came from — see
@@ -989,6 +1000,38 @@ type BuildFailureStatus struct {
 	Log []string `json:"log,omitempty"`
 }
 
+// SourceTreeStatus is the identity of the source one build was made from, and
+// on a skipped build the record of what it matched.
+//
+// A git tree object is the hash of a directory's contents, recursively, so two
+// commits whose tree object at the build root is equal have byte-identical
+// source there however much the rest of the repository moved. That is what
+// makes the monorepo fan-out answerable exactly rather than with a path filter
+// somebody has to maintain and which lies the moment a shared library outside
+// the build root changes (#500).
+//
+// The object id is the provider's own and is only ever compared with another
+// one the same provider produced for the same repository.
+type SourceTreeStatus struct {
+	// Object is the git tree object at `<commit>:<path>`.
+	Object string `json:"object,omitempty"`
+
+	// Path is the build root the object was resolved at, empty for the
+	// repository itself. It is recorded beside the object because the
+	// setting moves and a build does not: an object resolved at
+	// `services/api` says nothing about a project whose root directory is
+	// now `services/web`, and comparing the two would skip a build that
+	// should have run.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// MatchedBuild names the build whose source tree this one equals. It is
+	// set only on a skipped build, and it is the whole of what the skip
+	// asserts: this commit changed nothing here since that build.
+	// +optional
+	MatchedBuild string `json:"matchedBuild,omitempty"`
+}
+
 // BuildStatus defines the observed state of a Build.
 type BuildStatus struct {
 	// +optional
@@ -1101,6 +1144,16 @@ type BuildStatus struct {
 	// Source is how the commit reached the branch: through review, or not.
 	// +optional
 	Source *SourceProvenanceStatus `json:"source,omitempty"`
+
+	// SourceTree identifies the source this build was made from: the git
+	// tree object at `<commit>:<rootDirectory>`.
+	//
+	// It is recorded on **every** build of a repository, not only on a
+	// skipped one, because it is what the next push is compared against — a
+	// build that did not write it leaves the push after it nothing to
+	// compare and so builds, which is the safe direction.
+	// +optional
+	SourceTree *SourceTreeStatus `json:"sourceTree,omitempty"`
 
 	// Preview names the preview environment this build's release was routed
 	// to, written at the moment it was routed there.

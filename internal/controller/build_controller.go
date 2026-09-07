@@ -479,7 +479,9 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// Job exists — that is what "refuse before the build is scheduled"
 		// means, and it is where the compute is. The Build stays and says why
 		// it was refused: refusing without a record would be the platform
-		// quietly dropping changes.
+		// quietly dropping changes. It stays first, ahead of everything the
+		// commit itself gets to say, because a commit nobody reviewed does
+		// not get to be read for its configuration either.
 		if build.Status.Source == nil {
 			source, refusal := r.resolveSourceProvenance(ctx, build, project)
 			build.Status.Source = source
@@ -490,16 +492,14 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				return ctrl.Result{}, err
 			}
 		}
+		// What the commit itself says, and whether it is built at all —
+		// both settled before anything is created, and both before the
+		// concurrency gate.
+		if stop, err := r.prepareBuild(ctx, build, project); stop != nil {
+			return *stop, err
+		}
 		if waiting, res := r.gateConcurrency(ctx, build, builds.Concurrency); waiting {
 			return res, nil
-		}
-		// What the commit itself asked for, read once here and recorded
-		// before anything is created: the build Job is planned from it, and
-		// the Release this build writes is merged from it on a later
-		// reconcile, which cannot read the repository again without spending
-		// a second request on a question that has an answer.
-		if stop, err := r.readConfig(ctx, build, project); stop != nil {
-			return *stop, err
 		}
 		strategy = resolveStrategy(project, build, builds.DefaultStrategy)
 		target.Strategy = strategy
@@ -2456,7 +2456,8 @@ func buildDurationSeconds(build *kitchenv1alpha1.Build) float64 {
 
 func isTerminal(phase kitchenv1alpha1.BuildPhase) bool {
 	switch phase {
-	case kitchenv1alpha1.BuildSucceeded, kitchenv1alpha1.BuildFailed, kitchenv1alpha1.BuildCancelled:
+	case kitchenv1alpha1.BuildSucceeded, kitchenv1alpha1.BuildFailed,
+		kitchenv1alpha1.BuildCancelled, kitchenv1alpha1.BuildSkipped:
 		return true
 	default:
 		return false

@@ -22,6 +22,16 @@ describe("status", () => {
     expect(phaseTone(undefined)).toBe("neutral");
   });
 
+  // A build the platform had nothing to build for is neither a failure nor a
+  // deployment, and the tone is the only thing that says so on a list scanned
+  // at a glance. A monorepo's ordinary day is seven of these, so painting
+  // them like failures or like releases is the whole of what #500 is against.
+  it("draws a skipped build as neither a failure nor a success", () => {
+    expect(phaseTone("Skipped")).toBe("info");
+    expect(phaseTone("Skipped")).not.toBe("error");
+    expect(phaseTone("Skipped")).not.toBe("success");
+  });
+
   it("surfaces the condition that is not where it should be", () => {
     const conditions = [
       { type: "Ready", status: "True", lastTransitionTime: "" },

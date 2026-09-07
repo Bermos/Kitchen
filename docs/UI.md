@@ -366,6 +366,22 @@ itself, `text-toned` for a value, `text-muted` for a label, `text-dimmed` for
 something that is present but not being asked about, and `text-error` /
 `text-warning` / `text-success` for a state rather than a decoration.
 
+### A state that is neither good nor bad takes neither colour
+
+A phase is drawn from `phaseTone` in
+[`lib/status.ts`](../ui/src/lib/status.ts), and a phase that is not a fault and
+not an achievement takes `info` or `neutral` there — never `error` or
+`success`. The case that made the rule is a build the platform *skipped*: a
+push whose source under the project's build root did not change is neither a
+failure nor a deployment, and a monorepo's ordinary day is seven of them.
+Painting them red would put seven healthy projects in the attention band;
+painting them green would say seven services shipped. The row says what
+happened in a `text-muted` line under the commit, the way a failure says it in
+`text-error` and a stall in `text-warning`.
+
+`lib/status.test.ts` holds this one rather than `design.test.ts`, which is the
+frame and has no opinion about what a screen says.
+
 ## Identifiers, numbers and prose
 
 `font-mono` for anything that is typed or copied: a name, a hostname, a SHA, a

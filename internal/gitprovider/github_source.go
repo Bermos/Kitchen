@@ -53,7 +53,7 @@ func (g *GitHub) ListDir(ctx context.Context, repo, ref, dir string) ([]DirEntry
 
 	entries := make([]DirEntry, 0, len(contents))
 	for _, c := range contents {
-		entries = append(entries, DirEntry{Name: c.Name, Dir: c.Type == "dir"})
+		entries = append(entries, DirEntry{Name: c.Name, Dir: c.Type == dirEntryType})
 	}
 	return entries, nil
 }

@@ -574,6 +574,15 @@ type patchProjectRequest struct {
 	// empty string clears it, which is the file's last stage again.
 	DockerfileTarget *string `json:"dockerfileTarget,omitempty"`
 	RootDirectory    *string `json:"rootDirectory,omitempty"`
+	// SkipUnchanged asks the platform not to build a push whose source under
+	// `rootDirectory` is byte-identical to the one the last build used
+	// (#500) — the monorepo fan-out, answered by the git tree object rather
+	// than by a path filter somebody has to maintain.
+	//
+	// It is off by default and stays the project's own answer, because a
+	// repository whose services share code *outside* their root directories
+	// wants the fan-out and the platform cannot tell the two kinds apart.
+	SkipUnchanged *bool `json:"skipUnchanged,omitempty"`
 	// Env is on this request only so that it can be refused by name. This
 	// route is the project's own settings and is the admin's; environment
 	// variables are the day job and are the developer's, on
@@ -1095,6 +1104,9 @@ func applyProjectBuildAndRuntime(project *kitchenv1alpha1.Project, body patchPro
 		}
 		project.Spec.Build.RootDirectory = root
 	}
+	if body.SkipUnchanged != nil {
+		project.Spec.Build.SkipUnchanged = *body.SkipUnchanged
+	}
 	if body.Port != nil {
 		// Zero is not "no port": it is the project handing the question back
 		// to the platform, which answers it from the framework each build
@@ -1244,10 +1256,10 @@ func refusedRepositorySettings(
 	// workloads of such a project each name the image they run, which is
 	// `processes`.
 	if body.BuildStrategy != nil || body.DockerfilePath != nil ||
-		body.DockerfileTarget != nil || body.RootDirectory != nil {
+		body.DockerfileTarget != nil || body.RootDirectory != nil || body.SkipUnchanged != nil {
 		badRequest(w, "%s", repositorySettingRefusal(project,
-			"a build strategy, a Dockerfile, a Dockerfile stage and a root directory are a "+
-				"repository's settings, and this project builds nothing"))
+			"a build strategy, a Dockerfile, a Dockerfile stage, a root directory and whether an "+
+				"unchanged source tree is skipped are a repository's settings, and this project builds nothing"))
 		return true
 	}
 	return false
@@ -2217,7 +2229,8 @@ func (s *Server) cancelBuild(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	switch build.Status.Phase {
-	case kitchenv1alpha1.BuildSucceeded, kitchenv1alpha1.BuildFailed, kitchenv1alpha1.BuildCancelled:
+	case kitchenv1alpha1.BuildSucceeded, kitchenv1alpha1.BuildFailed,
+		kitchenv1alpha1.BuildCancelled, kitchenv1alpha1.BuildSkipped:
 		writeJSON(w, http.StatusConflict, errorBody{
 			Error: fmt.Sprintf("build %s already finished (%s): there is nothing to cancel", build.Name, build.Status.Phase),
 		})
@@ -2541,6 +2554,7 @@ func changedProjectFields(body patchProjectRequest, continuity continuityChange)
 		{"dockerfilePath", body.DockerfilePath != nil},
 		{"dockerfileTarget", body.DockerfileTarget != nil},
 		{"rootDirectory", body.RootDirectory != nil},
+		{"skipUnchanged", body.SkipUnchanged != nil},
 		{"port", body.Port != nil},
 		{"replicas", body.Replicas != nil},
 		{"cpu", body.CPU != nil},

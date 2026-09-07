@@ -345,6 +345,10 @@ type build struct {
 	Cache       *buildCache `json:"cache,omitempty"`
 	Gates       []gate      `json:"gates,omitempty"`
 	Source      *source     `json:"source,omitempty"`
+	// SourceTree is what this build's source was — the git tree object at
+	// the commit and the project's build root — and, on a build in the
+	// Skipped phase, the build it matched.
+	SourceTree *sourceTree `json:"sourceTree,omitempty"`
 	// Failure is why a failed build failed: which container stopped it, how
 	// it exited, and the last of what it printed. Absent on every build that
 	// did not fail.
@@ -405,12 +409,38 @@ type buildFailure struct {
 	Log       []string `json:"log,omitempty"`
 }
 
+// sourceTree is the identity of one build's source: the git tree object at
+// the commit and the project's build root. Comparing it is the whole of "was
+// there anything to build".
+type sourceTree struct {
+	Object string `json:"object"`
+	Path   string `json:"path,omitempty"`
+	// MatchedBuild is the build this one's source is byte-identical to,
+	// present exactly on a skipped build.
+	MatchedBuild string `json:"matchedBuild,omitempty"`
+}
+
 // why is a failed build in one line, bounded so that a table stays a table.
 //
 // A build that failed before it ever had a pod — an unsupported strategy, a
 // commit refused for want of review — has no container to name, and the Ready
-// condition the reconciler left is the answer instead.
+// condition the reconciler left is the answer instead. A skipped build is the
+// one line here that is about no failure at all.
 func (b build) why() string {
+	if b.Phase == "Skipped" {
+		// Not a failure and not a deploy: this commit changed nothing under
+		// the project's build root, so nothing was built. The WHY column is
+		// where a reader of a list finds that out without opening the build.
+		where := "the repository"
+		if b.SourceTree != nil && b.SourceTree.Path != "" {
+			where = b.SourceTree.Path
+		}
+		matched := "the last build"
+		if b.SourceTree != nil && b.SourceTree.MatchedBuild != "" {
+			matched = b.SourceTree.MatchedBuild
+		}
+		return firstLine(fmt.Sprintf("%s is unchanged since %s", where, matched), buildWhyWidth)
+	}
 	if b.Phase == "Running" {
 		// The one case where this column is not about a failure. A build
 		// whose Job has never created a pod reports Running for as long as
@@ -818,10 +848,11 @@ type decisionReplay struct {
 	Decision string        `json:"decision"`
 }
 
-// terminal reports whether a build has stopped moving, whichever way it went.
+// terminal reports whether a build has stopped moving, whichever way it went
+// — a skipped build included: nothing was built, and nothing is going to be.
 func (b build) terminal() bool {
 	switch b.Phase {
-	case phaseSucceeded, phaseFailed, phaseCancelled:
+	case phaseSucceeded, phaseFailed, phaseCancelled, phaseSkipped:
 		return true
 	default:
 		return false
@@ -1331,8 +1362,12 @@ const (
 	phaseSucceeded = "Succeeded"
 	phaseFailed    = "Failed"
 	phaseCancelled = "Cancelled"
-	phaseLive      = "Live"
-	phaseDegraded  = "Degraded"
+	// phaseSkipped is a commit the platform read and had nothing to build
+	// for: its source under the project's root directory was byte-identical
+	// to the last build's (#500).
+	phaseSkipped  = "Skipped"
+	phaseLive     = "Live"
+	phaseDegraded = "Degraded"
 )
 
 // detectTarget is the preflight's request: POST /connections/{name}/detect. It

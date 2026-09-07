@@ -70,7 +70,8 @@ project, here and on the settings PATCH: `registry`, `connection`,
 how a commit becomes an image — `buildStrategy`, `dockerfilePath`,
 `dockerfileTarget` and `rootDirectory`. A `400` naming the field is the
 answer, because each of them would otherwise read back as a setting that took
-and do nothing.
+and do nothing. `skipUnchanged` joins them on the settings PATCH, which is the
+only place it can be set.
 
 What such a project *does* declare is everything else: its runtime, its
 variables and its workloads, each of which a repository would have put in
@@ -254,6 +255,7 @@ optional and absent ones keep their value:
 {"productionBranch": "trunk", "previews": true, "previewsProtected": false, "previewsMax": 3,
  "previewsForks": "none", "exposure": "internal",
  "buildStrategy": "dockerfile", "dockerfilePath": "build/Dockerfile", "dockerfileTarget": "web", "rootDirectory": "apps/shop",
+ "skipUnchanged": true,
  "port": 8080, "replicas": 3, "cpu": "250m", "memory": "512Mi"}
 ```
 
@@ -266,6 +268,68 @@ nothing for one more. An empty `dockerfileTarget` clears
 the target, which is the file's last stage again. The
 repository and the two connections are deliberately not editable: rebinding a
 project to another repository is a different project.
+
+### Skipping a push that changed nothing
+
+A push to a monorepo of eight services matches every project on that repository,
+and seven of them rebuild and redeploy source that did not change. The
+compliance instinct — rebuild everything, so the platform is never out of step
+with the repository — does not survive contact with the record it is protecting:
+a release history where seven rows in eight are no-ops makes *when did this
+service last change* unanswerable by looking.
+
+`skipUnchanged` is the answer, and it is deliberately **not a path filter**. A
+path filter has to be maintained by hand and lies the moment a shared library
+outside `rootDirectory` changes. Git already holds the fact:
+
+> The tree object at `<commit>:<rootDirectory>` is the identity of the source
+> this project builds. If it equals the one the last build used, the source is
+> byte-identical, and there is nothing to build.
+
+That is exact, needs no reproducible builds, costs one request to the project's
+git connection — never a clone — and cannot drift, because it is derived rather
+than declared.
+
+**The skip is recorded, not silent.** A push whose tree object matches produces
+a `Build` in the `Skipped` phase naming the commit, the tree object and the
+build it matched, and creates no build job, no release and no promotion — see
+[a build that was skipped](builds.md#a-build-that-was-skipped). That is a
+stronger record than a rebuild produces, because it asserts something about the
+*source* — this commit changed nothing here — rather than an artifact that may
+or may not be byte-identical for reasons nobody controls.
+
+**It is off by default, and the caveat is why.** A monorepo whose services
+genuinely share code *outside* their root directories wants the fan-out: a
+change to a library one directory up is a change to what this project builds
+and leaves this tree object untouched, so the platform would skip a build that
+mattered. Nothing here can tell that repository from a clean one, so it does
+not guess — the project says.
+
+Four things build whatever the trees say:
+
+- a project that has not asked for it;
+- a build with no previous tree object to compare — the first build of a
+  project, the first build of a branch, or a git provider that cannot name the
+  tree at that path (GitLab publishes no id for a commit's *root* tree, so a
+  GitLab project whose build root is the whole repository never skips);
+- a build somebody asked for by hand, through
+  [`POST /projects/{name}/builds`](builds.md#triggering-a-build) or the CLI's
+  `kitchen deploy`;
+- a build whose branch's last build did not succeed — "there is nothing to
+  build" is only true when the artifact the last build produced exists.
+
+The comparison is per branch, so a pull request whose changes are all outside
+the build root still gets its first build and so its preview environment; a
+later push to that branch that changes nothing there is skipped against the
+branch's own last build and leaves the preview serving what it already had.
+
+The commit's own [`kitchen.json`](../CONFIG.md#build) may override this
+setting, which is the one way to turn it **off** in the same change that moves
+shared code out of the build root.
+
+`skipUnchanged` is refused with a `400` on a project that builds nothing, like
+the four settings above it: a project whose source is an image has no commits
+and no tree objects.
 
 ### An internal project
 

@@ -252,6 +252,10 @@ export interface Project {
    * file's last stage. */
   dockerfileTarget?: string;
   rootDirectory?: string;
+  /** Whether a push whose source under `rootDirectory` is byte-identical to
+   * the last build's is skipped rather than rebuilt. Always present: `false`
+   * is the default, and a switch cannot tell that from "not set". */
+  skipUnchanged?: boolean;
   env?: EnvVar[];
   port?: number;
   replicas?: number;
@@ -404,6 +408,10 @@ export interface ProjectSettings {
    * which is the file's last stage again. */
   dockerfileTarget?: string;
   rootDirectory?: string;
+  /** Skip a push whose source under `rootDirectory` did not change, instead
+   * of rebuilding it. Off by default — a monorepo whose services share code
+   * outside their root directories wants every push built. */
+  skipUnchanged?: boolean;
   port?: number;
   replicas?: number;
   cpu?: string;
@@ -513,6 +521,19 @@ export interface Revision {
   pullRequestUrl?: string;
 }
 
+/** The identity of one build's source: the git tree object at
+ * `<commit>:<path>`. Two builds whose object is equal built byte-identical
+ * source, which is what makes a skipped build an assertion about the commit
+ * rather than a build that did nothing. */
+export interface SourceTree {
+  object: string;
+  /** The build root it was resolved at, absent for the repository itself. */
+  path?: string;
+  /** The build this one's source is byte-identical to. Present exactly on a
+   * build in the `Skipped` phase. */
+  matchedBuild?: string;
+}
+
 export interface Build {
   name: string;
   project: string;
@@ -529,6 +550,10 @@ export interface Build {
   cache?: BuildCache;
   gates?: QualityGate[];
   source?: SourceProvenance;
+  /** What this build's source was — the git tree object at the commit and the
+   * project's build root — and, on a build in the `Skipped` phase, the build
+   * it matched. */
+  sourceTree?: SourceTree;
   /** Why the build failed, when it did. Absent on every build that did not. */
   failure?: BuildFailure;
   /** The other images this one commit produced, for a project whose unit is

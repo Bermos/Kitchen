@@ -80,6 +80,7 @@ it.
 | `strategy` | `auto`, `dockerfile` or `buildpacks`. `auto` reads the repository and decides — a Dockerfile wins, and everything else recognised goes to buildpacks. |
 | `dockerfilePath` | The Dockerfile, relative to the project's root directory — which it may not leave, since the root directory is all a build sees. Used when the strategy is, or resolves to, `dockerfile`. |
 | `dockerfileTarget` | Which stage of that Dockerfile produces the image to run — BuildKit's `--target`. Leave it out to ship the file's last stage. A stage the file does not declare fails the build; so does naming one on a commit built with `buildpacks`, which has no stages. It is the project's own — the web process's — and the stage every workload that names none of its own is built to. |
+| `skipUnchanged` | Whether a push whose source under the project's root directory is byte-identical to the last build's is skipped rather than rebuilt. It overrides the project's setting, which is off by default — see [skipping a push that changed nothing](#skipping-a-push-that-changed-nothing). |
 
 ```json
 {"build": {"strategy": "dockerfile", "dockerfilePath": "docker/prod.Dockerfile", "dockerfileTarget": "web"}}
@@ -98,6 +99,46 @@ image the commit produces resolves through it: the workload's own
 workload that names none inherits the unit's rather than resetting to the last
 stage — except one built with `buildpacks`, which inherits nothing, since the
 lifecycle has no stages to inherit into.
+
+#### Skipping a push that changed nothing
+
+A push to a monorepo of eight services matches all eight projects, and seven of
+them rebuild and redeploy source that did not change. `skipUnchanged` is the
+answer, and it is not a path filter: a path filter has to be maintained by hand
+and lies the moment a shared library outside the root directory changes. Git
+already holds the fact —
+
+> the tree object at `<commit>:<rootDirectory>` **is** the identity of the
+> source this project builds. If it equals the one the last build used, the
+> source is byte-identical and there is nothing to build.
+
+The platform resolves that object through the project's git connection, in one
+request and never by cloning. A push that matches produces a `Build` in the
+`Skipped` phase naming the commit, the tree object and the build it matched —
+**recorded, not silent** — and no build job, no release and no promotion. A
+release history where seven rows in eight are no-ops is a worse record than one
+that says which commits changed this service, which is the whole reason the
+skip exists.
+
+It is **off by default**, on the project and here. A monorepo whose services
+genuinely share code outside their root directories wants every push built: a
+change to a library one directory up is a change to what this project builds
+and leaves this tree object untouched. The platform cannot tell the two kinds
+of repository apart, so it does not guess.
+
+Four things always build, whatever the trees say: a project that has not asked
+for it, a build with no previous tree object to compare (the first build of a
+project, the first build of a branch, or a provider that cannot name the tree
+at that path), a build somebody asked for by hand, and one whose branch's last
+build did not succeed.
+
+Setting it here rather than on the project is for the commit that needs the
+opposite of what the project says — most usefully `false`, in the same change
+that moves shared code out of the build root:
+
+```json
+{"build": {"skipUnchanged": false}}
+```
 
 ### `runtime`
 

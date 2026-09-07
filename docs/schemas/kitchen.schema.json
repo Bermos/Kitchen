@@ -30,6 +30,11 @@
           "maxLength": 128,
           "description": "Which stage of a multi-stage Dockerfile produces the image to run. Leave it out to ship the file's last stage. A stage the file does not declare fails the build, and so does naming one on a commit built with buildpacks, which has no stages.",
           "examples": ["web", "runtime"]
+        },
+        "skipUnchanged": {
+          "type": "boolean",
+          "description": "Whether a push whose source under the project's root directory is byte-identical to the last build's should be skipped rather than rebuilt. It overrides the project's own setting, which is off by default. Leave it out to take the project's; set it to false in the commit that moves shared code somewhere the root directory cannot see.",
+          "examples": [true, false]
         }
       }
     },

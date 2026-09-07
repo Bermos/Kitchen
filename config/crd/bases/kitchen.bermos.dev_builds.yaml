@@ -632,6 +632,22 @@ spec:
                         maxLength: 128
                         pattern: ^[A-Za-z][A-Za-z0-9_.-]*$
                         type: string
+                      skipUnchanged:
+                        description: |-
+                          SkipUnchanged is the commit's own answer to whether a push that
+                          changed nothing under the build root should be built (#500).
+
+                          It is a pointer because the project's setting is what it overrides and
+                          `false` has to be expressible: a repository that has just moved a
+                          shared library into a place the tree object cannot see turns the skip
+                          off in the same change, and a plain bool would be indistinguishable
+                          from the file saying nothing.
+
+                          The file is read at the commit under build, so the setting that decides
+                          whether *this* commit is skipped is this commit's own — which is the
+                          only reading that lets the repository turn it off in the commit that
+                          needs it off.
+                        type: boolean
                       strategy:
                         description: 'Strategy the commit is built with: auto, dockerfile
                           or buildpacks.'
@@ -2293,6 +2309,7 @@ spec:
                 - Succeeded
                 - Failed
                 - Cancelled
+                - Skipped
                 type: string
               preview:
                 description: |-
@@ -2381,6 +2398,35 @@ spec:
                   title:
                     description: Title of that request, so a person reading this later
                       recognises it.
+                    type: string
+                type: object
+              sourceTree:
+                description: |-
+                  SourceTree identifies the source this build was made from: the git
+                  tree object at `<commit>:<rootDirectory>`.
+
+                  It is recorded on **every** build of a repository, not only on a
+                  skipped one, because it is what the next push is compared against — a
+                  build that did not write it leaves the push after it nothing to
+                  compare and so builds, which is the safe direction.
+                properties:
+                  matchedBuild:
+                    description: |-
+                      MatchedBuild names the build whose source tree this one equals. It is
+                      set only on a skipped build, and it is the whole of what the skip
+                      asserts: this commit changed nothing here since that build.
+                    type: string
+                  object:
+                    description: Object is the git tree object at `<commit>:<path>`.
+                    type: string
+                  path:
+                    description: |-
+                      Path is the build root the object was resolved at, empty for the
+                      repository itself. It is recorded beside the object because the
+                      setting moves and a build does not: an object resolved at
+                      `services/api` says nothing about a project whose root directory is
+                      now `services/web`, and comparing the two would skip a build that
+                      should have run.
                     type: string
                 type: object
               startedAt:
@@ -2902,6 +2948,7 @@ spec:
                       - Succeeded
                       - Failed
                       - Cancelled
+                      - Skipped
                       type: string
                     reference:
                       description: |-

@@ -7,12 +7,18 @@ import type { Condition, ConditionSeverity, Environment, ReleaseHistoryEntry } f
 export type Tone = "success" | "warning" | "error" | "info" | "neutral";
 
 const phaseTones: Record<string, Tone> = {
-  // Build: Queued | Running | Succeeded | Failed | Cancelled
+  // Build: Queued | Running | Succeeded | Failed | Cancelled | Skipped
   Queued: "neutral",
   Running: "warning",
   Succeeded: "success",
   Failed: "error",
   Cancelled: "neutral",
+  // A build the platform had nothing to build for: the commit's source under
+  // the project's root directory was byte-identical to the last build's. It
+  // is neither a failure nor a deployment, and `info` is the tone that says
+  // so — the whole point of recording the skip is that a monorepo's ordinary
+  // day should not read as seven broken builds or seven releases (#500).
+  Skipped: "info",
   // Environment: Pending | Deploying | Live | Degraded | Terminating
   Pending: "neutral",
   Deploying: "warning",

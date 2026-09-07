@@ -101,7 +101,12 @@ build stays in the list saying so.
 
 A failed build gets a WHY column: the container that stopped it and how it
 exited. The whole failure, including the last lines that container printed, is
-on --json and on "kitchen logs --build".`),
+on --json and on "kitchen logs --build".
+
+A build in the Skipped phase is neither: the commit's source under the
+project's root directory was byte-identical to the last build's, so nothing was
+built and nothing was deployed. WHY names the build it matched, and --json
+carries the tree object under "sourceTree".`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			client, err := r.client()
@@ -128,11 +133,13 @@ on --json and on "kitchen logs --build".`),
 					return "No builds yet.\n"
 				}
 				rows := make([][]string, 0, len(builds))
-				// WHY is populated for a failed build and for a running one
-				// that is not moving, and it is the column the list exists
-				// for on a bad day: without it every failure reads as the
-				// same failure, and a build stuck before its first pod reads
-				// as a build that is simply taking a while.
+				// WHY is populated for a failed build, for a running one
+				// that is not moving, and for a skipped one, and it is the
+				// column the list exists for on a bad day: without it every
+				// failure reads as the same failure, a build stuck before
+				// its first pod reads as a build that is simply taking a
+				// while, and a skipped build reads as a build that did
+				// nothing rather than as a commit that changed nothing.
 				failures := false
 				for _, b := range builds {
 					if b.why() != "" {
