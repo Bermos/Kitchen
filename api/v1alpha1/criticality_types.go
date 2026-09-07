@@ -189,7 +189,13 @@ func (c Continuity) Designated() bool {
 // What does happen is a fallback, and only for production. A production
 // environment that declares nothing reads its project's designation, because
 // production is where the project's function actually runs and declaring it
-// twice would only be a second place to forget. A preview inherits nothing.
+// twice would only be a second place to forget. A preview inherits nothing —
+// and neither does a promotion stage, for the same reason a preview does not:
+// nobody's payment fails while staging is down. That the staging environment
+// four teams integrate against may still be worth designating is exactly why
+// there is no ceiling; its owners designate it, and it is not assumed from the
+// project. Before #490 a stage was typed `production` and so inherited here,
+// which is the one place that fix changes what an answer says.
 // The fallback is *derived*, never written back to the object, and every
 // answer that carries it also carries [Continuity.Inherited] saying so.
 func EffectiveContinuity(project *Project, env *Environment) Continuity {

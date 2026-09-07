@@ -774,6 +774,23 @@ func previewEnvironment() *kitchenv1alpha1.Environment {
 	}
 }
 
+// The middle rung of a project's promotion pipeline: durable like
+// production, published under its own name, and typed for it since #490.
+func stageEnvironment() *kitchenv1alpha1.Environment {
+	return &kitchenv1alpha1.Environment{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop-staging", Namespace: testNamespace},
+		Spec: kitchenv1alpha1.EnvironmentSpec{
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "shop"},
+			Type:       kitchenv1alpha1.EnvironmentStage,
+			ReleaseRef: kitchenv1alpha1.LocalObjectReference{Name: testRelease},
+		},
+		Status: kitchenv1alpha1.EnvironmentStatus{
+			Phase: kitchenv1alpha1.EnvironmentLive,
+			URL:   "https://shop-staging.apps.example.com",
+		},
+	}
+}
+
 func TestDeletingAPreviewEnvironment(t *testing.T) {
 	h := newHarness(t, nil, append(fixtures(), previewEnvironment())...)
 
@@ -795,6 +812,25 @@ func TestDeletingTheProductionEnvironmentIsRefused(t *testing.T) {
 	}
 	if err := h.server.get(context.Background(), testEnvironment, &kitchenv1alpha1.Environment{}); err != nil {
 		t.Fatal("production was deleted anyway")
+	}
+}
+
+// A promotion stage's environment is not a preview and not the production
+// environment either (#490), and the refusal has to be true of it: it is the
+// project's, torn down with it, and the message names what it is rather than
+// calling everything durable "the production environment".
+func TestDeletingAStageEnvironmentIsRefused(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), stageEnvironment())...)
+
+	recorder := h.do(t, http.MethodDelete, "/api/v1/environments/shop-staging", "")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "is a stage environment") {
+		t.Fatalf("the refusal should name what it is: %s", recorder.Body.String())
+	}
+	if err := h.server.get(context.Background(), "shop-staging", &kitchenv1alpha1.Environment{}); err != nil {
+		t.Fatal("the stage was deleted anyway")
 	}
 }
 

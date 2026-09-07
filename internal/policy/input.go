@@ -124,8 +124,10 @@ type ProjectFacts struct {
 // EnvironmentFacts is what the engine knows about the target environment.
 type EnvironmentFacts struct {
 	Name string `json:"name"`
-	// Type is production or preview, which is what data-provenance-preview
-	// pivots on.
+	// Type is production, stage or preview. Every rule that reads it asks
+	// whether it is `preview` — data-provenance-preview is the one in the
+	// default bundle — so a promotion stage is judged the way production is,
+	// which is what a durable environment somebody integrates against wants.
 	Type      string `json:"type,omitempty"`
 	DataClass string `json:"dataClass,omitempty"`
 	Residency string `json:"residency,omitempty"`

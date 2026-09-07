@@ -1867,6 +1867,9 @@ func (r *BuildReconciler) adoptLatePreview(ctx context.Context, build *kitchenv1
 // and only if the policy allows. A target that does not exist yet is created
 // by ensureEnvironment — an environment must exist to be promoted into, and a
 // fresh one declares no requirements, so the fast path is also the right one.
+// It is created as whatever the pipeline says it is: a rung before the last
+// one is a `stage`, which publishes under its own name rather than under the
+// project's (#490).
 func (r *BuildReconciler) promoteOrFlip(
 	ctx context.Context,
 	namespace string,
@@ -1878,7 +1881,7 @@ func (r *BuildReconciler) promoteOrFlip(
 	err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envName}, env)
 	if apierrors.IsNotFound(err) {
 		return r.ensureEnvironment(ctx, namespace, project, envName,
-			kitchenv1alpha1.EnvironmentProduction, nil, releaseName, build)
+			EnvironmentTypeFor(project, envName), nil, releaseName, build)
 	}
 	if err != nil {
 		return err
@@ -1899,7 +1902,7 @@ func (r *BuildReconciler) promoteOrFlip(
 			return r.refuseFlipOnDataClass(ctx, build, project, env, releaseName, refusal)
 		}
 		return r.ensureEnvironment(ctx, namespace, project, envName,
-			kitchenv1alpha1.EnvironmentProduction, nil, releaseName, build)
+			EnvironmentTypeFor(project, envName), nil, releaseName, build)
 	}
 	return createAutomaticPromotion(ctx, r.Client, r.Audit, actorBuildController,
 		correlationFor(build), namespace, project, envName, releaseName,

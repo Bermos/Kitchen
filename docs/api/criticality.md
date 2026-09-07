@@ -78,6 +78,10 @@ anything:
   designation, because production is where the project's function actually
   runs. That fallback is *derived*, never written back to the object, and every
   answer carrying it also carries `inherited` naming the fields it applies to.
+- A **stage** — a rung of the promotion pipeline before production — inherits
+  nothing either, for the reason a preview does not: nobody's payment fails
+  while staging is down. Its owners designate it if it is worth designating,
+  which is what the absence of a ceiling below is for.
 - There is **no ceiling**. A `nonCritical` project may own the staging
   environment four teams integrate against, and a critical project may declare
   one of its environments `nonCritical`. Both are the institution's call, and

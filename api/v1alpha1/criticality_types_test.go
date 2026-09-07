@@ -112,6 +112,34 @@ func TestAPreviewNeverInheritsItsProjectsCriticality(t *testing.T) {
 	}
 }
 
+// A promotion stage is durable, but it is not where the project's function
+// runs, so it reads its own designation and nothing else — the fallback is
+// production's alone. Before #490 a stage was typed `production` and
+// inherited here; its owners designate it now, which is what the absence of a
+// ceiling is for.
+func TestAPromotionStageDoesNotInheritEither(t *testing.T) {
+	project := &Project{Spec: ProjectSpec{
+		Criticality: CriticalityCritical, RTO: "1h", RPO: "5m",
+	}}
+	stage := &Environment{Spec: EnvironmentSpec{Type: EnvironmentStage}}
+
+	resolved := EffectiveContinuity(project, stage)
+	if resolved.Designated() || len(resolved.Inherited) != 0 {
+		t.Fatalf("a stage inherited a designation: %+v", resolved)
+	}
+
+	// It says what it is told to say, and says it is its own.
+	stage.Spec.Criticality = CriticalityImportant
+	stage.Spec.RTO = "4h"
+	resolved = EffectiveContinuity(project, stage)
+	if resolved.Criticality != CriticalityImportant || resolved.RTO != "4h" {
+		t.Fatalf("a stage's own designation did not survive: %+v", resolved)
+	}
+	if len(resolved.Inherited) != 0 {
+		t.Fatalf("nothing was inherited, but the answer says %v", resolved.Inherited)
+	}
+}
+
 func TestAProductionEnvironmentInheritsAndSaysSo(t *testing.T) {
 	project := &Project{Spec: ProjectSpec{
 		Criticality: CriticalityCritical, RTO: "1h", RPO: "5m",

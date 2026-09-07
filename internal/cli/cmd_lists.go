@@ -324,11 +324,13 @@ func newEnvironmentsCommand(r *Runtime) *cobra.Command {
 		Aliases: []string{"environment", "envs"},
 		Short:   "The project's environments and where they answer",
 		Long: strings.TrimSpace(`
-List the linked project's environments: production, and a preview for each open
-pull request the platform built.
+List the linked project's environments: production, one for each rung of its
+promotion pipeline before production, and a preview for each open pull request
+the platform built.
 
-Each one carries the release it is meant to be on, the release it is observed
-to be on, its phase and its URL.`),
+Each one carries what it is (TYPE: production, stage or preview), the release
+it is meant to be on, the release it is observed to be on, its phase and its
+URL — and each type answers at its own hostname.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			client, err := r.client()

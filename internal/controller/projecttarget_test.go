@@ -40,6 +40,36 @@ func TestProductionTargetIsTheLastStageOrTheDefaultName(t *testing.T) {
 	}
 }
 
+// Which rung is which: the last one is production and everything before it
+// is a stage, so that a pipeline's environments do not all claim to be the
+// production environment — and therefore production's hostname (#490).
+func TestEveryRungButTheLastIsAStage(t *testing.T) {
+	project := &kitchenv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop"}}
+	if got := EnvironmentTypeFor(project, "shop-production"); got != kitchenv1alpha1.EnvironmentProduction {
+		t.Fatalf("a project with no pipeline has one environment and it is production, got %q", got)
+	}
+
+	project.Spec.Promotion = &kitchenv1alpha1.PromotionPolicySpec{Stages: []kitchenv1alpha1.PromotionStage{
+		{Name: "staging", Environment: "shop-staging"},
+		{Name: "canary", Environment: "shop-canary"},
+		{Name: "live", Environment: "shop-live"},
+	}}
+	for environment, want := range map[string]kitchenv1alpha1.EnvironmentType{
+		"shop-staging": kitchenv1alpha1.EnvironmentStage,
+		"shop-canary":  kitchenv1alpha1.EnvironmentStage,
+		"shop-live":    kitchenv1alpha1.EnvironmentProduction,
+		// An environment the pipeline no longer names — the `shop-production`
+		// a project had before it declared stages, say — is a stage: durable,
+		// published under its own name, and precisely not a second claimant
+		// of production's hostname.
+		"shop-production": kitchenv1alpha1.EnvironmentStage,
+	} {
+		if got := EnvironmentTypeFor(project, environment); got != want {
+			t.Errorf("EnvironmentTypeFor(%q) = %q, want %q", environment, got, want)
+		}
+	}
+}
+
 func TestDataClassRefusalNamesBothClassesAndTheFix(t *testing.T) {
 	project := &kitchenv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop"}}
 	project.Spec.DataClass = kitchenv1alpha1.DataClassConfidential

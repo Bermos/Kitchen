@@ -4,6 +4,7 @@ import {
   changeDetail,
   changeSign,
   commitsBetween,
+  durableWriteLabel,
   gatedByName,
   lastServedStint,
   deployTasksThatRunAgain,
@@ -262,6 +263,30 @@ describe("gatedByName", () => {
   it("gates nothing it has not been given", () => {
     expect(gatedByName(undefined, rowFor("rel-39"), diff())).toBe(false);
     expect(gatedByName(environment(), undefined, diff())).toBe(false);
+  });
+
+  // A stage is durable and somebody integrates against it, so it is gated
+  // the way production is — the exemption is the preview's alone, and the
+  // third type must not fall through it.
+  it("gates a promotion stage the way it gates production", () => {
+    const stage = environment({ name: "shop-staging", type: "stage" });
+    const rowsForStage = releaseRows(releases, builds, stage);
+    expect(gatedByName(stage, rowsForStage.find((r) => r.release.name === "rel-39"), clean)).toBe(true);
+  });
+});
+
+// The badge above the diff says what a move writes to, and it used to say
+// "production write" for every environment that was not a preview — which
+// was every rung of a staged pipeline (#490).
+describe("durableWriteLabel", () => {
+  it("names the environment by what it is", () => {
+    expect(durableWriteLabel(environment())).toBe("production write");
+    expect(durableWriteLabel(environment({ type: "stage" }))).toBe("stage write");
+  });
+
+  it("badges nothing on a preview, or on nothing", () => {
+    expect(durableWriteLabel(environment({ type: "preview" }))).toBe("");
+    expect(durableWriteLabel(undefined)).toBe("");
   });
 });
 

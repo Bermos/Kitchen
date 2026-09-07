@@ -14,6 +14,42 @@ interpret together: an environment with no `url` is either one of an
 nowhere on purpose, or one still waiting on a route, and only the second is a
 fault.
 
+## What an environment is, and where it answers
+
+Every environment view carries a `type`, and it is one of three:
+
+| `type` | What it is | Published at |
+|---|---|---|
+| `production` | The project's production environment: the last rung of its promotion pipeline, or its only environment when it declares none | `<project>.<baseDomain>` |
+| `stage` | Every other durable environment of the project: a rung of `promotion.stages` before the last one, and anything the pipeline no longer names | `<project>-<environment>.<baseDomain>` |
+| `preview` | One open pull request's environment, created and deleted with the request | `<project>-pr-<n>.<baseDomain>` |
+
+A stage's label is its own environment name, prefixed with the project's
+where it does not already carry it — so the conventional `shop-staging`
+answers at `shop-staging.<baseDomain>` rather than at `shop-shop-staging`.
+The type is derived from the project's pipeline rather than sent by a client;
+nothing in this API writes it. There is exactly one `production` environment
+per project by construction — the one production deployments land on — so no
+two environments of a project ever answer at the same generated address. A
+custom [domain](domains.md) points wherever it is pointed and is unaffected by
+any of this.
+
+The third column is where an environment of a `public` project answers. **An
+internal project publishes none of its environments**, whatever their type: an
+`internal` stage is still a stage, still deploys and still has its in-cluster
+Service, and its `url` is empty for the reason above. The type says what an
+environment *is*; `exposure` says whether anyone outside the cluster can reach
+it.
+
+**A stage used to read as `production` and answer at production's address.**
+`type` had two values, so every non-preview environment of a staged project
+was a production one — two environments claiming one hostname, which Gateway
+API resolves by rule age. A staged pipeline installed before that was fixed
+finds its stage environments re-typed on the operator's next pass and moved to
+their own hostnames; production's address is unchanged. On an internal project
+the re-typing happens just the same and changes no address, because there was
+none.
+
 ## Rolling back
 
 Rollback is not a special operation. A `Release` is an immutable snapshot of an
@@ -372,9 +408,9 @@ build's own evidence index, listed unverified, with the message saying so.
 
 `DELETE /environments/{name}` tears a preview down — its Deployment, Service
 and route go with it, and a new build for the pull request recreates it.
-Previews only: the production environment is the project, torn down with it
-and never on its own, so asking is a `400`. Answers `202` while the finalizer
-works.
+Previews only: a `production` environment and a `stage` alike are the project,
+torn down with it and never on their own, so asking is a `400` naming which of
+the two it is. Answers `202` while the finalizer works.
 
 ## When a workload will not start
 

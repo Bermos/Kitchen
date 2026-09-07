@@ -233,6 +233,21 @@ export function deployTasksThatRunAgain(diff: ConfigDiff | undefined) {
   return (diff?.processes ?? []).filter((p) => p.type === "task" && p.change !== "removed");
 }
 
+/** What a move here writes to, badged above the diff.
+ *
+ * An environment the project keeps is named by what it is — `production
+ * write`, `stage write` — because a stage is somebody's integration target
+ * and a write to it is not the cheap one this badge exists to distinguish
+ * from. A preview is badged with nothing: it is the environment a mistake
+ * costs nothing on, and it is why the badge is here at all.
+ *
+ * It reads the type verbatim rather than mapping it, so a type this
+ * dashboard has not heard of still says which one it is. */
+export function durableWriteLabel(environment: Environment | undefined): string {
+  if (!environment || environment.type === "preview") return "";
+  return `${environment.type} write`;
+}
+
 /**
  * Whether the confirm is gated on typing the environment's name.
  *

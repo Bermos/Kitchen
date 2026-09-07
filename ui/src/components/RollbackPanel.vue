@@ -8,6 +8,7 @@ import {
   changeSign,
   commitsBetween,
   deployTasksThatRunAgain,
+  durableWriteLabel,
   gatedByName,
   lastServedStint,
   movedProcesses,
@@ -373,8 +374,8 @@ function commitLabel(build: Build): string {
                 <h2 class="text-sm font-medium text-highlighted font-mono">
                   {{ props.environment.release }} → {{ target.release.name }}
                 </h2>
-                <UBadge v-if="props.environment.type !== 'preview'" color="warning" variant="subtle" size="sm">
-                  production write
+                <UBadge v-if="durableWriteLabel(props.environment)" color="warning" variant="subtle" size="sm">
+                  {{ durableWriteLabel(props.environment) }}
                 </UBadge>
                 <UBadge v-if="promoting" color="neutral" variant="subtle" size="sm">forward — a promotion</UBadge>
               </div>

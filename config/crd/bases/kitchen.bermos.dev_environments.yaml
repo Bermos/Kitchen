@@ -211,10 +211,12 @@ spec:
               type:
                 default: production
                 description: |-
-                  EnvironmentType distinguishes the single production Environment from
-                  ephemeral previews.
+                  EnvironmentType says what an Environment is for, and where it is
+                  published: the project's production environment, a rung of its promotion
+                  pipeline on the way there, or an ephemeral preview of one pull request.
                 enum:
                 - production
+                - stage
                 - preview
                 type: string
             required:

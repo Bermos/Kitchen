@@ -314,8 +314,11 @@ func (g gitReporting) reportEnvironment(
 			State:       state,
 			Description: deploymentDescription(env, state),
 			URL:         env.Status.URL,
-			Transient:   env.Spec.Type == kitchenv1alpha1.EnvironmentPreview,
-			Production:  env.Spec.Type == kitchenv1alpha1.EnvironmentProduction,
+			// A promotion stage is neither: it is not torn down with a pull
+			// request, and it is not production. Before #490 every rung was
+			// typed production and the forge was told so of all of them.
+			Transient:  env.Spec.Type == kitchenv1alpha1.EnvironmentPreview,
+			Production: env.Spec.Type == kitchenv1alpha1.EnvironmentProduction,
 		})
 		if err != nil {
 			log.Error(err, "failed to publish the deployment", "environment", env.Name, "repo", repo)

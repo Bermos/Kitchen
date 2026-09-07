@@ -20,14 +20,35 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EnvironmentType distinguishes the single production Environment from
-// ephemeral previews.
-// +kubebuilder:validation:Enum=production;preview
+// EnvironmentType says what an Environment is for, and where it is
+// published: the project's production environment, a rung of its promotion
+// pipeline on the way there, or an ephemeral preview of one pull request.
+// +kubebuilder:validation:Enum=production;stage;preview
 type EnvironmentType string
 
+// The middle value is #490, and it is not decoration. It was
+// `production | preview` alone, so every rung of a staged pipeline was typed
+// `production` whatever the stage was called — and since the generated
+// hostname follows the type, a project with a `staging` stage and a
+// `production` stage applied two HTTPRoutes into one namespace claiming one
+// hostname, a conflict Gateway API resolves by rule age. A stage answers at a
+// hostname of its own; the derivation is the environment reconciler's
+// hostname(), and which rung is which is EnvironmentTypeFor.
 const (
+	// EnvironmentProduction is where a project's production deployments end
+	// up: the last stage of its pipeline, or its only environment when it
+	// declares none. It is published at <project>.<baseDomain>.
 	EnvironmentProduction EnvironmentType = "production"
-	EnvironmentPreview    EnvironmentType = "preview"
+	// EnvironmentStage is every other durable environment of a project: a
+	// rung of the pipeline before the last one, and anything the pipeline
+	// no longer names. An artifact passes through it on the way to
+	// production, and it is published under its own name at
+	// <project>-<stage>.<baseDomain> rather than under the project's.
+	EnvironmentStage EnvironmentType = "stage"
+	// EnvironmentPreview is one pull request's environment, created and
+	// deleted by the platform with the request, published at
+	// <project>-pr-<n>.<baseDomain>.
+	EnvironmentPreview EnvironmentType = "preview"
 )
 
 // PreviewInfo links a preview Environment to its pull request.

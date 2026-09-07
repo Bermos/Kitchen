@@ -15,7 +15,7 @@ graph LR
     P[Project] -->|gitSource / registry| C
     P --> B[Build<br/><i>one per commit build</i>]
     B --> R[Release<br/><i>immutable: image + config</i>]
-    E[Environment<br/><i>production + previews</i>] -->|releaseRef| R
+    E[Environment<br/><i>production + stages + previews</i>] -->|releaseRef| R
     E -->|belongs to| P
     D[Domain] -->|target| E
     RC[ResourceClaim<br/><i>e.g. Postgres via Neon</i>] -->|via| C
@@ -1793,8 +1793,23 @@ through a Promotion at all (the preview is the review vehicle).
 
 ## `Environment` (namespaced: kitchen-system)
 
-A running instance of a Release with a URL. Exactly one `production` per Project;
+A running instance of a Release with a URL. Exactly one `production` per Project; a
+`stage` Environment for every rung of `spec.promotion.stages` before the last one;
 `preview` Environments are created/deleted by the operator from PR events.
+
+**The type decides where the environment is published**, so each one answers somewhere
+of its own — `<project>.<baseDomain>` for production,
+`<project>-<environment>.<baseDomain>` for a stage, `<project>-pr-<n>.<baseDomain>` for
+a preview. A stage's label is its own environment name, prefixed with the project's
+where it does not already carry it (so the conventional `shop-staging` answers at
+`shop-staging.<baseDomain>`, not `shop-shop-staging`), since two projects may each call
+a rung `staging`. The type is derived from the pipeline
+rather than declared: the environment production deployments land on — the last stage's,
+or `<project>-production` when the project declares no pipeline — is `production`, and
+every other durable environment of the project is a `stage`. That is what makes "exactly
+one `production` per Project" true by construction rather than by convention: an
+environment a pipeline stopped naming becomes a stage with a hostname of its own, not a
+second claimant of production's.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -1804,7 +1819,8 @@ metadata:
   ownerReferences: [Project my-shop]
 spec:
   projectRef: { name: my-shop }
-  type: preview                         # production | preview
+  type: preview                         # production | stage | preview — derived from the project's
+                                        # promotion pipeline; it decides the generated hostname
   releaseRef: { name: my-shop-rel-000042 }   # rollback = edit this line
   preview:
     pullRequest: 42

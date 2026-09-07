@@ -133,6 +133,39 @@ func TestAnEnvironmentNamesTheCommitItIsRunning(t *testing.T) {
 	}
 }
 
+// The type reaches every client verbatim, so a stage reads as a stage on the
+// single environment, in the project's listing, and in the CLI's TYPE column
+// that renders the same field — where every rung used to read `production`.
+func TestAStageEnvironmentReadsAsItsOwnType(t *testing.T) {
+	h := newHarness(t, nil, append(fixtures(), stageEnvironment())...)
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/environments/shop-staging", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[environmentView](t, recorder)
+	stage := string(kitchenv1alpha1.EnvironmentStage)
+	production := string(kitchenv1alpha1.EnvironmentProduction)
+	if view.Type != stage {
+		t.Errorf("type = %q, want %q", view.Type, stage)
+	}
+	if want := "https://shop-staging.apps.example.com"; view.URL != want {
+		t.Errorf("url = %q, want %q — a stage does not answer at production's address", view.URL, want)
+	}
+
+	recorder = h.do(t, http.MethodGet, "/api/v1/projects/shop/environments", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	types := map[string]string{}
+	for _, env := range decode[listBody[environmentView]](t, recorder).Items {
+		types[env.Name] = env.Type
+	}
+	if types["shop-staging"] != stage || types[testEnvironment] != production {
+		t.Errorf("the listing types are %+v, want the stage and production apart", types)
+	}
+}
+
 func TestAReleaseNamesTheCommitItFroze(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 

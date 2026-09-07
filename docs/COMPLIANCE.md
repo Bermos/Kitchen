@@ -2376,9 +2376,12 @@ preview is down — and copying the project's designation onto it would be the
 one design choice guaranteed to get the whole feature switched off, because it
 would page somebody at 03:00 for a preview. So a preview inherits nothing,
 ever; a *production* environment declaring nothing reads its project's
-designation, derived and marked as inherited rather than written back; and
-there is no ceiling in either direction, because a `nonCritical` project may
-perfectly well own the staging environment four teams integrate against. Every
+designation, derived and marked as inherited rather than written back; a
+promotion *stage* inherits nothing either, for the preview's reason rather
+than production's; and there is no ceiling in either direction, because a
+`nonCritical` project may perfectly well own the staging environment four
+teams integrate against — and that staging environment is designated by its
+owners rather than assumed from the project. Every
 change is a privileged audit record carrying the previous value, exactly as a
 reclassification is.
 

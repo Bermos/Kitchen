@@ -13,8 +13,10 @@ import PageSection from "../components/PageSection.vue";
 import PhaseBadge from "../components/PhaseBadge.vue";
 import SourceLink from "../components/SourceLink.vue";
 
-// Where this project is published: production, and one environment per open
-// pull request.
+// Where this project is published: production, one environment per rung of the
+// project's promotion pipeline before production, and one per open pull
+// request. Each type answers at its own address, which is why the table shows
+// the type beside it (#490).
 //
 // It was two tabs of the project page — Environments and Previews — over one
 // list, which meant the ceiling that refused a preview was on one of them and
@@ -107,7 +109,8 @@ function previewBuilds(pullRequest: number | undefined) {
         ]"
       >
         <template #description>
-          Where this project is published: production, and one environment per open pull request.
+          Where this project is published: production, one environment per rung of its promotion pipeline
+          before production, and one per open pull request. Each answers at its own address.
         </template>
         <template #actions>
           <UButton
