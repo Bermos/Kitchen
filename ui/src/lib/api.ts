@@ -3506,7 +3506,29 @@ export interface Finding {
   since: string;
   /** A dashboard path to the screen that shows the numbers behind it. */
   evidence: string;
+  /** The projects a cross-project detector correlated, and the rules whose
+   * rows it stands in front of. Both are absent on every other finding.
+   *
+   * They are served rather than left to be parsed out of the detail because of
+   * what the platform overview does with them: the project rows belonging to a
+   * correlation fold into it, and a fold computed from prose would be a screen
+   * guessing which rows it was allowed to hide. */
+  projects?: string[];
+  correlates?: string[];
+  /** Which rung of the correlation ladder a cross-project finding was raised
+   * at, absent on every other rule: `coincidence` is time alone, `dependency`
+   * is time plus something the affected projects share, and `change` is time
+   * plus something the platform did to itself. */
+  confidence?: Confidence;
+  /** The thresholds this finding was evaluated against, as the operator's
+   * policy spells them. It is on the finding because the catalogue is
+   * versioned code and the clock is not: two installations on v1 with
+   * different policies disagree about whether a rule fired. */
+  policy?: string;
 }
+
+/** Which rung of the correlation ladder a finding was raised at. */
+export type Confidence = "coincidence" | "dependency" | "change";
 
 /** One input the evaluation could not read, named once with the reason. */
 export interface InputFailure {
@@ -4003,6 +4025,65 @@ export interface PlatformStorage {
 /** One class of what the platform keeps: the rule in force, where the number
  * came from, and what the last retention sweep measured. `oldest` is the claim
  * retention actually makes — nothing of this class is older than this. */
+/** The numbers one policy holds. The current setting and each preset are the
+ * same shape, because a screen cannot show what choosing a preset would do
+ * unless they are. */
+export interface SignalPolicyValues {
+  /** How many projects must be degrading together before it is one platform
+   * problem rather than several application problems. */
+  correlatedProjects: number;
+  /** How far apart two failures may have started and still be one moment. */
+  correlationWindowMinutes: number;
+  /** How long an owner-tier condition may sit unacknowledged before the
+   * operator is added to it. */
+  escalationWindowMinutes: number;
+  /** How many of those windows it survives before it becomes a line on the
+   * compliance posture. */
+  untendedMultiple: number;
+  /** The longest silence a member may set on their own project's row. */
+  maxSilenceHours: number;
+  /** Whether the `page` tier is delivered as a page at all. False holds every
+   * paging condition down to a ticket — and it is a floor, not an absolute. */
+  paging: boolean;
+}
+
+/** One named base, as the screen offers it. */
+export interface SignalPolicyPreset extends SignalPolicyValues {
+  name: string;
+  /** What the preset is for, in one sentence, written by the API rather than
+   * by the screen: a dashboard that spelled these out would hold a second copy
+   * of a decision the catalogue owns. */
+  description: string;
+}
+
+/** What this installation counts as worth hearing. */
+export interface SignalPolicy extends SignalPolicyValues {
+  /** The base in force, and whether somebody has moved a number off it.
+   * "balanced" and "balanced, with two numbers moved" are different
+   * sentences, and only the second warns that choosing it again undoes
+   * something. */
+  preset: string;
+  modified: boolean;
+  /** The second clock spelled out, so nothing has to multiply two fields. */
+  untendedAfterHours: number;
+  /** The string every finding evaluated under this policy carries. */
+  provenance: string;
+  presets: SignalPolicyPreset[];
+}
+
+/** A change to the policy. Every field is optional: a request that does not
+ * mention one cannot disturb it, and naming a preset rebases everything the
+ * same request does not also set. */
+export interface SignalPolicyPatch {
+  preset?: string;
+  correlatedProjects?: number;
+  correlationWindowMinutes?: number;
+  escalationWindowMinutes?: number;
+  untendedMultiple?: number;
+  maxSilenceHours?: number;
+  paging?: boolean;
+}
+
 export interface RetentionClass {
   class: string;
   label: string;
@@ -5377,6 +5458,13 @@ export const api = {
     request<PlatformRetention>("GET", "/platform/retention"),
   updatePlatformRetention: (body: PlatformRetentionPatch) =>
     request<PlatformRetention>("PATCH", "/platform/retention", body),
+  // What this installation counts as worth hearing: the correlation threshold
+  // and window, the escalation clock, the longest silence a member may set,
+  // and whether it pages at all. The operator's alone, and the floor the
+  // compliance posture reads.
+  signalPolicy: () => request<SignalPolicy>("GET", "/platform/policy"),
+  updateSignalPolicy: (body: SignalPolicyPatch) =>
+    request<SignalPolicy>("PATCH", "/platform/policy", body),
   // What an export would carry. Taking one is downloadBackup, which answers a
   // gzip stream rather than JSON and so cannot live in this table.
   backup: () => request<Backup>("GET", "/platform/backup"),

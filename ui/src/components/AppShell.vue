@@ -235,6 +235,11 @@ const nav = computed<NavItem[]>(() => {
         // by projects afterwards, which is the operator's standing exactly.
         { label: "Connections", icon: "i-lucide-plug", to: "/platform/connections", name: "platform-connections" },
         { label: "Backup", icon: "i-lucide-archive", to: "/platform/backup", name: "platform-backup" },
+        // What this installation counts as worth hearing, which is a
+        // different question from what it is configured to run: the numbers
+        // that decide whether several projects failing together is one
+        // incident, and how long one may go unattended.
+        { label: "Policy", icon: "i-lucide-sliders-horizontal", to: "/platform/policy", name: "platform-policy" },
         { label: "Settings", icon: "i-lucide-settings-2", to: "/platform/settings", name: "platform-settings" },
       ];
     case "compliance":

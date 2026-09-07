@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Finding, SignalsAnswer } from "./api";
 import {
+  confidenceLabel,
+  confidenceTone,
+  correlations,
   evidenceLabel,
   evidenceLocation,
   findingHeadline,
@@ -194,5 +197,87 @@ describe("hasSomethingToSay", () => {
     // a clean environment.
     expect(hasSomethingToSay(answer({ unreadable: [{ input: "http_requests_1m", reason: "down" }] }))).toBe(true);
     expect(hasSomethingToSay(null)).toBe(false);
+  });
+});
+
+describe("the confidence ladder", () => {
+  it("gives the lowest rung a name rather than a shrug", () => {
+    // A correlation is never withheld for being unexplained, so the badge for
+    // time-alone has to read as a claim. "Coincidence" is the claim; a blank
+    // or a greyed-out row would be the platform hedging on the row it was
+    // built to be able to print.
+    expect(confidenceLabel("coincidence")).toBe("Coincidence");
+    expect(confidenceLabel("dependency")).toBe("Shared dependency");
+    expect(confidenceLabel("change")).toBe("Shared change");
+  });
+
+  it("climbs towards certainty, not towards alarm", () => {
+    // How bad the condition is, is the severity's job. These say how sure the
+    // platform is about why, which is a different axis and must not be read as
+    // "this one matters less".
+    expect(confidenceTone("coincidence")).toBe("neutral");
+    expect(confidenceTone("dependency")).toBe("warning");
+    expect(confidenceTone("change")).toBe("error");
+  });
+});
+
+describe("correlations", () => {
+  const crashing = (project: string): Finding =>
+    finding({
+      signal: "workload.crashloop",
+      scope: { kind: "environment", project, environment: `${project}-production`, name: "app" },
+      fingerprint: `workload.crashloop/${project}/${project}-production/app`,
+    });
+
+  const correlation = (over: Partial<Finding> = {}): Finding =>
+    finding({
+      signal: "platform.correlated",
+      scope: { kind: "platform", name: "workload.crashloop" },
+      fingerprint: "platform.correlated/workload.crashloop",
+      title: "crash-looping is firing in 3 projects at once",
+      confidence: "coincidence",
+      projects: ["api", "docs", "shop"],
+      correlates: ["workload.crashloop"],
+      ...over,
+    });
+
+  it("folds the project rows a correlation covers into it", () => {
+    const { correlated, rest } = correlations([
+      correlation(),
+      crashing("api"),
+      crashing("docs"),
+      crashing("shop"),
+    ]);
+    expect(correlated).toHaveLength(1);
+    expect(correlated[0].folded.map((f) => f.scope.project)).toEqual(["api", "docs", "shop"]);
+    // One incident is one row on this screen: the rows it stands in front of
+    // are not repeated underneath it.
+    expect(rest).toEqual([]);
+  });
+
+  it("leaves a row the correlation was not raised over alone", () => {
+    // The fold is exact on purpose. A fifth project crash-looping outside the
+    // window is not part of the incident, and hiding it under a headline that
+    // says three projects would be the screen losing a failure.
+    const { correlated, rest } = correlations([correlation(), crashing("api"), crashing("blog")]);
+    expect(correlated[0].folded.map((f) => f.scope.project)).toEqual(["api"]);
+    expect(rest.map((f) => f.scope.project)).toEqual(["blog"]);
+  });
+
+  it("does not fold a different rule's row", () => {
+    const other = finding({
+      signal: "env.no-backend",
+      scope: { kind: "environment", project: "api", environment: "api-production" },
+      fingerprint: "env.no-backend/api/api-production",
+    });
+    const { correlated, rest } = correlations([correlation(), other]);
+    expect(correlated[0].folded).toEqual([]);
+    expect(rest).toHaveLength(1);
+  });
+
+  it("has nothing to fold when nothing correlated", () => {
+    const { correlated, rest } = correlations([crashing("api")]);
+    expect(correlated).toEqual([]);
+    expect(rest).toHaveLength(1);
   });
 });

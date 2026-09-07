@@ -3,21 +3,33 @@ import { computed } from "vue";
 import { api } from "../lib/api";
 import { useFreshness } from "../lib/freshness";
 import { healthStrip } from "../lib/platform";
+import { correlations } from "../lib/signals";
 import { useAsync, usePoll } from "../lib/useAsync";
+import CorrelationRow from "../components/CorrelationRow.vue";
 import FindingList from "../components/FindingList.vue";
 import HealthStrip from "../components/HealthStrip.vue";
 import PageHeader from "../components/PageHeader.vue";
+import PageSection from "../components/PageSection.vue";
+import UntendedTable from "../components/UntendedTable.vue";
 
-// The platform's front page: a health strip and the problems list.
+// The platform's front page: a health strip, then the two questions an
+// operator actually arrives with.
 //
-// It is shaped as a list of findings rather than as a dashboard on purpose.
-// This screen *is* the alert inbox docs/OBSERVABILITY.md §7 designs, minus
-// persistence: today the catalogue is evaluated when the screen asks, and one
-// day a background loop writes transitions and this reads them instead — same
-// screen, same rows, same shape. Building it as a bespoke set of panels would
-// mean rebuilding it then.
+// **Is this one problem?** is the first, and it is the only question no
+// project-scoped screen can ever be asked. The Correlated table answers it,
+// one row per correlation, each carrying the rung it was raised at — and the
+// project rows belonging to a correlation fold into it and say so, because a
+// failure that is part of one incident is one row and not four.
 //
-// The five reads are deliberately five: each tile of the strip has exactly one
+// **Is anybody acting on the rest?** is the second, and the Untended table is
+// where a failure nobody has acknowledged past the escalation window ends up.
+// It reads the deliveries rather than the findings, because "nobody has
+// touched this in four hours" is a fact only the recorded history holds.
+//
+// Everything else is still the problems list underneath, which is the alert
+// inbox docs/OBSERVABILITY.md §7 designs.
+//
+// The reads are deliberately separate: each tile of the strip has exactly one
 // source, so a source that could not be read darkens its own tile and says why
 // rather than making the whole screen an error page.
 
@@ -26,13 +38,18 @@ const ingest = useAsync(() => api.platformIngest());
 const storage = useAsync(() => api.platformStorage());
 const edge = useAsync(() => api.platformEdge());
 const signals = useAsync(() => api.platformSignals());
+// The same conditions asked the other question: what has anybody done about
+// them. It is a second read rather than a field on the first because the two
+// are different answers — a finding is what is wrong, and a delivery is who
+// was told and whether they replied.
+const alerts = useAsync(() => api.alerts());
 
 // How old this screen is, and the reader's hold on it: every fetch above
 // reports into it and the header renders it.
 const freshness = useFreshness();
 
 // The strip's sources are cheap reads of informer caches and one store query
-// each; the catalogue is thirty-six rules over a whole snapshot, so it is asked
+// each; the catalogue is thirty-odd rules over a whole snapshot, so it is asked
 // for less often.
 usePoll(() => {
   void status.refresh();
@@ -40,7 +57,31 @@ usePoll(() => {
   void storage.refresh();
   void edge.refresh();
 }, 30_000, () => true);
-usePoll(() => void signals.refresh(), 60_000, () => true);
+usePoll(() => {
+  void signals.refresh();
+  void alerts.refresh();
+}, 60_000, () => true);
+
+// The round split in two: the correlations with the rows they fold up, and
+// everything not part of one.
+const split = computed(() => correlations(signals.data.value?.items));
+
+// What is left for the problems list: the same answer with the correlations
+// and their folded rows taken out, so that one incident is one row on this
+// screen rather than one row and its four symptoms.
+const remaining = computed(() => {
+  const answer = signals.data.value;
+  if (!answer) return null;
+  return { ...answer, items: split.value.rest };
+});
+
+// Failures with nobody acting: past the escalation window, unacknowledged, and
+// on the operator's own row. A failure somebody is already fixing is not here
+// — that is what the tier model does to it, and it is the whole point of the
+// table.
+const untended = computed(() =>
+  (alerts.data.value?.items ?? []).filter((alert) => alert.untended && !alert.symptom),
+);
 
 const tiles = computed(() =>
   healthStrip({
@@ -59,6 +100,7 @@ function refresh() {
   void storage.refresh();
   void edge.refresh();
   void signals.refresh();
+  void alerts.refresh();
 }
 
 const sections = [
@@ -68,6 +110,7 @@ const sections = [
   { label: "Addons", to: "/platform/addons", icon: "i-lucide-puzzle", hint: "what this platform installs into its own cluster" },
   { label: "Storage", to: "/platform/storage", icon: "i-lucide-hard-drive", hint: "volumes, and the store's own health" },
   { label: "Events", to: "/platform/events", icon: "i-lucide-list", hint: "the cluster's warning history" },
+  { label: "Policy", to: "/platform/policy", icon: "i-lucide-sliders-horizontal", hint: "what this installation counts as worth hearing" },
   { label: "Connections", to: "/platform/connections", icon: "i-lucide-plug", hint: "the forges this platform builds from" },
   // The one tile here that leaves the scope. The audit log is the auditor's
   // rather than the operator's (#469), and an operator following this arrives
@@ -98,8 +141,30 @@ const sections = [
 
     <HealthStrip :tiles="tiles" />
 
+    <PageSection
+      v-if="split.correlated.length"
+      title="Correlated"
+      description="Several projects failing at once, raised at the highest confidence this evaluation could reach. A rung is never withheld for being unexplained — that several things broke together at 04:05 with nothing to explain it is worth knowing on its own."
+    >
+      <div class="rounded-md border border-default divide-y divide-muted">
+        <CorrelationRow
+          v-for="entry in split.correlated"
+          :key="entry.finding.fingerprint"
+          :correlation="entry"
+        />
+      </div>
+    </PageSection>
+
+    <PageSection
+      v-if="untended.length || alerts.data.value?.message"
+      title="Untended"
+      description="Open past the escalation window with nobody acknowledging them. A failure somebody is already acting on is not here."
+    >
+      <UntendedTable :items="untended" :message="alerts.data.value?.message" />
+    </PageSection>
+
     <FindingList
-      :answer="signals.data.value"
+      :answer="remaining"
       :loading="signals.loading.value"
       :error="signals.error.value"
       title="Problems"

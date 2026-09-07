@@ -14,8 +14,114 @@
  * problems, and never omitted — see `unreadableSentence`.
  */
 
-import type { Finding, FindingScope, InputFailure, Severity, SignalCounts, SignalsAnswer } from "./api";
+import type { Confidence, Finding, FindingScope, InputFailure, Severity, SignalCounts, SignalsAnswer } from "./api";
 import type { Tone } from "./status";
+
+/**
+ * The confidence ladder.
+ *
+ * A cross-project finding says which rung it was raised at, and the badge is
+ * the whole point of saying so: `coincidence` is a real row and must not read
+ * as a weak one. **A correlation is never withheld for being unexplained** —
+ * "everything blipped at 04:05 and nothing explains it" is among the most
+ * valuable lines an operator can be handed — so the lowest rung gets a badge
+ * that says what is missing rather than a greyed-out row that says the
+ * platform is unsure whether to bother them.
+ */
+export function confidenceLabel(confidence: Confidence): string {
+  switch (confidence) {
+    case "change":
+      return "Shared change";
+    case "dependency":
+      return "Shared dependency";
+    default:
+      return "Coincidence";
+  }
+}
+
+/** One line of what the rung claims, which is also what it does not claim. */
+export function confidenceMeaning(confidence: Confidence): string {
+  switch (confidence) {
+    case "change":
+      return "These began just after something the platform did to itself.";
+    case "dependency":
+      return "These share something. It names the intersection, not a culprit.";
+    default:
+      return "They began together, and nothing else here explains it.";
+  }
+}
+
+/** The colour a rung carries. It climbs towards certainty rather than towards
+ * alarm: how bad the condition is, is the severity's job. */
+export function confidenceTone(confidence: Confidence): Tone {
+  switch (confidence) {
+    case "change":
+      return "error";
+    case "dependency":
+      return "warning";
+    default:
+      return "neutral";
+  }
+}
+
+export function confidenceIcon(confidence: Confidence): string {
+  switch (confidence) {
+    case "change":
+      return "i-lucide-git-commit-horizontal";
+    case "dependency":
+      return "i-lucide-share-2";
+    default:
+      return "i-lucide-clock";
+  }
+}
+
+/** One correlation and the rows it stands in front of. */
+export interface Correlation {
+  finding: Finding;
+  /** The project rows this correlation folded up. They are not shown again
+   * further down the screen — a failure that is part of one incident is one
+   * row, not four. */
+  folded: Finding[];
+}
+
+/** The overview's two halves: the correlations, and everything not folded into
+ * one of them.
+ *
+ * The fold is exact rather than by eye. A correlation carries the rules it
+ * covers and the projects it was raised over, so a row belongs to it when both
+ * match — which is why those two fields are served at all. Folding by the rule
+ * alone would hide a fifth project's crash loop that began an hour outside the
+ * window under a headline saying three projects.
+ */
+export function correlations(findings: Finding[] | undefined): {
+  correlated: Correlation[];
+  rest: Finding[];
+} {
+  const all = sortFindings(findings);
+  const correlated: Correlation[] = [];
+  const foldedFingerprints = new Set<string>();
+
+  for (const finding of all) {
+    if (!finding.confidence) continue;
+    const covers = new Set(finding.correlates ?? []);
+    const projects = new Set(finding.projects ?? []);
+    const folded = all.filter(
+      (other) =>
+        other !== finding &&
+        !other.confidence &&
+        covers.has(other.signal) &&
+        !!other.scope?.project &&
+        projects.has(other.scope.project),
+    );
+    for (const row of folded) foldedFingerprints.add(row.fingerprint);
+    correlated.push({ finding, folded });
+  }
+
+  return {
+    correlated,
+    rest: all.filter((finding) => !finding.confidence && !foldedFingerprints.has(finding.fingerprint)),
+  };
+}
 
 /**
  * The dot a severity gets.
