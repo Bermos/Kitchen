@@ -128,6 +128,27 @@ a path. That is the plumbing this removes; the driver note is worth keeping
 only as background for anyone who reads `verify-full` in a URL and wonders what
 changed.
 
+**And the database refuses the alternative** (#431). Everything above is what
+the *client* asks for, and a client is a pod that holds the password: until
+this, CloudNativePG's generated `pg_hba.conf` ended in `host all all all
+scram-sha-256`, so anything that chose to connect without TLS was served. Every
+Cluster the platform provisions now carries two rules of its own, written into
+the user-defined section that the operator places after its own fixed rules and
+before that default:
+
+```
+hostssl  all all all scram-sha-256
+hostnossl all all all reject
+```
+
+First match wins, so an encrypted connection authenticates and an unencrypted
+one is refused before the default is ever reached. CloudNativePG's own traffic
+is untouched — replication, the pooler and the local `postgres` socket are
+matched by the fixed rules above these — and the rules are written onto
+databases that already exist as well as new ones, since a database is created
+once and found by every reconcile after that. Postgres reloads `pg_hba.conf`,
+so no database restarts for it.
+
 **What `deletionPolicy` means for a database with a volume behind it.** For the
 self-hosted provider, `Delete` deletes the database and CloudNativePG collects
 its volume with it — the data is gone. `Retain` leaves the database running in

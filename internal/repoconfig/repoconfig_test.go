@@ -627,12 +627,12 @@ func TestProcessesReplaceRatherThanMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	merged := Processes(base, config)
+	merged := Processes(base, nil, config)
 	if len(merged) != 1 || merged[0].Name != "new-worker" {
 		t.Fatalf("processes = %+v, want the file's list alone", merged)
 	}
 	// A file that says nothing about processes leaves the project's.
-	if merged := Processes(base, &kitchenv1alpha1.RepoConfig{}); len(merged) != 1 || merged[0].Name != "old-worker" {
+	if merged := Processes(base, nil, &kitchenv1alpha1.RepoConfig{}); len(merged) != 1 || merged[0].Name != "old-worker" {
 		t.Fatalf("processes = %+v, want the project's kept", merged)
 	}
 }
@@ -908,5 +908,167 @@ func TestVolumesRefusals(t *testing.T) {
 				t.Errorf("message %q does not say what is wrong (%s)", err, tc.mentions)
 			}
 		})
+	}
+}
+
+// The project's posture is the ceiling and the file may only tighten below it
+// (#431). The two are written by different people — a project's settings are
+// somebody with a role on the project, a kitchen.json is whoever opened the
+// pull request — so the whole-block override every other setting in the file
+// gets is the one thing the posture does not get.
+func TestTheFileMayOnlyTightenTheProjectsPosture(t *testing.T) {
+	// The project asks for a non-root uid and no escalation, which is the
+	// posture it is entitled to keep.
+	project := kitchenv1alpha1.RuntimeSpec{
+		Port: 8080,
+		Security: &kitchenv1alpha1.SecuritySpec{
+			RunAsNonRoot:     true,
+			RunAsUser:        1000,
+			DropCapabilities: []string{"NET_RAW"},
+		},
+	}
+
+	// A file that adds constraints the project did not ask for: all of them
+	// apply, because that is what the file is for.
+	tighter, err := Parse([]byte(`{"runtime": {"security": {
+	  "readOnlyRootFilesystem": true, "dropCapabilities": ["SYS_ADMIN"]
+	}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	merged, err := Runtime(project, tighter)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if !merged.Security.ReadOnlyRootFilesystem {
+		t.Errorf("the file could not add a constraint: %+v", merged.Security)
+	}
+	// And the constraints it said nothing about are still there. A posture is
+	// a value rather than a set of keys, so a whole-block override took every
+	// one of these off by not repeating them.
+	if !merged.Security.RunAsNonRoot || merged.Security.RunAsUser != 1000 {
+		t.Errorf("the project's posture did not survive a file that said nothing about it: %+v", merged.Security)
+	}
+	// dropCapabilities is a floor, so the merged list is both.
+	if !slices.Contains(merged.Security.DropCapabilities, "NET_RAW") ||
+		!slices.Contains(merged.Security.DropCapabilities, "SYS_ADMIN") {
+		t.Errorf("the capability floor is not the union: %v", merged.Security.DropCapabilities)
+	}
+	if ignored := IgnoredSecurity(project, tighter); ignored != nil {
+		t.Errorf("a file that only tightens ignores nothing: %v", ignored)
+	}
+
+	// A file that weakens: it puts back the escalation the platform denies,
+	// and moves the uid the project pinned. Asking for root outright is not
+	// even expressible — `runAsUser: 0` is the image's own user left alone
+	// rather than a request for uid 0 — so moving the pinned number is the
+	// shape the redirection actually takes.
+	weaker, err := Parse([]byte(`{"runtime": {"security": {
+	  "allowPrivilegeEscalation": true, "runAsUser": 65532
+	}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	merged, err = Runtime(project, weaker)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if merged.Security.AllowPrivilegeEscalation {
+		t.Errorf("a repository turned privilege escalation back on: %+v", merged.Security)
+	}
+	if merged.Security.RunAsUser != 1000 {
+		t.Errorf("a repository moved the uid the project pinned: %+v", merged.Security)
+	}
+	ignored := IgnoredSecurity(project, weaker)
+	if !slices.Contains(ignored, "allowPrivilegeEscalation") || !slices.Contains(ignored, "runAsUser") {
+		t.Errorf("what was ignored is not named: %v", ignored)
+	}
+
+	// A project that allows escalation is a project that decided to, so the
+	// file repeating it is not a weakening.
+	permissive := kitchenv1alpha1.RuntimeSpec{
+		Security: &kitchenv1alpha1.SecuritySpec{AllowPrivilegeEscalation: true},
+	}
+	escalating, err := Parse([]byte(`{"runtime": {"security": {"allowPrivilegeEscalation": true}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if ignored := IgnoredSecurity(permissive, escalating); ignored != nil {
+		t.Errorf("the file repeated what the project already allows: %v", ignored)
+	}
+
+	// And a project with no posture at all leaves the whole block to the
+	// file, apart from the one relaxation that is never a repository's.
+	none := kitchenv1alpha1.RuntimeSpec{Port: 8080}
+	merged, err = Runtime(none, weaker)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if merged.Security.RunAsUser != 65532 {
+		t.Errorf("a project that pinned nothing did not take the file's uid: %+v", merged.Security)
+	}
+	if merged.Security.AllowPrivilegeEscalation {
+		t.Errorf("escalation is never a repository's to turn on: %+v", merged.Security)
+	}
+	if ignored := IgnoredSecurity(none, weaker); !slices.Contains(ignored, "allowPrivilegeEscalation") ||
+		slices.Contains(ignored, "runAsUser") {
+		t.Errorf("only the escalation should have been ignored: %v", ignored)
+	}
+}
+
+// The ceiling holds one level down too (#431). `processes[].security` is
+// written over `runtime.security` per workload, so a ceiling only the unit's
+// block answered to would be one line to walk around.
+func TestAWorkloadInTheFileAnswersToTheSameCeiling(t *testing.T) {
+	project := kitchenv1alpha1.RuntimeSpec{
+		Security: &kitchenv1alpha1.SecuritySpec{
+			RunAsNonRoot:     true,
+			RunAsUser:        1000,
+			DropCapabilities: []string{"NET_RAW"},
+		},
+	}
+
+	workloads, err := Parse([]byte(`{"processes": [
+	  {"name": "worker", "type": "worker", "command": ["node", "w.js"],
+	   "security": {"allowPrivilegeEscalation": true, "runAsUser": 65532, "readOnlyRootFilesystem": true}}
+	]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	processes := Processes(nil, project.Security, workloads)
+	if len(processes) != 1 || processes[0].Security == nil {
+		t.Fatalf("the workload did not survive the merge: %+v", processes)
+	}
+	worker := processes[0].Security
+	if worker.AllowPrivilegeEscalation {
+		t.Errorf("a workload in the file turned privilege escalation on: %+v", worker)
+	}
+	if worker.RunAsUser != 0 {
+		t.Errorf("a workload in the file moved the uid the project pinned: %+v", worker)
+	}
+	// And what it may have is still its own: the block is the workload's
+	// override, not the resolved posture, so only the tightening it asked for
+	// is in it.
+	if !worker.ReadOnlyRootFilesystem {
+		t.Errorf("the workload could not add a constraint: %+v", worker)
+	}
+	if refused := IgnoredProcessSecurity(project, workloads)["worker"]; !slices.Contains(refused, "runAsUser") ||
+		!slices.Contains(refused, "allowPrivilegeEscalation") {
+		t.Errorf("what the workload could not have is not named: %v", refused)
+	}
+	// dropCapabilities *replaces* at the workload level, so a workload that
+	// drops less than the project does is a weakening said entirely in what
+	// it left out — which is why what it keeps is the union.
+	narrower, err := Parse([]byte(`{"processes": [
+	  {"name": "worker", "type": "worker", "command": ["node", "w.js"],
+	   "security": {"dropCapabilities": ["SYS_ADMIN"]}}
+	]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	dropped := Processes(nil, project.Security, narrower)[0].Security.DropCapabilities
+	if !slices.Contains(dropped, "NET_RAW") || !slices.Contains(dropped, "SYS_ADMIN") {
+		t.Errorf("a workload dropped fewer capabilities than the project: %v", dropped)
 	}
 }

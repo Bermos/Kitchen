@@ -45,6 +45,18 @@ const (
 	// CloudNativePG publishes a classic HTTP repository rather than OCI
 	// artifacts, so this is a repository URL handed to helm with --repo,
 	// which needs no `helm repo add` and so no writable repository cache.
+	//
+	// CloudNativePG *does* sign: there is a `.prov` beside every release
+	// asset, made with RSA key E3C68F93B50C5EC0 as
+	// `helm-charts+no-reply@cloudnative-pg.io`. It is still not run with
+	// --verify, because the public key is published nowhere a consumer can
+	// fetch it from — no KEYS file in the repository or on the chart site,
+	// and not on keys.openpgp.org or keyserver.ubuntu.com (checked September
+	// 2026, #431). A signature checked against a key taken from the signer's
+	// own download server is ceremony, and fetching one at install time would
+	// read as though something had been checked. If the key is ever
+	// published, the keyring ships in the helm job's image. **A bump below
+	// re-asks that question**; docs/api/addons.md carries the answer.
 	DefaultCNPGChartRepository = "https://cloudnative-pg.github.io/charts"
 
 	// DefaultCNPGChartVersion is pinned rather than floated, and it is pinned

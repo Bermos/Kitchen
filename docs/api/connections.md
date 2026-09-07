@@ -341,6 +341,16 @@ deleted with it — but only when the platform wrote the Secret; a credential
 something else manages (an Infisical sync, a hand-written manifest) is left
 in place. Answers `204`.
 
+The copies a build synced out go too. A build writes the registry's docker
+config, the read-only credential beside it and the git token into the
+application namespace of every project that needs them, and nothing
+owner-references those copies — so deleting only the platform's own Secret
+revoked nothing, and a project repointed at another connection (which is why
+the `409` above no longer names it) kept the old credential in its namespace.
+They are removed by name across every project's namespace, under the same
+rule: only a copy carrying `app.kubernetes.io/managed-by: kitchen` is the
+platform's to delete.
+
 ### What a connection can see
 
 ```sh

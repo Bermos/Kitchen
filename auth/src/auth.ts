@@ -7,7 +7,7 @@ import { passkey } from "@better-auth/passkey";
 import { sso } from "@better-auth/sso";
 import type { Pool } from "pg";
 
-import { allowedOrigins, platformClients, type Config } from "./config.js";
+import { allowedOrigins, platformClients, platformResources, type Config } from "./config.js";
 import { isServiceAccount } from "./identity.js";
 import { guardKeyIssuance, guardKeySession } from "./keyscope.js";
 import { log } from "./log.js";
@@ -50,7 +50,7 @@ function requestingClient(body: Record<string, unknown>, authorization: string |
 /**
  * Refuses a resource indicator to any client that is not the platform's own.
  *
- * `validAudiences` on the provider bounds *what* may be asked for; nothing
+ * The provider's `resources` list bounds *what* may be asked for; nothing
  * bounded *who* could ask. Every client this issuer knows — the dashboard and
  * every application an `oidcClient` claim registered alike — could exchange a
  * code with `resource=<the operator API>` and receive a JWT the API accepts as
@@ -230,7 +230,17 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 				// what may be asked for and not by whom. `hooks.before`
 				// above is the other half — only the platform's own clients
 				// may name a resource at all.
-				validAudiences: config.apiURL ? [config.baseURL, config.apiURL] : undefined,
+				//
+				// This was `validAudiences` until the plugin's 1.7 line, which
+				// is the release that closed the advisory: a protected
+				// resource is now a row rather than a list, and a `resource=`
+				// naming anything unregistered is `invalid_target` at the
+				// token endpoint. The seeding mode is the plugin's default,
+				// `insertOnly` — an installation whose external URL changes
+				// keeps the row for the old one, which is an audience nothing
+				// accepts rather than a wider grant, and the guard above still
+				// decides who may name either.
+				resources: platformResources(config),
 				//
 				//
 				// The shape of a dashboard session, spelled out rather than
@@ -264,6 +274,29 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 				// person is attributed to one too. The claims follow the granted
 				// scopes, the same rule the ID token and userinfo apply.
 				customAccessTokenClaims: ({ user, scopes }) => {
+					if (!user) {
+						return {};
+					}
+					return {
+						...(scopes.includes("profile") ? { name: user.name, picture: user.image ?? undefined } : {}),
+						...(scopes.includes("email") ? { email: user.email, email_verified: user.emailVerified } : {}),
+					};
+				},
+				// The same claims on the ID token, which the provider stopped
+				// putting there in its 1.7 line: a flow that issues an access
+				// token may route the scope-requested standard claims to
+				// `/oauth2/userinfo` alone (OIDC Core §5.4), and it now does.
+				//
+				// Kitchen puts them back because something here reads them
+				// there. The preview gate is an ordinary OIDC client of
+				// whatever issuer it is pointed at, and it decides whether a
+				// visitor may see a preview from the address in the ID token it
+				// got on its own back-channel exchange — a gate that took `sub`
+				// alone would refuse an allowlist naming a person by address,
+				// silently, for every preview. §5.4 permits them here; it is
+				// the endpoint that has to be able to answer, not the token
+				// that has to stay bare.
+				customIdTokenClaims: ({ user, scopes }) => {
 					if (!user) {
 						return {};
 					}

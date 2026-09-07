@@ -1222,6 +1222,100 @@ func TestDeletingAConnectionKeepsSecretsItDidNotWrite(t *testing.T) {
 	}
 }
 
+// A build syncs the registry docker config and the git token out to every
+// application namespace that needs them, and nothing owner-references the
+// copies. Deleting the Connection used to take the platform's own copy and
+// leave every project's — so the credential an operator believes they revoked
+// was still readable in a namespace they no longer thought was on it (#431).
+func TestDeletingAConnectionTakesTheCopiesSyncedIntoProjects(t *testing.T) {
+	appNS := controller.AppNamespace(feedProject)
+	synced := func(name string) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Namespace: appNS,
+			Labels: map[string]string{managedByLabelKey: managedByLabelValue},
+		}}
+	}
+	// What the build leaves behind for one registry connection and one git
+	// connection, and one Secret in the same namespace that is nobody's but
+	// the project's.
+	copies := []runtime.Object{
+		synced("kitchen-registry-hub"),
+		synced("kitchen-registry-hub-read"),
+		synced("kitchen-git-hub"),
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "shop-secrets", Namespace: appNS}},
+	}
+	h := newHarness(t, nil, append(fixtures(), copies...)...)
+	if recorder := h.do(t, http.MethodPost, "/api/v1/connections",
+		`{"name": "hub", "provider": "github", "credential": {"token": "t"}}`); recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	if recorder := h.do(t, http.MethodDelete, "/api/v1/connections/hub", ""); recorder.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	for _, name := range controller.SyncedConnectionSecrets("hub") {
+		if err := h.server.Client.Get(context.Background(),
+			types.NamespacedName{Namespace: appNS, Name: name}, &corev1.Secret{}); err == nil {
+			t.Fatalf("the synced copy %s is still in %s", name, appNS)
+		}
+	}
+	// And the project's own secrets are not collateral.
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: appNS, Name: "shop-secrets"}, &corev1.Secret{}); err != nil {
+		t.Fatalf("the project's own secret went with the connection: %v", err)
+	}
+}
+
+// Another connection's copies stay: the names carry the connection they came
+// from, which is what makes deleting one of two registries safe.
+func TestDeletingAConnectionLeavesAnotherConnectionsCopies(t *testing.T) {
+	appNS := controller.AppNamespace(feedProject)
+	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "kitchen-registry-ghcr", Namespace: appNS,
+		Labels: map[string]string{managedByLabelKey: managedByLabelValue},
+	}}
+	h := newHarness(t, nil, append(fixtures(), other)...)
+	if recorder := h.do(t, http.MethodPost, "/api/v1/connections",
+		`{"name": "hub", "provider": "github", "credential": {"token": "t"}}`); recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	if recorder := h.do(t, http.MethodDelete, "/api/v1/connections/hub", ""); recorder.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: appNS, Name: "kitchen-registry-ghcr"}, &corev1.Secret{}); err != nil {
+		t.Fatalf("another connection's synced copy was deleted: %v", err)
+	}
+}
+
+// The rule the platform-namespace credential is already deleted under holds
+// out here too: the name is the platform's, but a Secret something else wrote
+// under it is not this API's to remove.
+func TestDeletingAConnectionKeepsASyncedNameSomethingElseWrote(t *testing.T) {
+	appNS := controller.AppNamespace(feedProject)
+	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "kitchen-git-hub", Namespace: appNS,
+		Labels: map[string]string{"app.kubernetes.io/managed-by": "infisical"},
+	}}
+	h := newHarness(t, nil, append(fixtures(), foreign)...)
+	if recorder := h.do(t, http.MethodPost, "/api/v1/connections",
+		`{"name": "hub", "provider": "github", "credential": {"token": "t"}}`); recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	if recorder := h.do(t, http.MethodDelete, "/api/v1/connections/hub", ""); recorder.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	if err := h.server.Client.Get(context.Background(),
+		types.NamespacedName{Namespace: appNS, Name: "kitchen-git-hub"}, &corev1.Secret{}); err != nil {
+		t.Fatalf("a secret the platform did not write was deleted: %v", err)
+	}
+}
+
 // neonConnection is a database-capable connection, as the Connection
 // reconciler leaves one once it has validated the credentials.
 func neonConnection() *kitchenv1alpha1.Connection {

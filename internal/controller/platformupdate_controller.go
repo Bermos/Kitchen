@@ -484,6 +484,14 @@ func (r *PlatformUpdateReconciler) gateConcurrentUpdates(
 // cluster-admin, so an upgrade that forwarded caller-supplied helm arguments
 // would be a way to apply arbitrary objects as cluster-admin, and
 // `selfUpdate.enabled` would not be the gate it looks like.
+//
+// There is no --verify, and the chart is Kitchen's own: publish.yml attests
+// the two images it builds and does not sign the chart, so no `.prov` exists
+// and a keyring would have nothing to check (#431). What this job has instead
+// is TLS to the registry, a version already refused if it is a downgrade or
+// an ungranted minor crossing, and a helm image pinned by digest — which is
+// the one that carries the weight here, since this is the job that rewrites
+// every object the platform is made of.
 func (r *PlatformUpdateReconciler) createJob(
 	ctx context.Context,
 	update *kitchenv1alpha1.PlatformUpdate,

@@ -1250,6 +1250,24 @@ posture does, because both halves are written whole on every reconcile.
 is stated rather than modelled around: a second spelling of the web process
 would be a workload nothing routes to answering to the name of the one that is.
 
+**`spec.runtime.security` is also the ceiling a commit's own `kitchen.json`
+may tighten below, and may not rise above (#431).** A repository declaring
+`runtime.security` is merged onto this posture field by field rather than
+replacing it: a field this spec declares is this spec's, `dropCapabilities` is
+a floor the file may only add to, and `allowPrivilegeEscalation` is never a
+repository's to turn on. A `processes[].security` in that file answers to the
+same ceiling, since it is written over `runtime.security` per workload — and
+its `dropCapabilities` becomes the union rather than the replacement it would
+otherwise be, because a workload dropping less than the project does is a
+weakening expressed entirely in what it left out. The two are written by
+different people — this spec
+by somebody with a role on the project, that file by whoever opened a pull
+request — so the whole-block override the file gets for every other setting is
+the one thing it does not get for this one. What the ceiling refuses is
+ignored rather than fatal, and the Build says so: `ConfigHonoured: False`,
+reason `SecurityCeiling`, naming the fields. See
+[CONFIG.md](CONFIG.md#runtime).
+
 Nothing is stored resolved. Both halves are snapshotted into the Release, so a
 rollback restores the resolution exactly by restoring the two declarations it
 was computed from, and `GET /releases/{name}/config-diff` reports the

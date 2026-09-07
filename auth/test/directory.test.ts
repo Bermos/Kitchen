@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { after, before, describe, it } from "node:test";
 
 import type { Account } from "../src/directory.js";
+import { PERSON_PROVISIONING } from "../src/identity.js";
 import { startHarness, type Harness } from "./support.js";
 
 /**
@@ -136,7 +137,10 @@ async function createAccount(
 	name: string,
 ): Promise<{ id: string; email: string }> {
 	const ctx = await kitchen.auth.$context;
-	const user = await ctx.internalAdapter.createUser({ email, name, emailVerified: true });
+	const user = await ctx.internalAdapter.createUser(
+		{ email, name, emailVerified: true },
+		PERSON_PROVISIONING,
+	);
 	return { id: user.id, email: user.email };
 }
 

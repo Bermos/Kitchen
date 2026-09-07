@@ -1,7 +1,8 @@
 import { defaultKeyHasher } from "@better-auth/api-key";
 
 import type { Auth } from "./auth.js";
-import type { Config } from "./config.js";
+import { platformResources, type Config } from "./config.js";
+import { MACHINE_PROVISIONING } from "./identity.js";
 import { log } from "./log.js";
 
 /** Name of the seeded API key, so it is recognisable in the UI later. */
@@ -30,11 +31,14 @@ export async function seedServiceCredential(auth: Auth, config: Config): Promise
 
 	let user = await ctx.internalAdapter.findUserByEmail(email);
 	if (!user) {
-		await ctx.internalAdapter.createUser({
-			email,
-			name: "Kitchen operator",
-			emailVerified: true,
-		});
+		await ctx.internalAdapter.createUser(
+			{
+				email,
+				name: "Kitchen operator",
+				emailVerified: true,
+			},
+			MACHINE_PROVISIONING,
+		);
 		user = await ctx.internalAdapter.findUserByEmail(email);
 		if (!user) {
 			throw new Error(`failed to create the service account ${email}`);
@@ -115,6 +119,7 @@ export async function seedUIClient(auth: Auth, config: Config): Promise<void> {
 	});
 
 	if (existing) {
+		await linkPlatformResources(auth, config, clientId);
 		const current = Array.isArray(existing.redirectUris)
 			? existing.redirectUris
 			: String(existing.redirectUris ?? "").split(",").filter(Boolean);
@@ -149,5 +154,45 @@ export async function seedUIClient(auth: Auth, config: Config): Promise<void> {
 			updatedAt: now,
 		},
 	});
+	await linkPlatformResources(auth, config, clientId);
 	log.info("registered the Kitchen UI as an OAuth client", { clientId, redirectURIs });
+}
+
+/**
+ * Says that the dashboard's client may ask for a token for the platform's own
+ * resources — the issuer and the operator API (`platformResources`).
+ *
+ * RFC 8707 §3 is enforced per client: a resource being registered says the
+ * audience exists, and a link says *this* client may name it. Without one the
+ * dashboard's sign-in fails at the token endpoint with `invalid_target`,
+ * because it asks for a token for the API rather than for the issuer.
+ *
+ * It is the same rule `platformClients` states in front of the token endpoint,
+ * kept by the provider's own table rather than only by Kitchen's guard — an
+ * application's client is registered through `/oauth2/register` and is linked
+ * to nothing, so it is refused twice.
+ *
+ * Re-linking on every start is deliberate and idempotent: the resource list
+ * follows the platform's external URLs, which are the chart's to change, so a
+ * link that does not exist yet is created and one that does is left alone.
+ */
+async function linkPlatformResources(auth: Auth, config: Config, clientId: string): Promise<void> {
+	const ctx = await auth.$context;
+	for (const resourceId of platformResources(config)) {
+		const linked = await ctx.adapter.findOne({
+			model: "oauthClientResource",
+			where: [
+				{ field: "clientId", value: clientId },
+				{ field: "resourceId", value: resourceId },
+			],
+		});
+		if (linked) {
+			continue;
+		}
+		await ctx.adapter.create({
+			model: "oauthClientResource",
+			data: { clientId, resourceId, createdAt: new Date() },
+		});
+		log.info("linked the Kitchen UI client to a platform resource", { clientId, resourceId });
+	}
 }

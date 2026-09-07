@@ -133,10 +133,46 @@ check, where a 2xx or 3xx is the application saying it is working; without one
 the check is a TCP connect, which is a weaker claim and much better than
 asserting a readiness nothing established. It is deliberately not `GET /`.
 
-`security` is where an application asks to run more tightly than the platform
-makes it. A repository is the right place to say it: an image knows whether it
-can survive a read-only root filesystem, and the commit that makes it able to
-is the commit that should declare it.
+`security` is where an application asks to run **more tightly** than the
+platform makes it. A repository is the right place to say it: an image knows
+whether it can survive a read-only root filesystem, and the commit that makes
+it able to is the commit that should declare it.
+
+More tightly, and only more tightly. The project's own `runtime.security` —
+the one set in the dashboard or through the API — is the **ceiling**, and this
+block is merged onto it field by field rather than replacing it. The two are
+written by different people: a project's settings are somebody with a role on
+the project, and a `kitchen.json` is a file in a repository, which the author
+of a pull request can change without having one. So:
+
+- A field the project declared is the project's. Repeating it changes nothing;
+  giving it a different value is **ignored**, and the build says which field.
+- `allowPrivilegeEscalation` may be set here only where the project already
+  sets it. It is the one relaxation in the block — it puts back the default
+  the platform tightens on every container — so it is never a repository's to
+  turn on.
+- `dropCapabilities` is a floor rather than a value: the merged list is
+  everything either of them drops, so a file may drop more and cannot drop
+  fewer.
+- Everything the project left alone is this file's to set, which is the point
+  of the file: a commit that hardens itself does not need a settings change to
+  do it.
+
+`processes[].security` answers to the same ceiling, and for the same reason:
+it is written over `runtime.security` per workload, so a ceiling only the
+unit's block answered to would be one line to walk around. Its
+`dropCapabilities` is the one field that behaves differently — a workload's
+list *replaces* the unit's rather than merging, so a workload dropping less
+than the project does is a weakening said entirely in what it left out, and
+what it keeps is the union.
+
+A field the ceiling does not allow is **ignored, not fatal**. The build runs,
+the deployment goes out under the project's posture, and the Build carries a
+`ConfigHonoured: False` condition naming the fields — the build's page lists
+it with the build's other conditions, and `GET /builds/{name}` returns it.
+Failing instead would mean a pull request that cannot deploy because of a line
+written before the ceiling existed, and a preview that will not build explains
+nothing to anybody not reading the operator's logs.
 
 ```json
 {
@@ -156,7 +192,7 @@ is the commit that should declare it.
 It applies to the web process, the workers and the scheduled runs alike,
 unless a workload declares a posture of its own — which is what
 `processes[].security` is, and what a unit whose images no longer share a base
-needs.
+needs. It is held to the project's ceiling exactly as the block above it is.
 
 **A project that says nothing still gets a posture**, and it is the
 platform's: the container runtime's own seccomp profile, and no privilege
@@ -347,7 +383,7 @@ The workloads the project ships besides its web process —
 | `timeout` | A Go duration bounding one run. An hour by default — and for a `task`, how long the deploy waits for it before calling it failed. |
 | `previews` | Run this workload in preview environments too. A worker and a scheduled job are off unless asked for; a service and a task are on unless they say otherwise, because a preview missing one of its own services — or with a database branch nothing migrated — is a broken preview. |
 | `health` | A worker's or a service's health check. A worker's must name its `port` — it publishes none — and a service's falls back to its own. Refused on a scheduled process and on a task, whose verdict is the run's exit status. |
-| `security` | This workload's own security posture, merged over `runtime.security` **field by field**: what is set here wins, what is left out is inherited. Same keys, same refusals. `{}` is no override at all, which is how one is taken back off. See [a workload that needs a different posture](#a-workload-that-needs-a-different-posture). |
+| `security` | This workload's own security posture, merged over `runtime.security` **field by field**: what is set here wins, what is left out is inherited. Same keys, same refusals, and the same project-level ceiling — see [`runtime`](#runtime). `{}` is no override at all, which is how one is taken back off. See [a workload that needs a different posture](#a-workload-that-needs-a-different-posture). |
 
 A `task` is the one entry here that is not a thing that keeps running: it is
 work that happens once per deploy and finishes before any of that release
@@ -603,6 +639,14 @@ start of a build, or at the end, where a conflict between the file and the
 project is settled. The end is where the shadowing refusal lands, because the
 file is read before the build and the release is written after it.
 
+**The one exception is `runtime.security`**, which is ignored rather than
+refused where the project's posture does not allow the change — see
+[`runtime`](#runtime). That is a `ConfigHonoured: False` condition on the
+Build with the reason `SecurityCeiling`, not a failure: the field is the one
+place in this file where refusing would stop a pull request deploying over a
+line that was written before the ceiling was, and where the platform can
+simply keep the safer of the two answers.
+
 ## Where it shows up afterwards
 
 - **On the build.** `GET /builds/{name}` answers `config` with the file's path
@@ -619,6 +663,7 @@ file is read before the build and the release is written after it.
 
 | | |
 |---|---|
+| **Except `runtime.security`, which may only tighten** | The project's posture is the ceiling and the file is merged onto it field by field. Every other setting is one person's two ways of saying it; this one is two people — a project's settings are somebody with a role on the project, a `kitchen.json` is whoever opened the pull request. What the ceiling refuses is ignored with a warning rather than failing the build, because the alternative refuses a deploy over a line written before the rule existed. |
 | **The file wins for what it names** | A value written in a file that is read on every build is a value that takes effect, or the file is decoration. The alternative — the dashboard wins, the file is a default — means committing a change to it usually does nothing, silently, which is the worst of the three options. |
 | **It is per commit, not a write to the project** | The file configures the build that read it and the release that build produced. It never writes back to the Project, so there is no loop between two writers and no moment where a merged pull request has silently changed a setting for the environment that is already running. |
 | **`env` merges, `processes` replaces** | The two lists fail differently. An unbound variable is an application that cannot reach its database; a stale worker is a command that may no longer exist. Merging is right for the first and wrong for the second. |

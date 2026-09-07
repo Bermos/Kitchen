@@ -38,6 +38,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/backup"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
+	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/provider"
 	"github.com/Bermos/Kitchen/internal/provider/cache"
@@ -708,10 +709,66 @@ func (s *Server) deleteConnection(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// And so do the copies of it a build synced out to the projects that used
+	// it (#431). Deleting only the platform's own copy revoked nothing: the
+	// registry docker config and the git token are read where they are needed,
+	// which is every application namespace this Connection ever built in, and
+	// nothing owner-references them. A project repointed at another Connection
+	// is the case that made it visible — it no longer appears in the list
+	// above, so the delete is allowed, and the credential an operator believes
+	// is gone is still in that project's namespace where a `fromSecret` used
+	// to be able to read it.
+	if err := s.deleteSyncedCredentials(ctx, connection.Name, projects.Items); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
 	caller, _ := CallerFrom(ctx)
 	s.log().Info("connection deleted through the api",
 		"connection", connection.Name, "caller", callerName(caller))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteSyncedCredentials removes one Connection's synced copies from every
+// project's application namespace.
+//
+// It walks the projects rather than listing namespaces, because the project
+// list is what the platform already holds and an application namespace exists
+// for exactly one project — a project deleted before this took its namespace
+// with it, finalizer and all, so there is nothing left there to find.
+//
+// A copy is deleted only when it carries the platform's own managed-by label,
+// which is the rule the platform-namespace credential is already deleted
+// under: the name is reserved to the platform, but a Secret somebody else put
+// under it is still not this API's to remove. A copy that is not there is the
+// ordinary case — most projects never built on most connections — so a
+// NotFound is nothing.
+func (s *Server) deleteSyncedCredentials(
+	ctx context.Context, connection string, projects []kitchenv1alpha1.Project,
+) error {
+	names := controller.SyncedConnectionSecrets(connection)
+	for i := range projects {
+		namespace := controller.AppNamespace(projects[i].Name)
+		for _, name := range names {
+			copied := &corev1.Secret{}
+			key := types.NamespacedName{Namespace: namespace, Name: name}
+			switch err := s.Client.Get(ctx, key, copied); {
+			case apierrors.IsNotFound(err):
+				continue
+			case err != nil:
+				return err
+			}
+			if copied.Labels[managedByLabelKey] != managedByLabelValue {
+				continue
+			}
+			if err := s.Client.Delete(ctx, copied); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			s.log().Info("removed a synced credential with the connection that owned it",
+				"connection", connection, "namespace", namespace, "secret", name)
+		}
+	}
+	return nil
 }
 
 // repositoryListTimeout bounds one repository listing. The walk is several

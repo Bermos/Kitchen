@@ -112,7 +112,19 @@ func Runtime(
 		merged.Health = declared.Health.DeepCopy()
 	}
 	if declared.Security != nil {
-		merged.Security = declared.Security.DeepCopy()
+		// The project's posture is the ceiling, so this is a field-by-field
+		// merge that keeps only what tightens rather than the whole-block
+		// override every other setting here gets (#431). A file that
+		// weakened one was two things at once: an override that dropped
+		// every constraint it did not repeat, since a posture is a value and
+		// not a set of keys, and `allowPrivilegeEscalation`, which puts back
+		// the one default the platform tightens on every container — and
+		// since #422 the author of a pull request's kitchen.json need not be
+		// anybody with access to the project.
+		//
+		// What it would not take is dropped rather than fatal, and
+		// [IgnoredSecurity] is what the build reports it with.
+		merged.Security, _ = merged.Security.TightenedBy(declared.Security)
 	}
 	if len(declared.Init) > 0 {
 		// Deep, not a slice clone: each entry carries its own step lists, and
@@ -212,8 +224,15 @@ func credentialSource(variable kitchenv1alpha1.EnvVar) string {
 // the code it runs, and a worker the commit no longer declares is one whose
 // command may no longer exist in the image — merging would keep it running
 // until somebody noticed.
+//
+// `ceiling` is the project's own `runtime.security`, and each declared
+// workload's posture is held to it exactly as the unit's is (#431). A ceiling
+// only the unit's block answered to would not be one: `processes[].security`
+// is written over the unit's per workload, so a worker declared in the file
+// could ask for the escalation the file may not ask for one line higher up.
 func Processes(
 	base []kitchenv1alpha1.ProcessSpec,
+	ceiling *kitchenv1alpha1.SecuritySpec,
 	config *kitchenv1alpha1.RepoConfig,
 ) []kitchenv1alpha1.ProcessSpec {
 	if config == nil || len(config.Processes) == 0 {
@@ -222,6 +241,9 @@ func Processes(
 	processes := make([]kitchenv1alpha1.ProcessSpec, len(config.Processes))
 	for i, process := range config.Processes {
 		processes[i] = *process.DeepCopy()
+		if processes[i].Security != nil {
+			processes[i].Security, _ = ceiling.TighteningOnly(processes[i].Security)
+		}
 	}
 	return processes
 }
@@ -296,7 +318,59 @@ func Snapshot(
 	return kitchenv1alpha1.ConfigSnapshot{
 		Env:       env,
 		Runtime:   runtime,
-		Processes: Processes(base.Processes, config),
+		Processes: Processes(base.Processes, base.Runtime.Security, config),
 		Files:     files,
 	}, nil
+}
+
+// IgnoredSecurity names the `runtime.security` fields of this commit's own
+// kitchen.json that the project's posture does not allow it to change — the
+// same answer [Runtime] acts on, asked separately so that a build can say so.
+//
+// It is the second half of ignoring rather than refusing: a field silently
+// dropped is a file that reads as though it applies and does not, which is
+// the failure mode kitchen.json exists to avoid. The build carries a warning
+// naming these; nothing fails.
+func IgnoredSecurity(
+	base kitchenv1alpha1.RuntimeSpec,
+	config *kitchenv1alpha1.RepoConfig,
+) []string {
+	if config == nil || config.Runtime == nil || config.Runtime.Security == nil {
+		return nil
+	}
+	_, ignored := base.Security.TightenedBy(config.Runtime.Security)
+	return ignored
+}
+
+// IgnoredProcessSecurity is the same answer for each workload the file
+// declares: the process's name against the `security` fields the project's
+// posture does not allow it to change, for the workloads that asked for one.
+//
+// It is separate from [IgnoredSecurity] rather than one flat list because the
+// two are different sentences to whoever has to fix it — "the file's
+// runtime.security" and "the file's worker" are two different lines to go and
+// look at.
+func IgnoredProcessSecurity(
+	base kitchenv1alpha1.RuntimeSpec,
+	config *kitchenv1alpha1.RepoConfig,
+) map[string][]string {
+	if config == nil || len(config.Processes) == 0 {
+		return nil
+	}
+	var ignored map[string][]string
+	for i := range config.Processes {
+		process := &config.Processes[i]
+		if process.Security == nil {
+			continue
+		}
+		_, refused := base.Security.TighteningOnly(process.Security)
+		if len(refused) == 0 {
+			continue
+		}
+		if ignored == nil {
+			ignored = map[string][]string{}
+		}
+		ignored[process.Name] = refused
+	}
+	return ignored
 }

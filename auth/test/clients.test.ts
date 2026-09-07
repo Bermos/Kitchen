@@ -35,7 +35,8 @@ describe("the operator's OAuth clients", () => {
 				grant_types: ["authorization_code", "refresh_token"],
 			}),
 		});
-		assert.equal(response.status, 200, await response.clone().text());
+		// RFC 7591 §3.2.1: a registration answers 201 with the client.
+		assert.equal(response.status, 201, await response.clone().text());
 		const client = (await response.json()) as { client_id: string };
 		return client.client_id;
 	}
