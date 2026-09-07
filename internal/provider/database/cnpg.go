@@ -459,6 +459,16 @@ func (c *CNPG) ensureCluster(
 		return nil, err
 	}
 
+	// The namespace first, before anything is put in it. On a first
+	// provision it does not exist, and the certificate below is the first
+	// object written there — ahead of the Cluster itself, because the Cluster
+	// has to name the Secret it will be issued into. Requesting it into a
+	// namespace that is not there fails, and fails the same way on every
+	// retry, so a claim would never provision at all.
+	if err := c.ensureNamespace(ctx); err != nil {
+		return nil, err
+	}
+
 	// The certificate is requested before the Cluster, because the Cluster has
 	// to name the Secret it will be issued into. Naming one cert-manager has
 	// not written yet costs nothing: CloudNativePG waits for a server Secret
@@ -470,9 +480,6 @@ func (c *CNPG) ensureCluster(
 
 	desired, err := c.desiredCluster(name, project, resolution, req, parent, certificate)
 	if err != nil {
-		return nil, err
-	}
-	if err := c.ensureNamespace(ctx); err != nil {
 		return nil, err
 	}
 	if err := c.Client.Create(ctx, desired); err != nil {

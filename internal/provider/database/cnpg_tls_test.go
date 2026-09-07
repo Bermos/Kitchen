@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // testPlatformIssuer is the ClusterIssuer the operator writes for the
@@ -344,5 +345,60 @@ func TestDestroyingTheDatabaseTakesItsCertificateWithIt(t *testing.T) {
 	secret := &corev1.Secret{}
 	if err := cnpg.Client.Get(context.Background(), key, secret); !apierrors.IsNotFound(err) {
 		t.Fatalf("the issued Secret outlived the database: %v", err)
+	}
+}
+
+// The namespace has to exist before the certificate is requested into it, and
+// this is the regression test for getting that wrong.
+//
+// On a first provision `kitchen-databases` is not there yet, and the
+// certificate is the first object written to it — ahead of the Cluster,
+// because the Cluster has to name the Secret it will be issued into. Asking
+// cert-manager for it first made the create fail with "namespace not found",
+// which failed the same way on every retry: the claim never provisioned at
+// all, and the kind job sat for fifteen minutes on an Environment that stayed
+// Pending with no Cluster behind it.
+//
+// It is asserted as an *ordering* rather than as an error, because the fake
+// client admits an object into a namespace that does not exist — which is
+// exactly why the first version of this passed its tests and only a real
+// cluster caught it.
+func TestTheDatabaseNamespaceExistsBeforeTheCertificateIsRequestedIntoIt(t *testing.T) {
+	created := []string{}
+	record := interceptor.Funcs{
+		Create: func(
+			ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption,
+		) error {
+			// A typed object carries no Kind on the wire, so the two the
+			// ordering is about are named by their Go type.
+			kind := obj.GetObjectKind().GroupVersionKind().Kind
+			if _, ok := obj.(*corev1.Namespace); ok {
+				kind = "Namespace"
+			}
+			created = append(created, kind)
+			return c.Create(ctx, obj, opts...)
+		},
+	}
+	cnpg := &CNPG{
+		Client: fake.NewClientBuilder().WithScheme(cnpgTLSScheme(t)).
+			WithObjects(platformCAIssuer()).WithInterceptorFuncs(record).Build(),
+		Namespace:      testDatabaseNamespace,
+		Images:         DefaultPostgresImages,
+		StorageSize:    DefaultStorageSize,
+		Instances:      DefaultInstances,
+		ServerCAIssuer: testPlatformIssuer,
+	}
+
+	if _, err := cnpg.Provision(context.Background(), shopDB); err == nil {
+		t.Fatal("a freshly created cluster reported itself ready")
+	}
+
+	namespace, certificate := slices.Index(created, "Namespace"), slices.Index(created, "Certificate")
+	if namespace < 0 || certificate < 0 {
+		t.Fatalf("provisioning created %v, want a Namespace and a Certificate", created)
+	}
+	if namespace > certificate {
+		t.Fatalf("the certificate was requested before the namespace existed (order: %v); on a "+
+			"first provision that fails, and fails identically on every retry", created)
 	}
 }
