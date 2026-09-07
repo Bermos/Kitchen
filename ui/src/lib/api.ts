@@ -1564,6 +1564,12 @@ export interface Environment {
    * may; an empty or absent list leaves the bar to the operators alone. */
   owners?: string[];
   requirements?: EnvironmentRequirements;
+  /** Which classes of consumer environment may bind to an offering this
+   * environment serves — "production", "stage", "preview" — declared by its
+   * owners on the same endpoint as the bar. Always present: an empty list is
+   * the answer and not a missing field, and it means this environment serves
+   * nobody. */
+  serves: string[];
   /** The highest sensitivity class this environment is rated to hold,
    * declared by its owners; absent means unrated. */
   dataClass?: string;
@@ -2463,12 +2469,43 @@ export interface NewClaimBackup {
   };
 }
 
+/** What one class of a consumer's environments reaches through a service
+ * binding. Which environments of the provider admit which consumers is the
+ * *provider* environment owners' declaration (`serves`), so a preview and a
+ * production environment of one project can reach two different environments
+ * of another — or a preview can reach nothing at all. */
+export interface ServiceBinding {
+  /** "production", "stage" or "preview" — the class of this project's own
+   * environments this row is about. */
+  consumer: string;
+  /** Which environment of the providing project it reaches. */
+  environment?: string;
+  /** The in-cluster address behind it. An address is the whole of what a
+   * service binding provisions, so it is answered rather than withheld. */
+  host?: string;
+  /** The rating of the environment it reaches, as it stood when the binding
+   * resolved. Absent means that environment is unrated. */
+  dataClass?: string;
+  /** Why this class reaches nothing. */
+  reason?: string;
+}
+
 export interface Claim {
   name: string;
   project: string;
-  /** The offering a service claim binds: the project that makes it, and its
-   * name. Where it resolved to is on the claim's Provisioned condition. */
-  service?: { project: string; offering: string };
+  /** The offering a service claim binds: the project that makes it, its
+   * name, and what each class of this project's own environments reaches
+   * through it. */
+  service?: {
+    project: string;
+    offering: string;
+    /** One row per class of this project's environments — production, stage,
+     * preview — whether it reaches anything or not. `environment` and `host`
+     * are what it reaches; `reason` is why it reaches nothing, in the words
+     * that name what would permit it. Empty on a claim that has not resolved
+     * yet. */
+    bindings: ServiceBinding[];
+  };
   /** The claim's declared sensitivity class — never above its project's,
    * which the create refuses. Absent means unclassified. */
   dataClass?: string;
@@ -4878,6 +4915,10 @@ export const api = {
       owners?: string[];
       dataClass?: string;
       residency?: string;
+      /** Replaces the whole list of consumer classes admitted here. An empty
+       * list is a lock, not an open door: this environment then serves
+       * nobody. */
+      serves?: string[];
       criticality?: string;
       rto?: string;
       rpo?: string;

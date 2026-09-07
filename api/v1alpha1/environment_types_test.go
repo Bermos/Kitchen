@@ -66,3 +66,39 @@ func TestRecordReleaseMoveKeepsOnlyRecentHistory(t *testing.T) {
 		t.Fatalf("want the newest entry kept, got %q", got)
 	}
 }
+
+// #494's default, which is the whole of the safe half: an environment that
+// declares nothing serves nobody, and a declaration is read in the platform's
+// own order rather than the order somebody typed it.
+func TestAnEnvironmentServesNobodyUntilItSaysOtherwise(t *testing.T) {
+	var absent *Environment
+	if absent.Admits(EnvironmentPreview) {
+		t.Fatal("no environment admits anything")
+	}
+	env := &Environment{}
+	for _, class := range EnvironmentTypes() {
+		if env.Admits(class) {
+			t.Fatalf("an environment declaring nothing must not admit %s", class)
+		}
+	}
+	if got := env.ServedConsumers(); len(got) != 0 {
+		t.Fatalf("want nobody, got %v", got)
+	}
+
+	env.Spec.Serves = &EnvironmentServes{Consumers: []EnvironmentType{}}
+	if got := env.ServedConsumers(); len(got) != 0 {
+		t.Fatalf("an empty list is a lock, not an open door: %v", got)
+	}
+
+	env.Spec.Serves.Consumers = []EnvironmentType{EnvironmentPreview, EnvironmentProduction}
+	if !env.Admits(EnvironmentPreview) || !env.Admits(EnvironmentProduction) {
+		t.Fatalf("what was declared is admitted: %v", env.Spec.Serves.Consumers)
+	}
+	if env.Admits(EnvironmentStage) {
+		t.Fatal("and what was not declared is not")
+	}
+	got := env.ServedConsumers()
+	if len(got) != 2 || got[0] != EnvironmentProduction || got[1] != EnvironmentPreview {
+		t.Fatalf("want production then preview whatever order it was written in, got %v", got)
+	}
+}

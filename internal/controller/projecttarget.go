@@ -92,15 +92,44 @@ func PreviewEnvironmentName(projectName string, pullRequest int32) string {
 // bundle is judged by the engine instead, where dataclass-le-environment
 // reports the same comparison as a named rule.
 func DataClassRefusal(project *kitchenv1alpha1.Project, env *kitchenv1alpha1.Environment) string {
-	if project == nil || !project.Spec.DataClass.Exceeds(env.Spec.DataClass) {
+	if project == nil {
 		return ""
 	}
-	rating := "rated " + string(env.Spec.DataClass)
-	if !env.Spec.DataClass.Classified() {
-		rating = "unrated, and an unrated environment receives no classified data"
+	return dataClassRefusalBetween(
+		dataClassHolder{noun: "project", name: project.Name, class: project.Spec.DataClass},
+		dataClassHolder{noun: "environment", name: env.Name, class: env.Spec.DataClass},
+	)
+}
+
+// dataClassHolder is one side of a data-class comparison: what it is, by
+// name, and what it is rated.
+type dataClassHolder struct {
+	noun  string
+	name  string
+	class kitchenv1alpha1.DataClass
+}
+
+func (h dataClassHolder) String() string { return h.noun + " " + h.name }
+
+// dataClassRefusalBetween is the one wording of the rule above, for the two
+// places that make the comparison: a release landing on an environment, and
+// an environment reading a binding to another project's offering (#494).
+// Empty means the pair is admissible.
+//
+// It is one function rather than two Sprintfs because the sentence is the
+// product here — an operator meets it in a promotion refusal and in a
+// missing variable's reason, and two spellings of one rule would read as two
+// rules. The comparison itself is DataClass.Exceeds, which is also what the
+// policy bundle's dataclass-le-environment reads.
+func dataClassRefusalBetween(from, to dataClassHolder) string {
+	if !from.class.Exceeds(to.class) {
+		return ""
 	}
-	return fmt.Sprintf("project %s is classified %s but environment %s is %s: "+
-		"classify the environment (dataClass on its requirements endpoint) at or above the "+
-		"project's class, or lower the project's class",
-		project.Name, project.Spec.DataClass, env.Name, rating)
+	rating := "rated " + string(to.class)
+	if !to.class.Classified() {
+		rating = "unrated, and an unrated " + to.noun + " receives no classified data"
+	}
+	return fmt.Sprintf("%s is classified %s but %s is %s: classify the %s (dataClass on its "+
+		"requirements endpoint) at or above %s's class, or lower %s's class",
+		from, from.class, to, rating, to, from, from)
 }

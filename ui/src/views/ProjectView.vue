@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import type { RouteLocationRaw } from "vue-router";
-import { api, type PlatformEvent } from "../lib/api";
+import { api, type Claim, type PlatformEvent, type ServiceBinding } from "../lib/api";
 import { incidentsFrom, undismissed } from "../lib/attention";
 import { claimPlan, claimUsedBy, host, processRows } from "../lib/project";
 import { claimRefusal } from "../lib/claims";
@@ -136,6 +136,19 @@ const processes = computed(() =>
 );
 const claims = computed(() => data.value?.claims ?? []);
 const refusedClaims = computed(() => claims.value.filter((claim) => claim.phase === "Failed"));
+
+// A binding to another project's offering does not reach one address: it
+// reaches whichever environment of the provider admits the class of
+// environment asking, which its owners decide. So a preview of this project
+// and its production can reach two different environments of the provider —
+// or a preview can reach nothing, which is the answer this row exists to make
+// visible rather than leaving somebody to find out from a missing variable.
+const boundServiceClaims = computed(() => claims.value.filter((claim) => claim.service?.bindings?.length));
+
+/** Which classes of this project's environments reach nothing, with why. */
+function unreached(claim: Claim): ServiceBinding[] {
+  return (claim.service?.bindings ?? []).filter((binding) => !binding.environment);
+}
 
 // What a feed entry links to: the most specific object it names.
 function eventTarget(event: PlatformEvent): RouteLocationRaw | null {
@@ -376,6 +389,31 @@ async function acquire() {
               <tr v-for="claim in refusedClaims" :key="`${claim.name}-why`" class="border-b border-muted last:border-0">
                 <td colspan="5" class="px-3 py-2 text-xs text-error">
                   <span class="font-mono">{{ claim.name }}</span> — {{ claimRefusal(claim) }}
+                </td>
+              </tr>
+              <!-- What a binding to another project's offering reaches, per
+                   class of this project's own environments. The providing
+                   project's environment owners decide who may bind to each of
+                   theirs, so this is where a preview reaching nothing — or
+                   reaching a staging environment rather than production — is
+                   said out loud. -->
+              <tr
+                v-for="claim in boundServiceClaims"
+                :key="`${claim.name}-reaches`"
+                class="border-b border-muted last:border-0"
+              >
+                <td colspan="5" class="px-3 py-2 text-xs">
+                  <p class="text-muted">
+                    <span class="font-mono">{{ claim.name }}</span>
+                    <template v-for="(binding, i) in claim.service!.bindings" :key="binding.consumer">
+                      {{ i ? "·" : "—" }} {{ binding.consumer }} reaches
+                      <span v-if="binding.environment" class="font-mono text-toned">{{ binding.environment }}</span>
+                      <span v-else class="text-dimmed">nothing</span>
+                    </template>
+                  </p>
+                  <p v-for="binding in unreached(claim)" :key="`${binding.consumer}-why`" class="text-dimmed mt-1">
+                    {{ binding.consumer }}: {{ binding.reason }}
+                  </p>
                 </td>
               </tr>
             </tbody>

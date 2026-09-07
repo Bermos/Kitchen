@@ -946,6 +946,78 @@ func (c *ResourceClaim) Service() ServiceConfig {
 	return *cfg.Service
 }
 
+// ClaimServiceBinding is what one class of the consumer's environments
+// reaches through this binding (#494): a preview of the consumer, a stage of
+// it, or its production.
+//
+// One entry per class, always all three, whether the class resolved or not —
+// which is what makes the status the answer to "what does my preview reach",
+// rather than a list somebody has to notice the absence of a row in. A class
+// that resolved carries the environment and the Secret; a class that did not
+// carries the reason and nothing else.
+type ClaimServiceBinding struct {
+	// Consumer is the class of the consumer's environment this row is
+	// about.
+	// +kubebuilder:validation:Enum=production;stage;preview
+	Consumer EnvironmentType `json:"consumer"`
+
+	// Environment is which environment of the *providing* project this
+	// class reaches, empty when the class reaches nothing.
+	// +optional
+	Environment string `json:"environment,omitempty"`
+
+	// SecretName is the binding Secret this class's workloads read their
+	// address out of, in the consumer's own application namespace. Empty
+	// when the class reaches nothing.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
+
+	// Host is the address behind that Secret, repeated here because a
+	// status that says only "there is a Secret" cannot answer what a
+	// preview reaches without reading one.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// DataClass is the provider environment's rating as it stood when this
+	// resolved. It is recorded rather than looked up again because it is
+	// what the *consumer's* environment is compared against before it reads
+	// the binding: an environment rated above what it is calling does not
+	// read it, through the same comparison every other data-class refusal
+	// makes.
+	// +optional
+	DataClass DataClass `json:"dataClass,omitempty"`
+
+	// Reason is why this class reaches nothing, in the words that name what
+	// would permit it. Empty on a class that resolved.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+}
+
+// ClaimServiceStatus is what a service claim resolved, per class of consumer
+// environment. Absent on every other type, and on a service claim an
+// operator older than #494 bound — which reads as "every class reaches
+// status.secretName", the behaviour that claim was bound under.
+type ClaimServiceStatus struct {
+	// Bindings is one row per class of consumer environment, in the
+	// platform's own order.
+	// +optional
+	Bindings []ClaimServiceBinding `json:"bindings,omitempty"`
+}
+
+// ServiceBinding is what an environment of class `consumer` reaches through
+// this claim, and false when the claim has resolved nothing for that class.
+func (c *ResourceClaim) ServiceBinding(consumer EnvironmentType) (ClaimServiceBinding, bool) {
+	if c.Status.Service == nil {
+		return ClaimServiceBinding{}, false
+	}
+	for _, binding := range c.Status.Service.Bindings {
+		if binding.Consumer == consumer {
+			return binding, binding.SecretName != ""
+		}
+	}
+	return ClaimServiceBinding{}, false
+}
+
 // ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
 // +kubebuilder:validation:Enum=Pending;Bound;Failed
 type ClaimPhase string
@@ -1369,6 +1441,13 @@ type ResourceClaimStatus struct {
 	// strategy.
 	// +optional
 	ForcesRecreate bool `json:"forcesRecreate,omitempty"`
+
+	// Service is what a service claim resolved for each class of consumer
+	// environment (#494): which environment of the provider a preview, a
+	// stage and production each reach, or why they reach nothing. Absent on
+	// every other type.
+	// +optional
+	Service *ClaimServiceStatus `json:"service,omitempty"`
 
 	// Volume is what a volume claim materialized, and empty for every other
 	// type: a volume claim binds to a mount rather than to a Secret, so

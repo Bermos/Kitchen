@@ -158,15 +158,51 @@ func (serviceClaimShaper) view(claim *kitchenv1alpha1.ResourceClaim, view *claim
 	if cfg.Project == "" && cfg.Offering == "" {
 		return
 	}
-	view.Service = &claimServiceView{Project: cfg.Project, Offering: cfg.Offering}
+	service := &claimServiceView{Project: cfg.Project, Offering: cfg.Offering, Bindings: []serviceBindingView{}}
+	if claim.Status.Service != nil {
+		for _, binding := range claim.Status.Service.Bindings {
+			service.Bindings = append(service.Bindings, serviceBindingView{
+				Consumer:    string(binding.Consumer),
+				Environment: binding.Environment,
+				Host:        binding.Host,
+				DataClass:   string(binding.DataClass),
+				Reason:      binding.Reason,
+			})
+		}
+	}
+	view.Service = service
 }
 
 func (serviceClaimShaper) deletionOutcome(*kitchenv1alpha1.ResourceClaim) string {
 	return "the binding is removed; the offering carries on being offered"
 }
 
-// claimServiceView is what a service claim binds, as a reader sees it.
+// claimServiceView is what a service claim binds, as a reader sees it: the
+// pair it named, and what each class of this project's own environments
+// reaches through it.
 type claimServiceView struct {
 	Project  string `json:"project"`
 	Offering string `json:"offering"`
+	// Bindings answers the question the screen is for — what does my
+	// preview reach — with one row per class of environment, whether it
+	// reaches anything or not. Empty on a claim that has not resolved yet,
+	// and on one bound by an operator older than #494, where every class
+	// reached one address.
+	Bindings []serviceBindingView `json:"bindings"`
+}
+
+// serviceBindingView is one class of this project's environments and what it
+// reaches: which environment of the providing project, at what address and
+// under what rating — or the reason it reaches nothing, in the words that
+// name what would permit it.
+//
+// The address is answered rather than withheld because an address is the
+// whole of what this claim provisions: there is no credential in a service
+// binding to read back.
+type serviceBindingView struct {
+	Consumer    string `json:"consumer"`
+	Environment string `json:"environment,omitempty"`
+	Host        string `json:"host,omitempty"`
+	DataClass   string `json:"dataClass,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }

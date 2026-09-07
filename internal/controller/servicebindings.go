@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,7 +52,14 @@ import (
 // by an old one.
 
 // serviceBindingEnv is every bound service claim of this project, as the
-// three variables a workload reads its address from.
+// three variables a workload reads its address from, and the claims that
+// bind nothing *here* with the reason each gives.
+//
+// Which binding this environment reads is decided by what class of
+// environment it is (#494): the claim resolved one per class, because the
+// provider's environment owners say who may bind to each of theirs, and a
+// preview of the consumer may well reach a different environment of the
+// provider than its production does — or none at all.
 //
 // A claim that is not bound yet contributes nothing and holds nothing up.
 // That is deliberate and it is the opposite of what an unbound
@@ -59,25 +67,33 @@ import (
 // declares, so deploying without it would run a release that cannot work,
 // while a binding is the platform's own addition and an offering that is not
 // resolvable — a project that has not opened it, an environment nobody has
-// deployed into — belongs to another team and another timetable. The claim's
-// own status says why, and the environment does not sit unready behind it.
+// deployed into, an environment whose owners admit no consumer of this class
+// — belongs to another team and another timetable. The claim's own status
+// says why, this environment carries the same sentence on its ClaimsBound
+// condition, and neither sits unready behind it.
 func serviceBindingEnv(
 	ctx context.Context,
 	c client.Client,
 	env *kitchenv1alpha1.Environment,
 	projectName string,
 	appNS string,
-) ([]corev1.EnvVar, error) {
+) ([]corev1.EnvVar, []string, error) {
 	claims := &kitchenv1alpha1.ResourceClaimList{}
 	if err := c.List(ctx, claims, client.InNamespace(env.Namespace)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	bound := make([]*kitchenv1alpha1.ResourceClaim, 0, len(claims.Items))
 	for i := range claims.Items {
 		claim := &claims.Items[i]
 		if claim.Spec.Type != kitchenv1alpha1.ClaimTypeService ||
-			claim.Spec.ProjectRef.Name != projectName ||
-			claim.Status.SecretName == "" {
+			claim.Spec.ProjectRef.Name != projectName {
+			continue
+		}
+		// A claim that resolved something for *some* class is here even
+		// when it resolved nothing for this one, so that the environment
+		// can say so. A claim that has never resolved anything is not: it
+		// is Failed or Pending and its own status is where that is read.
+		if claim.Status.SecretName == "" && claim.Status.Service == nil {
 			continue
 		}
 		bound = append(bound, claim)
@@ -88,9 +104,15 @@ func serviceBindingEnv(
 	sort.Slice(bound, func(i, j int) bool { return bound[i].Name < bound[j].Name })
 
 	vars := make([]corev1.EnvVar, 0, len(bound)*3)
+	var unbound []string
 	for _, claim := range bound {
+		secretName, refusal := bindingForEnvironment(claim, env)
+		if refusal != "" {
+			unbound = append(unbound, claim.Name+": "+refusal)
+			continue
+		}
 		secret := &corev1.Secret{}
-		key := types.NamespacedName{Namespace: appNS, Name: claim.Status.SecretName}
+		key := types.NamespacedName{Namespace: appNS, Name: secretName}
 		if err := c.Get(ctx, key, secret); err != nil {
 			if apierrors.IsNotFound(err) {
 				// The claim says it has a binding and the Secret is not
@@ -99,10 +121,10 @@ func serviceBindingEnv(
 				// of this environment from starting, which is a great deal
 				// worse than a variable arriving one pass later.
 				logf.FromContext(ctx).Info("a service binding names a secret that is not there yet",
-					"claim", claim.Name, "secret", claim.Status.SecretName, "environment", env.Name)
+					"claim", claim.Name, "secret", secretName, "environment", env.Name)
 				continue
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		prefix := kitchenv1alpha1.ServiceEnvPrefix(claim.Name)
 		// The URL is the one key that can be absent: an offering that speaks
@@ -110,14 +132,75 @@ func serviceBindingEnv(
 		// nothing else, so the variable is left out rather than named
 		// against a key nothing wrote.
 		if _, ok := secret.Data[service.BindingKeyURL]; ok {
-			vars = append(vars, bindingVar(prefix, claim.Status.SecretName, service.BindingKeyURL))
+			vars = append(vars, bindingVar(prefix, secretName, service.BindingKeyURL))
 		}
 		vars = append(vars,
-			bindingVar(prefix+"_HOST", claim.Status.SecretName, service.BindingKeyHost),
-			bindingVar(prefix+"_PORT", claim.Status.SecretName, service.BindingKeyPort),
+			bindingVar(prefix+"_HOST", secretName, service.BindingKeyHost),
+			bindingVar(prefix+"_PORT", secretName, service.BindingKeyPort),
 		)
 	}
-	return vars, nil
+	return vars, unbound, nil
+}
+
+// bindingForEnvironment is the Secret this environment reads a claim's
+// address out of, or the reason it reads none.
+//
+// Two refusals, and neither is new machinery. The first is the provider's
+// grant: the claim resolved a binding per class of consumer environment, and
+// a class no environment of the provider admits has none. The second is the
+// data class, made and worded by the one function every other data-class
+// refusal on the platform goes through (dataClassRefusalBetween, over
+// DataClass.Exceeds — the same ordering the policy bundle's
+// dataclass-le-environment rule reads): an environment rated above the
+// environment it would be calling does not call it, because data does not
+// flow somewhere rated below it.
+func bindingForEnvironment(
+	claim *kitchenv1alpha1.ResourceClaim,
+	env *kitchenv1alpha1.Environment,
+) (secretName string, refusal string) {
+	if claim.Status.Service == nil {
+		if claim.Status.SecretName == "" {
+			// Never resolved: Failed or Pending, and the claim's own status
+			// carries the provider's words. It is a refusal here rather
+			// than a wait, because an offering that is not resolvable
+			// belongs to another team and another timetable — see the file
+			// comment.
+			return "", "the binding has not resolved; the claim's own status says why"
+		}
+		// Bound by an operator older than #494, which resolved one address
+		// for every class. It keeps reading it until its claim is
+		// reconciled again, which is the next pass — a binding that
+		// vanished for the length of an upgrade would take an application
+		// down for a fact about the platform.
+		return claim.Status.SecretName, ""
+	}
+	binding, ok := claim.ServiceBinding(env.Spec.Type)
+	if !ok {
+		return "", serviceBindingReason(claim, env.Spec.Type)
+	}
+	refusal = dataClassRefusalBetween(
+		dataClassHolder{noun: "environment", name: env.Name, class: env.Spec.DataClass},
+		dataClassHolder{noun: "environment", name: binding.Environment, class: binding.DataClass},
+	)
+	if refusal == "" {
+		return binding.SecretName, ""
+	}
+	return "", refusal
+}
+
+// serviceBindingReason is the claim's own words about why this class of
+// environment reaches nothing, and a sentence of last resort for a claim
+// that recorded no row at all for it.
+func serviceBindingReason(
+	claim *kitchenv1alpha1.ResourceClaim,
+	consumer kitchenv1alpha1.EnvironmentType,
+) string {
+	for _, binding := range claim.Status.Service.Bindings {
+		if binding.Consumer == consumer && binding.Reason != "" {
+			return binding.Reason
+		}
+	}
+	return fmt.Sprintf("no environment of the providing project admits a %s consumer", consumer)
 }
 
 // bindingVar is one variable read out of a binding Secret. The address is

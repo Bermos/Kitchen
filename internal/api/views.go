@@ -1259,6 +1259,13 @@ type environmentView struct {
 	Preview      *previewView      `json:"preview,omitempty"`
 	Owners       []string          `json:"owners,omitempty"`
 	Requirements *requirementsView `json:"requirements,omitempty"`
+	// Serves is the classes of consumer environment that may bind to an
+	// offering this environment serves, declared by its owners on the same
+	// endpoint as the bar. It is always present and an empty list is the
+	// answer to the question rather than a missing field: an environment
+	// that has declared nothing serves nobody, which is the safe default
+	// and not a gap for a reader to guess at.
+	Serves []string `json:"serves"`
 	// DataClass is the highest sensitivity class this environment is rated
 	// to hold, declared by its owners; absent means unrated. Residency is
 	// where its data is declared to be — declared, not observed.
@@ -1288,6 +1295,17 @@ type environmentView struct {
 	Git *revisionView `json:"git,omitempty"`
 }
 
+// servedConsumerNames is who may bind to an offering this environment
+// serves, in the platform's own order and never nil — an empty list is the
+// answer, not the absence of one.
+func servedConsumerNames(env *kitchenv1alpha1.Environment) []string {
+	names := []string{}
+	for _, class := range env.ServedConsumers() {
+		names = append(names, string(class))
+	}
+	return names
+}
+
 // refusalView is the kubelet's refusal of one of this environment's
 // workloads, as the operator's half of it: which workload, which pod, which
 // container, and what was said.
@@ -1315,6 +1333,7 @@ func newEnvironmentView(
 		Exposure:        string(exposure.Normalized()),
 		Owners:          env.Spec.Owners,
 		Requirements:    newRequirementsView(env.Spec.Requirements),
+		Serves:          servedConsumerNames(env),
 		DataClass:       string(env.Spec.DataClass),
 		Residency:       env.Spec.Residency,
 		Criticality:     string(env.Spec.Criticality),
