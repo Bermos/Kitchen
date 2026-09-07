@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.37.0](https://github.com/Bermos/Kitchen/compare/v0.36.0...v0.37.0) (2026-09-07)
+
+
+### Features
+
+* **build:** skip a build whose source tree has not changed, and record the skip ([#510](https://github.com/Bermos/Kitchen/issues/510)) ([77186f9](https://github.com/Bermos/Kitchen/commit/77186f9cefdb5bba717dae1ebf134e2977213da7)), closes [#500](https://github.com/Bermos/Kitchen/issues/500)
+* **claims:** a postgres claim's database is signed by the platform's CA ([#511](https://github.com/Bermos/Kitchen/issues/511)) ([3a51b32](https://github.com/Bermos/Kitchen/commit/3a51b324face691a43419852a4f2bb8cc25e5d13))
+* **claims:** a project offers a service, and another project claims it ([#512](https://github.com/Bermos/Kitchen/issues/512)) ([e85eb89](https://github.com/Bermos/Kitchen/commit/e85eb89215acf3bf98694e8f82a71686dd75f37c))
+
 ## [0.36.0](https://github.com/Bermos/Kitchen/compare/v0.35.0...v0.36.0) (2026-09-07)
 
 
