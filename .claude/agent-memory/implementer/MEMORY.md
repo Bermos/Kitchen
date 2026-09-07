@@ -10,18 +10,21 @@ lesson, dated, under the heading it belongs to. Merge duplicates; do not drop.
 - 2026-09-07: A kind e2e job with a component disabled (`--set cert-manager.enabled=false`) turns every path that needs it into dead code there; its green runs said nothing about that path. Check what the job disables before trusting its coverage.
 - 2026-09-06: `Seal` in `internal/audit` stamps `time.Now()` when the timestamp is zero, so a "deterministic encoding" test that did not pin the instant flaked at millisecond boundaries. Pin timestamps in any test that seals, hashes or fingerprints.
 - 2026-09-07: `kubectl get resourceclaim` resolves to Kubernetes 1.34's built-in `resource.k8s.io` ResourceClaim, not Kitchen's CRD. Always write `resourceclaims.kitchen.bermos.dev` in workflows and docs; a loop that swallowed the error with `|| true` hid this for the whole of a fifteen-minute wait.
+- 2026-09-07: A ClickHouse column added to a table's `CREATE` reaches a fresh install and nowhere else — `ensureAddedColumns` (`signalTransitionColumnsAdded` in schema.go) is the upgrade path, and the integration suite recreates tables so it never exercises it. Test it by `ALTER TABLE … DROP COLUMN IF EXISTS` then re-ensuring; a column named in a read and missing from the table is a query that reads perfectly and fails.
 
 ## Tooling and environment
 
 - 2026-09-06: Run `make` with `LOCALBIN=<main checkout>/bin` from a worktree, or it downloads envtest, controller-gen and golangci-lint again. Symlink `ui/node_modules` rather than `npm ci`.
 - 2026-09-06: Auth service tests need a local Postgres (`pg_ctlcluster 16 main start`; `KITCHEN_AUTH_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/kitchen_auth_test`). The ClickHouse integration suite needs Docker (`dockerd &`) and `KITCHEN_CLICKHOUSE_URL` against the pinned `clickhouse/clickhouse-server` image; say in the PR body if you could not run it.
 - 2026-09-06: The Go build cache fills the disk over a long session; `find ~/.cache/go-build -type f -amin +120 -delete` and `docker system prune -af --volumes` recover it.
-- 2026-09-07: `make lint` catches what `make test` does not: goconst on a string repeated across test assertions (`"dir"`, a release name), gocyclo at 30 on `Reconcile` (extract a helper), unparam on an always-nil return.
+- 2026-09-07: `make lint` catches what `make test` does not: goconst on a string repeated across test assertions (`"dir"`, a release name), gocyclo at 30 on `Reconcile` (extract a helper), unparam on an always-nil return, staticcheck SA4000 on a "is this stable" test that compares one expression to itself (assert the exact expected string instead).
+- 2026-09-07: `make test` takes ~10 minutes (the 551-spec envtest suite is most of it) and buffers per package, so a log that has not moved for five minutes is normal rather than stuck. Run it to a file with `run_in_background` and wait with one `until grep -q EXIT= <log>` loop; two concurrent `make test` runs clobber each other's output file.
 
 ## Rebase and merge
 
 - 2026-09-07: After `git rebase origin/main`, build before trusting the tree: `main` had since exported `ConditionReady` and the branch redeclared it. Regenerate generated files after any rebase; the merge driver keeps one side and a stash pop drops deepcopy and the chart CRDs on purpose.
 - 2026-09-06: Files that conflict between concurrent branches: `docs/api/claims.md`, `docs/api/environments.md`, `internal/cli/internals_test.go` (both sides add tests; keep both), `.github/workflows/test-e2e.yml` (both add a case to the same job). Expect and resolve, never hand-merge a generated file.
+- 2026-09-07: `git rebase -i` is unavailable here, so to fold a late fix into an earlier commit of your own branch, `git reset --soft origin/main` and rebuild the history by staging paths (`git add api/ internal/ …`) — cheaper and safer than a sequence-editor trick, and it keeps a `fix:` about code that never shipped out of the release notes.
 - 2026-09-06: `main` refuses merge commits on push (`GH013`). Catch up with `git fetch origin main && git rebase origin/main` and force-push with lease on your own branch only.
 
 ## CI behaviour
@@ -36,3 +39,6 @@ lesson, dated, under the heading it belongs to. Merge duplicates; do not drop.
 - 2026-09-06: A credential never leaves `kitchen-system` as a key; only a certificate is copied to application namespaces. A ClusterIssuer resolves its Secret from cert-manager's cluster-resource namespace, which must be `kitchen-system` (documented for `cert-manager.enabled=false`).
 - 2026-09-06: The API never echoes a credential; `kitchen env set` sends names and only the changed values for the same reason.
 - 2026-09-07: `KITCHEN_URL`-style values are derived, not read from status, because status is written at the end of the reconcile that needs them.
+- 2026-09-07: `internal/signals` rules are pure functions of one `*Snapshot`, and a rule that needs the round's own output gets a second pass (`Signal.Correlates` + `Snapshot.Round`) rather than a different signature — but `Registry.Evaluate` then *overwrites* `Snapshot.Round`, so a test driving such a rule through the one-signal `evaluate` helper always sees an empty round. Drive the pass directly (`Catalogue().pass(snapshot, true)`).
+- 2026-09-07: A `bool` in a resolved config value cannot tell "unset" from "false". `signals.Policy.Normalised` repairs `Paging` only when `Preset` is unset, because the preset is what marks a value as having been resolved; without that, every hand-built snapshot in the package silently turned paging off.
+- 2026-09-07: `internal/api/retention.go` + `internal/retention` is the template for any new operator-only platform setting: spec on the Kitchen singleton, a resolver package, `GET`/`PATCH /platform/<thing>`, pointer fields so an absent one is left alone, an audit `Transition` only when something actually moved, and bounds enforced in the handler *as well as* on the CRD so the refusal names the field.
