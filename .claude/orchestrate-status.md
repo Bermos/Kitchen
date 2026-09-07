@@ -17,8 +17,9 @@ once the state is back in the plan.
   `dataClassRefusalBetween` helper, a `resolveEnv` regression test for the inverted case,
   the PR body's no-requeue justification, and the retitle
   `feat(environments)!: an environment declares who may bind, and existing service bindings stop until it does`.
-  The implementer was told to commit WIP and push; check the branch head against that
-  list. **Merge waits on the maintainer**: lock existing bindings (built, breaking, `!`)
+  All five are done on head 93d174a (clean, pushed); the fast checks were green and the
+  three kind jobs still running when paused — read them before merging. **Merge waits on
+  the maintainer**: lock existing bindings (built, breaking, `!`)
   or grandfather them. At merge, pass the `BREAKING CHANGE:` footer explicitly as the
   squash commit body.
 - **#520** `claude/correlation-ladder-472` (Refs #472). Two reviews; F1–F5 of the second
