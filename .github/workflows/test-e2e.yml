@@ -947,6 +947,20 @@ jobs:
           kubectl -n kitchen-system patch project "${PROJECT}" --type merge -p \
             "{\"spec\":{\"offers\":[{\"name\":\"${OFFERING}\",\"process\":\"api\",\"protocol\":\"http\",\"visibility\":\"open\"}]}}"
 
+          # The release froze `<host>/<name>:<tag>@<digest>`, and an image
+          # source names the parts separately. The digest is what pins, so the
+          # tag is dropped: what is left is the repository, which is
+          # everything before the tag's colon — unless taking that away leaves
+          # no repository at all, which is a reference carrying the registry's
+          # port and no tag.
+          ref="${WEB_IMAGE%@*}"
+          image_repository="${ref%:*}"
+          case "${image_repository}" in
+            */*) ;;
+            *) image_repository="${ref}" ;;
+          esac
+          echo "the consumer runs ${image_repository} at ${WEB_IMAGE#*@}"
+
           kubectl apply -f - <<EOF
           apiVersion: kitchen.bermos.dev/v1alpha1
           kind: Project
@@ -956,7 +970,7 @@ jobs:
           spec:
             source:
               image:
-                repository: ${WEB_IMAGE%@*}
+                repository: ${image_repository}
                 digest: ${WEB_IMAGE#*@}
                 connectionRef: {name: e2e-registry}
             runtime:

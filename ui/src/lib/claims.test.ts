@@ -10,6 +10,7 @@ import {
   mayPromoteRecovery,
   promoteRefusal,
 } from "./claims";
+import type { Claim } from "./api";
 import type { Caller } from "./policy";
 
 // The one escalation on the claims surface (#320): `deletionPolicy: Delete`
@@ -180,7 +181,14 @@ describe("the cautions a bound claim carries", () => {
 // sentences about deleting one have to say that rather than falling through
 // to the database's, which would tell somebody their data was about to go.
 describe("deleting a binding to another project's offering", () => {
-  const binding = { type: "service", service: { project: "pricing", offering: "pricing-api" } };
+  const binding: Claim = {
+    name: "prices",
+    project: "checkout",
+    connection: "",
+    type: "service",
+    createdAt: "2026-09-07T00:00:00Z",
+    service: { project: "pricing", offering: "pricing-api" },
+  };
 
   it("says the offering carries on being offered", () => {
     expect(claimDeletionOutcome(binding)).toContain("carries on being offered");
