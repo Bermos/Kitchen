@@ -301,7 +301,7 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 	// condition can always find it — and never before, because a
 	// notification about a transition the store refused would be the
 	// platform saying something it has no record of.
-	l.notify(ctx, rows)
+	l.notify(ctx, rows, snapshot.Policy)
 
 	round.Evaluated = true
 	round.Findings = len(findings.Firing())
@@ -315,12 +315,24 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 // notify hands each recorded transition to the subscriptions that asked for
 // it. Best-effort and quiet, like every other outbound path here: the round's
 // job was to record what changed, and it has.
-func (l *Loop) notify(ctx context.Context, rows []clickhouse.SignalTransition) {
+//
+// The policy is this round's own — the one the snapshot was gathered with and
+// the rows were stamped against — because the tier a row carries is the tier
+// the rule declared, and what this installation *does* about that is applied
+// wherever a delivery is read. The screens read it in signals.Assess; the
+// webhooks read it here, and an installation with paging switched off would
+// otherwise have paged every one of them. Normalising is what makes a round
+// whose singleton could not be read deliver the tier as declared rather than
+// silently holding every page down, a zero Policy being indistinguishable
+// from one with paging deliberately off.
+func (l *Loop) notify(ctx context.Context, rows []clickhouse.SignalTransition, policy signals.Policy) {
 	if l.Notifier == nil {
 		return
 	}
+	policy = policy.Normalised()
 	for _, row := range rows {
-		if _, err := l.Notifier.QueueSignal(ctx, row); err != nil {
+		delivered := string(policy.Deliver(signals.Tier(row.Tier)))
+		if _, err := l.Notifier.QueueSignal(ctx, row, delivered); err != nil {
 			logf.FromContext(ctx).V(1).Info("a signal notification was not queued",
 				"fingerprint", row.Fingerprint, "audience", row.Audience, "reason", err.Error())
 		}

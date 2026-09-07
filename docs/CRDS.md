@@ -3089,7 +3089,11 @@ learn that they are three code paths. The events are `deploy.succeeded`, `build.
 opening or resolving, and every rule declares a tier per audience — `page`, `ticket` or
 `log` — so `minTier` decides which of them reach this address: `page` for the top tier
 alone, `ticket` (the default) for both. There is no third value, because `log` is the
-tier that notifies nobody by definition. The tier lives on the rule, versioned with the
+tier that notifies nobody by definition. The floor is compared against the tier this
+installation *delivers*, which is the rule's with
+`spec.observability.signals.policy.paging` applied — an installation that does not page
+holds every page down to a ticket here as well as on the screens, and the payload carries
+the rule's own tier as `baseTier` beside it. The tier lives on the rule, versioned with the
 catalogue; the filter lives here, because which of them a given relay wants is an
 installation's preference. See [docs/api/alerts.md](api/alerts.md).
 

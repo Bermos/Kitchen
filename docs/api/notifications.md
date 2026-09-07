@@ -322,7 +322,7 @@ nobody reads. The background evaluation loop hands each recorded transition
 straight to the delivery path instead, once per transition — the history is
 written one row per change, which is what makes that true by construction.
 
-The payload carries seven fields no other event does, on top of the common
+The payload carries eight fields no other event does, on top of the common
 ones:
 
 ```json
@@ -332,9 +332,18 @@ ones:
  "message": "web is crash-looping",
  "signal": "workload.crashloop",
  "fingerprint": "workload.crashloop/shop/shop-production/web",
- "audience": "developer", "tier": "ticket", "state": "open",
- "severity": "critical", "detail": "12 restarts in 30m"}
+ "audience": "developer", "tier": "ticket", "baseTier": "ticket",
+ "state": "open", "severity": "critical", "detail": "12 restarts in 30m"}
 ```
+
+**`tier` is what this installation does about the condition, and `baseTier`
+what the rule declared** — the same pair [the alerts feed](alerts.md) serves
+the screens. They differ where [the signal
+policy](platform.md#signal-policy) holds a page down to a ticket, which is an
+installation with `paging` off: the row recorded in the history carries the
+rule's `page`, and the delivery says `ticket` because that is what a page means
+here. Route on `tier`; `baseTier` is there so a relay can say *a page, and this
+installation does not page* rather than quietly losing the distinction.
 
 **`id` is derived rather than random for this event alone**, from the
 delivery's identity and the instant the transition was recorded at —
@@ -346,7 +355,10 @@ instant and are two events. One condition's two deliveries are likewise two
 events, because they go to two readers in two vocabularies.
 
 **`minTier`** is the filter, and it is the only per-event option a subscription
-has:
+has. It is compared against `tier` — what this installation delivers the
+condition at — and not against `baseTier`, for the reason above: an
+installation with `paging` off has said that a page means a ticket here, so a
+subscription asking for pages alone is not asking for this one.
 
 | `minTier` | Hears |
 |---|---|

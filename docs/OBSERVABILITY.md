@@ -923,7 +923,11 @@ looked at.
 The tier a condition is recorded at is the rule's, never the installation's:
 what a policy does with a page is applied when the row is *read*, so turning
 paging back on re-reads every condition already open rather than only the ones
-that break next.
+that break next. There are two readers and the policy is applied at both — the
+alerts feed the screens render, and the outbound `signal.firing` subscription,
+where it decides the tier a `minTier` floor is compared against as well as the
+one the payload publishes. A policy that reached only the screens would be an
+installation that had switched paging off and still paged.
 
 `platform.correlated` is rung 1 widened past HTTP. It reads the round rather
 than the estate — the one rule in the catalogue whose subject is the

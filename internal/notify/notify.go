@@ -139,10 +139,11 @@ type Payload struct {
 	// duration in seconds, an alert's count.
 	Value float64 `json:"value,omitempty"`
 
-	// The seven a `signal.firing` payload carries and nothing else does: the
+	// The eight a `signal.firing` payload carries and nothing else does: the
 	// rule that fired, the delivery's identity, who it was delivered to, what
-	// they are meant to do about it, whether it opened or resolved, how bad
-	// the condition is, and the line under the title.
+	// they are meant to do about it and what the rule asked for, whether it
+	// opened or resolved, how bad the condition is, and the line under the
+	// title.
 	//
 	// They are added under PayloadVersion v1 rather than moving it: the
 	// promise this package makes is that fields may be added and nothing is
@@ -151,10 +152,20 @@ type Payload struct {
 	Signal      string `json:"signal,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Audience    string `json:"audience,omitempty"`
-	Tier        string `json:"tier,omitempty"`
-	State       string `json:"state,omitempty"`
-	Severity    string `json:"severity,omitempty"`
-	Detail      string `json:"detail,omitempty"`
+
+	// Tier is what this installation does about the condition, and BaseTier
+	// what the rule declared. They differ where the signal policy holds a
+	// page down to a ticket — an installation with paging switched off — and
+	// a relay routing on `tier` is then routing on what this installation
+	// asked for rather than on what the catalogue asked for everywhere. The
+	// pair mirrors what the alerts feed serves the screens; see the
+	// commentary on [Notifier.QueueSignal].
+	Tier     string `json:"tier,omitempty"`
+	BaseTier string `json:"baseTier,omitempty"`
+
+	State    string `json:"state,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // Notifier creates deliveries for the events it is handed. The zero value is
@@ -368,9 +379,37 @@ const signalDetailLimit = 500
 // QueueSignal creates a delivery per subscription that asked for this
 // transition, and reports how many. It is Queue for the one event that does
 // not come out of the activity feed.
-func (n *Notifier) QueueSignal(ctx context.Context, transition clickhouse.SignalTransition) (int, error) {
+//
+// # The tier it filters and publishes on
+//
+// `delivered` is the tier this installation delivers the transition at, which
+// is signals.Policy.Deliver of the tier the rule declared. The recorded tier
+// is the declaration and nothing else — that is what `signal_transitions`
+// carries, so that changing the policy re-reads every condition already open
+// — and the installation's policy is applied wherever a delivery is read.
+// signals.Assess is that reader for the screens; this is the other one, and
+// until it was given this argument a `homelab` installation with paging
+// switched off still paged every webhook whose subscription asked for pages:
+// the policy reached the screens and stopped there.
+//
+// It is one string resolved by the caller rather than a signals.Policy this
+// function resolves, and that is an import constraint rather than a
+// preference: internal/signals reaches internal/controller, which reaches this
+// package. The detection loop is the only thing that queues a signal and it
+// already holds the policy its round was judged against — the same one that
+// stamped these rows — so nothing re-reads the singleton to answer a question
+// the round has answered. An empty argument is the tier as declared, which is
+// what an installation that pages delivers.
+func (n *Notifier) QueueSignal(
+	ctx context.Context,
+	transition clickhouse.SignalTransition,
+	delivered string,
+) (int, error) {
 	if n == nil {
 		return 0, nil
+	}
+	if delivered == "" {
+		delivered = transition.Tier
 	}
 	subscriptions := &kitchenv1alpha1.NotificationSubscriptionList{}
 	if err := n.Client.List(ctx, subscriptions, client.InNamespace(n.Namespace)); err != nil {
@@ -386,14 +425,14 @@ func (n *Notifier) QueueSignal(ctx context.Context, transition clickhouse.Signal
 	queued := 0
 	for i := range subscriptions.Items {
 		subscription := &subscriptions.Items[i]
-		if !MatchesSignal(subscription, transition) {
+		if !MatchesSignal(subscription, transition, delivered) {
 			continue
 		}
 		if queued >= maxQueuedPerEvent {
 			return queued, fmt.Errorf(
 				"more than %d subscriptions match one event; the rest were not queued", maxQueuedPerEvent)
 		}
-		if err := n.createSignal(ctx, subscription, id, occurred, transition); err != nil {
+		if err := n.createSignal(ctx, subscription, id, occurred, transition, delivered); err != nil {
 			logf.Log.WithName("notify").V(1).Info("signal notification not queued",
 				"subscription", subscription.Name, "fingerprint", transition.Fingerprint,
 				"reason", err.Error())
@@ -407,15 +446,22 @@ func (n *Notifier) QueueSignal(ctx context.Context, transition clickhouse.Signal
 // MatchesSignal reports whether a subscription asked for this delivery: the
 // event, the project scope, and the tier floor.
 //
-// The tier is compared against the transition's *recorded* tier — what the
-// rule declared for that audience when the row was written — and not against
-// what an acknowledgement has since made of it. A subscription is a standing
-// instruction about what to be told, and holding a message back because
-// somebody acknowledged the condition four seconds later would make delivery
-// depend on a race.
+// The floor is compared against `delivered` — the tier this installation
+// delivers the transition at, which is the recorded tier with the signal
+// policy applied. Those are two different questions and only one of them is
+// the reader's: an installation that has switched paging off has said what a
+// page means here, and it means a ticket, so a subscription asking for pages
+// is not asking for this. See [Notifier.QueueSignal].
+//
+// What it is deliberately not compared against is what an acknowledgement has
+// since made of the tier. A subscription is a standing instruction about what
+// to be told, and holding a message back because somebody acknowledged the
+// condition four seconds later would make delivery depend on a race; the
+// policy is settled before anybody is told.
 func MatchesSignal(
 	subscription *kitchenv1alpha1.NotificationSubscription,
 	transition clickhouse.SignalTransition,
+	delivered string,
 ) bool {
 	if !Matches(subscription, kitchenv1alpha1.NotifySignalFiring, transition.Project) {
 		return false
@@ -424,7 +470,7 @@ func MatchesSignal(
 	// construction rather than by a rule anybody could configure away: it is
 	// not one of the two values a subscription's floor may take, so no floor
 	// admits it. See NotificationSubscriptionSpec.AdmitsTier.
-	return subscription.Spec.AdmitsTier(kitchenv1alpha1.NotificationTier(transition.Tier))
+	return subscription.Spec.AdmitsTier(kitchenv1alpha1.NotificationTier(delivered))
 }
 
 // SignalEventID is the delivery's idempotency key: see the commentary above.
@@ -445,6 +491,7 @@ func (n *Notifier) createSignal(
 	id string,
 	occurred time.Time,
 	transition clickhouse.SignalTransition,
+	delivered string,
 ) error {
 	payload := Payload{
 		Version:      PayloadVersion,
@@ -460,7 +507,8 @@ func (n *Notifier) createSignal(
 		Signal:      transition.Signal,
 		Fingerprint: transition.Fingerprint,
 		Audience:    transition.Audience,
-		Tier:        transition.Tier,
+		Tier:        delivered,
+		BaseTier:    transition.Tier,
 		State:       transition.State,
 		Severity:    transition.Severity,
 		Detail:      truncate(transition.Detail, signalDetailLimit),

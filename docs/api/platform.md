@@ -556,7 +556,11 @@ meaningless.
 - `maxSilenceHours` — the longest silence a member may set on their own row.
 - `paging` — whether the `page` tier is delivered as a page at all. False holds
   every paging condition down to a ticket, for every project on the
-  installation, which is the homelab reading: nobody is on call for a house.
+  installation, which is the homelab reading: nobody is on call for a house. It
+  holds it down at both places a delivery is read — the alerts feed the screens
+  render, and the `signal.firing`
+  [subscriptions](notifications.md#signals-the-third-trigger-and-the-one-with-a-filter),
+  where it is also what a `minTier` floor is compared against.
 
 `preset` is the base in force and `modified` says whether somebody has moved a
 number off it — "balanced" and "balanced, with two numbers moved" are different
