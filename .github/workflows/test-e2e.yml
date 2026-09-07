@@ -990,23 +990,28 @@ jobs:
                 offering: ${OFFERING}
           EOF
 
+          # The long name, deliberately: Kubernetes 1.34 serves a
+          # `resourceclaims.resource.k8s.io` of its own for dynamic resource
+          # allocation, and `kubectl get resourceclaim` on a recent kind
+          # resolves to that one and answers "not found" about an object that
+          # is right there.
           for _ in $(seq 60); do
-            phase="$(kubectl -n kitchen-system get resourceclaim "${BINDING}" \
+            phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" \
               -o jsonpath='{.status.phase}' 2>/dev/null || true)"
             [ "${phase}" = Bound ] && break
             sleep 5
           done
-          phase="$(kubectl -n kitchen-system get resourceclaim "${BINDING}" -o jsonpath='{.status.phase}')"
+          phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o jsonpath='{.status.phase}')"
           [ "${phase}" = Bound ] || {
             echo "::error::the binding ended ${phase}"
-            kubectl -n kitchen-system get resourceclaim "${BINDING}" -o yaml
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" -o yaml
             kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=200
             exit 1
           }
 
           # The binding carries an address and no credential, and it is in the
           # *consumer's* namespace.
-          secret="$(kubectl -n kitchen-system get resourceclaim "${BINDING}" \
+          secret="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}" \
             -o jsonpath='{.status.secretName}')"
           key() { # key <name>
             kubectl -n "${CONSUMER_APP_NS}" get secret "${secret}" \
@@ -1104,19 +1109,19 @@ jobs:
                 offering: not-offered
           EOF
           for _ in $(seq 30); do
-            phase="$(kubectl -n kitchen-system get resourceclaim "${BINDING}-absent" \
+            phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" \
               -o jsonpath='{.status.phase}' 2>/dev/null || true)"
             [ -n "${phase}" ] && [ "${phase}" != Pending ] && break
             sleep 5
           done
-          phase="$(kubectl -n kitchen-system get resourceclaim "${BINDING}-absent" \
+          phase="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" \
             -o jsonpath='{.status.phase}')"
-          reason="$(kubectl -n kitchen-system get resourceclaim "${BINDING}-absent" \
+          reason="$(kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" \
             -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}')"
           echo "a claim on an offering nobody makes is ${phase}: ${reason}"
           [ "${phase}" = Failed ] || {
             echo "::error::a claim naming an offering that does not exist is ${phase}"
-            kubectl -n kitchen-system get resourceclaim "${BINDING}-absent" -o yaml
+            kubectl -n kitchen-system get resourceclaims.kitchen.bermos.dev "${BINDING}-absent" -o yaml
             exit 1
           }
           case "${reason}" in
@@ -1127,7 +1132,7 @@ jobs:
               exit 1
               ;;
           esac
-          kubectl -n kitchen-system delete resourceclaim "${BINDING}-absent" --wait=false
+          kubectl -n kitchen-system delete resourceclaims.kitchen.bermos.dev "${BINDING}-absent" --wait=false
 
       # #301's third criterion. Two releases of the same images, applied by
       # hand: what differs between them is the frozen configuration the deploy
