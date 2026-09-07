@@ -239,7 +239,7 @@ describe("what an API key may reach", () => {
 			headers: { "content-type": "application/json", "x-api-key": kitchen.serviceKey },
 			body: JSON.stringify(registration),
 		});
-		assert.equal(registered.status, 200, await registered.clone().text());
+		assert.equal(registered.status, 201, await registered.clone().text());
 
 		const accounts = await withKeyInternally("/kitchen/accounts", kitchen.serviceKey);
 		assert.equal(accounts.status, 200, await accounts.clone().text());

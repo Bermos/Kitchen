@@ -293,6 +293,25 @@ export function allowedOrigins(config: Config): ReadonlySet<string> {
 }
 
 /**
+ * The protected resources this issuer mints access tokens for: itself, and the
+ * operator API where one is configured.
+ *
+ * RFC 8707's `resource` parameter names one of these, and the provider refuses
+ * — `invalid_target` — anything that is not on the list. It is one function
+ * because two things need the same answer and must not drift: the plugin, which
+ * seeds a row per resource and validates the parameter against them, and
+ * `seedUIClient`, which links the dashboard's client to each so that the
+ * per-client half of the rule (RFC 8707 §3) has something to admit.
+ *
+ * The operator API is a resource of its own so that a token for the API says
+ * so, rather than being a token for everything. The issuer is on the list
+ * because the API accepts a token whose audience is either.
+ */
+export function platformResources(config: Config): string[] {
+	return config.apiURL ? [config.baseURL, config.apiURL] : [config.baseURL];
+}
+
+/**
  * The OAuth clients that are the platform's own — the only ones this issuer
  * will mint a token for a named resource for.
  *
@@ -302,7 +321,7 @@ export function allowedOrigins(config: Config): ReadonlySet<string> {
  * whatever a project developer is deploying, and it exists so that their app
  * can sign people in.
  *
- * `validAudiences` says which audiences may be asked for; it never said *by
+ * `platformResources` says which audiences may be asked for; it never said *by
  * whom*. So an application's client could exchange its code with
  * `resource=<the operator API>` and be handed a JWT the API accepts as the
  * person who pressed "Allow" — with every role that person holds, for an hour,

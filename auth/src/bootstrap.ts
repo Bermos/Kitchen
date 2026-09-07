@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import type { Auth } from "./auth.js";
 import type { Config } from "./config.js";
 import { BOOTSTRAP_LOCK_KEY, withAdvisoryLock } from "./db.js";
-import { listPeople, normalizeEmail } from "./identity.js";
+import { listPeople, normalizeEmail, PERSON_PROVISIONING } from "./identity.js";
 import { log } from "./log.js";
 
 /**
@@ -102,13 +102,16 @@ async function createFirstUser(auth: Auth, config: Config, request: BootstrapReq
 	}
 
 	const hash = await ctx.password.hash(request.password);
-	const user = await ctx.internalAdapter.createUser({
-		email,
-		name,
-		// Nobody can send this account a verification mail yet, and it is
-		// created from a secret only a cluster administrator can read.
-		emailVerified: true,
-	});
+	const user = await ctx.internalAdapter.createUser(
+		{
+			email,
+			name,
+			// Nobody can send this account a verification mail yet, and it is
+			// created from a secret only a cluster administrator can read.
+			emailVerified: true,
+		},
+		PERSON_PROVISIONING,
+	);
 	await ctx.internalAdapter.linkAccount({
 		userId: user.id,
 		providerId: "credential",

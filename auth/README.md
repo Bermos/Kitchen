@@ -226,11 +226,26 @@ docker build -t ghcr.io/bermos/kitchen-auth:dev .
 - The OIDC provider is `@better-auth/oauth-provider`. It supersedes the
   `oidc-provider` plugin, which better-auth deprecated in 1.6 and drops in the
   next major; both implement the same OpenID Connect surface.
-- `validAudiences` is an explicit, closed list: this issuer, plus the operator
-  API when `KITCHEN_AUTH_API_URL` is set. Leaving it open is the
-  audience-confusion problem GHSA-p2fr-6hmx-4528 describes, which is only fixed
-  in the 1.7 prereleases; a two-entry allow-list is the same mitigation with
-  the API able to be an audience of its own.
+- `resources` is an explicit, closed list: this issuer, plus the operator API
+  when `KITCHEN_AUTH_API_URL` is set (`platformResources` in `src/config.ts`).
+  Leaving it open is the audience-confusion problem GHSA-p2fr-6hmx-4528
+  describes, which the 1.7 line fixes by making a protected resource a row
+  rather than a list: a `resource=` naming anything unregistered is
+  `invalid_target`, and a client that is not *linked* to the resource is
+  refused too (RFC 8707 §3, `enforcePerClientResources`, on by default). The
+  dashboard's client is linked in `src/seed.ts`; a client `/oauth2/register`
+  issued is linked to nothing, which is the same answer `platformClients`
+  gives in front of the token endpoint. This was `validAudiences` before 1.7,
+  which said what could be asked for and never by whom.
+- Seeding is `insertOnly`, the plugin's default: an installation whose external
+  URL changes keeps the resource row for the old one. That is an audience
+  nothing accepts rather than a wider grant, and only the platform's own
+  clients can name either.
+- Standard claims (`name`, `email`, …) reach the ID token through
+  `customIdTokenClaims`. The plugin routes scope-requested claims to
+  `/oauth2/userinfo` alone from 1.7 (OIDC Core §5.4 permits either); Kitchen
+  puts them back because the preview gate reads the visitor's address off the
+  ID token it exchanges on its own back-channel.
 - Access tokens are opaque unless the client asks for one with a `resource`
   parameter, in which case they are JWTs signed with the JWKS. That is why the
   operator API's callers request `resource=<api url>`, and why a token minted

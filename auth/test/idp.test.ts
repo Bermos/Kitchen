@@ -71,7 +71,8 @@ describe("the identity provider", () => {
 				grant_types: ["authorization_code", "refresh_token"],
 			}),
 		});
-		assert.equal(response.status, 200, await response.clone().text());
+		// RFC 7591 §3.2.1: a registration answers 201 with the client.
+		assert.equal(response.status, 201, await response.clone().text());
 
 		const client = (await response.json()) as Record<string, unknown>;
 		assert.ok(client.client_id, "a client id is issued");
@@ -297,6 +298,12 @@ describe("the authorization code flow", () => {
 		) as Record<string, unknown>;
 		assert.equal(claims.iss, kitchen.url);
 		assert.equal(claims.aud, client.client_id);
+		assert.ok(claims.sub, "the ID token names the account it was issued for");
+		// The provider stopped putting the scope-requested standard claims in
+		// the ID token in its 1.7 line (OIDC Core §5.4 lets a flow that issues
+		// an access token route them to UserInfo alone). `customIdTokenClaims`
+		// puts them back, because the preview gate reads the address there —
+		// so this asserts a decision rather than the plugin's default.
 		assert.equal(claims.email, admin.email);
 
 		const userinfo = await kitchen.fetch("/oauth2/userinfo", {
@@ -811,7 +818,7 @@ describe("the resource indicator belongs to the platform's own clients", () => {
 				grant_types: ["authorization_code", "refresh_token"],
 			}),
 		});
-		assert.equal(registration.status, 200, await registration.clone().text());
+		assert.equal(registration.status, 201, await registration.clone().text());
 		app = (await registration.json()) as typeof app;
 	});
 
@@ -850,6 +857,7 @@ describe("the resource indicator belongs to the platform's own clients", () => {
 
 		const tokens = (await response.json()) as { access_token: string; id_token: string };
 		assert.ok(tokens.id_token, "an ID token is the whole of what the app asked for");
+		assert.ok(claimsOf(tokens.id_token).sub, "and it names who signed in");
 		assert.equal(claimsOf(tokens.id_token).email, admin.email);
 	});
 

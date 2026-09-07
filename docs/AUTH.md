@@ -901,13 +901,13 @@ and the decisions behind them are in [API.md](API.md).
 
 Two things fall out of the API being a **resource server of its own**:
 
-- `validAudiences` on the provider is an explicit two-entry list — the issuer
+- `resources` on the provider is an explicit two-entry list — the issuer
   and `spec.api.externalURL` — so a client can ask for a token *for the API*
   (`resource=https://kitchen.<baseDomain>`) rather than one for everything.
   That is also what makes the access token a signed JWT: the provider issues
   opaque tokens when no resource is named.
 - **A third-party OAuth client cannot obtain the API's audience.**
-  `validAudiences` is issuer-wide: it says which audiences may be asked for and
+  The list is issuer-wide: it says which audiences may be asked for and
   never said by whom, so until issue #314 every client this provider knew —
   including the one an `oidcClient` claim registers for somebody's application
   — could exchange its code with `resource=<the API>` and be handed a token the
@@ -925,7 +925,11 @@ Two things fall out of the API being a **resource server of its own**:
   token and `/oauth2/userinfo`. A token with no `azp` is one minted straight
   from a session — the CI-key path — and is accepted as before. If third-party
   API access ever becomes a feature, it needs a consent screen that names the
-  audience first.
+  audience first. The provider now keeps a third check of its own: from the
+  plugin's 1.7 line a protected resource is a row rather than a list entry, and
+  a resource indicator is admitted only for a client *linked* to it (RFC 8707
+  §3). The dashboard's client is linked where it is seeded; a client
+  `/oauth2/register` issued is linked to nothing.
 - **The access token carries the account's name and address**, following the
   granted scopes (`profile` → `name`, `email` → `email`). Neither the UI nor
   the operator calls `/oauth2/userinfo`, and the ID token stops at the UI's

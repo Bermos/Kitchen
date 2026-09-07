@@ -153,3 +153,27 @@ export async function listPeople(auth: Auth, config: Config): Promise<PersonRow[
 	});
 	return users.filter((user) => isPerson(config, user.email));
 }
+
+/**
+ * Where an account the platform creates came from.
+ *
+ * `internalAdapter.createUser` takes a provisioning source alongside the row
+ * since better-auth 1.7: it is the input to the `user.validateUserInfo` gate,
+ * which decides whether a provisioning attempt is allowed at all. Kitchen
+ * configures no such gate — nothing here is provisioned from a provider's
+ * profile — so today these values are recorded rather than read. They are
+ * written honestly anyway, because the moment a gate is added it is handed
+ * exactly this, and a gate that cannot tell a person's account from a
+ * credential's is a gate that has to allow both.
+ *
+ * The split is the same one the rest of this file draws: `PERSON_PROVISIONING`
+ * for the account somebody signs in to, which is created from an address and a
+ * password; `MACHINE_PROVISIONING` for the service account and the machine
+ * accounts, which are credentials wearing an account's clothes and are created
+ * by the platform for itself. `method` is an open string for exactly this — no
+ * built-in method describes an account nobody ever signs in to.
+ */
+export const PERSON_PROVISIONING = { method: "email-password" } as const;
+
+/** @see PERSON_PROVISIONING */
+export const MACHINE_PROVISIONING = { method: "kitchen-machine" } as const;

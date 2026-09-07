@@ -3,7 +3,12 @@ import { randomBytes } from "node:crypto";
 import { defaultKeyHasher } from "@better-auth/api-key";
 
 import type { Auth } from "./auth.js";
-import { MACHINE_ACCOUNT_DOMAIN, machineAddress, machineIdentity } from "./identity.js";
+import {
+	MACHINE_ACCOUNT_DOMAIN,
+	MACHINE_PROVISIONING,
+	machineAddress,
+	machineIdentity,
+} from "./identity.js";
 import { log } from "./log.js";
 
 /**
@@ -106,14 +111,17 @@ export async function createProjectKey(
 		throw new KeyExistsError(`${project} already has a key called ${name}`);
 	}
 
-	const user = await ctx.internalAdapter.createUser({
-		email,
-		name: `${name} (${project})`,
-		// Nothing can receive mail here, and an unverified address is one no
-		// access entry naming an address will ever resolve to — see
-		// src/identity.ts.
-		emailVerified: false,
-	});
+	const user = await ctx.internalAdapter.createUser(
+		{
+			email,
+			name: `${name} (${project})`,
+			// Nothing can receive mail here, and an unverified address is one no
+			// access entry naming an address will ever resolve to — see
+			// src/identity.ts.
+			emailVerified: false,
+		},
+		MACHINE_PROVISIONING,
+	);
 
 	const value = randomBytes(KEY_BYTES).toString("hex");
 	const now = new Date();
