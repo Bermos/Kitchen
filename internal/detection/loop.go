@@ -56,6 +56,7 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/notify"
 	"github.com/Bermos/Kitchen/internal/signals"
 )
 
@@ -122,6 +123,20 @@ type Loop struct {
 	// Resolver overrides how dns.mismatch resolves a name, so a test needs no
 	// network. Nil is the bounded system resolver the API also uses.
 	Resolver signals.Resolver
+
+	// Notifier is where a recorded transition goes out, for the
+	// subscriptions that asked for it. Nil notifies nothing, which is what a
+	// caller wired without one gets — and what the tests use, since a
+	// delivery object is the notification path's business rather than this
+	// loop's.
+	//
+	// It is fed from here rather than from the activity feed on purpose. The
+	// feed is prose for a person catching up, and a condition that opens and
+	// resolves forty times while a node flaps would fill it with forty lines
+	// nobody reads. The history is the right stream for this, and it is
+	// written one row per change — which is what makes "once per transition"
+	// true by construction rather than by de-duplication.
+	Notifier *notify.Notifier
 
 	// store resolves the telemetry store. It is a field for the reason the
 	// API's logStore is one: a test must be able to run a round against a
@@ -268,7 +283,8 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 	findings := signals.Catalogue().Evaluate(snapshot)
 	transitions := l.tracker.Observe(findings, snapshot.Now)
 
-	if err := store.InsertSignalTransitions(ctx, signals.TransitionRows(transitions)); err != nil {
+	rows := signals.TransitionRows(transitions)
+	if err := store.InsertSignalTransitions(ctx, rows); err != nil {
 		// The tracker has already moved on, so these transitions would
 		// otherwise be lost between one round and the next — the condition
 		// would be open in memory and absent from the history forever.
@@ -278,6 +294,12 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 		return round, fmt.Errorf("the transitions could not be recorded: %w", err)
 	}
 
+	// Only once the row is in the history, so that a receiver told about a
+	// condition can always find it — and never before, because a
+	// notification about a transition the store refused would be the
+	// platform saying something it has no record of.
+	l.notify(ctx, rows)
+
 	round.Evaluated = true
 	round.Findings = len(findings.Firing())
 	round.Open = l.tracker.Open()
@@ -285,6 +307,21 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 	round.Transitions = transitions
 	l.publish(ctx, round, snapshot)
 	return round, nil
+}
+
+// notify hands each recorded transition to the subscriptions that asked for
+// it. Best-effort and quiet, like every other outbound path here: the round's
+// job was to record what changed, and it has.
+func (l *Loop) notify(ctx context.Context, rows []clickhouse.SignalTransition) {
+	if l.Notifier == nil {
+		return
+	}
+	for _, row := range rows {
+		if _, err := l.Notifier.QueueSignal(ctx, row); err != nil {
+			logf.FromContext(ctx).V(1).Info("a signal notification was not queued",
+				"fingerprint", row.Fingerprint, "audience", row.Audience, "reason", err.Error())
+		}
+	}
 }
 
 // sources is where a round's snapshot comes from. It is the API's own wiring,

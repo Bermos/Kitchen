@@ -246,3 +246,145 @@ func TestNilNotifierNotifiesNothing(t *testing.T) {
 	var notifier *Notifier
 	notifier.Deliver(context.Background(), clickhouse.Event{Type: clickhouse.EventBuildFailed})
 }
+
+// The signal catalogue's own feed, and the filter that decides which of it a
+// subscription hears: the tier the rule declared for the audience the delivery
+// was made to.
+//
+// `log` is the case that matters most, because it is the tier that notifies
+// nobody by definition — a subscription cannot ask for it, so no configuration
+// turns a data point into a message.
+func TestASubscriptionHearsSignalsAtOrAboveItsTier(t *testing.T) {
+	pages := subscription("pages", "shop", kitchenv1alpha1.NotifySignalFiring)
+	pages.Spec.MinTier = kitchenv1alpha1.TierPage
+	tickets := subscription("tickets", "shop", kitchenv1alpha1.NotifySignalFiring)
+	tickets.Spec.MinTier = kitchenv1alpha1.TierTicket
+	unset := subscription("unset", "shop", kitchenv1alpha1.NotifySignalFiring)
+	deploys := subscription("deploys", "shop", kitchenv1alpha1.NotifyDeploySucceeded)
+
+	for _, tc := range []struct {
+		tier string
+		want []string
+	}{
+		{tier: "page", want: []string{"pages", "tickets", "unset"}},
+		{tier: "ticket", want: []string{"tickets", "unset"}},
+		{tier: "log", want: nil},
+		// A tier a catalogue newer than this build declared is admitted by
+		// nobody, which is the safe direction for a thing that sends
+		// messages.
+		{tier: "whenever", want: nil},
+	} {
+		t.Run(tc.tier, func(t *testing.T) {
+			c := fake.NewClientBuilder().
+				WithScheme(testScheme(t)).
+				WithObjects(pages.DeepCopy(), tickets.DeepCopy(), unset.DeepCopy(), deploys.DeepCopy()).
+				Build()
+			notifier := &Notifier{Client: c, Namespace: platformNamespace}
+
+			if _, err := notifier.QueueSignal(context.Background(), signalTransition(tc.tier)); err != nil {
+				t.Fatalf("queueing: %v", err)
+			}
+
+			deliveries := &kitchenv1alpha1.NotificationDeliveryList{}
+			if err := c.List(context.Background(), deliveries, client.InNamespace(platformNamespace)); err != nil {
+				t.Fatalf("listing deliveries: %v", err)
+			}
+			got := map[string]bool{}
+			for i := range deliveries.Items {
+				got[deliveries.Items[i].Spec.SubscriptionRef.Name] = true
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("a %s reached %v, want %v", tc.tier, got, tc.want)
+			}
+			for _, want := range tc.want {
+				if !got[want] {
+					t.Errorf("subscription %q asked for a %s and did not get it", want, tc.tier)
+				}
+			}
+		})
+	}
+}
+
+// The payload a relay reads, and the one field that is not decorative: the
+// event id is the receiver's idempotency key, and for a signal it is derived
+// from the transition rather than random.
+//
+// That is what makes "once per transition" a property a receiver can rely on.
+// A loop that recorded the same round twice — a leader change between the
+// write and the notify — produces the same id and is de-duplicated; two
+// genuinely different openings of the same condition differ in their instant
+// and are two events.
+func TestASignalDeliveryIsKeyedOnItsTransition(t *testing.T) {
+	relay := subscription(relayName, "shop", kitchenv1alpha1.NotifySignalFiring)
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(relay).Build()
+	notifier := &Notifier{Client: c, Namespace: platformNamespace}
+
+	transition := signalTransition("ticket")
+	if _, err := notifier.QueueSignal(context.Background(), transition); err != nil {
+		t.Fatalf("queueing: %v", err)
+	}
+	deliveries := &kitchenv1alpha1.NotificationDeliveryList{}
+	if err := c.List(context.Background(), deliveries, client.InNamespace(platformNamespace)); err != nil {
+		t.Fatalf("listing deliveries: %v", err)
+	}
+	if len(deliveries.Items) != 1 {
+		t.Fatalf("one subscription, one delivery, got %d", len(deliveries.Items))
+	}
+	delivery := deliveries.Items[0]
+
+	if delivery.Spec.EventID != SignalEventID(transition) {
+		t.Errorf("the delivery's id is the transition's: %q", delivery.Spec.EventID)
+	}
+	// The same transition, notified again, is the same event.
+	if again := SignalEventID(transition); again != SignalEventID(transition) {
+		t.Errorf("the id is derived and must be stable: %q", again)
+	}
+	// A different instant is a different event, which is what stops a
+	// receiver dropping the second opening of a condition that flapped.
+	later := transition
+	later.At = transition.At.Add(time.Minute)
+	if SignalEventID(later) == SignalEventID(transition) {
+		t.Error("two openings of one condition are two events")
+	}
+	// And so is the other audience's delivery of the same condition: the key
+	// is the pair, everywhere.
+	operator := transition
+	operator.Audience = "operator"
+	if SignalEventID(operator) == SignalEventID(transition) {
+		t.Error("one condition's two deliveries are two events")
+	}
+
+	payload := Payload{}
+	if err := json.Unmarshal([]byte(delivery.Spec.Payload), &payload); err != nil {
+		t.Fatalf("unreadable payload: %v", err)
+	}
+	switch {
+	case payload.Type != string(kitchenv1alpha1.NotifySignalFiring):
+		t.Errorf("the payload names the event: %+v", payload)
+	case payload.Signal != "workload.crashloop" || payload.Fingerprint != transition.Fingerprint:
+		t.Errorf("the payload names the rule and the condition: %+v", payload)
+	case payload.Audience != "developer" || payload.Tier != "ticket":
+		t.Errorf("the payload says who it was delivered to and what they are meant to do: %+v", payload)
+	case payload.State != "open" || payload.Severity != "critical":
+		t.Errorf("the payload says what happened and how bad it is: %+v", payload)
+	}
+}
+
+// signalTransition is one recorded delivery at a chosen tier.
+func signalTransition(tier string) clickhouse.SignalTransition {
+	return clickhouse.SignalTransition{
+		At:          time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+		State:       "open",
+		Signal:      "workload.crashloop",
+		Fingerprint: "workload.crashloop/shop/shop-production/web",
+		Audience:    "developer",
+		Tier:        tier,
+		Version:     2,
+		Severity:    "critical",
+		Scope:       "environment",
+		Project:     "shop",
+		Environment: "shop-production",
+		Title:       "web is crash-looping",
+		Detail:      "12 restarts in 30m",
+	}
+}

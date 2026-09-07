@@ -274,7 +274,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | PATCH | `/access/reviews/{name}` | Record decisions, close the cycle, or both. Closing applies the revocations and mints the artefact | `operator` |
 | GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?privileged=true`, `?privilegeClass=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
 | GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
-| GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, and the key artifacts are signed under | `operator` |
+| GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, the key artifacts are signed under, and the conditions nobody has tended to | `operator` |
 | GET | `/compliance/inventory` | Every environment and claim with its data class, provenance and residency — the classification inventory, exportable in one request | any account — filtered |
 | GET | `/compliance/drift` | Deployed releases measured against their environment's bar today: what is running that no longer meets it, and whether each rule started failing after promotion or was waived there. `?project=`, `?environment=`, `?all=true` | any account — filtered |
 | GET | `/compliance/criticality` | The function-to-resource mapping: every designated function with the environments, releases, claims, connections, domains and third parties behind it. `?criticality=` narrows to a designation and worse, `?project=` to one | any account — filtered |
@@ -289,6 +289,11 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall | any account — filtered |
 | GET | `/me` | Who the caller is: subject, address, name and platform role | any account |
 | GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components | any account — body varies |
+| GET | `/alerts` | Every open delivery this caller may read, at the tier they read it at, with what is mitigating it. `?project=` narrows | any account — filtered |
+| POST | `/alerts/ack` | Record that somebody has seen a condition, which is what stops the escalation clock | member of the delivery's project for the `developer` row, `operator` for the operator's, enforced by the handler |
+| POST | `/alerts/silence` | Quieten one delivery, with a reason and an expiry. Never reaches the other audience's row | as above |
+| POST | `/alerts/unsilence` | Lift a silence before it expires — a record, not a deletion | as above |
+| POST | `/alerts/claim` | Take the escalated ticket. Any operator; there is no rota | `operator` |
 | GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list | `operator` |
 | GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything | `operator` |
 | GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all | `operator` |
@@ -400,6 +405,7 @@ such changes two changes to two different files.
 - [Custom domains](api/domains.md) — putting an environment on an address of its own
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query
 - [Metrics, traffic and traces](api/telemetry.md) — the golden signals, the request rows behind them, and the spans
+- [Alerts](api/alerts.md) — what the catalogue found, at the tier each audience reads it at, and the acknowledgements, silences and claims about it
 - [The activity feed and the audit log](api/audit.md) — what the platform did, best-effort and tamper-evident
 - [Notifications](api/notifications.md) — subscribing an address to what the platform does, the signed payload it is sent, and the dead letters when it was not taken
 - [Policy decisions](api/decisions.md) — every verdict the policy engine reached, the bundles it evaluates, replaying a decision, and the drift view over them

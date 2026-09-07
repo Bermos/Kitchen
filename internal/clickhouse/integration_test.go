@@ -107,6 +107,7 @@ func retainedTables() []string {
 		MetricsGaugeTable, MetricsSumTable, MetricsHistogramTable,
 		MetricsExponentialHistogramTable, MetricsSummaryTable, MetricsRollupTable,
 		K8sEventsTable, RequestsMinuteTable, SignalTransitionsTable,
+		SignalMitigationsTable,
 	}
 }
 
@@ -1500,7 +1501,7 @@ func TestIntegrationSignalTransitions(t *testing.T) {
 	transition := func(state, audience string, at time.Time) SignalTransition {
 		return SignalTransition{
 			At: at, State: state, Signal: "workload.crashloop", Version: 1,
-			Fingerprint: fingerprint, Audience: audience, Severity: "critical",
+			Fingerprint: fingerprint, Audience: audience, Tier: "ticket", Severity: "critical",
 			Scope: "environment", Project: integrationProject, Environment: environment,
 			Name: "web", Title: "crash-looping", Detail: "12 restarts in 30m",
 			Evidence: "/environments/" + environment, Since: opened, OpenedAt: opened,
@@ -1533,6 +1534,8 @@ func TestIntegrationSignalTransitions(t *testing.T) {
 	switch {
 	case recorded.Signal != "workload.crashloop" || recorded.Version != 1:
 		t.Errorf("the rule and its version come back with the row: %+v", recorded)
+	case recorded.Tier != "ticket":
+		t.Errorf("the tier the row was written at comes back with it: %+v", recorded)
 	case recorded.Severity != "critical" || recorded.Scope != "environment":
 		t.Errorf("the finding comes back as it went in: %+v", recorded)
 	case recorded.Project != integrationProject || recorded.Environment != environment:
@@ -1563,5 +1566,80 @@ func TestIntegrationSignalTransitions(t *testing.T) {
 	}
 	if !remaining["operator"] {
 		t.Errorf("the operator's delivery is untouched by it: %+v", open)
+	}
+}
+
+// TestIntegrationSignalMitigations runs the mitigation records against a real
+// server: the table beside the transitions, the write one route makes, and the
+// read the fold is built from.
+//
+// The two things only a real server answers are here. A record with no expiry
+// is written into a non-nullable DateTime64 as the epoch and has to read back
+// as no expiry rather than as a silence that ended in 1970; and the two
+// deliveries of one condition have to come back as two rows, because a member
+// acking their project's row must not acknowledge the operator's.
+func TestIntegrationSignalMitigations(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureSignalsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureSignalsSchema: %v", err)
+	}
+
+	now := time.Now().UTC()
+	environment := uniqueEnvironment("mitigations")
+	fingerprint := "workload.crashloop/" + integrationProject + "/" + environment + "/web"
+	expiry := now.Add(2 * time.Hour)
+
+	records := []SignalMitigation{{
+		At: now, Kind: "ack", Fingerprint: fingerprint, Audience: "developer",
+		Project: integrationProject, Actor: "ada@example.test", Source: "explicit",
+	}, {
+		At: now.Add(time.Second), Kind: "silence", Fingerprint: fingerprint, Audience: "developer",
+		Project: integrationProject, Actor: "ada@example.test",
+		Reason: "waiting on the upstream fix", Until: expiry, Source: "explicit",
+	}, {
+		At: now.Add(2 * time.Second), Kind: "claim", Fingerprint: fingerprint, Audience: "operator",
+		Project: integrationProject, Actor: "ops@example.test", Source: "explicit",
+	}}
+	for _, record := range records {
+		if err := client.InsertSignalMitigation(ctx, record); err != nil {
+			t.Fatalf("InsertSignalMitigation(%s): %v", record.Kind, err)
+		}
+	}
+
+	read, err := client.SignalMitigations(ctx)
+	if err != nil {
+		t.Fatalf("SignalMitigations: %v", err)
+	}
+	mine := map[string]SignalMitigation{}
+	for _, row := range read {
+		if row.Fingerprint == fingerprint {
+			mine[row.Kind+"/"+row.Audience] = row
+		}
+	}
+	if len(mine) != 3 {
+		t.Fatalf("three records went in, %d came back: %+v", len(mine), mine)
+	}
+
+	ack := mine["ack/developer"]
+	if !ack.Until.IsZero() {
+		t.Errorf("an acknowledgement has no expiry, and must not read as one that has passed: %+v", ack)
+	}
+	if ack.Actor != "ada@example.test" || ack.Source != "explicit" {
+		t.Errorf("who did it and how comes back as it went in: %+v", ack)
+	}
+
+	silence := mine["silence/developer"]
+	if silence.Reason != "waiting on the upstream fix" {
+		t.Errorf("a silence carries its reason, which is the whole of what it leaves behind: %+v", silence)
+	}
+	if silence.Until.Truncate(time.Second).Before(expiry.Truncate(time.Second)) {
+		t.Errorf("a silence carries its expiry: %+v", silence)
+	}
+
+	// The operator's claim is about the same condition and a different
+	// delivery, which is the property the whole key exists for.
+	if claim := mine["claim/operator"]; claim.Actor != "ops@example.test" {
+		t.Errorf("the operator's claim is its own row: %+v", mine)
 	}
 }

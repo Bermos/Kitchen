@@ -62,7 +62,8 @@ func TestCatalogueHoldsEveryRowOfTheDesign(t *testing.T) {
 
 func TestCatalogueRefusesADuplicateID(t *testing.T) {
 	rule := Signal{
-		ID: SignalCrashLoop, Version: 1, Audience: AudienceOperator, Summary: "x",
+		ID: SignalCrashLoop, Version: 1, Audience: AudienceOperator,
+		Tiers: Tiers{Operator: TierTicket}, Summary: "x",
 		Evaluate: func(*Snapshot) []Finding { return nil },
 	}
 	if _, err := NewRegistry(rule, rule); err == nil {
@@ -72,11 +73,26 @@ func TestCatalogueRefusesADuplicateID(t *testing.T) {
 
 func TestCatalogueRefusesAnIncompleteSignal(t *testing.T) {
 	for name, rule := range map[string]Signal{
-		"no id":       {Version: 1, Audience: AudienceOperator, Summary: "x", Evaluate: nilRule},
-		"no version":  {ID: "a.b", Audience: AudienceOperator, Summary: "x", Evaluate: nilRule},
-		"no summary":  {ID: "a.b", Version: 1, Audience: AudienceOperator, Evaluate: nilRule},
-		"no rule":     {ID: "a.b", Version: 1, Audience: AudienceOperator, Summary: "x"},
-		"no audience": {ID: "a.b", Version: 1, Summary: "x", Evaluate: nilRule},
+		"no id": {Version: 1, Audience: AudienceOperator, Tiers: operatorTicket, Summary: "x",
+			Evaluate: nilRule},
+		"no version": {ID: "a.b", Audience: AudienceOperator, Tiers: operatorTicket, Summary: "x",
+			Evaluate: nilRule},
+		"no summary": {ID: "a.b", Version: 1, Audience: AudienceOperator, Tiers: operatorTicket,
+			Evaluate: nilRule},
+		"no rule": {ID: "a.b", Version: 1, Audience: AudienceOperator, Tiers: operatorTicket,
+			Summary: "x"},
+		"no audience": {ID: "a.b", Version: 1, Tiers: operatorTicket, Summary: "x", Evaluate: nilRule},
+		// The tier is declared per audience, so both halves of getting it
+		// wrong are refused: an audience the rule reaches and did not
+		// describe, and one it describes and does not reach.
+		"no tier at all": {ID: "a.b", Version: 1, Audience: AudienceOperator, Summary: "x",
+			Evaluate: nilRule},
+		"no tier for the developer it reaches": {ID: "a.b", Version: 1, Audience: AudienceDeveloper,
+			Tiers: operatorTicket, Summary: "x", Evaluate: nilRule},
+		"a tier for an audience it does not reach": {ID: "a.b", Version: 1, Audience: AudienceOperator,
+			Tiers: Tiers{Developer: TierPage, Operator: TierTicket}, Summary: "x", Evaluate: nilRule},
+		"an unknown tier": {ID: "a.b", Version: 1, Audience: AudienceOperator,
+			Tiers: Tiers{Operator: "whenever"}, Summary: "x", Evaluate: nilRule},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NewRegistry(rule); err == nil {
@@ -87,6 +103,10 @@ func TestCatalogueRefusesAnIncompleteSignal(t *testing.T) {
 }
 
 func nilRule(*Snapshot) []Finding { return nil }
+
+// operatorTicket is a valid declaration for an operator-audience rule, so that
+// a test about some other missing field is not also a test about the tier.
+var operatorTicket = Tiers{Operator: TierTicket}
 
 // A rule that cannot read its input must say so rather than report health it
 // did not measure. This is the whole degradation contract, tested through the

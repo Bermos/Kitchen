@@ -44,22 +44,25 @@ const (
 func platformSignals() []Signal {
 	return []Signal{{
 		ID:       SignalLatencyCorrelated,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierPage},
 		Summary:  "p95 is up against baseline in three or more projects at once",
 		Requires: []Input{InputRequests},
 		Evaluate: evaluateLatencyCorrelated,
 	}, {
 		ID:       SignalErrorCorrelated,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierPage},
 		Summary:  "5xx is up against baseline in three or more projects at once",
 		Requires: []Input{InputRequests},
 		Evaluate: evaluateErrorCorrelated,
 	}, {
 		ID:       SignalComponentUnhealthy,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierPage},
 		Summary:  "a platform component the survey watches is not running",
 		Requires: []Input{InputKitchen},
 		Evaluate: evaluateComponentUnhealthy,

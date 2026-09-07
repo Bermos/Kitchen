@@ -126,6 +126,28 @@ const K8sEventsTable = "k8s_events"
 // acknowledged and silenced separately.
 const SignalTransitionsTable = "signal_transitions"
 
+// SignalMitigationsTable holds what people have *done* about those conditions:
+// every acknowledgement, silence and claim, one row each, append-only.
+//
+// It is keyed the same way its subject is — by (fingerprint, audience) — and
+// for the same reason. A member acking their project's row must not
+// acknowledge the operator's row about the same condition, because escalation
+// is explicitly about nobody having acknowledged; and a member silencing their
+// project's signal must not silence the operator's, which is the whole of what
+// project-scoping protects.
+//
+// It is a second table rather than more columns on the first because the two
+// are written by different things at different times: the evaluation loop
+// writes a transition when a condition changes, and a person writes a
+// mitigation when they decide something. A column on the transition would have
+// to be updated, and this store's tables are append-only by construction.
+//
+// **The evidence is the audit log, not this table.** Every row here is also an
+// audit record, hash-chained and kept under the audit retention. What lives
+// here is the standing state — is this acknowledged, is it silenced, who has
+// it — which is a question about now, answered by a scan of the recent past.
+const SignalMitigationsTable = "signal_mitigations"
+
 // TracesTable holds spans, one row each, as the collector receives them over
 // OTLP from instrumented applications.
 //
@@ -453,9 +475,47 @@ func (c *Client) EnsureK8sEventsSchema(ctx context.Context, retentionDays int32)
 // two classes loses it, and it is the same trade: row-level expiry during
 // merge, in exchange for a promise the store actually keeps.
 func (c *Client) EnsureSignalsSchema(ctx context.Context, retentionDays int32) error {
-	return c.ensureTableRules(ctx, SignalTransitionsTable,
+	if err := c.ensureTableRules(ctx, SignalTransitionsTable,
 		createSignalTransitionsTable(c.cfg.Database, retentionDays),
-		timeColumnKitchen, signalRetentionRules(retentionDays))
+		timeColumnKitchen, signalRetentionRules(retentionDays)); err != nil {
+		return err
+	}
+	// The mitigation records answer to the same class and to a plain TTL,
+	// which is the one place the two tables differ. A mitigation carries no
+	// state to be conditional on, and it does not need one: a silence lasts
+	// at most thirty days by construction, and the durable record of every
+	// ack, silence and claim is the audit log rather than this table.
+	return c.ensureTable(ctx, SignalMitigationsTable,
+		createSignalMitigationsTable(c.cfg.Database, retentionDays), retentionDays)
+}
+
+// createSignalMitigationsTable is what people did about a condition.
+//
+// The ordering key leads with the two columns that are the delivery's identity
+// — the fingerprint and the audience — because every read is "what stands for
+// this key" or "what stands for this project's keys", and both are point
+// lookups. The project is second rather than first, unlike every other table
+// here, because a platform condition's mitigations carry no project at all and
+// leading with it would put the operator's whole list in one bucket keyed on
+// the empty string.
+func createSignalMitigationsTable(database string, retentionDays int32) string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.%s
+(
+    timestamp   DateTime64(3, 'UTC'),
+    kind        LowCardinality(String),
+    fingerprint String,
+    audience    LowCardinality(String),
+    project     LowCardinality(String),
+    actor       String,
+    reason      String,
+    until       DateTime64(3, 'UTC'),
+    source      LowCardinality(String)
+)
+ENGINE = MergeTree
+PARTITION BY toDate(timestamp)
+ORDER BY (fingerprint, audience, timestamp)
+TTL %s`, quoteIdentifier(database), quoteIdentifier(SignalMitigationsTable),
+		ttlExpression(retentionDays))
 }
 
 // signalRetentionRules is the signal history's TTL: one rule, conditional.
@@ -590,6 +650,20 @@ var (
 		{"process", "LowCardinality(String)"},
 		{"run", "LowCardinality(String)"},
 	}
+	// The column #471 added: what the delivery's audience is meant to *do*
+	// about the condition, as the rule declared it when the row was written.
+	// It is on the row for the reason `version` is — the catalogue moves, and
+	// a history reinterpreted against today's declaration is a history that
+	// changes what it said — which is also why it has to reach a table an
+	// earlier version created rather than only a fresh one.
+	//
+	// A row written before it existed reads back as the empty string, which
+	// the tier model ranks below log: an old row is a condition nobody
+	// declared a tier for, and answering "act now" for it would be inventing
+	// one.
+	signalTransitionColumnsAdded = []addedColumn{
+		{"tier", "LowCardinality(String)"},
+	}
 )
 
 // columnsAddedLater is what a table gains beyond what its CREATE would give an
@@ -608,6 +682,9 @@ var (
 func columnsAddedLater(table, ddl string) []addedColumn {
 	if table == EventsTable {
 		return eventColumnsAdded
+	}
+	if table == SignalTransitionsTable {
+		return signalTransitionColumnsAdded
 	}
 	if strings.Contains(ddl, kitchenProjectColumn) {
 		return kitchenColumnsAdded
@@ -1495,6 +1572,7 @@ func createSignalTransitionsTable(database string, retentionDays int32) string {
     version     UInt32,
     fingerprint String,
     audience    LowCardinality(String),
+    tier        LowCardinality(String),
     severity    LowCardinality(String),
     scope       LowCardinality(String),
     project     LowCardinality(String),

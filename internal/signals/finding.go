@@ -163,6 +163,17 @@ type Finding struct {
 	// is the person who should be reading it.
 	Audience Audience `json:"audience"`
 
+	// Tier is what this finding's audience is meant to do about it — the
+	// producing rule's declaration for [Finding.Audience], stamped on by the
+	// registry for the same reason the audience is: a rule cannot see its own
+	// catalogue entry.
+	//
+	// It is the pair's tier and not the condition's. The operator's copy of a
+	// developer condition is a row of its own (see [Deliveries]) and carries
+	// the operator's tier; only a recorded [Transition] can hold both, because
+	// only a recorded round has two rows.
+	Tier Tier `json:"tier,omitempty"`
+
 	// Fingerprint identifies the condition across evaluations. Two rounds that
 	// both find the same container crash-looping produce the same string, which
 	// is what lets the background loop diff rounds and record transitions

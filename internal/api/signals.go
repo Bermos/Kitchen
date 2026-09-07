@@ -252,22 +252,8 @@ const staleRounds = 3
 // readable, and the read succeeded. Any of them failing is a fallback rather
 // than an error — there is a correct answer available, it just costs a gather.
 func (s *Server) recordedSignals(ctx context.Context) (recordedRound, bool) {
-	kitchen := &kitchenv1alpha1.Kitchen{}
-	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
-		return recordedRound{}, false
-	}
-	status := kitchen.Status.Signals
-	if status == nil || status.LastEvaluated == nil {
-		return recordedRound{}, false
-	}
-	interval := kitchen.Spec.Observability.Signals.Interval()
-	if seconds := status.IntervalSeconds; seconds > 0 {
-		// The interval the round was actually evaluated on, which is the one
-		// its age has to be judged against: an operator who has just widened
-		// the interval has not made the last round stale.
-		interval = time.Duration(seconds) * time.Second
-	}
-	if time.Since(status.LastEvaluated.Time) > staleRounds*interval {
+	status, ok := s.currentRound(ctx)
+	if !ok {
 		return recordedRound{}, false
 	}
 
@@ -291,6 +277,37 @@ func (s *Server) recordedSignals(ctx context.Context) (recordedRound, bool) {
 		})
 	}
 	return round, true
+}
+
+// currentRound is the first two of those four: the loop has completed a round,
+// and it is recent enough to be about now.
+//
+// It is split out because three callers want exactly that question and not the
+// findings behind it — the alerts endpoints, which read the transitions
+// themselves rather than as findings, and the resolving actions, which only
+// need to know whether there is a history to record an acknowledgement
+// against. Folding them back into recordedSignals would cost each of them a
+// second read of the same table.
+func (s *Server) currentRound(ctx context.Context) (*kitchenv1alpha1.SignalEvaluationStatus, bool) {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		return nil, false
+	}
+	status := kitchen.Status.Signals
+	if status == nil || status.LastEvaluated == nil {
+		return nil, false
+	}
+	interval := kitchen.Spec.Observability.Signals.Interval()
+	if seconds := status.IntervalSeconds; seconds > 0 {
+		// The interval the round was actually evaluated on, which is the one
+		// its age has to be judged against: an operator who has just widened
+		// the interval has not made the last round stale.
+		interval = time.Duration(seconds) * time.Second
+	}
+	if time.Since(status.LastEvaluated.Time) > staleRounds*interval {
+		return nil, false
+	}
+	return status, true
 }
 
 // signalSources is where a snapshot comes from, on this side of the operator.

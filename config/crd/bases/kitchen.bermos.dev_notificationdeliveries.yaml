@@ -75,6 +75,7 @@ spec:
                 - preview.destroyed
                 - environment.unhealthy
                 - alert.firing
+                - signal.firing
                 type: string
               eventId:
                 minLength: 1

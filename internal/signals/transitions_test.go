@@ -42,13 +42,30 @@ func trackerOver(t *testing.T, entries ...Signal) *Tracker {
 }
 
 func testSignal(id ID, audience Audience, version int) Signal {
+	return testSignalAt(id, audience, version, testTiers(audience))
+}
+
+// testSignalAt is testSignal with the tier declaration chosen, for the tests
+// that are about what a tier does rather than about the diff.
+func testSignalAt(id ID, audience Audience, version int, tiers Tiers) Signal {
 	return Signal{
 		ID:       id,
 		Version:  version,
 		Audience: audience,
+		Tiers:    tiers,
 		Summary:  "a rule that exists to be diffed",
 		Evaluate: func(*Snapshot) []Finding { return nil },
 	}
+}
+
+// testTiers is a declaration covering exactly the audiences a rule reaches, so
+// that a test about the diff does not have to decide a tier to get a valid
+// catalogue.
+func testTiers(audience Audience) Tiers {
+	if audience == AudienceDeveloper {
+		return Tiers{Developer: TierPage, Operator: TierTicket}
+	}
+	return Tiers{Operator: TierPage}
 }
 
 func crashLoop(scope Scope) Finding {

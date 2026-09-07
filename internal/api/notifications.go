@@ -99,10 +99,15 @@ type subscriptionView struct {
 	Scope       string   `json:"scope"`
 	Description string   `json:"description,omitempty"`
 	Suspended   bool     `json:"suspended"`
-	MaxAttempts int32    `json:"maxAttempts"`
-	Timeout     int32    `json:"timeoutSeconds"`
-	CreatedBy   string   `json:"createdBy,omitempty"`
-	CreatedAt   string   `json:"createdAt"`
+	// MinTier is the lowest tier of signal delivery this subscription hears,
+	// and it applies to `signal.firing` alone. Always answered with the
+	// effective value rather than the stored one, so a subscription that
+	// never set it reads as what it actually does.
+	MinTier     string `json:"minTier"`
+	MaxAttempts int32  `json:"maxAttempts"`
+	Timeout     int32  `json:"timeoutSeconds"`
+	CreatedBy   string `json:"createdBy,omitempty"`
+	CreatedAt   string `json:"createdAt"`
 
 	// Ready and Reason are the reconciler's verdict: whether this
 	// subscription can deliver, and why not when it cannot.
@@ -135,6 +140,7 @@ func newSubscriptionView(subscription *kitchenv1alpha1.NotificationSubscription)
 		Scope:          scope,
 		Description:    subscription.Spec.Description,
 		Suspended:      subscription.Spec.Suspended,
+		MinTier:        string(subscription.Spec.Tier()),
 		MaxAttempts:    subscription.Spec.Attempts(),
 		Timeout:        subscription.Spec.Timeout(),
 		CreatedBy:      subscription.Spec.CreatedBy,
@@ -276,8 +282,13 @@ type subscriptionRequest struct {
 	Project     string   `json:"project,omitempty"`
 	Description *string  `json:"description,omitempty"`
 	Suspended   *bool    `json:"suspended,omitempty"`
-	MaxAttempts int32    `json:"maxAttempts,omitempty"`
-	Timeout     int32    `json:"timeoutSeconds,omitempty"`
+	// MinTier filters `signal.firing`: `page` for the top tier alone,
+	// `ticket` for both. There is no third value — `log` is the tier that
+	// notifies nobody, so asking for it would be asking to undo what it
+	// means.
+	MinTier     string `json:"minTier,omitempty"`
+	MaxAttempts int32  `json:"maxAttempts,omitempty"`
+	Timeout     int32  `json:"timeoutSeconds,omitempty"`
 
 	// Secret is the signing key. It goes in and is never answered with —
 	// here, or on any other route.
@@ -320,6 +331,11 @@ func (s *Server) createSubscription(w http.ResponseWriter, req *http.Request) {
 			"payload is signed with, and the platform never reads it back to you "+
 			"(rotate it with PATCH). Generate one, for example with "+
 			"`openssl rand -hex 32`", minSigningKeyLength)
+		return
+	}
+	tier, err := parseNotificationTier(body.MinTier)
+	if err != nil {
+		badRequest(w, "%s", err.Error())
 		return
 	}
 	if body.MaxAttempts < 0 || body.MaxAttempts > 10 {
@@ -371,6 +387,7 @@ func (s *Server) createSubscription(w http.ResponseWriter, req *http.Request) {
 			URL:            body.URL,
 			Events:         events,
 			SecretRef:      kitchenv1alpha1.LocalObjectReference{Name: notificationSecretPrefix + body.Name},
+			MinTier:        tier,
 			MaxAttempts:    body.MaxAttempts,
 			TimeoutSeconds: body.Timeout,
 			CreatedBy:      callerName(caller),
@@ -468,6 +485,15 @@ func (s *Server) patchSubscription(w http.ResponseWriter, req *http.Request) {
 		subscription.Spec.Suspended = *body.Suspended
 		changed = append(changed, "suspended")
 	}
+	if body.MinTier != "" {
+		tier, err := parseNotificationTier(body.MinTier)
+		if err != nil {
+			badRequest(w, "%s", err.Error())
+			return
+		}
+		subscription.Spec.MinTier = tier
+		changed = append(changed, "minTier")
+	}
 	if body.MaxAttempts != 0 {
 		if body.MaxAttempts < 1 || body.MaxAttempts > 10 {
 			badRequest(w, "maxAttempts must be between 1 and 10 (got %d)", body.MaxAttempts)
@@ -493,8 +519,8 @@ func (s *Server) patchSubscription(w http.ResponseWriter, req *http.Request) {
 		changed = append(changed, "secret")
 	}
 	if len(changed) == 0 {
-		badRequest(w, "nothing to change: send url, events, description, suspended, maxAttempts, "+
-			"timeoutSeconds or secret")
+		badRequest(w, "nothing to change: send url, events, description, suspended, minTier, "+
+			"maxAttempts, timeoutSeconds or secret")
 		return
 	}
 
@@ -777,6 +803,29 @@ func parseNotificationEvents(raw []string) ([]kitchenv1alpha1.NotificationEvent,
 		events = append(events, event)
 	}
 	return events, nil
+}
+
+// parseNotificationTier reads the tier floor, refusing anything that is not
+// one of the two a subscription may ask for.
+//
+// The refusal names `log` explicitly, because it is the value somebody will
+// try: it is a tier in the model and it is deliberately not one here. A
+// subscription that could ask for logs would be one that turns a data point
+// into a message, which is exactly what the three tiers exist to stop.
+func parseNotificationTier(raw string) (kitchenv1alpha1.NotificationTier, error) {
+	switch tier := kitchenv1alpha1.NotificationTier(strings.TrimSpace(raw)); tier {
+	case "":
+		return "", nil
+	case kitchenv1alpha1.TierPage, kitchenv1alpha1.TierTicket:
+		return tier, nil
+	case "log":
+		return "", fmt.Errorf("minTier cannot be `log`: that is the tier that notifies nobody, " +
+			"and a subscription asking for it would be asking for every data point the " +
+			"catalogue records. Use `ticket` for everything worth a message, or `page` for " +
+			"the top tier alone")
+	default:
+		return "", fmt.Errorf("unknown minTier %q: `page` or `ticket`", raw)
+	}
 }
 
 func notificationEventWords() string {

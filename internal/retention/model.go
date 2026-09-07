@@ -129,7 +129,8 @@ var definitions = []Definition{
 	{ClassClusterEvents, "Cluster events",
 		"the cluster's Warning history, which the API server itself keeps for about an hour", true},
 	{ClassSignals, "Signal history",
-		"when each condition the catalogue detects opened and resolved; open ones are never expired", false},
+		"when each condition the catalogue detects opened and resolved, and what anybody did about it; " +
+			"open ones are never expired", false},
 	{ClassActivity, "Activity",
 		"the dashboard's activity feed — prose for a person catching up, not evidence", true},
 	{ClassAudit, "Audit log",

@@ -367,6 +367,17 @@ func main() {
 	}
 
 	// The activity recorder feeds the dashboard's recent-activity feed.
+	// One notifier for the whole process. It has two feeds and they are
+	// deliberately different streams: the activity recorder below, which is
+	// what a reconciler having done something turns into, and the signal
+	// evaluation loop, which hands it each recorded transition directly
+	// (#471). A condition that opens and resolves forty times while a node
+	// flaps belongs in the history and not in the feed a person reads.
+	notifier := &notify.Notifier{
+		Client:    mgr.GetClient(),
+		Namespace: controller.PlatformNamespace,
+	}
+
 	// It is shared by the reconcilers and the API, writes into the telemetry
 	// store best-effort, and costs nothing on installations without one.
 	recorder := &activity.Recorder{
@@ -378,10 +389,7 @@ func main() {
 		// nothing is ever notified that is not also in the feed. The sink only
 		// queues delivery objects; the requests themselves are
 		// NotificationDeliveryReconciler's, off every reconcile path.
-		Sink: &notify.Notifier{
-			Client:    mgr.GetClient(),
-			Namespace: controller.PlatformNamespace,
-		},
+		Sink: notifier,
 	}
 
 	// One audit recorder for the whole process, shared by every reconciler
@@ -734,6 +742,10 @@ func main() {
 		// nothing else sees what Hubble reported dropping, and the loop runs
 		// on the leader, which is where the follower runs too.
 		Ingest: api.FlowIngest(flowCollector),
+		// Where a recorded transition goes out. The loop is the only writer
+		// of the history, so it is the only place a delivery can be queued
+		// exactly once per transition.
+		Notifier: notifier,
 	}); err != nil {
 		setupLog.Error(err, "unable to add the signal evaluation loop to manager")
 		os.Exit(1)

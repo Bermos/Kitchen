@@ -139,10 +139,16 @@ detection was not running.
 
 Findings from a recorded round carry one thing an evaluated round cannot know:
 `since` is still what the objects can prove, but the platform's own record of
-when it *first saw* the condition is in the store beside it — which is what
-makes "failing for four hours and nobody has touched it" a question the
-alerting work (#471) can ask. This screen is still the alert inbox minus
-acknowledgement.
+when it *first saw* the condition is in the store beside it.
+
+That is the question [`GET /alerts`](alerts.md) asks, and it is why this
+endpoint did not grow to answer it. This one answers **what is wrong**, one row
+per (signal, scope), and is unchanged. That one answers **and what am I meant
+to do about it**, one row per *delivery* — the pair (fingerprint, audience) —
+with the tier its reader reads it at, how long it has gone unacknowledged, and
+what anybody has done about it. A developer-audience condition is one finding
+here and two deliveries there, which is why they are two endpoints rather than
+one with more fields.
 
 ### Nodes
 

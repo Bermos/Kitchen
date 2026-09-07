@@ -55,6 +55,7 @@ requirements; delete it and create the one you meant.
 | `preview.created` | A preview environment was published for a pull request |
 | `preview.destroyed` | That preview went away again |
 | `alert.firing` | A [saved query](logs.md) with an alert crossed its threshold |
+| `signal.firing` | A delivery of [the signal catalogue](alerts.md) opened or resolved — the condition, who it was delivered to, and the tier they read it at. Filtered by `minTier` |
 
 `events` is required and an empty list is refused. A subscription with no
 events is not one that hears everything — it is one that would start hearing
@@ -79,7 +80,7 @@ platform's.
             "events": ["deploy.succeeded", "build.failed"],
             "project": "shop", "scope": "project",
             "description": "into #shop-deploys", "suspended": false,
-            "maxAttempts": 5, "timeoutSeconds": 10,
+            "minTier": "ticket", "maxAttempts": 5, "timeoutSeconds": 10,
             "createdBy": "grace@example.com", "createdAt": "2026-09-01T09:00:00Z",
             "ready": true,
             "delivered": 412, "failed": 3, "deadLettered": 0,
@@ -104,8 +105,9 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 over plain HTTP is one anybody on the path can read, and the signature proves
 only that it was not changed on the way. `maxAttempts` (1–10, default 5) and
 `timeoutSeconds` (1–30, default 10) bound the retry ladder and one attempt.
-Omitting `project` asks for the platform scope and is refused for anybody but
-an operator.
+`minTier` (`page` or `ticket`, default `ticket`) filters `signal.firing` and
+nothing else. Omitting `project` asks for the platform scope and is refused for
+anybody but an operator.
 
 **`secret` is supplied by the caller and never comes back.** It is at least 16
 characters, and the platform writes it into a Secret it owns and manages; no
@@ -123,7 +125,7 @@ subscription is an operator's and answers `404` to anybody else.
 
 ### `PATCH /notifications/subscriptions/{name}`
 
-Changes `url`, `events`, `description`, `suspended`, `maxAttempts`,
+Changes `url`, `events`, `description`, `suspended`, `minTier`, `maxAttempts`,
 `timeoutSeconds` or `secret` — send only what is changing, and at least one of
 them. Rotating the key is `{"secret": "…"}`, and the new key applies to the
 next attempt of every delivery, including ones already queued.
@@ -309,6 +311,61 @@ threshold that stays crossed all afternoon is one message, not one every five
 minutes. `status.firing`, `status.lastCount` and `status.message` on the
 SavedQuery are what a person reads while it stays crossed, and
 [CRDs](../CRDS.md#savedquery-namespaced-kitchen-system) carries the fields.
+
+## Signals: the third trigger, and the one with a filter
+
+A `signal.firing` event is one delivery of the signal catalogue opening or
+resolving. It does **not** come through the activity feed, unlike everything
+above: the feed is prose for a person catching up, and a condition that opens
+and resolves forty times while a node flaps would fill it with forty lines
+nobody reads. The background evaluation loop hands each recorded transition
+straight to the delivery path instead, once per transition — the history is
+written one row per change, which is what makes that true by construction.
+
+The payload carries seven fields no other event does, on top of the common
+ones:
+
+```json
+{"version": "v1", "id": "9f2c…", "type": "signal.firing",
+ "occurredAt": "2026-04-01T12:00:00Z", "subscription": "shop-relay",
+ "project": "shop", "environment": "shop-production",
+ "message": "web is crash-looping",
+ "signal": "workload.crashloop",
+ "fingerprint": "workload.crashloop/shop/shop-production/web",
+ "audience": "developer", "tier": "ticket", "state": "open",
+ "severity": "critical", "detail": "12 restarts in 30m"}
+```
+
+**`id` is derived rather than random for this event alone**, from the
+delivery's identity and the instant the transition was recorded at —
+`(fingerprint, audience, state, at)`. That is what makes *once per transition*
+something a receiver can rely on rather than a promise this side makes: a loop
+that recorded the same round twice produces the same id and is de-duplicated,
+while two genuinely different openings of the same condition differ in their
+instant and are two events. One condition's two deliveries are likewise two
+events, because they go to two readers in two vocabularies.
+
+**`minTier`** is the filter, and it is the only per-event option a subscription
+has:
+
+| `minTier` | Hears |
+|---|---|
+| `page` | The top tier alone |
+| `ticket` (the default) | Both `page` and `ticket` |
+
+There is no third value. `log` is the tier that notifies nobody by definition,
+so a subscription asking for it would be asking to undo what the tier means; a
+request naming it is a `400`.
+
+The split is deliberate and is [#471](https://github.com/Bermos/Kitchen/issues/471)'s
+fourth decision: the **tier lives on the rule**, because *what kind of thing is
+this and what is this reader meant to do about it* is catalogue knowledge
+versioned with the catalogue, and the **filter lives on the subscription**,
+because which of them reach a given relay is an installation's preference.
+
+`minTier` applies to `signal.firing` and to nothing else. Every other event in
+the vocabulary is a thing that happened rather than a condition somebody is
+meant to act on, and has no tier to filter by.
 
 ## From the terminal
 

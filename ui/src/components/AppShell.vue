@@ -147,10 +147,10 @@ interface NavItem {
  * The sidebar, per scope.
  *
  * Fleet is the only one that spans projects and it holds the questions that
- * genuinely do — what is wrong, what shipped. (`/alerts` is the third and has
- * no route behind it yet; #471 is what puts something there, and an entry
- * leading nowhere is worse than none.) Everything a developer asks about one
- * project is in the Project scope, addressed by that project.
+ * genuinely do — what exists, what needs acting on, what shipped. Alerts is in
+ * this scope rather than in Platform because both audiences have it: the API
+ * narrows the same list to what the reader may see. Everything a developer
+ * asks about one project is in the Project scope, addressed by that project.
  */
 const nav = computed<NavItem[]>(() => {
   const project = activeProject.value;
@@ -163,6 +163,12 @@ const nav = computed<NavItem[]>(() => {
           to: "/",
           name: "overview",
           count: inventory.data.value?.projects.length,
+        },
+        {
+          label: "Alerts",
+          icon: "i-lucide-bell-ring",
+          to: "/alerts",
+          name: "alerts",
         },
         {
           label: "Deploys",

@@ -242,10 +242,14 @@ export const routes: RouteRecordRaw[] = [
 
   // ── Fleet ────────────────────────────────────────────────────────────────
   // The only scope that spans projects, and the three questions worth asking
-  // across all of them: what is wrong, what is firing, what shipped. `/alerts`
-  // is the third and has no route yet — #471 is what puts something there, and
-  // until it does an entry leading nowhere is worse than none.
+  // across all of them: what exists, what needs acting on, what shipped.
   screen({ path: "/", name: "overview", view: "OverviewView.vue", scope: "fleet" }),
+  // Alerts is the second, and it is in this scope rather than in Platform
+  // because both audiences have it: the API answers it for anybody with a
+  // token and narrows it to what they may see — a member's own projects'
+  // deliveries and the symptom rows they are owed, an operator's whole estate.
+  // It carries no `requires` for the same reason.
+  screen({ path: "/alerts", name: "alerts", view: "AlertsView.vue", scope: "fleet" }),
   screen({ path: "/deploys", name: "deploys", view: "BuildsView.vue", scope: "fleet" }),
   screen({
     // Every signed-in account's own screen, and so one with no `requires`:
@@ -312,10 +316,11 @@ export const routes: RouteRecordRaw[] = [
     scope: "project",
   }),
   screen({
-    // What is firing about this project, with the evidence beside it. The
-    // fleet's `/alerts` is the same question across every project and has no
-    // route behind it yet (#471); this one is answered by the environments'
-    // own signals, which already ship.
+    // What is asking for somebody about this project, with the evidence and
+    // the controls beside it. It is the fleet's `/alerts` narrowed to one
+    // project — the same rows through the same component, so that the same
+    // condition cannot say two different things depending on which list it is
+    // read from.
     path: "/projects/:name/alerts",
     name: "project-alerts",
     view: "ProjectAlertsView.vue",

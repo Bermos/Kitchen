@@ -45,14 +45,15 @@ var attachFailureReasons = []string{"FailedAttachVolume", "FailedMount"}
 func storageSignals() []Signal {
 	return []Signal{{
 		ID:       SignalPVCPending,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierTicket},
 		Summary:  "a PersistentVolumeClaim is unbound — the classic first-install hang",
 		Requires: []Input{InputClaims},
 		Evaluate: evaluatePVCPending,
 	}, {
 		ID:      SignalPVCFilling,
-		Version: 1,
+		Version: 2,
 		// Deliberately developer, where §7 lists it under an operator table.
 		// A volume past 85% is scoped to the claim's project, and it is the
 		// owning developer who fills it and who can delete something or ask
@@ -61,34 +62,39 @@ func storageSignals() []Signal {
 		// Audience now drives ForEnvironment, so this line puts it on that
 		// project's diagnostics strip rather than merely labelling it.
 		Audience: AudienceDeveloper,
+		Tiers:    Tiers{Developer: TierTicket, Operator: TierTicket},
 		Summary:  "a volume is past 85% used",
 		Requires: []Input{InputVolumeStats},
 		Evaluate: evaluatePVCFilling,
 	}, {
 		ID:       SignalAttachFailed,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierTicket},
 		Summary:  "the CSI driver could not attach or mount a volume",
 		Requires: []Input{InputClusterEvents},
 		Evaluate: evaluateAttachFailed,
 	}, {
 		ID:       SignalStoreDisk,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierTicket},
 		Summary:  "the telemetry store's own volume is filling",
 		Requires: []Input{InputStore},
 		Evaluate: evaluateStoreDisk,
 	}, {
 		ID:       SignalIngestStalled,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierTicket},
 		Summary:  "nothing has been written to the store while pods are running",
 		Requires: []Input{InputFreshness, InputPods},
 		Evaluate: evaluateIngestStalled,
 	}, {
 		ID:       SignalFlowsLost,
-		Version:  1,
+		Version:  2,
 		Audience: AudienceOperator,
+		Tiers:    Tiers{Operator: TierLog},
 		Summary:  "Hubble reported dropping events, so the request numbers under-report",
 		Requires: []Input{InputIngest},
 		Evaluate: evaluateFlowsLost,

@@ -871,6 +871,15 @@ export interface Compliance {
     storing: boolean;
     message?: string;
   };
+  /** The escalation ladder's last rung. An outage nobody has looked at for
+   *  hours is not a louder alert — nothing is more broken at hour four than at
+   *  hour one — it is a fact about the institution, and this is where facts
+   *  about the institution are reported. `message` says why the list is empty
+   *  when emptiness is not the claim. */
+  incidents?: {
+    untended: UntendedIncident[];
+    message?: string;
+  };
 }
 
 /** One row of the classification inventory: an environment or a claim with
@@ -3416,6 +3425,130 @@ export interface SignalsAnswer {
   environment?: string;
 }
 
+/**
+ * What a reader is meant to *do* about a condition, which is a different
+ * question from how bad it is.
+ *
+ * `severity` answers "how much of a hurry is the reader in" and is a property
+ * of the condition alone. A tier answers "and what is this particular reader
+ * meant to do about it", which is a property of the pair (condition,
+ * audience): a node going NotReady is the operator's to act on now and not
+ * even a word a developer has.
+ *
+ * The dashboard does not use the word `page` — see `tierLabel` in
+ * `lib/alerts.ts`. There is a delivery mechanism and nothing in it wakes
+ * anybody, so the screens use the three tiers as their ordering, which is
+ * where the value is, and the top one gets the word once something behind it
+ * actually pages.
+ */
+export type Tier = "page" | "ticket" | "log";
+
+/** Who a delivery was made to. `developer` is additive: a developer-audience
+ * condition is delivered to the project *and* to the operator, as two rows. */
+export type Audience = "developer" | "operator";
+
+/** What stands about one delivery: the acknowledgement, the silence, the claim. */
+export interface Mitigation {
+  acknowledged?: boolean;
+  acknowledgedBy?: string;
+  acknowledgedAt?: string;
+  /** `explicit` is somebody pressing the button; `action` is the
+   * acknowledgement a resolving action — a rollback, a redeploy, a build —
+   * recorded on their behalf. */
+  acknowledgedVia?: "explicit" | "action";
+
+  silencedBy?: string;
+  silencedAt?: string;
+  silenceReason?: string;
+  silencedUntil?: string;
+
+  claimedBy?: string;
+  claimedAt?: string;
+}
+
+/**
+ * One open delivery as its reader sees it (GET /alerts).
+ *
+ * It is a finding with the delivery's half of the model on top: `tier` is what
+ * this reader reads it at *now* — after a silence, an acknowledgement and the
+ * clock — and `baseTier` is what the rule declared. They differ exactly when
+ * something has happened.
+ */
+export interface Alert extends Finding {
+  audience: Audience;
+  tier: Tier;
+  baseTier?: Tier;
+
+  /** When the platform first saw it, and how long it has been open with
+   * nobody acknowledging it. The second is zero once anybody has. */
+  openedAt?: string;
+  unmitigatedSeconds?: number;
+
+  /** Past the escalation window with nobody acknowledging. On the owner's row
+   * it means "this is being repeated"; on the operator's, "this was added to
+   * your list because of it". `note` is the sentence saying which. */
+  escalated?: boolean;
+  /** Past a multiple of the same window: it stops being an alert and becomes a
+   * line on the compliance posture. */
+  untended?: boolean;
+  note?: string;
+
+  /** A derived row: a platform condition degrading this project, in the
+   * project's own words. Nothing about it is recorded and nothing on it is
+   * actionable. */
+  symptom?: boolean;
+  /** Whether the controls apply to this row at all. */
+  actionable: boolean;
+
+  mitigation?: Mitigation;
+}
+
+/** A round by tier, plus the one number that is not a tier. */
+export interface AlertCounts {
+  page: number;
+  ticket: number;
+  log: number;
+  untended: number;
+}
+
+/** Every open delivery this caller may read. */
+export interface AlertsAnswer {
+  items: Alert[];
+  counts: AlertCounts;
+  /** `recorded` is the background loop's history — the only answer whose rows
+   * can be acted on — and `evaluated` is a round taken to serve the request. */
+  source: "recorded" | "evaluated";
+  evaluatedAt: string;
+  /** Why this answer is thinner than it should be: nothing is recording, or
+   * the mitigation records could not be read. */
+  message?: string;
+  project?: string;
+}
+
+/** What a write names: the delivery, and why. */
+export interface MitigationRequest {
+  fingerprint: string;
+  /** Omitted for a claim, which is about the operator's delivery and no
+   * other. */
+  audience?: Audience;
+  reason?: string;
+  /** RFC 3339. Silences only, and required on one. */
+  until?: string;
+}
+
+/** One condition nobody has tended to, on the compliance posture. */
+export interface UntendedIncident {
+  signal: string;
+  fingerprint: string;
+  audience: Audience;
+  project?: string;
+  environment?: string;
+  title: string;
+  note?: string;
+  openedAt?: string;
+  unmitigatedSeconds?: number;
+}
+
 /** One bucket of a platform series. `value` is null for a bucket nothing was
  * observed in, which is deliberately not zero: a scrape that did not happen is
  * not a machine that was idle. */
@@ -5048,6 +5181,19 @@ export const api = {
   // this environment and its project.
   environmentSignals: (name: string) =>
     request<SignalsAnswer>("GET", `/environments/${name}/signals`),
+
+  // Alerts: the same conditions asked a different question — at the tier
+  // their reader reads them at, with what is mitigating each. Filtered rather
+  // than refused, because it is the one screen both audiences have.
+  alerts: (query: { project?: string } = {}) =>
+    request<AlertsAnswer>(
+      "GET",
+      `/alerts${query.project ? `?project=${encodeURIComponent(query.project)}` : ""}`,
+    ),
+  ackAlert: (body: MitigationRequest) => request<Alert>("POST", "/alerts/ack", body),
+  silenceAlert: (body: MitigationRequest) => request<Alert>("POST", "/alerts/silence", body),
+  unsilenceAlert: (body: MitigationRequest) => request<Alert>("POST", "/alerts/unsilence", body),
+  claimAlert: (body: MitigationRequest) => request<Alert>("POST", "/alerts/claim", body),
 
   // The operator's screens. Everything platform-scoped lives under this one
   // prefix and nothing project-scoped does, which is what makes the

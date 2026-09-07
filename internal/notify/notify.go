@@ -47,9 +47,11 @@ package notify
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -136,6 +138,23 @@ type Payload struct {
 	// Value is the one number some events carry — a finished build's
 	// duration in seconds, an alert's count.
 	Value float64 `json:"value,omitempty"`
+
+	// The seven a `signal.firing` payload carries and nothing else does: the
+	// rule that fired, the delivery's identity, who it was delivered to, what
+	// they are meant to do about it, whether it opened or resolved, how bad
+	// the condition is, and the line under the title.
+	//
+	// They are added under PayloadVersion v1 rather than moving it: the
+	// promise this package makes is that fields may be added and nothing is
+	// removed or given a new meaning without the version changing, and a
+	// relay reading `deploy.succeeded` sees none of these.
+	Signal      string `json:"signal,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Audience    string `json:"audience,omitempty"`
+	Tier        string `json:"tier,omitempty"`
+	State       string `json:"state,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 }
 
 // Notifier creates deliveries for the events it is handed. The zero value is
@@ -311,4 +330,178 @@ func eventID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+// The signal catalogue's own way in.
+//
+// Everything above is a reader of the activity feed: a reconciler records
+// something, and this package turns it into deliveries. A signal delivery is
+// not in that feed and must not be — the feed is prose for a person catching
+// up, and a condition that opens and resolves forty times while a node flaps
+// would fill it — so the background evaluation loop hands each recorded
+// transition here directly.
+//
+// # How idempotency is keyed
+//
+// The receiver's idempotency key is the delivery's event id, and for a signal
+// it is *derived* rather than random: the digest of the delivery's identity
+// and the instant the transition was recorded at — (fingerprint, audience,
+// state, at). That is exactly one id per transition, which is what makes "once
+// per transition" a property a receiver can rely on rather than a promise this
+// side makes. A loop that recorded the same round twice — a leader change
+// between the write and the notify — produces the same id and a receiver
+// de-duplicates it; two genuinely different openings of the same condition
+// differ in their instant and are two events, which is the behaviour a random
+// id gets wrong in the other direction.
+//
+// The one thing it deliberately does not key on is the tier. Two subscriptions
+// at two tiers receiving the same transition receive the same event id, for
+// the same reason two subscriptions to one deploy do: it is one thing that
+// happened, sent twice.
+
+// signalDetailLimit bounds the one field of a signal payload a rule composes
+// freely. The delivery's payload has a maximum length the API server enforces,
+// and a delivery refused at admission is a notification nobody gets and nobody
+// hears about.
+const signalDetailLimit = 500
+
+// QueueSignal creates a delivery per subscription that asked for this
+// transition, and reports how many. It is Queue for the one event that does
+// not come out of the activity feed.
+func (n *Notifier) QueueSignal(ctx context.Context, transition clickhouse.SignalTransition) (int, error) {
+	if n == nil {
+		return 0, nil
+	}
+	subscriptions := &kitchenv1alpha1.NotificationSubscriptionList{}
+	if err := n.Client.List(ctx, subscriptions, client.InNamespace(n.Namespace)); err != nil {
+		return 0, err
+	}
+
+	occurred := transition.At
+	if occurred.IsZero() {
+		occurred = n.now()
+	}
+	id := SignalEventID(transition)
+
+	queued := 0
+	for i := range subscriptions.Items {
+		subscription := &subscriptions.Items[i]
+		if !MatchesSignal(subscription, transition) {
+			continue
+		}
+		if queued >= maxQueuedPerEvent {
+			return queued, fmt.Errorf(
+				"more than %d subscriptions match one event; the rest were not queued", maxQueuedPerEvent)
+		}
+		if err := n.createSignal(ctx, subscription, id, occurred, transition); err != nil {
+			logf.Log.WithName("notify").V(1).Info("signal notification not queued",
+				"subscription", subscription.Name, "fingerprint", transition.Fingerprint,
+				"reason", err.Error())
+			continue
+		}
+		queued++
+	}
+	return queued, nil
+}
+
+// MatchesSignal reports whether a subscription asked for this delivery: the
+// event, the project scope, and the tier floor.
+//
+// The tier is compared against the transition's *recorded* tier — what the
+// rule declared for that audience when the row was written — and not against
+// what an acknowledgement has since made of it. A subscription is a standing
+// instruction about what to be told, and holding a message back because
+// somebody acknowledged the condition four seconds later would make delivery
+// depend on a race.
+func MatchesSignal(
+	subscription *kitchenv1alpha1.NotificationSubscription,
+	transition clickhouse.SignalTransition,
+) bool {
+	if !Matches(subscription, kitchenv1alpha1.NotifySignalFiring, transition.Project) {
+		return false
+	}
+	// `log` is the tier that notifies nobody, and it is refused here by
+	// construction rather than by a rule anybody could configure away: it is
+	// not one of the two values a subscription's floor may take, so no floor
+	// admits it. See NotificationSubscriptionSpec.AdmitsTier.
+	return subscription.Spec.AdmitsTier(kitchenv1alpha1.NotificationTier(transition.Tier))
+}
+
+// SignalEventID is the delivery's idempotency key: see the commentary above.
+func SignalEventID(transition clickhouse.SignalTransition) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		"signal",
+		transition.Fingerprint,
+		transition.Audience,
+		transition.State,
+		transition.At.UTC().Format(time.RFC3339Nano),
+	}, "|")))
+	return hex.EncodeToString(sum[:16])
+}
+
+func (n *Notifier) createSignal(
+	ctx context.Context,
+	subscription *kitchenv1alpha1.NotificationSubscription,
+	id string,
+	occurred time.Time,
+	transition clickhouse.SignalTransition,
+) error {
+	payload := Payload{
+		Version:      PayloadVersion,
+		ID:           id,
+		Type:         string(kitchenv1alpha1.NotifySignalFiring),
+		OccurredAt:   occurred.UTC().Format(time.RFC3339),
+		Subscription: subscription.Name,
+		Project:      transition.Project,
+		Environment:  transition.Environment,
+		// The sentence a person reads, which is the title the screens show.
+		Message: transition.Title,
+
+		Signal:      transition.Signal,
+		Fingerprint: transition.Fingerprint,
+		Audience:    transition.Audience,
+		Tier:        transition.Tier,
+		State:       transition.State,
+		Severity:    transition.Severity,
+		Detail:      truncate(transition.Detail, signalDetailLimit),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	return n.Client.Create(ctx, &kitchenv1alpha1.NotificationDelivery{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: subscription.Name + "-",
+			Namespace:    n.Namespace,
+			Labels: map[string]string{
+				SubscriptionLabel: subscription.Name,
+				EventLabel:        string(kitchenv1alpha1.NotifySignalFiring),
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: kitchenv1alpha1.GroupVersion.String(),
+				Kind:       "NotificationSubscription",
+				Name:       subscription.Name,
+				UID:        subscription.UID,
+			}},
+		},
+		Spec: kitchenv1alpha1.NotificationDeliverySpec{
+			SubscriptionRef: kitchenv1alpha1.LocalObjectReference{Name: subscription.Name},
+			Event:           kitchenv1alpha1.NotifySignalFiring,
+			EventID:         id,
+			Payload:         string(body),
+			Project:         transition.Project,
+		},
+	})
+}
+
+// truncate bounds a field a rule wrote. A finding's detail is a sentence
+// somebody composed and is short in practice; the bound is here because the
+// payload has a maximum length the API server enforces, and a delivery refused
+// at admission is a notification nobody gets and nobody hears about.
+func truncate(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "…"
 }
