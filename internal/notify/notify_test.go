@@ -37,6 +37,12 @@ const (
 	// relayName is the subscription under test: the payload names it, the
 	// label selects on it, and the owner reference points at it.
 	relayName = "relay"
+
+	// The two tiers a subscription's floor may take, spelled once. They are
+	// this package's own strings rather than internal/signals' constants:
+	// signals reaches internal/controller, which reaches this package.
+	tierPage   = "page"
+	tierTicket = "ticket"
 )
 
 func testScheme(t *testing.T) *runtime.Scheme {
@@ -263,25 +269,37 @@ func TestASubscriptionHearsSignalsAtOrAboveItsTier(t *testing.T) {
 	deploys := subscription("deploys", "shop", kitchenv1alpha1.NotifyDeploySucceeded)
 
 	for _, tc := range []struct {
-		tier string
-		want []string
+		name string
+		// tier is what the rule declared and the history recorded;
+		// delivered is what the installation's policy makes of it, empty
+		// meaning it is delivered as declared.
+		tier      string
+		delivered string
+		want      []string
 	}{
-		{tier: "page", want: []string{"pages", "tickets", "unset"}},
-		{tier: "ticket", want: []string{"tickets", "unset"}},
-		{tier: "log", want: nil},
+		{name: tierPage, tier: tierPage, want: []string{"pages", "tickets", "unset"}},
+		{name: tierTicket, tier: tierTicket, want: []string{"tickets", "unset"}},
+		{name: "log", tier: "log", want: nil},
 		// A tier a catalogue newer than this build declared is admitted by
 		// nobody, which is the safe direction for a thing that sends
 		// messages.
-		{tier: "whenever", want: nil},
+		{name: "whenever", tier: "whenever", want: nil},
+		// An installation with paging off — the `homelab` preset — records
+		// the rule's page and delivers a ticket, and a subscription asking
+		// for pages alone is asking for something this installation does
+		// not do.
+		{name: "a page this installation does not page", tier: tierPage, delivered: tierTicket,
+			want: []string{"tickets", "unset"}},
 	} {
-		t.Run(tc.tier, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			c := fake.NewClientBuilder().
 				WithScheme(testScheme(t)).
 				WithObjects(pages.DeepCopy(), tickets.DeepCopy(), unset.DeepCopy(), deploys.DeepCopy()).
 				Build()
 			notifier := &Notifier{Client: c, Namespace: platformNamespace}
 
-			if _, err := notifier.QueueSignal(context.Background(), signalTransition(tc.tier)); err != nil {
+			_, err := notifier.QueueSignal(context.Background(), signalTransition(tc.tier), tc.delivered)
+			if err != nil {
 				t.Fatalf("queueing: %v", err)
 			}
 
@@ -294,11 +312,11 @@ func TestASubscriptionHearsSignalsAtOrAboveItsTier(t *testing.T) {
 				got[deliveries.Items[i].Spec.SubscriptionRef.Name] = true
 			}
 			if len(got) != len(tc.want) {
-				t.Fatalf("a %s reached %v, want %v", tc.tier, got, tc.want)
+				t.Fatalf("a %s reached %v, want %v", tc.name, got, tc.want)
 			}
 			for _, want := range tc.want {
 				if !got[want] {
-					t.Errorf("subscription %q asked for a %s and did not get it", want, tc.tier)
+					t.Errorf("subscription %q asked for a %s and did not get it", want, tc.name)
 				}
 			}
 		})
@@ -319,8 +337,8 @@ func TestASignalDeliveryIsKeyedOnItsTransition(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(relay).Build()
 	notifier := &Notifier{Client: c, Namespace: platformNamespace}
 
-	transition := signalTransition("ticket")
-	if _, err := notifier.QueueSignal(context.Background(), transition); err != nil {
+	transition := signalTransition(tierTicket)
+	if _, err := notifier.QueueSignal(context.Background(), transition, ""); err != nil {
 		t.Fatalf("queueing: %v", err)
 	}
 	deliveries := &kitchenv1alpha1.NotificationDeliveryList{}
@@ -363,10 +381,45 @@ func TestASignalDeliveryIsKeyedOnItsTransition(t *testing.T) {
 		t.Errorf("the payload names the event: %+v", payload)
 	case payload.Signal != "workload.crashloop" || payload.Fingerprint != transition.Fingerprint:
 		t.Errorf("the payload names the rule and the condition: %+v", payload)
-	case payload.Audience != "developer" || payload.Tier != "ticket":
+	case payload.Audience != "developer" || payload.Tier != tierTicket || payload.BaseTier != tierTicket:
 		t.Errorf("the payload says who it was delivered to and what they are meant to do: %+v", payload)
 	case payload.State != "open" || payload.Severity != "critical":
 		t.Errorf("the payload says what happened and how bad it is: %+v", payload)
+	}
+}
+
+// What the payload says a page is worth on an installation that does not page.
+//
+// The recorded tier is the rule's declaration — that is what the history keeps,
+// so that changing the policy re-reads every condition already open — and the
+// installation's policy is applied where the delivery is read. A relay is one
+// of the two readers, so it is told both: what to do about it, and what the
+// catalogue asked for.
+func TestASignalPayloadCarriesBothTiers(t *testing.T) {
+	relay := subscription(relayName, "shop", kitchenv1alpha1.NotifySignalFiring)
+	relay.Spec.MinTier = kitchenv1alpha1.TierTicket
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(relay).Build()
+	notifier := &Notifier{Client: c, Namespace: platformNamespace}
+
+	if _, err := notifier.QueueSignal(context.Background(), signalTransition(tierPage), tierTicket); err != nil {
+		t.Fatalf("queueing: %v", err)
+	}
+	deliveries := &kitchenv1alpha1.NotificationDeliveryList{}
+	if err := c.List(context.Background(), deliveries, client.InNamespace(platformNamespace)); err != nil {
+		t.Fatalf("listing deliveries: %v", err)
+	}
+	if len(deliveries.Items) != 1 {
+		t.Fatalf("a ticket floor hears a page held down to a ticket, got %d deliveries", len(deliveries.Items))
+	}
+	payload := Payload{}
+	if err := json.Unmarshal([]byte(deliveries.Items[0].Spec.Payload), &payload); err != nil {
+		t.Fatalf("unreadable payload: %v", err)
+	}
+	if payload.Tier != tierTicket {
+		t.Errorf("`tier` is what this installation does about it: %+v", payload)
+	}
+	if payload.BaseTier != tierPage {
+		t.Errorf("`baseTier` is what the rule declared: %+v", payload)
 	}
 }
 

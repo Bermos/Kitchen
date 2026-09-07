@@ -210,7 +210,12 @@ func FoldMitigations(records []Mitigation) map[TransitionKey]MitigationState {
 // Both rules are the same rule twice: a silence is a decision somebody made,
 // and a decision with no reason and no end is a rule that quietly outlives
 // whoever made it.
-func ValidateSilence(reason string, until time.Time, now time.Time) error {
+// The bound is the installation's rather than the compiled-in month: an
+// operator who has decided that a silence here lasts a week is making exactly
+// the decision `/platform/policy` exists for, and a refusal that quoted a
+// number nobody set would be arguing with a screen the caller can read.
+func ValidateSilence(reason string, until time.Time, policy Policy, now time.Time) error {
+	policy = policy.Normalised()
 	switch {
 	case reason == "":
 		return fmt.Errorf("a silence must say why: it is a decision somebody made, " +
@@ -218,9 +223,9 @@ func ValidateSilence(reason string, until time.Time, now time.Time) error {
 	case until.IsZero() || !until.After(now):
 		return fmt.Errorf("a silence must expire in the future: a silence with no end " +
 			"is a rule nobody remembers making")
-	case until.Sub(now) > MaxSilence:
-		return fmt.Errorf("a silence may last at most %s; ask for it again if it is still true then",
-			MaxSilence)
+	case until.Sub(now) > policy.MaxSilence:
+		return fmt.Errorf("a silence may last at most %s on this installation; ask for it again "+
+			"if it is still true then", policy.MaxSilence)
 	}
 	return nil
 }

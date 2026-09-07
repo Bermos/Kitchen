@@ -62,6 +62,16 @@ const (
 	InputProjects Input = "projects"
 	InputBuilds   Input = "builds"
 	InputKitchen  Input = "kitchen"
+	// InputResourceClaims is what each project attaches, read by the
+	// correlation ladder's second rung and by nothing else.
+	InputResourceClaims Input = "resourceclaims"
+	// InputPlatformChanges is the two kinds that record what this platform
+	// did to itself — PlatformUpdate and AddonUpgrade — as one input,
+	// because they are one question and a ladder that had half the timeline
+	// would silently climb one rung less. The other two legs of that
+	// timeline are [InputClusterEvents] and [InputAudit], which fail
+	// separately and are already inputs of their own.
+	InputPlatformChanges Input = "platform_changes"
 
 	// From the telemetry store.
 	InputClusterEvents Input = "k8s_events"
@@ -78,6 +88,15 @@ const (
 	InputVolumeStats Input = "kubelet_volume_stats"
 	InputFreshness   Input = "telemetry_freshness"
 	InputStore       Input = "clickhouse_system"
+	// InputAudit is the hash-chained record of what people did to the
+	// platform, which is the fourth leg of the correlation ladder's
+	// timeline: a settings change at 04:03 is a platform change like a
+	// release is.
+	InputAudit Input = "audit_records"
+	// InputHistory is the catalogue's own recorded output — when each open
+	// condition was first seen. It is what lets the correlation ladder say
+	// two failures began together rather than that one round noticed both.
+	InputHistory Input = "signal_transitions"
 
 	// Derived by the operator itself.
 	InputDNS    Input = "dns"
@@ -94,6 +113,14 @@ type Signal struct {
 	// why a finding that never resolved suddenly did. It does not move for a
 	// reworded title.
 	Version int
+
+	// Correlates marks a rule that reads the rest of the round rather than
+	// the estate — [Snapshot.Round] — and so must be evaluated after every
+	// other rule has answered. There is one, and one is the point: the
+	// correlator is the only thing in the catalogue whose subject is the
+	// catalogue's own output, and a second pass exists so that widening
+	// correlation past HTTP costs the other thirty-odd rules nothing.
+	Correlates bool
 
 	// Audience decides whether the rule also reaches the environment page's
 	// diagnostics strip.

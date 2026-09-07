@@ -496,6 +496,113 @@ the audit log rather than here: one record a pass, kind `Retention`,
 was measured against and what the pass removed. Read it with
 `GET /audit?kind=Retention`.
 
+### Signal policy
+
+`GET /platform/policy` is what this installation counts as worth hearing.
+
+It is the operator's alone and it is installation-wide, which is the
+distinction it exists to draw. [`/alerts → Routing`](alerts.md) is *who hears
+about a condition*, and a project edits its own; this is *what makes something
+a condition at all*, every number applies to every project, and the compliance
+posture reads it.
+
+**A project cannot yet tighten its own thresholds.** #472's design says it
+should be able to — asking to be woken more often costs the operator nothing —
+and that half is not built; it is
+[#519](https://github.com/Bermos/Kitchen/issues/519). Until it lands these
+values are the whole answer for every project, not a floor with overrides
+above it.
+
+```json
+{"preset": "balanced", "modified": false,
+ "correlatedProjects": 3, "correlationWindowMinutes": 15,
+ "escalationWindowMinutes": 60, "untendedMultiple": 4,
+ "maxSilenceHours": 720, "paging": true,
+ "untendedAfterHours": 4,
+ "provenance": "preset=balanced correlatedProjects=3 correlationWindow=15m0s escalationWindow=1h0m0s untendedMultiple=4 maxSilence=720h0m0s paging=on",
+ "presets": [
+   {"name": "strict", "description": "Two projects are a correlation, …",
+    "correlatedProjects": 2, "correlationWindowMinutes": 30,
+    "escalationWindowMinutes": 30, "untendedMultiple": 2,
+    "maxSilenceHours": 168, "paging": true},
+   {"name": "balanced", "description": "The platform's own judgement, …", "…": "…"},
+   {"name": "homelab", "description": "One host and a handful of projects, …",
+    "correlatedProjects": 2, "correlationWindowMinutes": 60,
+    "escalationWindowMinutes": 240, "untendedMultiple": 6,
+    "maxSilenceHours": 720, "paging": false}]}
+```
+
+The six numbers are the whole of what is configurable, and that bound is the
+point. Which signals exist, what they compute and what each one asks of its
+reader stay versioned code — see
+[docs/OBSERVABILITY.md §9](../OBSERVABILITY.md) — because two installations on
+catalogue v1 that disagreed about what a rule *is* would make the version
+meaningless.
+
+- `correlatedProjects` — how many projects must be degrading together before it
+  is one platform problem rather than several application problems.
+- `correlationWindowMinutes` — how far apart two failures may have started and
+  still count as the same moment. It is also how far back the ladder's third
+  rung looks for a change of the platform's own, clamped to the hour that
+  timeline is actually gathered over — a window set wider searches a stretch
+  nothing was read for, and the finding says which span it checked.
+- `escalationWindowMinutes` — how long an owner-tier condition may sit
+  unacknowledged before the operator is added to it. It repeats and adds a
+  ticket; nothing becomes more urgent, because nothing is more broken at hour
+  four than at hour one.
+- `untendedMultiple` — how many of those windows it survives before it stops
+  being an alert and becomes a line on the compliance posture.
+  `untendedAfterHours` is the product, served so nothing has to multiply.
+- `maxSilenceHours` — the longest silence a member may set on their own row.
+- `paging` — whether the `page` tier is delivered as a page at all. False holds
+  every paging condition down to a ticket, for every project on the
+  installation, which is the homelab reading: nobody is on call for a house. It
+  holds it down at both places a delivery is read — the alerts feed the screens
+  render, and the `signal.firing`
+  [subscriptions](notifications.md#signals-the-third-trigger-and-the-one-with-a-filter),
+  where it is also what a `minTier` floor is compared against.
+
+`preset` is the base in force and `modified` says whether somebody has moved a
+number off it — "balanced" and "balanced, with two numbers moved" are different
+sentences, and only the second warns that choosing the preset again would undo
+something.
+
+`provenance` is the string every finding evaluated under this policy carries,
+served rather than paraphrased so a screen shows the reader the thing they will
+later find on a finding. **A finding records the thresholds it was evaluated
+against**, which is what keeps `v1 @ correlatedProjects=2` and
+`v1 @ correlatedProjects=3` distinguishable after the fact — a compliance
+posture that reads these numbers has to be able to say what they were at the
+time, and an audit pack that cannot is not evidence.
+
+`PATCH /platform/policy` changes any subset. Every field is optional and an
+absent one is left alone, so a form can send only what moved:
+
+```json
+{"correlatedProjects": 2, "maxSilenceHours": 168}
+```
+
+Naming a preset is the exception in one direction: it **rebases**, clearing
+every override the installation had, and a request that also sets a number is
+choosing the preset and then moving that one.
+
+```json
+{"preset": "homelab"}
+```
+
+A number outside its bound is answered `400` naming the field, the range and
+what the number is for. A write that changes nothing is answered `200` and
+recorded as nothing — the log is for changes. A write that does change
+something is recorded in the audit log under kind `SignalPolicy` with
+`details.change` `signal-policy`, carrying what moved and the provenance on
+both sides of it. Read it with `GET /audit?kind=SignalPolicy`.
+
+Nothing in the CLI carries this surface as a command of its own, deliberately:
+it is a decision an operator makes once and reads off a screen, not something a
+pipeline sets. `kitchen api GET /platform/policy` and
+`kitchen api PATCH /platform/policy --data '{"preset": "homelab"}'` reach it
+authenticated, like any other route.
+
 ### Backup
 
 `GET /platform/backup` is what an archive taken now would hold, before anybody

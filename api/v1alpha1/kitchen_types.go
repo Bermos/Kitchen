@@ -836,6 +836,99 @@ type SignalsSpec struct {
 	// +kubebuilder:default=60
 	// +optional
 	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
+
+	// Policy is the clock the catalogue is read against: how many projects
+	// have to degrade together before it is one incident, how long a
+	// failure may run unmitigated, and how long a member may silence their
+	// own row.
+	//
+	// It is deliberately the only configurable half. Which signals exist,
+	// what they compute and their base tier stay versioned code — see
+	// docs/OBSERVABILITY.md §9 — because two installations on catalogue v1
+	// that disagreed about what a rule *is* would destroy the thing the
+	// version is for. The numbers here are not that: they are the
+	// installation's own idea of what is worth hearing, and every finding
+	// records the ones it was evaluated against.
+	// +kubebuilder:default={}
+	// +optional
+	Policy SignalPolicySpec `json:"policy,omitempty"`
+}
+
+// SignalPolicySpec is the bounded, named set of thresholds an installation may
+// set, and the whole of what #472 reopened.
+//
+// Every field is a pointer over a named preset. The preset supplies the base
+// — `balanced` is the compiled-in constants exactly, so an installation that
+// sets nothing behaves as it always did — and a field that is set overrides
+// that one number. That shape is what makes "three presets, and the numbers
+// underneath them" one object rather than two ways of saying the same thing.
+//
+// The values here are installation-wide and apply to every project: they are
+// what the operator is accountable for, and what the compliance posture reads.
+// Letting a project tighten its own thresholds is the other half of #472's
+// design and is not built — see #519.
+type SignalPolicySpec struct {
+	// Preset is the base every unset number comes from.
+	//
+	//   - `strict` wants to hear about it early: two projects correlate, half
+	//     an hour unmitigated escalates, a silence lasts a week.
+	//   - `balanced` is the platform's own judgement and the compiled-in
+	//     numbers exactly.
+	//   - `homelab` is one host and a handful of projects: two projects
+	//     correlate — three is a threshold a small estate never reaches —
+	//     nothing escalates before the afternoon, and **nothing pages**:
+	//     every condition that would say "act now" arrives as a ticket.
+	// +kubebuilder:validation:Enum=strict;balanced;homelab
+	// +kubebuilder:default=balanced
+	// +optional
+	Preset string `json:"preset,omitempty"`
+
+	// CorrelatedProjects is how many projects must be degrading together
+	// before it is called one platform problem rather than several
+	// application problems.
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	CorrelatedProjects *int32 `json:"correlatedProjects,omitempty"`
+
+	// CorrelationWindowMinutes is how far apart two failures may have
+	// started and still count as the same moment.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1440
+	// +optional
+	CorrelationWindowMinutes *int32 `json:"correlationWindowMinutes,omitempty"`
+
+	// EscalationWindowMinutes is how long an owner-tier condition may sit
+	// unacknowledged before the operator is added to it.
+	// +kubebuilder:validation:Minimum=5
+	// +kubebuilder:validation:Maximum=10080
+	// +optional
+	EscalationWindowMinutes *int32 `json:"escalationWindowMinutes,omitempty"`
+
+	// UntendedMultiple is how many escalation windows a condition survives
+	// before it stops being an alert and becomes a line on the compliance
+	// posture.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	// +optional
+	UntendedMultiple *int32 `json:"untendedMultiple,omitempty"`
+
+	// MaxSilenceHours is the longest silence a member may set on their own
+	// project's row.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=8760
+	// +optional
+	MaxSilenceHours *int32 `json:"maxSilenceHours,omitempty"`
+
+	// Paging is whether the catalogue's `page` tier is delivered as a page
+	// at all. False holds every paging condition down to a ticket, which is
+	// what the homelab preset wants: nobody is on call for a house.
+	//
+	// It is installation-wide and applies to every project. Letting a project
+	// tighten its own rows back up is the other half of #472's design and is
+	// not built yet; it is tracked as #519.
+	// +optional
+	Paging *bool `json:"paging,omitempty"`
 }
 
 // SignalsEnabled reads the pointer with its default applied, for a Kitchen

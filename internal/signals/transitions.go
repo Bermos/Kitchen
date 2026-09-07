@@ -101,6 +101,19 @@ type Transition struct {
 	Detail   string
 	Evidence string
 
+	// Confidence is which rung of the correlation ladder the finding was
+	// raised at, empty for every rule that is not a cross-project detector.
+	// Projects and Correlates are the rest of that answer: the affected set,
+	// and the rules whose rows the correlation stands in front of.
+	Confidence Confidence
+	Projects   []string
+	Correlates []ID
+
+	// Policy is the installation's thresholds when the row was written, as
+	// [Policy.Provenance] spells them — the provenance a finding evaluated
+	// against configurable numbers needs to stay reproducible.
+	Policy string
+
 	// Since is what the snapshot could prove about the condition's age, and
 	// OpenedAt is when this platform first saw it. They are both here because
 	// they answer different questions: a pod's last restart is Since, and
@@ -130,6 +143,10 @@ func (t Transition) Finding() Finding {
 		Detail:      t.Detail,
 		Since:       t.Since,
 		Evidence:    t.Evidence,
+		Confidence:  t.Confidence,
+		Projects:    t.Projects,
+		Correlates:  t.Correlates,
+		Policy:      t.Policy,
 	}
 }
 
@@ -275,6 +292,12 @@ func (t *Tracker) transition(
 	// makes the operator's copy of a developer condition a ticket while the
 	// developer's own copy is a page.
 	tier, _ := t.tiers[finding.Signal].For(key.Audience)
+	// A rule that lowered its own tier for this finding keeps the lower one,
+	// on *both* rows of the condition. The lowering is a statement about this
+	// instance — "three volumes filling is milder than the kind in general" —
+	// and an instance is not milder for one reader and not the other. Each
+	// row's own declaration is still the ceiling, so this only ever lowers.
+	tier = lowered(tier, finding.Tier)
 	return Transition{
 		At:          now,
 		State:       state,
@@ -288,6 +311,10 @@ func (t *Tracker) transition(
 		Title:       finding.Title,
 		Detail:      finding.Detail,
 		Evidence:    finding.Evidence,
+		Confidence:  finding.Confidence,
+		Projects:    finding.Projects,
+		Correlates:  finding.Correlates,
+		Policy:      finding.Policy,
 		Since:       finding.Since,
 		OpenedAt:    openedAt,
 	}

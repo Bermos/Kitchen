@@ -267,6 +267,23 @@ spec:
       intervalSeconds: 60               # the resolution of every duration the history can report: a
                                         # condition that opened and resolved between two rounds was
                                         # never seen
+      policy:                           # the clock, as opposed to the catalogue: the bounded, named
+                                        # set of numbers an installation may set. Edited through
+                                        # `PATCH /platform/policy` and the /platform/policy screen
+        preset: balanced                # strict | balanced | homelab. `balanced` is the compiled-in
+                                        # constants exactly, so an installation that sets nothing
+                                        # behaves as it always did. A field below overrides that one
+                                        # number; naming a preset again clears every override
+        correlatedProjects: 3           # how many projects degrading together is one platform problem
+        correlationWindowMinutes: 15    # how far apart two failures may have begun and still be one
+                                        # moment — and how far back the ladder looks for a change
+        escalationWindowMinutes: 60     # how long a failure may run unacknowledged before the
+                                        # operator is added to it
+        untendedMultiple: 4             # how many of those windows before it becomes a line on the
+                                        # compliance posture
+        maxSilenceHours: 720            # the longest silence a member may set on their own row
+        paging: true                    # false holds every `page` down to a ticket, for every project on
+                                        # the installation. A project tightening its own rows is #519
 status:
   conditions: [...]                     # Ready, GatewayProgrammed, TunnelConnected,
                                         # TelemetrySchemaReady, PreviewGateReady, RegistryReady,
@@ -3072,7 +3089,11 @@ learn that they are three code paths. The events are `deploy.succeeded`, `build.
 opening or resolving, and every rule declares a tier per audience — `page`, `ticket` or
 `log` — so `minTier` decides which of them reach this address: `page` for the top tier
 alone, `ticket` (the default) for both. There is no third value, because `log` is the
-tier that notifies nobody by definition. The tier lives on the rule, versioned with the
+tier that notifies nobody by definition. The floor is compared against the tier this
+installation *delivers*, which is the rule's with
+`spec.observability.signals.policy.paging` applied — an installation that does not page
+holds every page down to a ticket here as well as on the screens, and the payload carries
+the rule's own tier as `baseTier` beside it. The tier lives on the rule, versioned with the
 catalogue; the filter lives here, because which of them a given relay wants is an
 installation's preference. See [docs/api/alerts.md](api/alerts.md).
 

@@ -162,9 +162,15 @@ curl -X POST -H "authorization: Bearer $TOKEN" \
 
 `200`. A silence must carry a reason and an expiry, and both are refused as
 `400` when missing: a decision with no reason and no end is a rule that quietly
-outlives whoever made it. The bound is **thirty days** — a decision nobody
-revisits within a month is one whose reason has stopped being true without
-anybody noticing, and asking again is cheap.
+outlives whoever made it. The bound is **thirty days by default** — a decision
+nobody revisits within a month is one whose reason has stopped being true
+without anybody noticing, and asking again is cheap. It is the operator's to
+move: it is `maxSilenceHours` on
+[the signal policy](platform.md#signal-policy), which is installation-wide and
+which the refusal quotes, so a member asked for a longer silence than this
+installation allows is told what this installation allows rather than what the
+platform ships with. The escalation clock the paragraphs above measure against
+is the same policy's `escalationWindowMinutes`.
 
 A silence is **project-scoped**, and it is scoped by being keyed on the pair:
 it lowers the delivery it names to `log` and never reaches the operator's row

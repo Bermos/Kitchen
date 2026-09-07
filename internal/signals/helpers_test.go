@@ -66,6 +66,10 @@ func newSnapshot() *Snapshot {
 		Resources: map[EnvKey]clickhouse.ResourceSeries{},
 		Freshness: map[string]time.Time{},
 		NodeUsage: map[string]NodeUsage{},
+		// Empty rather than absent, like Gather's: a platform that has
+		// recorded nothing knows no condition's start, which is what the
+		// correlation ladder reads it as.
+		OpenedAt: map[string]time.Time{},
 		Environments: []kitchenv1alpha1.Environment{{
 			ObjectMeta: metav1.ObjectMeta{Name: testEnvironment},
 			Spec: kitchenv1alpha1.EnvironmentSpec{

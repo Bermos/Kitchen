@@ -1569,6 +1569,84 @@ func TestIntegrationSignalTransitions(t *testing.T) {
 	}
 }
 
+// TestIntegrationSignalTransitionsCarryACorrelation runs the four columns the
+// correlation ladder added through the same cycle, and then through the
+// upgrade path that is the only way an existing installation gets them.
+//
+// Both halves are things no fake can answer. A `LowCardinality(String)` column
+// added to the DDL reaches a fresh install and nowhere else: `CREATE TABLE IF
+// NOT EXISTS` does not reshape a table that is already there, so the ALTER in
+// `ensureAddedColumns` is what an upgrade actually runs — and a column named
+// in the argMax read but missing from the table is a query that reads
+// perfectly and fails. The other half is the two list-shaped columns: the
+// history is flat, so a correlation's affected set and the rules it folded up
+// are joined on the way in and split on the way out, and a fold the history
+// could not reproduce would make a recorded round read differently from the
+// one that was evaluated.
+func TestIntegrationSignalTransitionsCarryACorrelation(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+	if err := client.EnsureSignalsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureSignalsSchema: %v", err)
+	}
+
+	// The upgrade an installation that predates #472 performs: the table
+	// exists without the four columns, and the next reconcile has to add
+	// them rather than leave every read naming columns that are not there.
+	for _, column := range []string{"confidence", "projects", "correlates", "policy"} {
+		statement := fmt.Sprintf("ALTER TABLE %s.%s DROP COLUMN IF EXISTS %s",
+			quoteIdentifier(client.cfg.Database), quoteIdentifier(SignalTransitionsTable),
+			quoteIdentifier(column))
+		if err := client.Exec(ctx, statement); err != nil {
+			t.Fatalf("dropping %s to stand in for a table written before it: %v", column, err)
+		}
+	}
+	if err := client.EnsureSignalsSchema(ctx, integrationRetained); err != nil {
+		t.Fatalf("EnsureSignalsSchema over a table missing the correlation columns: %v", err)
+	}
+
+	opened := time.Now().UTC().Add(-20 * time.Minute)
+	environment := uniqueEnvironment("ladder")
+	fingerprint := "platform.correlated/workload.crashloop/" + environment
+	policy := "preset=homelab correlatedProjects=2 correlationWindow=1h0m0s"
+	if err := client.InsertSignalTransitions(ctx, []SignalTransition{{
+		At: opened, State: "open", Signal: "platform.correlated", Version: 1,
+		Fingerprint: fingerprint, Audience: "operator", Tier: "page", Severity: "critical",
+		Scope: "platform", Project: integrationProject, Name: "workload.crashloop",
+		Title:  "crash-looping is firing in 3 projects at once",
+		Detail: "crash-looping across api, docs, shop", Evidence: "/platform",
+		Confidence: "dependency", Projects: "api,docs,shop",
+		Correlates: "workload.crashloop", Policy: policy,
+		Since: opened, OpenedAt: opened,
+	}}); err != nil {
+		t.Fatalf("InsertSignalTransitions with a correlation: %v", err)
+	}
+
+	open, err := client.OpenSignalTransitions(ctx)
+	if err != nil {
+		t.Fatalf("OpenSignalTransitions: %v", err)
+	}
+	var recorded *SignalTransition
+	for i := range open {
+		if open[i].Fingerprint == fingerprint {
+			recorded = &open[i]
+		}
+	}
+	if recorded == nil {
+		t.Fatalf("the correlation did not come back: %+v", open)
+	}
+	switch {
+	case recorded.Confidence != "dependency":
+		t.Errorf("the rung comes back with the row: %+v", recorded)
+	case recorded.Projects != "api,docs,shop":
+		t.Errorf("the affected set comes back as it went in: %+v", recorded)
+	case recorded.Correlates != "workload.crashloop":
+		t.Errorf("what it folded up comes back as it went in: %+v", recorded)
+	case recorded.Policy != policy:
+		t.Errorf("the thresholds it was evaluated against come back with it: %+v", recorded)
+	}
+}
+
 // TestIntegrationSignalMitigations runs the mitigation records against a real
 // server: the table beside the transitions, the write one route makes, and the
 // read the fold is built from.

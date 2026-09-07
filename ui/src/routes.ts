@@ -421,6 +421,18 @@ export const routes: RouteRecordRaw[] = [
     requires: "POST /api/v1/platform/backup",
   }),
   screen({
+    // What this installation counts as worth hearing: the correlation
+    // threshold and window, the escalation clock, the longest silence a
+    // member may set. It is the operator's alone and is deliberately not the
+    // routing screen — `/alerts → Routing` is who hears about a condition,
+    // and a project edits its own (#472).
+    path: "/platform/policy",
+    name: "platform-policy",
+    view: "PlatformPolicyView.vue",
+    scope: "platform",
+    requires: "GET /api/v1/platform/policy",
+  }),
+  screen({
     // The platform's own configuration — the `Kitchen` singleton — which is
     // as platform-scoped as anything under this prefix and used to sit in
     // the general navigation, where the one thing it told a developer was

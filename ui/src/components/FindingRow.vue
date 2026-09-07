@@ -3,6 +3,10 @@ import { computed } from "vue";
 import type { Finding } from "../lib/api";
 import { uptime } from "../lib/format";
 import {
+  confidenceIcon,
+  confidenceLabel,
+  confidenceMeaning,
+  confidenceTone,
   evidenceLabel,
   evidenceLocation,
   firstClause,
@@ -34,6 +38,11 @@ const label = computed(() => evidenceLabel(props.finding.evidence));
  * lets the strip render `title (12 restarts in 30m)` without knowing anything
  * about the rule behind it. */
 const headline = computed(() => firstClause(props.finding.detail));
+/** The rung a cross-project finding was raised at. Every other rule leaves it
+ * empty, and the badge is absent rather than neutral there: "how sure are you
+ * that these belong together" is not a question a rule about one container is
+ * answering, and a grey badge saying so would be an answer. */
+const rung = computed(() => props.finding.confidence);
 </script>
 
 <template>
@@ -54,6 +63,25 @@ const headline = computed(() => firstClause(props.finding.detail));
         <!-- The strip shows the headline clause and keeps the rest on hover;
              the list shows the whole detail below. Nothing is lost either way. -->
         <span v-if="dense && headline" class="text-toned truncate" :title="finding.detail">{{ headline }}</span>
+        <!-- The rung, where there is one. `Coincidence` is a real row and not
+             a weak one: a correlation is never withheld for being
+             unexplained, so the lowest rung says what is missing rather than
+             reading as a row the platform was unsure about. -->
+        <span
+          v-if="rung"
+          class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]"
+          :class="
+            confidenceTone(rung) === 'error'
+              ? 'bg-error/10 text-error'
+              : confidenceTone(rung) === 'warning'
+                ? 'bg-warning/10 text-warning'
+                : 'bg-elevated text-toned'
+          "
+          :title="confidenceMeaning(rung)"
+        >
+          <UIcon :name="confidenceIcon(rung)" class="size-3" />
+          {{ confidenceLabel(rung) }}
+        </span>
         <!-- The rule's name, because a finding is a versioned rule and knowing
              which one fired is how it gets argued with. -->
         <span v-if="!dense" class="font-mono text-[11px] text-dimmed">{{ finding.signal }}</span>

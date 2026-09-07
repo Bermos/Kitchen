@@ -383,6 +383,25 @@ func (s *Server) signalStore(ctx context.Context) signals.Store {
 	}
 }
 
+// signalPolicy is the installation's thresholds, resolved from the singleton.
+//
+// Every caller that judges a *recorded* round needs it, because a transition
+// carries the tier the rule declared and not what this installation does with
+// it — the clock and the paging floor are applied when the row is read, which
+// is what makes changing the policy take effect on conditions that are already
+// open rather than only on the next thing to break.
+//
+// A singleton that cannot be read answers with the default rather than an
+// error, for the reason [signals.Gather] does the same: the alternative is an
+// alerts screen that fails whole because a setting could not be fetched.
+func (s *Server) signalPolicy(ctx context.Context) signals.Policy {
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		return signals.DefaultPolicy()
+	}
+	return signals.PolicyFrom(kitchen)
+}
+
 // dnsResolver is how dns.mismatch resolves a published name. It is the
 // catalogue's own bounded resolver rather than a second copy of one, so that
 // this evaluation and the background loop's cannot disagree about whether a
@@ -473,6 +492,18 @@ func (u unreachableStore) ResourceSeries(
 	context.Context, clickhouse.ResourceSeriesQuery,
 ) (clickhouse.ResourceSeries, error) {
 	return clickhouse.ResourceSeries{}, u.err
+}
+
+func (u unreachableStore) OpenSignalTransitions(
+	context.Context,
+) ([]clickhouse.SignalTransition, error) {
+	return nil, u.err
+}
+
+func (u unreachableStore) QueryAuditRecords(
+	context.Context, clickhouse.AuditQuery,
+) ([]clickhouse.AuditRecord, error) {
+	return nil, u.err
 }
 
 func (u unreachableStore) ProjectTraffic(

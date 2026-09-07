@@ -1474,6 +1474,34 @@ Reading it needs the operator role, so this command is
 on **Platform → Settings**, under Retention, and that is also where changing it
 has a form.
 
+### The signal policy
+
+**There is no command, and that is the decision rather than an omission.**
+
+What an installation counts as worth hearing — how many projects failing
+together is one problem, how long a failure may run with nobody acting, the
+longest silence a member may set, whether it pages at all — is settled once by
+an operator reading three presets and their consequences, not set by a
+pipeline. A flag for it would make typing a threshold easier than thinking
+about one, which is the same reasoning the retention override is left to
+`kitchen api` for. The screen is **Platform → Policy**.
+
+`kitchen api` reaches it authenticated, like any route:
+
+```sh
+kitchen api GET /platform/policy
+kitchen api PATCH /platform/policy --data '{"preset": "homelab"}'
+kitchen api PATCH /platform/policy --data '{"correlatedProjects": 2}'
+```
+
+What comes back is worth reading even from a script: `provenance` is the exact
+string every finding evaluated under this policy carries, so a pipeline
+checking that an estate is still on the floor it was signed off against can
+compare one field.
+
+See [docs/api/platform.md](api/platform.md) for the numbers and what each one
+means.
+
 ### The audit pack
 
 ```sh

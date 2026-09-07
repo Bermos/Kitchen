@@ -48,7 +48,14 @@ func TestLatencyCorrelatedFiresAcrossProjects(t *testing.T) {
 	if finding.Title != "p95 degraded across 4 projects" {
 		t.Fatalf("title = %q", finding.Title)
 	}
-	expectDetail(t, finding, "check node saturation and the edge")
+	// Rung 1 says what it does *not* know, which is the whole argument of
+	// #472: a correlation is never withheld for being unexplained, and an
+	// operator handed one with no qualifier would go looking for the shared
+	// cause this evaluation already failed to find.
+	expectDetail(t, finding, "nothing explains it yet")
+	if finding.Confidence != ConfidenceCoincidence {
+		t.Fatalf("confidence = %q, want coincidence", finding.Confidence)
+	}
 }
 
 // Two projects sharing a node is a coincidence worth nothing.

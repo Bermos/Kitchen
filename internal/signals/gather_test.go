@@ -90,6 +90,11 @@ type stubStore struct {
 	err       error
 	freshness []clickhouse.NodeFreshness
 	events    []clickhouse.K8sEvent
+	// auditRecords is the privileged half of the audit log, which the
+	// correlation ladder reads as the fourth leg of its timeline.
+	auditRecords []clickhouse.AuditRecord
+	// openTransitions is the recorded history, which is the ladder's clock.
+	openTransitions []clickhouse.SignalTransition
 	// storeStatsReads counts the store-health reads one gather makes, which is
 	// how the "one narrow read, not the dashboard's overview" contract is
 	// asserted rather than assumed.
@@ -121,6 +126,18 @@ func (s *stubStore) UnroutedHosts(context.Context, clickhouse.PlatformRequestsQu
 
 func (s *stubStore) QueryK8sEvents(context.Context, clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error) {
 	return s.events, s.err
+}
+
+func (s *stubStore) OpenSignalTransitions(
+	context.Context,
+) ([]clickhouse.SignalTransition, error) {
+	return s.openTransitions, s.err
+}
+
+func (s *stubStore) QueryAuditRecords(
+	context.Context, clickhouse.AuditQuery,
+) ([]clickhouse.AuditRecord, error) {
+	return s.auditRecords, s.err
 }
 
 func (s *stubStore) TelemetryFreshness(context.Context, time.Duration) ([]clickhouse.NodeFreshness, error) {
@@ -549,5 +566,116 @@ func TestGatherNarrowedToOneEnvironmentStillReadsTheCluster(t *testing.T) {
 	if len(snapshot.Environments) != 2 || len(snapshot.Nodes) != 1 {
 		t.Fatalf("the cluster reads were narrowed too: %d environments, %d nodes",
 			len(snapshot.Environments), len(snapshot.Nodes))
+	}
+}
+
+// An installation that keeps no audit log has no audit table, because the
+// table is the compliance reconcile's and it never ran. Asking anyway answers
+// UNKNOWN_TABLE, and the round would publish `audit_records` as unreadable on
+// the singleton's status and on the operator's screen every minute for ever —
+// describing a setting as a fault. That is #441 read back to front, and the
+// API's own reads ask the same question first.
+func TestGatherDoesNotAskForAnAuditLogThisInstallationDoesNotKeep(t *testing.T) {
+	off := kitchenSingleton(false)
+	off.Spec.Compliance.Audit.Enabled = false
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, off),
+		Store:  &stubStore{},
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+
+	if snapshot.Available(InputAudit) {
+		t.Error("the audit log was read on an installation that keeps none")
+	}
+	for _, failure := range snapshot.Unreadable() {
+		if failure.Input == InputAudit {
+			t.Errorf("a switched-off audit log is reported as a failed read: %s", failure.Reason)
+		}
+	}
+
+	// With the log on, it is read like any other input.
+	on := kitchenSingleton(false)
+	on.Spec.Compliance.Audit.Enabled = true
+	kept := Gather(context.Background(), Sources{
+		Client: testClient(t, on),
+		Store:  &stubStore{},
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+	if !kept.Available(InputAudit) {
+		t.Error("the audit log was not consulted on an installation that keeps one")
+	}
+}
+
+// The history is the correlation ladder's clock, and it is an input like any
+// other: read where there is a store, and honestly absent where there is not.
+func TestGatherReadsWhenEachConditionWasFirstSeen(t *testing.T) {
+	opened := testNow.Add(-2 * time.Hour)
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Store: &stubStore{openTransitions: []clickhouse.SignalTransition{{
+			At: testNow, State: "open", Signal: "workload.crashloop",
+			Fingerprint: "workload.crashloop/shop/pr-41/web", Audience: "operator",
+			OpenedAt: opened,
+		}}},
+		Now: func() time.Time { return testNow },
+	}, Options{})
+
+	if got := snapshot.OpenedAt["workload.crashloop/shop/pr-41/web"]; !got.Equal(opened) {
+		t.Fatalf("the condition's start came back as %s, want %s", got, opened)
+	}
+	if !snapshot.Available(InputHistory) {
+		t.Error("the history was read and still reports unavailable")
+	}
+}
+
+// The correlation ladder's clock comes from the tracker where there is one,
+// and the store is the fallback.
+//
+// It is a cost property, and it is the reason [StartsSource] exists: the
+// background loop evaluates every minute and already holds every open
+// condition with the instant it opened, while the store's answer is an
+// unbounded GROUP BY over the whole transitions table. A round that asked the
+// store would pay that for ever to learn what the process had already.
+func TestTheLaddersClockPrefersTheTrackerOverTheStore(t *testing.T) {
+	tracker := NewTracker(Catalogue())
+	tracker.Restore([]Transition{{
+		Signal: SignalCrashLoop, Fingerprint: "workload.crashloop/shop/pr-41/web",
+		Audience: AudienceOperator, OpenedAt: testNow.Add(-3 * time.Hour),
+	}})
+
+	// The store would answer something else entirely, and is not asked.
+	store := &stubStore{openTransitions: []clickhouse.SignalTransition{{
+		Fingerprint: "workload.crashloop/shop/pr-41/web", OpenedAt: testNow,
+	}}}
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Store:  store,
+		Starts: tracker,
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+
+	want := testNow.Add(-3 * time.Hour)
+	if got := snapshot.OpenedAt["workload.crashloop/shop/pr-41/web"]; !got.Equal(want) {
+		t.Fatalf("the start came back as %s, want the tracker's %s", got, want)
+	}
+
+	// A caller with no tracker gets the store's answer rather than nothing.
+	fallback := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Store:  store,
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+	if got := fallback.OpenedAt["workload.crashloop/shop/pr-41/web"]; !got.Equal(testNow) {
+		t.Fatalf("without a tracker the start came back as %s, want the store's %s", got, testNow)
+	}
+
+	// And a caller with neither says so rather than reporting no condition has
+	// a start, which would read as "none of these began together".
+	none := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+	if none.Available(InputHistory) {
+		t.Error("an installation recording nothing reports a readable history")
 	}
 }

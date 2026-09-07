@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"time"
 )
 
 // Registry is a catalogue of rules. It exists as a value rather than as a
@@ -88,6 +87,7 @@ func all() []Signal {
 		edgeSignals(),
 		buildSignals(),
 		platformSignals(),
+		correlationSignals(),
 		continuitySignals(),
 	}
 	var signals []Signal
@@ -125,22 +125,58 @@ func (r *Registry) Lookup(id ID) (Signal, bool) {
 // question that does not arise, and a permanent row saying otherwise would
 // train the reader to ignore the list.
 func (r *Registry) Evaluate(snapshot *Snapshot) Findings {
-	findings := make(Findings, 0, len(r.signals))
-	for _, signal := range r.signals {
-		if finding, ok := unevaluable(signal, snapshot); ok {
-			if finding != nil {
-				findings = append(findings, *finding)
-			}
-			continue
-		}
-		findings = append(findings, stamped(signal.Evaluate(snapshot), signal, snapshot.Now)...)
-	}
+	// A snapshot built by hand — every test in this package, and any caller
+	// that assembled one — carries no policy, and a round judged against a
+	// correlation threshold of zero would call every pair of failures an
+	// incident. Repairing it here rather than trusting the gatherer is what
+	// makes "the rules read [Snapshot.Policy]" true of every path into them.
+	snapshot.Policy = snapshot.Policy.Normalised()
+
+	findings := r.pass(snapshot, false)
+
 	// The institution's designations are applied to the whole round rather
 	// than inside the rules — one place, thirty-odd rules — and before the
 	// sort, because escalating a finding is exactly a claim about where it
 	// belongs in the order. See [Findings.escalate].
 	findings.escalate(snapshot.Continuity)
 	findings.Sort()
+
+	// The second pass is the correlator's, and it is a pass rather than a rule
+	// ordering because of what it reads: [Snapshot.Round] is the answer the
+	// first pass just produced, so a widened correlation sees every rule in the
+	// catalogue without any of them knowing it exists. See [Signal.Correlates].
+	//
+	// It is shown the escalated, sorted round rather than the raw one, so that
+	// a correlation reads the same findings a screen would — a condition the
+	// institution's designations moved is the condition the operator sees.
+	// Nothing it produces needs escalating in turn: a correlation is
+	// platform-scoped, and the designations are an environment's.
+	snapshot.Round = findings
+	correlated := r.pass(snapshot, true)
+	if len(correlated) == 0 {
+		return findings
+	}
+	findings = append(findings, correlated...)
+	findings.Sort()
+	return findings
+}
+
+// pass runs one half of the catalogue: the rules that read the estate, or the
+// one that reads what they answered.
+func (r *Registry) pass(snapshot *Snapshot, correlating bool) Findings {
+	findings := make(Findings, 0, len(r.signals))
+	for _, signal := range r.signals {
+		if signal.Correlates != correlating {
+			continue
+		}
+		if finding, ok := unevaluable(signal, snapshot); ok {
+			if finding != nil {
+				findings = append(findings, *finding)
+			}
+			continue
+		}
+		findings = append(findings, stamped(signal.Evaluate(snapshot), signal, snapshot)...)
+	}
 	return findings
 }
 
@@ -161,15 +197,48 @@ func (r *Registry) Evaluate(snapshot *Snapshot) Findings {
 // [Finding.Tier] is the third and rides on the second: the tier is declared per
 // audience, so the tier a finding carries is the one for the audience it was
 // just stamped with.
-func stamped(findings []Finding, signal Signal, now time.Time) []Finding {
+// The tier here is the *rule's* answer and never the installation's. What this
+// platform does with it — holding a page down to a ticket where paging is off
+// — is applied when a delivery is read, in [Assess], because that is the only
+// place that can be re-read: a policy applied here would be baked into the
+// recorded transition, and moving off the homelab preset would leave every
+// condition that was already open a ticket until it happened to reopen.
+// [Transition.Tier] is documented as the tier the rule declared, and this is
+// what makes that true.
+//
+// [Finding.Policy] is the fourth, and it is stamped on every finding rather
+// than on the ones whose rule read a configurable number: what a finding was
+// evaluated against is a property of the round, and a provenance that appeared
+// only on the correlations would leave every other finding unreproducible.
+func stamped(findings []Finding, signal Signal, snapshot *Snapshot) []Finding {
+	provenance := snapshot.Policy.Provenance()
 	for i := range findings {
 		if findings[i].Since.IsZero() {
-			findings[i].Since = now
+			findings[i].Since = snapshot.Now
 		}
 		findings[i].Audience = signal.Audience
-		findings[i].Tier, _ = signal.Tiers.For(signal.Audience)
+		declared, _ := signal.Tiers.For(signal.Audience)
+		findings[i].Tier = lowered(declared, findings[i].Tier)
+		findings[i].Policy = provenance
 	}
 	return findings
+}
+
+// lowered is the declaration with a rule's own answer applied, and it can only
+// go down.
+//
+// The declared tier is what kind of thing the rule is (#471, decision 4) and
+// stays catalogue knowledge. What a rule may do is be *less* urgent about one
+// finding than about the kind in general, which is exactly what a correlation
+// of warnings is: `platform.correlated` declares a page because it can fold
+// three crash loops, and folds three filling volumes into a ticket. A rule
+// that could raise its own tier would be the configurable-catalogue door this
+// package keeps shut, so this never raises.
+func lowered(declared, own Tier) Tier {
+	if own.Valid() && own.Rank() < declared.Rank() {
+		return own
+	}
+	return declared
 }
 
 // unevaluable decides whether a rule can run, and what to say when it cannot.
@@ -202,6 +271,7 @@ func unevaluable(signal Signal, snapshot *Snapshot) (*Finding, bool) {
 			// lower one: "I cannot see whether production is serving" is the
 			// same claim on the reader's attention as the rule it replaced.
 			finding.Tier, _ = signal.Tiers.For(signal.Audience)
+			finding.Policy = snapshot.Policy.Provenance()
 			return &finding, true
 		}
 	}

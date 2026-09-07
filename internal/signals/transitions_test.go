@@ -17,6 +17,7 @@ limitations under the License.
 package signals
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -321,7 +322,40 @@ func TestTransitionRowsRoundTrip(t *testing.T) {
 	if len(back) != 1 {
 		t.Fatalf("one row is one transition: %+v", back)
 	}
-	if back[0] != transition {
+	if !reflect.DeepEqual(back[0], transition) {
+		t.Errorf("the round trip changed it:\n got %+v\nwant %+v", back[0], transition)
+	}
+}
+
+// A correlation carries two lists, and the transitions table is flat: they are
+// joined into one column each on the way in and split on the way out. The
+// round trip is the whole test — a fold the history could not reproduce would
+// make a recorded round read differently from the one that was evaluated.
+func TestACorrelationsListsSurviveTheRoundTrip(t *testing.T) {
+	transition := Transition{
+		At:          transitionRoundTwo,
+		State:       StateOpen,
+		Signal:      SignalCorrelated,
+		Fingerprint: "platform.correlated/workload.crashloop",
+		Audience:    AudienceOperator,
+		Version:     1,
+		Severity:    SeverityCritical,
+		Scope:       Scope{Kind: ScopePlatform, Name: "workload.crashloop"},
+		Title:       "crash-looping is firing in 3 projects at once",
+		Detail:      "crash-looping across api, docs, shop",
+		Evidence:    "/platform",
+		Confidence:  ConfidenceDependency,
+		Projects:    []string{"api", "docs", "shop"},
+		Correlates:  []ID{SignalCrashLoop},
+		Policy:      DefaultPolicy().Provenance(),
+		Since:       transitionRoundOne,
+		OpenedAt:    transitionRoundOne,
+	}
+	back := TransitionsFrom(TransitionRows([]Transition{transition}))
+	if len(back) != 1 {
+		t.Fatalf("one row is one transition: %+v", back)
+	}
+	if !reflect.DeepEqual(back[0], transition) {
 		t.Errorf("the round trip changed it:\n got %+v\nwant %+v", back[0], transition)
 	}
 }

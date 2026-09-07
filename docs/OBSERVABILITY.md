@@ -853,9 +853,90 @@ means it also surfaces on the environment's diagnostics strip.
 
 | Signal | Fires when | Computed from |
 |---|---|---|
-| `platform.latency-correlated` | p95 rising in ≥ 3 projects simultaneously | `http_requests_1m` across projects — several projects degrading together is a platform problem wearing project costumes; evidence links to node saturation and edge status |
-| `platform.error-correlated` | 5xx rising in ≥ 3 projects simultaneously | same |
+| `platform.latency-correlated` | p95 rising in as many projects at once as the policy calls a correlation | `http_requests_1m` across projects — several projects degrading together is a platform problem wearing project costumes |
+| `platform.error-correlated` | 5xx rising in as many projects at once | same |
+| `platform.correlated` | *any other* rule in this catalogue firing across that many projects whose starts are known and inside the correlation window | the round itself plus `signal_transitions`, evaluated in a second pass — see below |
 | `platform.component-unhealthy` | the existing component survey, folded into the same feed | Kitchen status |
+
+#### The confidence ladder
+
+The operator's question is not "which projects are unhealthy", it is **"is this
+one problem"**. All three cross-project detectors answer it at the highest
+confidence the snapshot allows, and the finding says which rung that was:
+
+1. **Coincidence** — time only. Enough projects began failing inside the
+   correlation window, and the finding states what it does *not* know: no
+   shared node, no shared dependency, no change of ours.
+2. **Shared dependency** — the affected set intersected against node
+   placement, the StorageClass underneath, the Gateway in front, and the
+   resource they all attach. It names the intersection, never a culprit, and
+   only where the intersection is exactly one thing across the *whole* set: a
+   dependency two of three projects share explains two of three failures,
+   which is a weaker sentence than this rung makes.
+3. **Shared change** — the same, joined against the platform's own timeline,
+   which is `PlatformUpdate`, `AddonUpgrade`, the cluster's node and Gateway
+   events, and the privileged half of the audit log. The only rung that can
+   offer an action on the cause rather than on the symptom. A change *after*
+   the failures began is not on it: a ladder that ignored the direction of
+   time would raise every correlation during a rollout to its top rung.
+
+**A correlation is never withheld for being unexplained.** *Everything blipped
+at 04:05 for two minutes and nothing explains it* is among the most valuable
+lines an operator can be handed, precisely because nobody was awake for it.
+
+Three things bound what it may claim, and each is a way the row would otherwise
+be louder or surer than the evidence:
+
+- **It is never louder than what it folds.** The correlation's severity is the
+  worst of the conditions underneath it and its tier follows — critical pages,
+  anything milder is a ticket. Three volumes past 85% is a warning about three
+  volumes; raising it would page about a condition no part of which was worth
+  paging about, and the project rows fold into it, so the screen would lose
+  three warnings to gain one page. A rule may lower its declared tier for one
+  finding this way and never raise it.
+- **A condition with no known start is not coincident with anything.** Most
+  rules leave `since` to the registry, which stamps the round's own instant, so
+  a round's findings share one timestamp; reading that as evidence would make
+  three volumes that began filling in March, June and September "firing at
+  once". The start comes from the recorded history — when the platform first
+  saw the condition, which is what #473 built — and where there is none, the
+  finding is left out. The background loop answers it from the tracker it
+  already holds rather than from the store, so the clock costs a round
+  nothing; a screen evaluating on request reads it back instead.
+- **Rung 2 says nothing about a cluster of one.** On a single-node cluster
+  every project shares the only node, and on a single-StorageClass cluster
+  every claim is on the only class — the ordinary shape, and the homelab
+  preset's own. Naming either describes the installation rather than the
+  incident, so each is reported only where the cluster has more than one, which
+  is the rule the Gateway leg already followed.
+
+And rung 1's sentence is a claim about what was *checked*, in two ways. Where
+the reads behind the rungs failed — the history included, which is the one rung
+1's own count depends on — it names them rather than saying nothing explains
+it, the same ethic as a rule that could not be evaluated. An input that does
+not arise is not a blind spot: an installation that keeps no audit log has none
+to correlate against and is not asked. And it names the span it *searched* for
+a change, which is the narrower of the correlation window and the hour the
+timeline is gathered over — quoting either alone would claim a stretch it never
+looked at.
+
+The tier a condition is recorded at is the rule's, never the installation's:
+what a policy does with a page is applied when the row is *read*, so turning
+paging back on re-reads every condition already open rather than only the ones
+that break next. There are two readers and the policy is applied at both — the
+alerts feed the screens render, and the outbound `signal.firing` subscription,
+where it decides the tier a `minTier` floor is compared against as well as the
+one the payload publishes. A policy that reached only the screens would be an
+installation that had switched paging off and still paged.
+
+`platform.correlated` is rung 1 widened past HTTP. It reads the round rather
+than the estate — the one rule in the catalogue whose subject is the
+catalogue's own output — so every rule is correlatable without any of them
+knowing it exists, and it leaves the two dimensions the traffic detectors
+already cover alone rather than putting two rows on one screen for one
+incident. It groups by the *condition*, never by the project set: which
+projects are caught up changes minute to minute as traffic and pods move, and
+a fingerprint that listed them would resolve and reopen every evaluation.
 
 **Continuity — the one rule whose number is not ours** (dev + operator)
 
@@ -863,10 +944,34 @@ means it also surfaces on the environment's diagnostics strip.
 |---|---|---|
 | `env.rto-at-risk` | an environment is serving nothing and has spent half its declared RTO; critical once it is past | workload status (API) + the designation on the Project and the Environment |
 
-Thresholds are constants with taste, not user configuration, in v1 —
-configurable thresholds are an alerting-era feature and the catalogue is
-versioned code either way. **`env.rto-at-risk` is the exception, and it is a
-different kind of number entirely.** A recovery time objective is not a
+Thresholds are constants with taste rather than user configuration, with two
+exceptions, and both are exceptions for the same reason: the number is not the
+platform's to have an opinion about.
+
+**The clock is policy, and it is the operator's** (issue #472). Six numbers —
+how many projects make a correlation, the window they must fall inside, how
+long a failure may run unacknowledged before it escalates, how many of those
+windows before it becomes a posture line, the longest silence a member may
+set, and whether this installation pages at all — are configurable through
+`GET`/`PATCH /platform/policy`, with three presets whose `balanced` values are
+the constants exactly. §9 recorded this trade-off as *"code, until the alerting
+era forces the question with real requirements"*, and the homelab installation
+supplied the requirement: a threshold of three correlated projects is a
+threshold a three-project estate never reaches, so the detector reads there as
+health and nowhere else as noise. The set is deliberately bounded and named —
+which signals exist, what they compute and their base tier stay code — and
+**every finding records the thresholds it was evaluated against**, so
+`v1 @ correlatedProjects=2` and `v1 @ correlatedProjects=3` stay
+distinguishable after the fact. That provenance is what makes a compliance
+posture able to say what this installation's numbers were at the time.
+
+The policy is installation-wide and applies to every project. #472 also asks
+that a project be able to *tighten* its own thresholds and never loosen them —
+which would make these values a floor rather than the whole answer — and that
+half is not built; it is #519.
+
+**`env.rto-at-risk` is the other exception, and it is a different kind of
+number entirely.** A recovery time objective is not a
 threshold anybody on this side of the API should have an opinion about: the
 institution sets it, on the Project or the Environment (issue #141), and the
 platform's job is to hold the estate to it. Change the RTO and you have
@@ -1068,7 +1173,12 @@ Settled by choosing a side, with the reason:
 - **Kubernetes events via the operator vs. a second collector** — operator
   (§4). The activity feed stays separate and untouched.
 - **Signals as versioned code vs. user-configurable rules** — code, until
-  the alerting era forces the question with real requirements.
+  the alerting era forces the question with real requirements. *(Answered by
+  #472: the homelab installation is that requirement. The catalogue is still
+  code — which signals exist, what they compute, their base tier — and a
+  bounded, named set of six numbers became the operator's, on
+  `/platform/policy`. What keeps `Signal.Version` meaning something is that a
+  finding now records the values it was evaluated against; see §7.)*
 
 Flagged rather than guessed. **Stage 0's job has since run, and answered all
 five** — the readings are in the verification record; each is summarised here

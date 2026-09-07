@@ -153,6 +153,20 @@ const (
 	// correlation: one fingerprint is two rows, delivered to two audiences,
 	// and acknowledging one is explicitly not acknowledging the other.
 	KindSignalMitigation = "SignalMitigation"
+
+	// KindSignalPolicy is a change to the thresholds the signal catalogue is
+	// read against: what counts as a correlation, how long a failure may run
+	// unmitigated, how long a silence may last, and whether this
+	// installation pages at all (#472).
+	//
+	// Its own kind for the reason KindRetention is, and with more force. The
+	// compliance posture reads *the floor* rather than any project's
+	// override, so "what was the floor when this incident was left untended
+	// for six hours" is a question an auditor asks and the answer has to be
+	// one query. A finding also records the values it was evaluated against,
+	// so the two halves meet: the finding says what the numbers were, and
+	// this says who changed them to that.
+	KindSignalPolicy = "SignalPolicy"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of

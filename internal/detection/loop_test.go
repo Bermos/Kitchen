@@ -18,6 +18,7 @@ package detection
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -32,12 +33,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
+	"github.com/Bermos/Kitchen/internal/notify"
 	"github.com/Bermos/Kitchen/internal/signals"
 )
 
@@ -140,6 +143,12 @@ func (f *fakeStore) UnroutedHosts(
 }
 
 func (f *fakeStore) QueryK8sEvents(context.Context, clickhouse.K8sEventQuery) ([]clickhouse.K8sEvent, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) QueryAuditRecords(
+	context.Context, clickhouse.AuditQuery,
+) ([]clickhouse.AuditRecord, error) {
 	return nil, nil
 }
 
@@ -271,6 +280,115 @@ func TestADeveloperConditionIsRecordedForBothAudiences(t *testing.T) {
 	if !audiences[string(signals.AudienceDeveloper)] || !audiences[string(signals.AudienceOperator)] {
 		t.Fatalf("a developer condition reaches both audiences: %+v / %+v", audiences, round.Transitions)
 	}
+}
+
+// The installation's signal policy reaches the webhooks, not only the screens.
+//
+// A recorded transition carries the tier the *rule* declared — that is what
+// makes changing the policy re-read every condition already open — and what
+// this installation does about that tier is applied wherever a delivery is
+// read. There are two such readers: the alerts feed the screens render, and
+// this one. An installation on the `homelab` preset, where paging is off,
+// records `page` for a crash loop and must deliver a ticket; a subscription
+// asking for pages alone is asking for something this installation does not
+// do, and one asking for tickets hears it with both tiers on the payload.
+func TestThePolicyDecidesWhatAWebhookIsTold(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		preset string
+		floor  kitchenv1alpha1.NotificationTier
+		// want is the delivered tier per audience, and its size is the
+		// number of deliveries this policy and this floor produce.
+		want map[string]string
+	}{{
+		name:   "nothing pages where nothing pages",
+		preset: string(signals.PresetHomelab),
+		floor:  kitchenv1alpha1.TierPage,
+		want:   map[string]string{},
+	}, {
+		name:   "a page is a page where the installation pages",
+		preset: string(signals.PresetBalanced),
+		floor:  kitchenv1alpha1.TierPage,
+		want:   map[string]string{string(signals.AudienceDeveloper): string(signals.TierPage)},
+	}, {
+		name:   "a ticket floor hears both rows, and the page as a ticket",
+		preset: string(signals.PresetHomelab),
+		floor:  kitchenv1alpha1.TierTicket,
+		want: map[string]string{
+			string(signals.AudienceDeveloper): string(signals.TierTicket),
+			string(signals.AudienceOperator):  string(signals.TierTicket),
+		},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			kitchen := singleton()
+			kitchen.Spec.Observability.Signals.Policy.Preset = tc.preset
+			relay := &kitchenv1alpha1.NotificationSubscription{
+				ObjectMeta: metav1.ObjectMeta{Name: "relay", Namespace: controller.PlatformNamespace},
+				Spec: kitchenv1alpha1.NotificationSubscriptionSpec{
+					URL:       "https://relay.example.com/hook",
+					Events:    []kitchenv1alpha1.NotificationEvent{kitchenv1alpha1.NotifySignalFiring},
+					SecretRef: kitchenv1alpha1.LocalObjectReference{Name: "kitchen-notify-relay"},
+					MinTier:   tc.floor,
+				},
+			}
+			c := fake.NewClientBuilder().
+				WithScheme(testScheme(t)).
+				WithRuntimeObjects(kitchen, relay, crashLoopingPod()).
+				WithStatusSubresource(&kitchenv1alpha1.Kitchen{}).
+				Build()
+			loop := &Loop{
+				Client:   c,
+				Resolver: nowhere{},
+				store:    func(context.Context) (Store, error) { return &fakeStore{}, nil },
+				Notifier: &notify.Notifier{Client: c, Namespace: controller.PlatformNamespace},
+			}
+
+			if _, err := loop.RoundOnce(context.Background()); err != nil {
+				t.Fatalf("the round: %v", err)
+			}
+
+			deliveries := &kitchenv1alpha1.NotificationDeliveryList{}
+			if err := c.List(context.Background(), deliveries,
+				client.InNamespace(controller.PlatformNamespace)); err != nil {
+				t.Fatalf("listing deliveries: %v", err)
+			}
+			got := map[string]string{}
+			for i := range deliveries.Items {
+				payload := notify.Payload{}
+				if err := json.Unmarshal([]byte(deliveries.Items[i].Spec.Payload), &payload); err != nil {
+					t.Fatalf("unreadable payload: %v", err)
+				}
+				// The fixture is one condition; anything else the round
+				// found is not what this test is about.
+				if payload.Signal != string(signals.SignalCrashLoop) {
+					continue
+				}
+				got[payload.Audience] = payload.Tier
+				// Whatever the policy did, the payload still says what the
+				// rule declared — and the history agrees with it.
+				if payload.BaseTier != declaredCrashLoopTier(payload.Audience) {
+					t.Errorf("the payload keeps the rule's own tier: %+v", payload)
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("delivered %v, want %v", got, tc.want)
+			}
+			for audience, tier := range tc.want {
+				if got[audience] != tier {
+					t.Errorf("the %s row was delivered as %q, want %q", audience, got[audience], tier)
+				}
+			}
+		})
+	}
+}
+
+// declaredCrashLoopTier is what the catalogue says about a crash loop for each
+// reader, spelled once so the assertion above cannot drift from the rule.
+func declaredCrashLoopTier(audience string) string {
+	if audience == string(signals.AudienceOperator) {
+		return string(signals.TierTicket)
+	}
+	return string(signals.TierPage)
 }
 
 // An installation with no telemetry store has nowhere to record, and says so

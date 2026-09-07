@@ -44,18 +44,18 @@ const (
 func platformSignals() []Signal {
 	return []Signal{{
 		ID:       SignalLatencyCorrelated,
-		Version:  2,
+		Version:  3,
 		Audience: AudienceOperator,
 		Tiers:    Tiers{Operator: TierPage},
-		Summary:  "p95 is up against baseline in three or more projects at once",
+		Summary:  "p95 is up against baseline in as many projects at once as the policy calls a correlation",
 		Requires: []Input{InputRequests},
 		Evaluate: evaluateLatencyCorrelated,
 	}, {
 		ID:       SignalErrorCorrelated,
-		Version:  2,
+		Version:  3,
 		Audience: AudienceOperator,
 		Tiers:    Tiers{Operator: TierPage},
-		Summary:  "5xx is up against baseline in three or more projects at once",
+		Summary:  "5xx is up against baseline in as many projects at once as the policy calls a correlation",
 		Requires: []Input{InputRequests},
 		Evaluate: evaluateErrorCorrelated,
 	}, {
@@ -71,10 +71,11 @@ func platformSignals() []Signal {
 
 func evaluateLatencyCorrelated(snapshot *Snapshot) []Finding {
 	return correlated(snapshot, correlationRule{
-		id:    SignalLatencyCorrelated,
-		name:  "latency",
-		scope: "p95",
-		value: func(traffic clickhouse.ProjectTraffic) float64 { return traffic.P95Ms },
+		id:     SignalLatencyCorrelated,
+		covers: []ID{SignalLatencyRegressed},
+		name:   "latency",
+		scope:  "p95",
+		value:  func(traffic clickhouse.ProjectTraffic) float64 { return traffic.P95Ms },
 		degraded: func(comparison Regression) bool {
 			return comparison.Regressed(LatencyRegressionFactor, LatencyFloorMs)
 		},
@@ -86,10 +87,11 @@ func evaluateLatencyCorrelated(snapshot *Snapshot) []Finding {
 
 func evaluateErrorCorrelated(snapshot *Snapshot) []Finding {
 	return correlated(snapshot, correlationRule{
-		id:    SignalErrorCorrelated,
-		name:  "errors",
-		scope: "5xx rate",
-		value: func(traffic clickhouse.ProjectTraffic) float64 { return traffic.ErrorRate },
+		id:     SignalErrorCorrelated,
+		covers: []ID{SignalErrorRate},
+		name:   "errors",
+		scope:  "5xx rate",
+		value:  func(traffic clickhouse.ProjectTraffic) float64 { return traffic.ErrorRate },
 		degraded: func(comparison Regression) bool {
 			return comparison.Elevated(ErrorRateFactor, ErrorRateFiring)
 		},
@@ -103,7 +105,13 @@ func evaluateErrorCorrelated(snapshot *Snapshot) []Finding {
 // number they read and what counts as degraded; the counting, the threshold on
 // how many projects, and the words are one implementation.
 type correlationRule struct {
-	id       ID
+	id ID
+	// covers is the environment-scoped rule whose findings this detector's row
+	// stands in front of, so that the overview can fold those rows into it
+	// rather than showing one incident twice. It is declared rather than
+	// derived because these two read the request rollup and not the round:
+	// nothing in what they compute names the rule they correspond to.
+	covers   []ID
 	name     string
 	scope    string
 	value    func(clickhouse.ProjectTraffic) float64
@@ -152,7 +160,7 @@ func correlated(snapshot *Snapshot, rule correlationRule) []Finding {
 			baseline: comparison.Baseline,
 		})
 	}
-	if len(affected) < CorrelatedProjects {
+	if len(affected) < snapshot.Policy.CorrelatedProjects {
 		return nil
 	}
 	sort.Slice(affected, func(i, j int) bool { return affected[i].project < affected[j].project })
@@ -170,14 +178,24 @@ func correlated(snapshot *Snapshot, rule correlationRule) []Finding {
 	// moves; the problem does not, and a fingerprint that listed them would
 	// resolve and reopen on every evaluation.
 	scope := Scope{Kind: ScopePlatform, Name: rule.name}
-	return []Finding{fire(rule.id, SeverityCritical, scope, snapshot.Now.Add(-RecentWindow),
+	// The window the *data* covers, which is not the correlation window: these
+	// two rules compare one merge of the recent window against one merge of
+	// the baseline, so the earliest instant either can prove anything about is
+	// where the recent window began. The correlation window decides how far
+	// back the ladder looks for a change, and nothing about what the numbers
+	// mean.
+	since := snapshot.Now.Add(-RecentWindow)
+	rung := snapshot.Ladder(names, since)
+	// Critical, unlike the widened detector's answer: these two do not stand
+	// in front of other rows, they *are* the measurement, and p95 or 5xx up
+	// against baseline across the estate is the condition the platform exists
+	// to notice.
+	return []Finding{rung.fire(rule.id, SeverityCritical, scope, since, rule.covers,
 		fmt.Sprintf("%s degraded across %d projects", rule.scope, len(affected)),
 		sentence(
 			strings.Join(numbers, ", "),
 			rule.explain,
-			"check node saturation and the edge before anyone debugs "+names[0],
-		),
-		EvidencePlatform)}
+		))}
 }
 
 // evaluateComponentUnhealthy folds the component survey into the same feed.

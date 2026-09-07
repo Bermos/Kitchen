@@ -162,6 +162,11 @@ func TestThePlatformsOwnSurfaceIsTheOperators(t *testing.T) {
 		{http.MethodPost, "/api/v1/connections/test", "testing a connection"},
 		{http.MethodGet, "/api/v1/updates", "reading the platform's updates"},
 		{http.MethodGet, "/api/v1/platform/nodes", "reading the platform's nodes"},
+		// What this installation counts as worth hearing is the operator's
+		// alone (#472): a project may tighten what *it* hears, and the floor
+		// is what the operator is accountable for.
+		{http.MethodGet, "/api/v1/platform/policy", "reading the platform's signal policy"},
+		{http.MethodPatch, "/api/v1/platform/policy", "changing the platform's signal policy"},
 		{http.MethodGet, "/api/v1/compliance", "reading the platform's compliance posture"},
 		{http.MethodGet, "/api/v1/environments/" + testEnvironment + "/objects",
 			"reading an environment's Kubernetes objects"},
