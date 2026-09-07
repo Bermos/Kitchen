@@ -282,7 +282,9 @@ func upstreamNamespace(upstream *url.URL) string {
 
 // isGeneratedHost reports whether host is one the platform generates for this
 // project: <project>.<baseDomain> for production, <project>-pr-<n> for a
-// preview. It mirrors the reconciler's hostname().
+// preview. It mirrors the reconciler's hostname() for the hosts that can
+// reach this gate — a promotion stage's host is generated too, and is not
+// among them, because only a preview is ever gated.
 func isGeneratedHost(project, host, baseDomain string) bool {
 	if baseDomain == "" {
 		return false

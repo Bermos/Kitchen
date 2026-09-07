@@ -22,8 +22,8 @@ import (
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 )
 
-// Two questions more than one place asks about a project's environments, each
-// answered exactly once — like registrySecretName, because two spellings of
+// Three questions more than one place asks about a project's environments,
+// each answered exactly once — like registrySecretName, because two spellings of
 // the same derivation is how the build-time break-glass came to look for its
 // grant on an environment no staged project has.
 
@@ -41,6 +41,29 @@ func ProductionTargetEnvironmentName(project *kitchenv1alpha1.Project) string {
 		return pipeline.Stages[len(pipeline.Stages)-1].Environment
 	}
 	return project.Name + "-production"
+}
+
+// EnvironmentTypeFor is what the named environment of this project is:
+// `production` for the one environment production deployments land on, and
+// `stage` for every other durable environment of the project — each rung of
+// the pipeline before the last one.
+//
+// It is the third question this file answers once rather than twice, and the
+// most easily got wrong: every rung used to be created `production`, which
+// is what gave a staged pipeline two environments claiming production's one
+// hostname (#490). It is deliberately asked *of*
+// ProductionTargetEnvironmentName rather than of the stage list again, so
+// that "exactly one production Environment per Project" is true by
+// construction — an environment the pipeline no longer names is a stage with
+// a hostname of its own, not a second claimant of production's.
+//
+// Previews are not asked about here: a preview is created from a pull
+// request, never from a stage, and its type is given at creation.
+func EnvironmentTypeFor(project *kitchenv1alpha1.Project, environment string) kitchenv1alpha1.EnvironmentType {
+	if environment == ProductionTargetEnvironmentName(project) {
+		return kitchenv1alpha1.EnvironmentProduction
+	}
+	return kitchenv1alpha1.EnvironmentStage
 }
 
 // PreviewEnvironmentName is the environment a pull request's preview lives on.

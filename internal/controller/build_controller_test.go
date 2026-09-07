@@ -1148,6 +1148,11 @@ var _ = Describe("Build Controller", func() {
 			staging := &kitchenv1alpha1.Environment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-staging", Namespace: namespace}, staging)).To(Succeed())
 			Expect(staging.Spec.ReleaseRef.Name).To(Equal(releaseName(projectName, sha)))
+			// A rung before the last is a stage, not production (#490): the
+			// type is what its hostname follows, and typing it production
+			// gave it production's.
+			Expect(staging.Spec.Type).To(Equal(kitchenv1alpha1.EnvironmentStage),
+				"stage one of a pipeline is a stage environment")
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName + "-production", Namespace: namespace}, &kitchenv1alpha1.Environment{})
 			Expect(err).To(HaveOccurred(), "a staged build must not touch production directly")
 		})

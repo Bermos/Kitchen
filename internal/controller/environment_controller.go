@@ -266,9 +266,9 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	project := &kitchenv1alpha1.Project{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ProjectRef.Name}, project); err != nil {
-		return r.notReady(ctx, env, "ProjectMissing", err)
+	project, halt, err := r.projectOf(ctx, env)
+	if project == nil {
+		return halt, err
 	}
 
 	release := &kitchenv1alpha1.Release{}
@@ -1850,13 +1850,110 @@ func appNamespace(projectName string) string {
 	return previewgate.AppNamespace(projectName)
 }
 
-// hostname computes the environment's generated host. Production gets the
-// project slug; previews get <project>-pr-<n>.
+// projectOf is the environment's project, with the environment's own type
+// brought into step with that project on the way past. A nil project means
+// the reconcile is over and the returned result and error are its answer —
+// a project that is not there yet is a state the environment reports, not a
+// failure.
+//
+// The two are one step because they are one question. An Environment's type
+// is derived from its project's promotion pipeline and from nothing else, so
+// the moment the project is in hand is the moment the type can be checked,
+// and every path past here reads a type that is already right.
+//
+// **The correction is here for the upgrade.** Before #490 every non-preview
+// environment was created `production` whatever rung of the pipeline it was,
+// and the generated hostname follows the type — so an installation already
+// running a staged pipeline has two environments claiming production's host.
+// Correcting that only when somebody next deploys would leave a pipeline
+// nobody deploys to colliding forever. Correcting it moves where an existing
+// stage answers, which is the visible break this fix is, and it is recorded
+// as a transition for that reason.
+//
+// A preview's type is never re-derived: it belongs to a pull request rather
+// than to a rung, and no pipeline names it.
+func (r *EnvironmentReconciler) projectOf(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+) (*kitchenv1alpha1.Project, ctrl.Result, error) {
+	project := &kitchenv1alpha1.Project{}
+	key := types.NamespacedName{Namespace: env.Namespace, Name: env.Spec.ProjectRef.Name}
+	if err := r.Get(ctx, key, project); err != nil {
+		result, err := r.notReady(ctx, env, "ProjectMissing", err)
+		return nil, result, err
+	}
+	if err := r.reconcileType(ctx, env, project); err != nil {
+		return nil, ctrl.Result{}, err
+	}
+	return project, ctrl.Result{}, nil
+}
+
+// reconcileType writes the type the project's pipeline says this environment
+// is: `production` for the one environment production deployments land on,
+// `stage` for every other durable environment. It is the same derivation the
+// build controller creates an environment with (EnvironmentTypeFor), read
+// here in the one place that runs whether or not anybody deploys.
+func (r *EnvironmentReconciler) reconcileType(
+	ctx context.Context,
+	env *kitchenv1alpha1.Environment,
+	project *kitchenv1alpha1.Project,
+) error {
+	if env.Spec.Type == kitchenv1alpha1.EnvironmentPreview {
+		return nil
+	}
+	want := EnvironmentTypeFor(project, env.Name)
+	if want == env.Spec.Type {
+		return nil
+	}
+	from := env.Spec.Type
+	if err := r.Audit.Record(ctx, audit.Transition{
+		Object:     env,
+		Kind:       audit.KindEnvironment,
+		Controller: actorEnvironmentController,
+		Project:    project.Name,
+		Reason: fmt.Sprintf("environment %s is a %s environment of %s, not a %s one: its generated hostname follows",
+			env.Name, want, project.Name, from),
+		Details: map[string]any{"type": string(want), "previousType": string(from)},
+	}); err != nil {
+		return err
+	}
+	env.Spec.Type = want
+	return r.Update(ctx, env)
+}
+
+// hostname computes the environment's generated host, and each type answers
+// somewhere else: production gets the project slug, a promotion stage gets
+// its own name under it, and a preview gets <project>-pr-<n>.
+//
+// The stage case is #490. Every non-preview environment used to take
+// projectHost, so a project with a `staging` stage and a `production` stage
+// applied two HTTPRoutes into one namespace claiming one hostname — a
+// conflict Gateway API resolves by rule age, which is to say silently.
 func hostname(projectName string, env *kitchenv1alpha1.Environment, baseDomain string) string {
-	if env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && env.Spec.Preview != nil {
+	switch {
+	case env.Spec.Type == kitchenv1alpha1.EnvironmentPreview && env.Spec.Preview != nil:
 		return fmt.Sprintf("%s-pr-%d.%s", projectName, env.Spec.Preview.PullRequest, baseDomain)
+	case env.Spec.Type == kitchenv1alpha1.EnvironmentStage:
+		return fmt.Sprintf("%s.%s", stageHostLabel(projectName, env.Name), baseDomain)
 	}
 	return projectHost(projectName, baseDomain)
+}
+
+// stageHostLabel is the label a stage environment publishes under: its own
+// name, prefixed with the project's where it does not already carry it.
+//
+// The prefix is not cosmetic. Environment names are the project admin's to
+// choose and two projects may each call a rung `staging`, so a host built
+// from the environment's name alone would collide across projects — which is
+// the bug this fixes, moved rather than fixed. The dedupe is: an environment
+// named `shop-staging` is published at `shop-staging`, not at
+// `shop-shop-staging`, which is the conventional name and the one the
+// pipeline's own environments are created with.
+func stageHostLabel(projectName, envName string) string {
+	if strings.HasPrefix(envName, projectName+"-") {
+		return envName
+	}
+	return projectName + "-" + envName
 }
 
 // projectHost is where a project's production environment is published, and

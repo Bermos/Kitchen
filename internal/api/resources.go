@@ -2259,9 +2259,10 @@ func (s *Server) cancelBuild(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, s.buildView(ctx, build))
 }
 
-// deleteEnvironment removes a stuck preview. Only previews: the production
-// environment is the project — it goes down when the project does, and a
-// stray DELETE must not be able to take a live site with it.
+// deleteEnvironment removes a stuck preview. Only previews: a production
+// environment and a promotion stage's alike are the project — they go down
+// when it does, and a stray DELETE must not be able to take a live site or
+// the stage four teams integrate against with it.
 func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -2271,7 +2272,8 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if env.Spec.Type != kitchenv1alpha1.EnvironmentPreview {
-		badRequest(w, "environment %q is the production environment: it is torn down with its project, not on its own", env.Name)
+		badRequest(w, "environment %q is a %s environment: it is torn down with its project, not on its own",
+			env.Name, env.Spec.Type)
 		return
 	}
 	if !s.recorded(w, req, audit.Transition{

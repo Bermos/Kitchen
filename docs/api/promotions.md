@@ -78,6 +78,10 @@ Three places, all landing in the same object:
   is a rule on the next environment's requirements (`require-gate`), not a
   second mechanism.
 
+Each rung before the last has an environment of its own — typed `stage`, and
+published at its own hostname rather than at production's. See
+[Environments](environments.md#what-an-environment-is-and-where-it-answers).
+
 `PATCH /environments/{name}` keeps working for environments without
 requirements. Against one that declares them it answers `202` with the
 promotion the move became, because the answer to "may this land" is the

@@ -1453,6 +1453,11 @@ export interface EnvironmentRequirements {
 export interface Environment {
   name: string;
   project: string;
+  /** What this environment is, and so where it is published: `production`
+   *  at the project's own host, `stage` — a rung of the promotion pipeline
+   *  before production — at one of its own, `preview` at its pull request's.
+   *  It is read verbatim rather than mapped, so a value this dashboard has
+   *  not heard of still renders as itself. */
   type: string;
   release: string;
   observedRelease?: string;
@@ -1482,8 +1487,8 @@ export interface Environment {
   residency?: string;
   /** What this environment itself declares. Absent means it declares
    * nothing, which is not the same as nothing applying: a production
-   * environment reads its project's designation, and a preview reads none.
-   * GET /compliance/criticality answers with that resolved. */
+   * environment reads its project's designation, and a stage and a preview
+   * read none. GET /compliance/criticality answers with that resolved. */
   criticality?: string;
   rto?: string;
   rpo?: string;
