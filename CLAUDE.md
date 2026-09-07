@@ -124,6 +124,13 @@ keeps all three:
   issuer — there is no browser flow, because the identity provider's OAuth
   plugin implements no device grant (docs/CLI.md says what it would take).
 
+## Working through subagents
+
+`/orchestrate` (`.claude/skills/orchestrate/SKILL.md`) is the playbook for running a
+batch of issues through subagents; the roles it dispatches — `implementer`,
+`reviewer`, `dependency-mapper` — live in `.claude/agents/` and keep what they learn
+in `.claude/agent-memory/<name>/MEMORY.md`, which is checked in and grows with each run.
+
 ## Commits
 
 **Every commit message is a
