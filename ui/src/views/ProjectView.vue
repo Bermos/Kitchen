@@ -5,7 +5,7 @@ import type { RouteLocationRaw } from "vue-router";
 import { api, type Claim, type PlatformEvent, type ServiceBinding } from "../lib/api";
 import { incidentsFrom, undismissed } from "../lib/attention";
 import { claimPlan, claimUsedBy, host, processRows } from "../lib/project";
-import { claimRefusal } from "../lib/claims";
+import { bindingRequestSentence, claimRefusal, isBindingRequest } from "../lib/claims";
 import { compactCount, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { buildLink, environmentLink } from "../lib/links";
@@ -13,6 +13,7 @@ import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 import { useAsync, usePoll } from "../lib/useAsync";
 import AttentionBand from "../components/AttentionBand.vue";
+import BindingRequestsPanel from "../components/BindingRequestsPanel.vue";
 import ConditionsTable from "../components/ConditionsTable.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PageSection from "../components/PageSection.vue";
@@ -58,9 +59,25 @@ watch(name, () => void refresh());
 // up the answer to "is this healthy".
 const metrics = useAsync(() => api.metricsOverview(name.value));
 const activity = useAsync(() => api.events({ project: name.value, limit: 20 }));
+// Who has asked to bind this project's offerings (#495). It rides separately
+// like the feed, because a project that offers nothing asks for it and gets
+// an empty list, and neither that nor a slow answer should hold up "is this
+// healthy".
+//
+// It is asked for only by somebody who may read it. The queue is the
+// deciders' — it carries the name of the account that asked, so the API gives
+// it to this project's admins alone — and a screen that requested it for
+// everybody would spend every poll being refused.
+// Not `immediate`: the role it is gated on is read off the project, which is
+// still loading here, so the first fetch is the one the role's own watcher
+// makes below once there is an answer.
+const requests = useAsync(async () => (mayDecideRequests.value ? await api.bindingRequests(name.value) : []), {
+  immediate: false,
+});
 watch(name, () => {
   void metrics.refresh();
   void activity.refresh();
+  void requests.refresh();
 });
 
 const project = computed(() => data.value?.project);
@@ -84,9 +101,18 @@ usePoll(() => void refresh(), 15000, () => true);
 usePoll(() => void live.refresh(), 15000, () => Boolean(production.value));
 usePoll(() => void metrics.refresh(), 60000, () => true);
 usePoll(() => void activity.refresh(), 30000, () => true);
+usePoll(() => void requests.refresh(), 30000, () => mayDecideRequests.value);
 
 const caller = computed(() => callerFor(project.value?.role, name.value));
 const mayBuild = computed(() => may("POST /api/v1/projects/{name}/builds", caller.value));
+// Reading the binding queue and deciding one are the same role, deliberately:
+// it is the deciders' inbox and it names the person who asked. The role is
+// not known until the project has loaded, so the queue is asked for again
+// once it is.
+const mayDecideRequests = computed(() => may("GET /api/v1/projects/{name}/requests", caller.value));
+watch(mayDecideRequests, (may) => {
+  if (may) void requests.refresh();
+});
 // Acquiring an image somebody else built is admin's where a rebuild is a
 // developer's, and it is a different route, so it gets its own answer from the
 // same table rather than sharing the one above.
@@ -135,7 +161,12 @@ const processes = computed(() =>
   project.value ? processRows(project.value, production.value, live.data.value ?? []) : [],
 );
 const claims = computed(() => data.value?.claims ?? []);
-const refusedClaims = computed(() => claims.value.filter((claim) => claim.phase === "Failed"));
+// A binding the providing project refused is `Failed` too, and its story is
+// the request row's below — with the provider's own words and the one act
+// this side has — so it is left to that one rather than said twice (#495).
+const refusedClaims = computed(() =>
+  claims.value.filter((claim) => claim.phase === "Failed" && !isBindingRequest(claim)),
+);
 
 // A binding to another project's offering does not reach one address: it
 // reaches whichever environment of the provider admits the class of
@@ -148,6 +179,40 @@ const boundServiceClaims = computed(() => claims.value.filter((claim) => claim.s
 /** Which classes of this project's environments reach nothing, with why. */
 function unreached(claim: Claim): ServiceBinding[] {
   return (claim.service?.bindings ?? []).filter((binding) => !binding.environment);
+}
+
+// The other side of a binding request (#495), read here rather than on the
+// provider's screen: what this project asked another project for, and what
+// came back. A refused binding carries that project's own words, which is the
+// only place this reader can see them — they hold no role over there.
+const askedFor = computed(() => claims.value.filter(isBindingRequest));
+
+// Asking again after a refusal, on the same claim: the record of who asked
+// and who refused stays, which deleting the claim and writing it afresh would
+// throw away.
+const mayAskAgain = computed(() => may("POST /api/v1/claims/{name}/request", caller.value));
+const asking = ref("");
+async function askAgain(claim: Claim) {
+  if (asking.value) return;
+  asking.value = claim.name;
+  try {
+    await api.requestBinding(claim.name);
+    toast.add({
+      title: `${claim.service?.project} has been asked again`,
+      description: "Nothing binds until they answer it.",
+      color: "success",
+      icon: "i-lucide-check",
+    });
+    await refresh();
+  } catch (err) {
+    toast.add({
+      title: err instanceof Error ? err.message : String(err),
+      color: "warning",
+      icon: "i-lucide-info",
+    });
+  } finally {
+    asking.value = "";
+  }
 }
 
 // What a feed entry links to: the most specific object it names.
@@ -391,6 +456,31 @@ async function acquire() {
                   <span class="font-mono">{{ claim.name }}</span> — {{ claimRefusal(claim) }}
                 </td>
               </tr>
+              <!-- A binding this project asked another project for and has
+                   not been given (#495). It is not a failure of this project's
+                   and there is nothing here to fix: the grant belongs to the
+                   other project's admins, so the row says what is true and
+                   offers the one act this side has — asking again. -->
+              <tr v-for="claim in askedFor" :key="`${claim.name}-asked`" class="border-b border-muted last:border-0">
+                <td colspan="5" class="px-3 py-2 text-xs">
+                  <div class="flex items-start justify-between gap-4">
+                    <p class="text-muted">
+                      <span class="font-mono">{{ claim.name }}</span> — {{ bindingRequestSentence(claim) }}
+                    </p>
+                    <UButton
+                      v-if="mayAskAgain && claim.service?.grant?.state === 'denied'"
+                      color="neutral"
+                      variant="link"
+                      size="xs"
+                      class="px-0 shrink-0"
+                      :loading="asking === claim.name"
+                      @click="askAgain(claim)"
+                    >
+                      Ask again
+                    </UButton>
+                  </div>
+                </td>
+              </tr>
               <!-- What a binding to another project's offering reaches, per
                    class of this project's own environments. The providing
                    project's environment owners decide who may bind to each of
@@ -420,6 +510,18 @@ async function acquire() {
           </table>
         </div>
       </PageSection>
+
+      <!-- Who has asked to bind what this project offers (#495). It is here
+           rather than on Settings because it is a queue somebody answers
+           rather than a setting somebody changes, and because this is the
+           screen its admins already open. -->
+      <BindingRequestsPanel
+        v-if="requests.data.value?.length"
+        :project="name"
+        :role="project.role"
+        :requests="requests.data.value ?? []"
+        @decided="requests.refresh()"
+      />
 
       <!-- Everybody's since #469: conditions are a fact about this project. -->
       <ConditionsTable :conditions="project.conditions" />

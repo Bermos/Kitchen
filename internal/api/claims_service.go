@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
@@ -33,14 +34,20 @@ import (
 // offers (#493).
 //
 // It is the one claim whose request names an object outside the project the
-// claim is for, and the two refusals that follow from that are the whole of
-// what this file adds to the shared door:
+// claim is for, and what follows from that is the whole of what this file
+// adds to the shared door:
 //
-//   - **The offering has to exist and admit this consumer.** Both are
-//     decidable here, from two objects that already exist, so a claim that
-//     could not bind is refused rather than created and left Failed. The
-//     reconciler makes the same two checks again, because an offering can be
-//     closed or removed after a claim was written.
+//   - **The offering has to exist.** That is decidable here, from an object
+//     that already exists, so a claim naming nothing is refused rather than
+//     created and left Failed. The reconciler makes the check again, because
+//     an offering can be withdrawn after a claim was written.
+//   - **Whether the offering admits this consumer is not decided here at
+//     all** (#495). An offering whose visibility is `request` admits nobody
+//     until the providing project says so, and the claim *is* the request:
+//     it is created, it sits PendingApproval provisioning nothing, and an
+//     admin of the providing project answers it through
+//     `PATCH /projects/{name}/requests/{claim}`. Refusing the write here
+//     would leave a consumer with nothing to ask with.
 //   - **A binding may not take a name one of the consumer's own workloads
 //     has.** The binding arrives in the pod as `KITCHEN_SERVICE_<NAME>`,
 //     which is the prefix a sibling process is handed under, so two of them
@@ -100,8 +107,9 @@ func (serviceClaimShaper) config(
 	return &runtime.RawExtension{Raw: raw}, true
 }
 
-// resolve is the cross-project half: the offering has to exist, and it has
-// to admit this consumer.
+// resolve is the cross-project half: the offering has to exist. Whether it
+// admits this consumer is the providing project's answer and not this door's
+// (#495), which is why the consuming project is not read here.
 //
 // It is a read of the *providing* project, which the caller may hold no role
 // on at all — and that is correct rather than a leak. An offering is a
@@ -115,7 +123,7 @@ func (serviceClaimShaper) resolve(
 	s *Server,
 	w http.ResponseWriter,
 	body *createClaimRequest,
-	consumer *kitchenv1alpha1.Project,
+	_ *kitchenv1alpha1.Project,
 ) bool {
 	cfg := body.Service
 	name := strings.TrimSpace(cfg.Offering)
@@ -128,21 +136,12 @@ func (serviceClaimShaper) resolve(
 		s.writeError(w, err)
 		return false
 	}
-	offering, ok := provider.Offering(name)
-	if !ok {
+	if _, ok := provider.Offering(name); !ok {
 		has := "it makes none"
 		if names := provider.OfferingNames(); len(names) > 0 {
 			has = "its offerings are " + strings.Join(names, ", ")
 		}
 		badRequest(w, "project %s makes no offering named %q: %s", provider.Name, name, has)
-		return false
-	}
-	if provider.Name != consumer.Name && offering.Visibility() != kitchenv1alpha1.OfferingOpen {
-		badRequest(w, "offering %s/%s admits consumers by request (visibility %s), and asking for one is not "+
-			"built yet (#495). Until it is, project %s's admins open the offering to every project on the "+
-			"platform (visibility %s) or it binds nobody",
-			provider.Name, offering.Name, kitchenv1alpha1.OfferingRequest, provider.Name,
-			kitchenv1alpha1.OfferingOpen)
 		return false
 	}
 	return true
@@ -159,6 +158,20 @@ func (serviceClaimShaper) view(claim *kitchenv1alpha1.ResourceClaim, view *claim
 		return
 	}
 	service := &claimServiceView{Project: cfg.Project, Offering: cfg.Offering, Bindings: []serviceBindingView{}}
+	if grant := claim.ServiceGrant(); grant != nil {
+		service.Grant = &claimServiceGrantView{
+			State:       string(grant.State),
+			RequestedBy: grant.RequestedBy,
+			DecidedBy:   grant.DecidedBy,
+			DecidedAt:   grant.DecidedAt,
+			Reason:      grant.Reason,
+			Open:        grant.Open,
+		}
+		if !grant.RequestedAt.IsZero() {
+			at := grant.RequestedAt
+			service.Grant.RequestedAt = &at
+		}
+	}
 	if claim.Status.Service != nil {
 		for _, binding := range claim.Status.Service.Bindings {
 			service.Bindings = append(service.Bindings, serviceBindingView{
@@ -189,6 +202,32 @@ type claimServiceView struct {
 	// and on one bound by an operator older than #494, where every class
 	// reached one address.
 	Bindings []serviceBindingView `json:"bindings"`
+	// Grant is the providing project's answer to this binding (#495):
+	// waiting, admitted, or refused with the words that say why. Absent on a
+	// binding nobody had to answer for and that no open door admitted
+	// either — a project binding its own `request` offering, and one written
+	// before this operator. A claim on an `open` offering carries one, marked
+	// as the open door it was.
+	Grant *claimServiceGrantView `json:"grant,omitempty"`
+}
+
+// claimServiceGrantView is the providing project's answer as the consumer
+// reads it: who asked, who decided, when, and why.
+//
+// The reason is answered rather than withheld and that is the point of it:
+// the consumer is the one person a refusal is for, and a refusal they cannot
+// read is a support ticket. Nothing here is a credential — a service binding
+// has none.
+type claimServiceGrantView struct {
+	State       string       `json:"state"`
+	RequestedBy string       `json:"requestedBy,omitempty"`
+	RequestedAt *metav1.Time `json:"requestedAt,omitempty"`
+	DecidedBy   string       `json:"decidedBy,omitempty"`
+	DecidedAt   *metav1.Time `json:"decidedAt,omitempty"`
+	Reason      string       `json:"reason,omitempty"`
+	// Open marks a binding admitted because the offering was open to every
+	// project when it bound, rather than by anybody's decision.
+	Open bool `json:"open,omitempty"`
 }
 
 // serviceBindingView is one class of this project's environments and what it

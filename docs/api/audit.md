@@ -27,7 +27,17 @@ run's). Types:
 `release.redeployed`, `preview.created`, `preview.removed`, `preview.refused`,
 `project.created`, `project.deleted`,
 `claim.created`, `claim.deleted`, `claim.bound`, `claim.failed`,
+`binding.requested`, `binding.approved`, `binding.denied`,
 `run.started`, `run.succeeded`, `run.failed`, `secret.rotated`.
+
+The three `binding.*` entries are one project asking another for a binding to
+its [offering](./projects.md#who-has-asked-to-bind-this-projects-offerings)
+and the answer, and they land in **different projects' feeds** on purpose: the
+request is in the *provider's*, where the people who can answer it are looking
+and where nothing else would announce it, and the decision is in the
+*consumer's* beside `claim.bound`, where the people waiting for it are. The
+request names the claim in its message rather than in the `claim` field, which
+belongs to the consumer's project and not to that row's.
 
 `build.skipped` is a commit the platform read and had nothing to build for:
 its source at the project's build root was byte-identical to the last build's,

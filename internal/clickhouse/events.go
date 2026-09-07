@@ -60,10 +60,20 @@ const (
 	EventClaimFailed    = "claim.failed"
 	EventClaimCreated   = "claim.created"
 	EventClaimDeleted   = "claim.deleted"
-	EventProjectCreated = "project.created"
-	EventProjectDeleted = "project.deleted"
-	EventDomainAttached = "domain.attached"
-	EventDomainRemoved  = "domain.removed"
+
+	// One project asking another for a binding to its offering, and the
+	// answer (#495). All three are in the feed because the whole exchange
+	// happens between two projects and neither can see the other's
+	// reconciler: the request lands in the *provider's* feed, where the
+	// people who can answer it are looking, and the decision lands in the
+	// *consumer's*, where the people waiting for it are.
+	EventBindingRequested = "binding.requested"
+	EventBindingApproved  = "binding.approved"
+	EventBindingDenied    = "binding.denied"
+	EventProjectCreated   = "project.created"
+	EventProjectDeleted   = "project.deleted"
+	EventDomainAttached   = "domain.attached"
+	EventDomainRemoved    = "domain.removed"
 
 	// An environment declared before anything deployed into it (#491). It is
 	// in the feed because an environment appearing with no deploy behind it

@@ -9254,8 +9254,9 @@ spec:
                   bind to it is a grant, and a grant anybody with push access could
                   widen is not a grant — so it is written here through the API by a
                   project admin, and a file that declares one fails the build saying
-                  why. An offering nobody has opened is `request`, which admits nobody
-                  until the request flow (#495) lands.
+                  why. An offering nobody has opened is `request`, which admits a
+                  consumer only when this project has answered its request (#495) —
+                  one at a time, rather than every project on the platform at once.
 
                   Entries merge per name rather than by position (listType=map), so two
                   people adding two offerings do not drop each other's.
@@ -14066,6 +14067,7 @@ spec:
                 description: ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
                 enum:
                 - Pending
+                - PendingApproval
                 - Bound
                 - Failed
                 type: string
@@ -14362,6 +14364,65 @@ spec:
                       - consumer
                       type: object
                     type: array
+                  grant:
+                    description: |-
+                      Grant is the providing project's answer to this claim: whether it may
+                      bind at all (#495).
+
+                      Absent on a claim nobody has had to answer for and that bound nothing
+                      on the strength of an open door either: a project binding its own
+                      `request` offering, which asks nobody, and a claim written before this
+                      operator. A claim on an **open** offering does carry one — recorded
+                      with Open set the moment it binds, including a project's own — because
+                      that record is what keeps it binding if the offering is closed later.
+                    properties:
+                      decidedAt:
+                        format: date-time
+                        type: string
+                      decidedBy:
+                        description: |-
+                          DecidedBy is the admin of the *providing* project who approved or
+                          denied it, and DecidedAt is when. Both are empty on a request nobody
+                          has answered, and on an approval Open explains instead.
+                        type: string
+                      open:
+                        description: |-
+                          Open records an approval nobody made: the offering was open to every
+                          project on the platform when this claim bound, so no request was ever
+                          put to anybody.
+
+                          It is written down rather than inferred because of what happens next.
+                          An offering moved from `open` to `request` must not break the
+                          bindings it already has — the projects reading it did nothing — so
+                          this is the record that says the binding was admitted before the door
+                          closed. Closing it freezes *new* consumers; the ones already through
+                          are withdrawn one at a time, deliberately, by denying them.
+                        type: boolean
+                      reason:
+                        description: |-
+                          Reason is the decision's own words, required of a denial because a
+                          refusal the consumer cannot account for is a support ticket. Empty on
+                          a request nobody has answered.
+                        type: string
+                      requestedAt:
+                        format: date-time
+                        type: string
+                      requestedBy:
+                        description: |-
+                          RequestedBy is the account whose claim asked, as the API knew them,
+                          and RequestedAt is when they last asked — a denied request asked
+                          again moves both.
+                        type: string
+                      state:
+                        description: State is requested, approved or denied.
+                        enum:
+                        - requested
+                        - approved
+                        - denied
+                        type: string
+                    required:
+                    - state
+                    type: object
                 type: object
               volume:
                 description: |-

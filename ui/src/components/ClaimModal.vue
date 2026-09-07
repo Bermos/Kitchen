@@ -125,9 +125,11 @@ async function loadOfferings() {
   }
 }
 
-/** Every offering on the platform, with the ones that admit consumers by
- * request listed disabled rather than left out: an offering nobody can see is
- * an offering nobody asks for, and asking is what the next issue is about. */
+/** Every offering on the platform. The ones that admit consumers by request
+ * are chosen the same way as the open ones: writing the claim *is* asking for
+ * one (#495), and it then waits for that project to answer rather than
+ * binding. So nothing here is disabled — the label says which of the two it
+ * is, and the sentence under the field says what happens next. */
 const offeringOptions = computed(() =>
   offerings.value.map((entry) => ({
     label: [
@@ -139,8 +141,17 @@ const offeringOptions = computed(() =>
       .filter(Boolean)
       .join(" — "),
     value: `${entry.project}/${entry.name}`,
-    disabled: entry.visibility !== "open" && entry.project !== props.project,
   })),
+);
+
+/** Whether choosing this one is a request rather than a binding: an offering
+ * that admits by request, made by somebody else. A project binding its own
+ * offering asks nobody. */
+const asksForApproval = computed(
+  () =>
+    Boolean(offering.value) &&
+    offering.value!.visibility !== "open" &&
+    offering.value!.project !== props.project,
 );
 
 const offering = computed<Offering | undefined>(() =>
@@ -989,8 +1000,8 @@ async function save() {
 
           <UFormField
             label="What to bind"
-            help="What the projects on this platform offer. An offering that admits consumers by request is listed and
-              cannot be chosen yet — asking for one, and having it approved, is not built."
+            help="What the projects on this platform offer. One that admits consumers by request can be chosen too:
+              writing the claim is how this project asks for it."
             required
           >
             <USelect
@@ -1001,6 +1012,17 @@ async function save() {
               class="w-full"
             />
           </UFormField>
+
+          <UAlert
+            v-if="asksForApproval"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-info"
+            title="This one has to be approved"
+            :description="`${offering!.project} admits consumers by request. The claim is the request: it is written now,
+              provisions nothing, and binds when an admin of that project answers it — or carries their reason if they
+              refuse.`"
+          />
 
           <p v-if="offering" class="text-xs text-muted">
             The application reads it as <span class="font-mono">{{ bindingVariable }}</span

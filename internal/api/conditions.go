@@ -130,6 +130,18 @@ var conditionSeverities = map[conditionStatement]conditionSeverity{
 	// drawn as a broken build.
 	{controller.ConditionReady, controller.ReasonSourceUnchanged}: severityInfo,
 
+	// A binding to another project's offering that this environment reads
+	// none of, in its two shapes (#494, #495). Neither is a fault of this
+	// environment's: the grant belongs to the providing project — its
+	// environment owners for the first, its admins for the second — and this
+	// environment deployed anyway, carrying the claim's own sentence. A
+	// request that is merely waiting for somebody to answer it drawn in red
+	// would be the platform reporting good manners as a failure, and the
+	// claim itself is `PendingApproval`, which the dashboard already draws as
+	// information.
+	{controller.ConditionClaimsBound, controller.ReasonNotAdmittedHere}:  severityInfo,
+	{controller.ConditionClaimsBound, controller.ReasonAwaitingApproval}: severityInfo,
+
 	// And the counter-case, spelled out rather than left to the default: an
 	// installation with no scheduled backup is unprotected, which is worth
 	// somebody's attention however green everything else is. "Not every

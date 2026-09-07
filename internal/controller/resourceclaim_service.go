@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/provider/database"
 	"github.com/Bermos/Kitchen/internal/provider/service"
 )
@@ -54,12 +56,12 @@ import (
 //     make, are both **Failed** with the name in the message. They are
 //     configuration to correct rather than a state to wait through: nothing
 //     appears on a timer that would make the name right.
-//   - an offering the consumer has not been granted is Failed too, and the
-//     message says which grant is missing. `visibility: request` is the
-//     default, and the flow that turns a request into a grant is #495 — so
-//     until it lands the refusal names `open` as what would admit this
-//     consumer today, rather than binding on the strength of an approval
-//     nothing recorded.
+//   - an offering whose visibility is `request` binds nothing until the
+//     providing project has approved this consumer (#495). The claim is the
+//     request: it sits **PendingApproval** with no Secret and no variable
+//     anywhere until an admin of the providing project answers it, and a
+//     denial is Failed carrying their words. An approval withdrawn takes the
+//     address back, which is the same path.
 //   - an environment that is not there **yet** is Pending, because that one
 //     does appear on a timer: the offering names an environment, and a
 //     project's first build for a target creates it.
@@ -119,8 +121,11 @@ func (serviceContract) reconcile(
 				offersOf(provider)))
 	}
 
-	if refusal := offeringGrantRefusal(provider, project, offering); refusal != "" {
-		return r.failed(ctx, claim, "NotGranted", fmt.Errorf("%s", refusal))
+	// The grant: whether this consumer may bind at all. It is the providing
+	// project's answer and not this claim's to assume, so it is settled
+	// before anything below provisions a Secret (#495).
+	if admitted, result, err := r.serviceGrant(ctx, claim, project, provider, offering); !admitted {
+		return result, err
 	}
 
 	envName := offering.Environment
@@ -227,7 +232,7 @@ func (serviceContract) reconcile(
 		resolvedIn[string(consumer)] = target.Name
 	}
 	if len(resolvedIn) == 0 {
-		claim.Status.Service = &kitchenv1alpha1.ClaimServiceStatus{Bindings: bindings}
+		claim.Status.Service = serviceStatus(claim, bindings)
 		// Every Secret was taken back above, so the name of one has to go
 		// too: a status naming a Secret that is not there is what sends the
 		// finalizer and the claim's own screen looking for it.
@@ -239,7 +244,20 @@ func (serviceContract) reconcile(
 			fmt.Errorf("%s", notAdmittedRefusal(provider, offering, "", served)))
 	}
 
-	claim.Status.Service = &kitchenv1alpha1.ClaimServiceStatus{Bindings: bindings}
+	claim.Status.Service = serviceStatus(claim, bindings)
+	// An offering open to every project admits this consumer without anybody
+	// being asked, and that is written down at the moment it binds — see
+	// ClaimServiceGrant.Open for why the record matters later.
+	//
+	// It **replaces a refusal**, deliberately: an offering opened to every
+	// project on the platform is opened to the one this project refused
+	// while it was closed, and a denial left standing under `open` would be
+	// a per-consumer block the visibility does not have. Closing the
+	// offering again therefore leaves that consumer bound, and withdrawing
+	// it is a decision to make a second time (docs/api/claims.md).
+	if offering.Visibility() == kitchenv1alpha1.OfferingOpen && !claim.Status.Service.Grant.Admitted() {
+		claim.Status.Service.Grant = openGrant(provider, offering, project)
+	}
 	// SecretName is the binding of the first class that resolved, in the
 	// platform's own order, because it is what everything written before a
 	// binding could differ per class reads: the claim's own screen, the
@@ -278,6 +296,7 @@ func (serviceContract) reconcile(
 			// environment: "the preview reached staging" is the fact
 			// somebody comes back to this row for.
 			"environments":   resolvedIn,
+			"grant":          grantDetail(claim.ServiceGrant()),
 			"secret":         claim.Status.SecretName,
 			"dataProvenance": claim.Status.DataProvenance,
 			"previewMode":    claim.Status.PreviewMode,
@@ -303,6 +322,16 @@ func (serviceContract) finalize(
 	r *ResourceClaimReconciler,
 	claim *kitchenv1alpha1.ResourceClaim,
 ) error {
+	return r.removeBindingSecrets(ctx, claim)
+}
+
+// removeBindingSecrets takes back every class's binding Secret from the
+// consumer's application namespace, whether the claim is going away or only
+// its grant is.
+func (r *ResourceClaimReconciler) removeBindingSecrets(
+	ctx context.Context,
+	claim *kitchenv1alpha1.ResourceClaim,
+) error {
 	appNS := appNamespace(claim.Spec.ProjectRef.Name)
 	for _, consumer := range kitchenv1alpha1.EnvironmentTypes() {
 		if err := r.removeBindingSecret(ctx, appNS, serviceBindingSecretName(claim.Name, consumer)); err != nil {
@@ -312,30 +341,224 @@ func (serviceContract) finalize(
 	return nil
 }
 
-// offeringGrantRefusal is the grant check, and "" means the offering admits
-// this consumer.
+// serviceGrant settles whether the providing project admits this consumer,
+// and answers false with the result the reconcile returns when it does not
+// (#495).
 //
-// A project binding its own offering is admitted whatever the visibility
-// says: the grant is the providing project's to give, and here the two are
-// the same project. It is not a useful thing to do — a sibling process is
-// already handed its siblings' addresses — but refusing a project access to
-// its own offering would be a rule with nobody on the other side of it.
-func offeringGrantRefusal(
-	provider *kitchenv1alpha1.Project,
+// Two shapes of offering never ask anybody. **A project binding its own
+// offering** is admitted whatever the visibility says: the grant is the
+// providing project's to give, and here the two are the same project —
+// refusing it would be a rule with nobody on the other side of it. **An open
+// offering** admits every project on the platform, which is what the word
+// means; the fact that it did is written onto the claim when it binds, so
+// that closing the offering afterwards freezes new consumers rather than
+// cutting off the ones already through.
+//
+// Everything else is a request, and the claim itself is the request: the
+// first reconcile of a claim on a `request` offering records who asked and
+// when, and leaves the claim PendingApproval with no Secret, no variable and
+// no address anywhere. A denied one is Failed with the provider's words,
+// which is the same spelling every other refusal on a claim has — a
+// withdrawal and a refusal are one fact, and Reason says which it was.
+func (r *ResourceClaimReconciler) serviceGrant(
+	ctx context.Context,
+	claim *kitchenv1alpha1.ResourceClaim,
 	consumer *kitchenv1alpha1.Project,
+	provider *kitchenv1alpha1.Project,
 	offering kitchenv1alpha1.ServiceOffering,
+) (bool, ctrl.Result, error) {
+	if provider.Name == consumer.Name || offering.Visibility() == kitchenv1alpha1.OfferingOpen {
+		return true, ctrl.Result{}, nil
+	}
+	grant := claim.ServiceGrant()
+	if grant.Admitted() {
+		return true, ctrl.Result{}, nil
+	}
+	if grant == nil && claim.Status.Phase == kitchenv1alpha1.ClaimBound && boundSomewhere(claim) {
+		// A binding an operator older than this one resolved, on an
+		// offering that has since been closed. Nothing but an open offering
+		// could have resolved it — a request offering refused every
+		// consumer before this — so it is recorded as one rather than taken
+		// away from a project that did nothing. Closing an offering freezes
+		// new consumers; withdrawing one already through the door is a
+		// decision somebody makes.
+		claim.Status.Service = serviceStatus(claim, claimBindings(claim))
+		claim.Status.Service.Grant = openGrant(provider, offering, consumer)
+		return true, ctrl.Result{}, nil
+	}
+
+	// Not admitted, so whatever this claim was reading it stops reading
+	// now: an approval withdrawn takes the address back, and the consumer's
+	// environments roll without it on the pass the claim wakes them with.
+	if err := r.withdrawBindings(ctx, claim); err != nil {
+		return false, ctrl.Result{}, err
+	}
+	if grant != nil && grant.State == kitchenv1alpha1.ServiceGrantDenied {
+		result, err := r.failed(ctx, claim, "BindingDenied",
+			fmt.Errorf("%s", grantDenialRefusal(provider, offering, grant)))
+		return false, result, err
+	}
+	if grant == nil {
+		// The claim is the request. Who asked is the account the API wrote
+		// on the claim when it created it, which is the one place the
+		// platform knows a person by; a claim written straight to the
+		// cluster carries nobody, and the request says so rather than
+		// inventing an author.
+		claim.Status.Service = serviceStatus(claim, nil)
+		claim.Status.Service.Grant = &kitchenv1alpha1.ClaimServiceGrant{
+			State:       kitchenv1alpha1.ServiceGrantRequested,
+			RequestedBy: claim.Annotations[audit.RequestedByAnnotation],
+			RequestedAt: metav1.Time{Time: time.Now().UTC()},
+		}
+	}
+	result, err := r.awaitingApproval(ctx, claim, provider, offering, consumer.Name)
+	return false, result, err
+}
+
+// openGrant is the record of an admission nobody made: the offering was open
+// to every project on the platform when this claim bound to it.
+func openGrant(
+	provider *kitchenv1alpha1.Project,
+	offering kitchenv1alpha1.ServiceOffering,
+	consumer *kitchenv1alpha1.Project,
+) *kitchenv1alpha1.ClaimServiceGrant {
+	return &kitchenv1alpha1.ClaimServiceGrant{
+		State:     kitchenv1alpha1.ServiceGrantApproved,
+		DecidedAt: &metav1.Time{Time: time.Now().UTC()},
+		Open:      true,
+		Reason: fmt.Sprintf("offering %s/%s was open to every project on this platform when %s bound to it",
+			provider.Name, offering.Name, consumer.Name),
+	}
+}
+
+// boundSomewhere reports whether this claim has an address written for some
+// class of the consumer's environments — which is what "already through the
+// door" means. A claim bound by an operator older than #494 has one Secret
+// and no rows at all, and that counts too.
+func boundSomewhere(claim *kitchenv1alpha1.ResourceClaim) bool {
+	if claim.Status.SecretName != "" {
+		return true
+	}
+	for _, binding := range claimBindings(claim) {
+		if binding.SecretName != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// claimBindings is what the claim resolved per class, and nothing for a claim
+// with no service status at all.
+func claimBindings(claim *kitchenv1alpha1.ResourceClaim) []kitchenv1alpha1.ClaimServiceBinding {
+	if claim.Status.Service == nil {
+		return nil
+	}
+	return claim.Status.Service.Bindings
+}
+
+// serviceStatus is the claim's service status with these bindings and the
+// grant it already carries.
+//
+// The grant is the one thing on this status that is not the reconciler's own
+// answer — the providing project's admins write it through the API — so
+// every pass has to carry it forward rather than replace the status whole.
+func serviceStatus(
+	claim *kitchenv1alpha1.ResourceClaim,
+	bindings []kitchenv1alpha1.ClaimServiceBinding,
+) *kitchenv1alpha1.ClaimServiceStatus {
+	return &kitchenv1alpha1.ClaimServiceStatus{Bindings: bindings, Grant: claim.ServiceGrant()}
+}
+
+// withdrawBindings takes back every class's binding Secret and forgets the
+// addresses, for a claim that is no longer admitted. It is the revocation
+// half of an approval: the Secret goes, the variables go with it, and the
+// consumer's environments roll on the pass this wakes them with.
+func (r *ResourceClaimReconciler) withdrawBindings(
+	ctx context.Context,
+	claim *kitchenv1alpha1.ResourceClaim,
+) error {
+	if err := r.removeBindingSecrets(ctx, claim); err != nil {
+		return err
+	}
+	if claim.Status.Service != nil {
+		claim.Status.Service.Bindings = nil
+	}
+	claim.Status.SecretName = ""
+	return nil
+}
+
+// grantAwaitedRefusal is what a claim waiting for the providing project says,
+// on its own screen and on every environment of the consumer that would have
+// read it.
+//
+// Like every other sentence a service claim writes it is a **statement of
+// fact rather than an instruction**: the person reading it is the consumer,
+// and the act it is waiting on belongs to the providing project's admins,
+// who would answer this reader's call with a 403.
+func grantAwaitedRefusal(
+	provider *kitchenv1alpha1.Project,
+	offering kitchenv1alpha1.ServiceOffering,
+	consumer string,
 ) string {
-	if provider.Name == consumer.Name {
-		return ""
+	return fmt.Sprintf("offering %s/%s admits consumers by request (visibility %s), and %s on behalf of "+
+		"project %s. Nothing is bound and no address has been written anywhere while it waits",
+		provider.Name, offering.Name, kitchenv1alpha1.OfferingRequest,
+		grantAwaited(provider.Name, offering.Name), consumer)
+}
+
+// grantAwaited and grantRefused are the two sentences a binding nobody has
+// admitted carries, and they are written once here because they are read in
+// two places: on the claim's own status, and on every environment of the
+// consumer that would have read the binding. Two spellings of one fact drift,
+// and the second reader is the one who would never see the first.
+func grantAwaited(provider, offering string) string {
+	return fmt.Sprintf("the request to bind offering %s/%s is waiting for an admin of %s to answer it",
+		provider, offering, provider)
+}
+
+func grantRefused(provider, offering string, grant *kitchenv1alpha1.ClaimServiceGrant) string {
+	who := "an admin of project " + provider
+	if grant.DecidedBy != "" {
+		who = grant.DecidedBy
 	}
-	if offering.Visibility() == kitchenv1alpha1.OfferingOpen {
-		return ""
+	words := grant.Reason
+	if words == "" {
+		words = "no reason was given"
 	}
-	return fmt.Sprintf("offering %s/%s admits consumers by request (visibility %s) and no request from "+
-		"project %s has been approved. Asking for one, and approving it, is #495; until that lands the "+
-		"offering admits a consumer only at visibility %s, which project %s's admins set on the offering",
-		provider.Name, offering.Name, kitchenv1alpha1.OfferingRequest, consumer.Name,
-		kitchenv1alpha1.OfferingOpen, provider.Name)
+	return fmt.Sprintf("%s refused this binding to offering %s/%s: %s", who, provider, offering, words)
+}
+
+// grantDenialRefusal is a refused request in the provider's own words, which
+// is the whole of what a denial is for: a consumer who cannot account for a
+// refusal opens a support ticket instead of reading one.
+func grantDenialRefusal(
+	provider *kitchenv1alpha1.Project,
+	offering kitchenv1alpha1.ServiceOffering,
+	grant *kitchenv1alpha1.ClaimServiceGrant,
+) string {
+	return grantRefused(provider.Name, offering.Name, grant) +
+		". Asking again is a request on this same claim, which does not have to be deleted and " +
+		"written afresh"
+}
+
+// grantDetail is the grant as an audit record carries it: the state, who
+// decided and when. The reason is left out — it is the provider's prose and
+// it is on the claim — and nothing here is a credential.
+func grantDetail(grant *kitchenv1alpha1.ClaimServiceGrant) map[string]any {
+	if grant == nil {
+		return map[string]any{"state": "none"}
+	}
+	detail := map[string]any{"state": string(grant.State), "open": grant.Open}
+	if grant.RequestedBy != "" {
+		detail["requestedBy"] = grant.RequestedBy
+	}
+	if grant.DecidedBy != "" {
+		detail["decidedBy"] = grant.DecidedBy
+	}
+	if grant.DecidedAt != nil {
+		detail["decidedAt"] = grant.DecidedAt.UTC().Format(time.RFC3339)
+	}
+	return detail
 }
 
 // servingEnvironments is every durable environment of the providing project:

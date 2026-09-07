@@ -296,6 +296,68 @@ func (r *ResourceClaimReconciler) pending(
 	return ctrl.Result{RequeueAfter: claimRequeueDelay}, nil
 }
 
+// awaitingApproval records a binding waiting for the *providing* project to
+// answer it (#495).
+//
+// It is its own phase rather than a reason on Pending because the two wait
+// for different things — an ordinary Pending resolves on a timer, this one
+// only when a person acts — and because the provider's own screen lists what
+// is waiting for a person by asking for exactly this phase.
+//
+// The requeue is still there, and it is not a poll for the approval: a
+// decision is a status write on this claim and wakes the reconciler at once.
+// It is there because the *offering* can move — opened to every project,
+// withdrawn, pointed at another environment — and the claim watches no
+// Project.
+func (r *ResourceClaimReconciler) awaitingApproval(
+	ctx context.Context,
+	claim *kitchenv1alpha1.ResourceClaim,
+	provider *kitchenv1alpha1.Project,
+	offering kitchenv1alpha1.ServiceOffering,
+	consumer string,
+) (ctrl.Result, error) {
+	waiting := grantAwaitedRefusal(provider, offering, consumer)
+	was := claim.Status.Phase == kitchenv1alpha1.ClaimPendingApproval
+	if !was {
+		if err := r.Audit.Record(ctx, audit.Transition{
+			Object:     claim,
+			Kind:       audit.KindResourceClaim,
+			Controller: actorResourceClaimController,
+			From:       string(claim.Status.Phase),
+			To:         string(kitchenv1alpha1.ClaimPendingApproval),
+			Project:    claim.Spec.ProjectRef.Name,
+			Reason:     waiting,
+			Details: map[string]any{
+				"type":            claim.Spec.Type,
+				"offeringProject": provider.Name,
+				"offering":        offering.Name,
+				"grant":           grantDetail(claim.ServiceGrant()),
+			},
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	claim.Status.Phase = kitchenv1alpha1.ClaimPendingApproval
+	setClaimCondition(claim, condReady, metav1.ConditionFalse, "AwaitingApproval", waiting)
+	if err := r.Status().Update(ctx, claim); err != nil {
+		return ctrl.Result{}, err
+	}
+	if !was {
+		// The *provider's* feed: a request is news to the people who can
+		// answer it, and it is the only entry in this exchange they would
+		// otherwise have to go looking for. It names the claim rather than
+		// carrying it in the claim column, which belongs to the consumer's
+		// project and not to this row's.
+		r.Activity.Record(ctx, clickhouse.Event{
+			Type:    clickhouse.EventBindingRequested,
+			Project: provider.Name,
+			Message: fmt.Sprintf("project %s asks to bind offering %s, through claim %s",
+				consumer, offering.Name, claim.Name),
+		})
+	}
+	return ctrl.Result{RequeueAfter: claimRequeueDelay}, nil
+}
+
 // failed records a claim the provider (or its configuration) refused, with
 // the provider's own words in the condition.
 func (r *ResourceClaimReconciler) failed(

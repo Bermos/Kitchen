@@ -172,7 +172,7 @@ async function save() {
       description:
         draft.value.visibility === "open"
           ? "Any project on the platform may bind to it now."
-          : "Nothing binds to it until this project approves a consumer.",
+          : "Nothing binds to it until this project admits a consumer.",
       color: "success",
       icon: "i-lucide-check",
     });
@@ -291,7 +291,7 @@ watch(
                 {{ offering.visibility }}
               </UBadge>
               <p v-if="offering.visibility === 'request'" class="text-xs text-dimmed mt-1">
-                nothing binds until a consumer is approved
+                nothing binds until this project admits a consumer
               </p>
             </td>
             <td class="px-3 py-2">
@@ -365,8 +365,16 @@ watch(
             color="neutral"
             variant="soft"
             icon="i-lucide-info"
-            title="Nothing binds to a request offering yet"
-            description="Asking for a binding, and approving it, is not built. Until it is, an offering admits consumers only when it is open to every project on the platform."
+            title="Nothing binds until this project admits it"
+            description="A project asking for this offering waits, provisioning nothing, until an admin here answers it. The queue is on the project's own screen."
+          />
+          <UAlert
+            v-if="!adding && draft.visibility === 'request' && offers[editing]?.visibility === 'open'"
+            color="neutral"
+            variant="soft"
+            icon="i-lucide-info"
+            title="The projects already bound stay bound"
+            description="Closing an offering freezes new consumers. Each one already through is withdrawn on its own, from the requests on this project's screen."
           />
           <UAlert v-if="writeError" color="warning" variant="soft" icon="i-lucide-info" :title="writeError" />
         </div>
