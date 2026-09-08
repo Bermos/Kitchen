@@ -64,7 +64,14 @@ committed or not (`git stash` is not a checkpoint; a WIP commit on the branch is
 branch — what landed, what is open with its PR and head, what is running on which
 worktree, the decisions list, and the next issue in order — committed and pushed,
 and (3) any check-in timers cancelled. Whoever or whatever resumes reads that note
-first and deletes it once the state is back in the plan. If `/usage` cannot be run
+first and deletes it once the state is back in the plan. **Before pushing the note,
+`git diff --stat HEAD^ HEAD` must name the note and nothing else.** On 8 September a
+checkpoint commit swept 61 files of a just-merged feature out of `main`, because a
+`git checkout -B` meant for the main checkout ran inside a worktree (a `cd` earlier
+in the same compound shell command had stuck), moved the shared branch ref out from
+under the main checkout, and the next commit there carried its stale index. Never
+`cd` into a worktree in a compound command that then touches the orchestration
+branch; a branch ref is one object shared by every worktree. If `/usage` cannot be run
 from where you are, ask the maintainer for the figure at each wave boundary rather
 than guessing, and treat "unknown" as above the line.
 
