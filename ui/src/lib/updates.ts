@@ -17,7 +17,7 @@
  * different events.
  */
 
-import type { ComponentStatus, PlatformUpdate } from "./api";
+import type { ComponentStatus, K8sEvent, PlatformUpdate } from "./api";
 
 /**
  * The namespace the platform installs into. Compiled into the operator and the
@@ -170,6 +170,84 @@ export function checklist(components: ComponentStatus[] | undefined): ComponentS
 export function componentDetail(component: ComponentStatus): string {
   if (component.message) return component.message;
   return `${component.available} of ${component.desired} pod${component.desired === 1 ? "" : "s"} available`;
+}
+
+/**
+ * How many unanswered attempts a probe gets before the panel stops reading it
+ * as the rollout and starts reading it as the fault.
+ *
+ * The chart's startup probes run every five seconds, so twelve unanswered
+ * attempts is about a minute of a container not answering — well inside the
+ * kubelet's own `failureThreshold` of 60, and long enough that "it is still
+ * starting" has stopped being the likeliest explanation. The count is the
+ * kubelet's own, which is what makes this a measure of how long it has been
+ * going on rather than of how many pods are doing it.
+ */
+export const PROBE_GRACE = 12;
+
+/** Kubernetes writes these two prefixes verbatim, and the distinction is the
+ *  whole of the rule below: a startup or readiness probe going unanswered
+ *  leaves the pod out of service, which is what a rollout *is*. A liveness
+ *  probe going unanswered kills the container, so it is never held back. */
+const WARMING_UP = /^(startup|readiness) probe failed/i;
+
+/**
+ * Whether a cluster warning is the sound of a container coming up.
+ *
+ * Applying the chart replaces every platform workload, and a replaced pod
+ * spends its first seconds refusing connections on a port nothing is listening
+ * on yet — which the kubelet records as `Unhealthy`, once per attempt. Those
+ * warnings are the upgrade working. Rendering them under "what is going wrong"
+ * is the checklist's mistake in another panel: it reports a fault at the one
+ * moment there is none, and it does it every single time.
+ *
+ * The grace is bounded rather than unconditional, because a probe that never
+ * answers is exactly what a stuck upgrade looks like from the outside. Past
+ * `PROBE_GRACE` attempts the same event is a warning again, without anything
+ * needing to reclassify it.
+ */
+export function warmingUp(event: K8sEvent): boolean {
+  return event.reason === "Unhealthy" && WARMING_UP.test(event.message ?? "") && (event.count || 1) <= PROBE_GRACE;
+}
+
+/** The cluster's warnings, split into what the upgrade explains and what it
+ *  does not. */
+export interface UpgradeWarnings {
+  /** What the panel shows: warnings this upgrade does not account for. */
+  wrong: K8sEvent[];
+  /** Probes that have not answered yet — held back as the rollout happening. */
+  starting: K8sEvent[];
+}
+
+/**
+ * Split the window's warnings by whether the upgrade explains them.
+ *
+ * A **failed** upgrade gets no grace at all: once helm has given up, the probes
+ * that never answered are not noise around the failure, they are the account of
+ * it, and holding any of them back would hide the evidence at the one moment it
+ * is worth reading.
+ */
+export function partitionWarnings(events: K8sEvent[] | undefined, stage: UpdateStage): UpgradeWarnings {
+  const items = events ?? [];
+  if (stage === "failed") return { wrong: items, starting: [] };
+  return {
+    wrong: items.filter((event) => !warmingUp(event)),
+    starting: items.filter(warmingUp),
+  };
+}
+
+/**
+ * The one line that says what was held back, so that a quiet panel is a
+ * judgement the screen made rather than a question it never asked.
+ */
+export function warmingUpLine(events: K8sEvent[]): string {
+  const pods = [...new Set(events.map((event) => event.name).filter(Boolean))];
+  if (!pods.length) return "";
+  const subject = pods.length === 1 ? "pod is not answering its probes" : "pods are not answering their probes";
+  return (
+    `${pods.length} ${subject} yet — ${pods.join(", ")}. ` +
+    "A container that has not come up yet is the rollout happening; one that keeps not answering is listed as a warning."
+  );
 }
 
 /** The version as the dashboard writes it: `v1.2.3`, or `dev` unadorned. */

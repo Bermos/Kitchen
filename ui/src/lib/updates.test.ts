@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
-import type { ComponentStatus, PlatformUpdate } from "./api";
-import { checklist, componentDetail, frozen, inFlight, moving, settled, stageOf, unreachable, versionLabel } from "./updates";
+import type { ComponentStatus, K8sEvent, PlatformUpdate } from "./api";
+import {
+  PROBE_GRACE,
+  checklist,
+  componentDetail,
+  frozen,
+  inFlight,
+  moving,
+  partitionWarnings,
+  settled,
+  stageOf,
+  unreachable,
+  versionLabel,
+  warmingUpLine,
+} from "./updates";
 
 /** What the client throws when the API answered: an Error carrying the status.
  *  The class itself lives in the API client, which no test here imports. */
@@ -11,6 +24,18 @@ const update = (over: Partial<PlatformUpdate> = {}): PlatformUpdate => ({
   version: "0.13.1",
   phase: "Running",
   fromVersion: "0.13.0",
+  ...over,
+});
+
+/** The kubelet's own wording, which is what the rule below reads. */
+const probe = (over: Partial<K8sEvent> = {}): K8sEvent => ({
+  timestamp: "2026-09-08T10:00:00Z",
+  namespace: "kitchen-system",
+  kind: "Pod",
+  name: "kitchen-auth-8fff9ddbf-htzln",
+  reason: "Unhealthy",
+  message: 'Startup probe failed: Get "http://10.244.0.156:8080/healthz": dial tcp 10.244.0.156:8080: connect: connection refused',
+  count: 2,
   ...over,
 });
 
@@ -111,6 +136,68 @@ describe("the component checklist", () => {
     expect(componentDetail(component({ message: "pods refused at admission" }))).toBe("pods refused at admission");
     expect(componentDetail(component({ healthy: false, available: 0, desired: 1 }))).toBe("0 of 1 pod available");
     expect(componentDetail(component({ healthy: false, available: 2, desired: 3 }))).toBe("2 of 3 pods available");
+  });
+});
+
+describe("the grace a restarting pod gets", () => {
+  it("holds back the probes of a container that has not come up yet", () => {
+    // The whole of the reported bug: applying the chart restarts every platform
+    // workload, and every one of them refuses connections on its own port for
+    // its first few seconds. Rendering that as what is going wrong reports a
+    // fault at the one moment there is none.
+    const { wrong, starting } = partitionWarnings(
+      [
+        probe({ count: 2 }),
+        probe({ name: "kitchen-auth-fc54fc64b-ndg5t", count: 5 }),
+        probe({
+          name: "kitchen-clickhouse-0",
+          count: 1,
+          message: 'Readiness probe failed: Get "https://10.244.0.77:8443/ping": dial tcp: connect: connection refused',
+        }),
+      ],
+      "applying",
+    );
+    expect(wrong).toEqual([]);
+    expect(starting).toHaveLength(3);
+  });
+
+  it("ends the grace when the probe keeps going unanswered", () => {
+    // A probe that never answers is exactly what a stuck upgrade looks like
+    // from the outside, so the same event becomes a warning on its own.
+    expect(partitionWarnings([probe({ count: PROBE_GRACE })], "applying").wrong).toEqual([]);
+    expect(partitionWarnings([probe({ count: PROBE_GRACE + 1 })], "applying").starting).toEqual([]);
+  });
+
+  it("never holds back a liveness probe, which kills the container", () => {
+    const dying = probe({ message: 'Liveness probe failed: Get "http://10.244.0.156:8080/healthz": connection refused' });
+    expect(partitionWarnings([dying], "applying").wrong).toEqual([dying]);
+  });
+
+  it("holds back nothing else the cluster complains about", () => {
+    const events = [
+      probe({ reason: "FailedScheduling", message: "0/3 nodes are available: insufficient memory" }),
+      probe({ reason: "Failed", message: "Error: ImagePullBackOff" }),
+      probe({ reason: "BackOff", message: "Back-off restarting failed container" }),
+      probe({ reason: "FailedMount", message: "MountVolume.SetUp failed for volume \"data\"" }),
+    ];
+    expect(partitionWarnings(events, "applying").wrong).toEqual(events);
+  });
+
+  it("gives a failed upgrade no grace at all", () => {
+    // Once helm has given up, the probes that never answered are not noise
+    // around the failure — they are the account of it.
+    const events = [probe({ count: 1 })];
+    expect(partitionWarnings(events, "failed")).toEqual({ wrong: events, starting: [] });
+  });
+
+  it("says what it held back rather than going silent", () => {
+    const line = warmingUpLine([probe({ count: 2 }), probe({ count: 5 }), probe({ name: "kitchen-clickhouse-0" })]);
+    // One entry per pod, not per event: two rounds of the same pod's probe is
+    // one pod that has not come up.
+    expect(line).toContain("2 pods are not answering their probes yet");
+    expect(line).toContain("kitchen-auth-8fff9ddbf-htzln, kitchen-clickhouse-0");
+    expect(warmingUpLine([probe()])).toContain("1 pod is not answering its probes yet");
+    expect(warmingUpLine([])).toBe("");
   });
 });
 
