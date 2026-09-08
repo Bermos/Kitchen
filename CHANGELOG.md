@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.40.0](https://github.com/Bermos/Kitchen/compare/v0.39.0...v0.40.0) (2026-09-08)
+
+
+### Features
+
+* **auth:** a platform credential that holds scopes rather than the operator role ([#542](https://github.com/Bermos/Kitchen/issues/542)) ([10f812c](https://github.com/Bermos/Kitchen/commit/10f812c13b0cb7393ce5461ae3a9b4fe9694eda4))
+* **operator:** grow the platform's own volumes on a running install ([#552](https://github.com/Bermos/Kitchen/issues/552)) ([bd6aa1e](https://github.com/Bermos/Kitchen/commit/bd6aa1e5d0ca146c4b4dcdbb6e88fded2727a404)), closes [#533](https://github.com/Bermos/Kitchen/issues/533)
+
+
+### Bug fixes
+
+* **api:** an open alert carries the current round's reading, and says when it was taken ([#546](https://github.com/Bermos/Kitchen/issues/546)) ([7c28722](https://github.com/Bermos/Kitchen/commit/7c28722e50c4be7ab002346848f77f6d05194753)), closes [#532](https://github.com/Bermos/Kitchen/issues/532)
+* **chart,operator:** bound ClickHouse's own system.* log tables and collect what they orphan ([#549](https://github.com/Bermos/Kitchen/issues/549)) ([277d783](https://github.com/Bermos/Kitchen/commit/277d783761561475008d5657fbe5b83bbbe117cc)), closes [#530](https://github.com/Bermos/Kitchen/issues/530)
+* **chart:** mount clickhouse.extraConfig by subPath, never over config.d ([#539](https://github.com/Bermos/Kitchen/issues/539)) ([5e90870](https://github.com/Bermos/Kitchen/commit/5e90870e56cc5c54688057afb49b0b3e0fd7b8ce)), closes [#529](https://github.com/Bermos/Kitchen/issues/529)
+* **operator:** record the system-log reclaim the moment it happens ([#563](https://github.com/Bermos/Kitchen/issues/563)) ([461a0ee](https://github.com/Bermos/Kitchen/commit/461a0ee51c0c5c9bdcb23504046b9b09036e4ab9)), closes [#562](https://github.com/Bermos/Kitchen/issues/562) [#530](https://github.com/Bermos/Kitchen/issues/530)
+* restore the platform credential ([#542](https://github.com/Bermos/Kitchen/issues/542)) that the checkpoint commit undid ([#550](https://github.com/Bermos/Kitchen/issues/550)) ([64b48ce](https://github.com/Bermos/Kitchen/commit/64b48ce337a66eca4002d641d30336f416169661))
+* **signals:** judge the store's disk by its volume, not by the database on it ([#538](https://github.com/Bermos/Kitchen/issues/538)) ([1cb910b](https://github.com/Bermos/Kitchen/commit/1cb910b3dd3f7ac86394e3a270105188e708a562)), closes [#531](https://github.com/Bermos/Kitchen/issues/531)
+* **ui:** give a restarting pod grace before the upgrade calls it a fault ([#560](https://github.com/Bermos/Kitchen/issues/560)) ([b045851](https://github.com/Bermos/Kitchen/commit/b0458518982576e1302f014fc27d13213819cdf4))
+* **ui:** raise the overlay layer above the shell's chrome ([#561](https://github.com/Bermos/Kitchen/issues/561)) ([5829e37](https://github.com/Bermos/Kitchen/commit/5829e3726217efc4cba49637c0a25920e755a11b))
+
 ## [0.39.0](https://github.com/Bermos/Kitchen/compare/v0.38.0...v0.39.0) (2026-09-07)
 
 
