@@ -355,7 +355,11 @@ build logs and Hubble flow data. It is not the system of record; the CRDs are.
 Connection details always land in the secret `<release>-clickhouse` (`host`,
 `httpPort`, `nativePort`, `database`, `username`, `password`, `scheme`,
 `caFile`, `dsn`), whether ClickHouse runs here or elsewhere, so the agent and
-the operator have one place to look.
+the operator have one place to look. Two more keys are addressed to the
+operator rather than to any client and are written only for a store this chart
+runs: `certificateSecret`, which asks for a certificate from the platform's
+internal CA, and `systemLogsBounded`, which says the chart owns this server's
+`config.d` — see [ClickHouse's own logs](#clickhouses-own-logs).
 
 The password is generated on install and read back from the cluster on upgrade,
 so it stays stable. Two consequences worth knowing:
@@ -446,6 +450,79 @@ naming what is readable. That condition does not hold the platform short of
 Ready — it is a choice somebody made — but it is in the list an operator reads,
 beside a healthy `internal-ca` row in `status.components` on an installation
 where the CA did issue.
+
+### ClickHouse's own logs
+
+ClickHouse logs about itself into `system.*_log` tables, and most of them have
+no TTL out of the box: they grow for as long as the server runs. On a
+24-day-old install that was 14.8 GiB of a 20 GiB volume — 88% of it — against
+1.68 GiB of the telemetry Kitchen actually collects. `system.text_log` alone
+held 137 million rows, because the image logs at `trace` and that table records
+every line of it.
+
+Three of the twelve do arrive bounded — `query_log` and
+`processors_profile_log` at 30 days, `asynchronous_insert_log` at 3 — and the
+chart keeps or tightens each of them rather than loosening any.
+
+`<release>-clickhouse-system-logs` is mounted into `config.d` as
+`kitchen-system-logs.xml`, and it sets the logger to `information` and gives
+each table a TTL:
+
+| Tables | Kept | Image default |
+| --- | --- | --- |
+| `processors_profile_log` | 1 day | 30 days |
+| `text_log`, `trace_log`, `metric_log`, `asynchronous_metric_log`, `query_metric_log`, `background_schedule_pool_log` | 3 days | none |
+| `asynchronous_insert_log` | 3 days | 3 days, kept |
+| `query_log` | 7 days | 30 days |
+| `query_views_log`, `part_log` | 7 days | none |
+| `error_log` | 14 days | none |
+
+These are **not** values, and `kitchen.observability.clickhouse.retentionDays`
+does not govern them: that setting is how long the platform keeps *your*
+telemetry, and this is how long the store keeps its own diagnostics. They are
+separate questions with separate right answers, and tying the second to the
+first would mean an installation that wanted a year of logs also kept a year of
+ClickHouse's stack traces.
+
+To change them, override the elements with `clickhouse.extraConfig` under a
+filename that sorts **after** `kitchen-system-logs.xml` — ClickHouse merges
+`config.d` in filename order and the last value for an element wins:
+
+```sh
+--set clickhouse.extraConfig.zz-system-logs\.xml='<clickhouse><text_log><ttl>event_date + INTERVAL 30 DAY DELETE</ttl></text_log></clickhouse>'
+```
+
+Changing a system log table's TTL — this chart doing it, or you overriding it —
+makes ClickHouse **rename** the table it already had to `system.<name>_0` and
+create a fresh one, because a TTL is part of a system log table's definition
+and the server does not alter one it disagrees with. The renamed table is
+written to by nothing and expires by nothing, so the space is not returned by
+the change itself. The operator drops those on its next reconcile of the
+telemetry schema — **which deletes what they hold**: everything
+`system.text_log` and the rest recorded before the upgrade goes, at the first
+reconcile after the store restarts, with no grace period and no way to opt out.
+That is the point of the change rather than a side effect of it, and these are
+the tables ClickHouse itself documents as safe to drop at any time; but an
+installation that wanted last month's `system.query_log` should read it before
+upgrading. Nothing in the `kitchen` database — the telemetry the platform
+collects — is touched.
+
+What came back is recorded in `status.systemLogs` on the Kitchen singleton,
+cumulatively: the table list and the byte count both grow as later sweeps
+collect the tables renamed after the first one.
+
+```sh
+kubectl get kitchen default -o jsonpath='{.status.systemLogs}'
+```
+
+That `kubectl` is the only way to read it today, which is a gap against this
+platform's own premise rather than a decision —
+[#554](https://github.com/Bermos/Kitchen/issues/554) is putting it on a
+Platform-scope screen.
+
+The sweep touches only a store this chart runs — an external ClickHouse's
+system tables are somebody else's — and only tables named after the ones above
+with the suffix the server itself adds.
 
 ## The telemetry agent
 
@@ -1922,6 +1999,49 @@ Nothing is lost by it: the data is on the PersistentVolumeClaim, which the
 delete does not touch, and a pod that never started has nothing in flight. An
 installation whose store is healthy — `extraConfig` unset, or TLS off — needs
 none of this and rolls normally.
+
+### Upgrading to bounded ClickHouse system logs
+
+This release gives every `system.*_log` table in the bundled store a TTL and
+drops the server's logger from `trace` to `information`
+([ClickHouse's own logs](#clickhouses-own-logs)). Nothing is required of you,
+but two things happen that are worth recognising when you see them.
+
+**The store's pod rolls.** The new file is mounted into `config.d`, which
+changes the pod template, and ClickHouse reads its configuration at startup.
+It is one pod, and the data is on the PersistentVolumeClaim.
+
+**Every bounded table is renamed once.** A TTL is part of a system log table's
+definition, so ClickHouse renames the table it already had to
+`system.text_log_0`, `system.trace_log_0` and so on, and starts a fresh one
+beside it. The renamed tables carry no TTL, are written to by nothing and are
+dropped by nothing — so on their own they would keep every byte this release is
+about, and the fix would reclaim nothing at all on precisely the installations
+that need it.
+
+The operator collects them. On its next reconcile of the telemetry schema it
+drops each superseded table and records what it recovered:
+
+```sh
+kubectl get kitchen default -o jsonpath='{.status.systemLogs}'
+{"lastReclaimed":"2026-09-08T09:12:44Z","tables":["text_log_0","trace_log_0"],"bytesReclaimed":11453000000}
+```
+
+The renames do not all arrive at once — each log is renamed the first time it
+is written after the change, which for the quiet ones can be hours — so the
+sweep runs on every reconcile rather than once. `tables` and `bytesReclaimed`
+are cumulative for that reason: the list names every superseded table this
+installation has collected rather than only the last sweep's, and the next time
+you look it may name more. On a store with nothing superseded the sweep is a
+single read of `system.tables` that returns no rows.
+
+Dropping a superseded table deletes the rows in it, which is the whole of what
+this reclaims — see [ClickHouse's own logs](#clickhouses-own-logs) for what
+that includes and what it leaves alone.
+
+An **external** ClickHouse gets none of this: the chart does not own its
+`config.d`, so it ships no TTLs there and the operator sweeps nothing. Its
+system tables are bounded wherever it is administered from.
 
 ### Upgrading from 0.1.0
 

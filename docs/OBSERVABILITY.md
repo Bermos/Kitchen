@@ -607,6 +607,21 @@ back the class actually goes, not merely how far back it is configured to go.
 docs/COMPLIANCE.md §12.4 says why it is a claim about what is *left* rather
 than an observation of what was deleted.
 
+**None of it governs ClickHouse's own logs**, and that is deliberate. The
+store writes about itself into `system.*_log` tables that Kitchen never reads
+and no class here names — and most of them arrive with no TTL at all (three of
+the twelve do: `query_log` and `processors_profile_log` at 30 days,
+`asynchronous_insert_log` at 3), so on one 24-day-old install they were 88% of
+the telemetry volume against 1.68 GiB of everything above. The chart bounds them from `config.d` with fixed
+intervals of its own (1 to 14 days, tightening the three it finds and loosening
+none; charts/kitchen/README.md, "ClickHouse's own logs"), because how long the platform keeps *your* telemetry and how long the
+store keeps its own stack traces are separate questions: tying the second to
+the first would mean an installation asking for a year of logs also kept a year
+of ClickHouse's. Applying those TTLs makes the server rename each table it
+already had, and the operator drops the superseded copies on its next reconcile
+of the schema — `status.systemLogs` on the Kitchen singleton says what came
+back.
+
 ### 5.2 Whether the timestamps mean anything
 
 `spec.observability.clockSync` measures how far each node's clock is from the

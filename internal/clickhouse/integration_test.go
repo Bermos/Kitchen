@@ -1721,3 +1721,85 @@ func TestIntegrationSignalMitigations(t *testing.T) {
 		t.Errorf("the operator's claim is its own row: %+v", mine)
 	}
 }
+
+// The upgrade path for #530, against a real server, because every part of it
+// is a thing only ClickHouse can judge: `match` against the pattern this
+// package builds, `ifNull(total_bytes, 0)` on a table that has never been
+// merged, and a `DROP ... SYNC` of a table inside the `system` database at all.
+//
+// The fixture is a stand-in for what the server itself produces when the
+// chart's TTLs first reach a running store — it renames `system.text_log` to
+// `system.text_log_0` and starts a fresh one — because reproducing that here
+// would mean restarting the server with a different configuration, which this
+// suite has no way to do. What it does reproduce exactly is the shape the
+// sweep has to deal with: a superseded copy beside the live table, and the
+// live table left alone.
+func TestIntegrationOrphanedSystemLogsAreCollected(t *testing.T) {
+	client := integrationClient(t)
+	ctx := context.Background()
+
+	const orphan = "system.`text_log_99`"
+	if err := client.Exec(ctx, "DROP TABLE IF EXISTS "+orphan+" SYNC"); err != nil {
+		t.Fatalf("clearing a previous run's fixture: %v", err)
+	}
+	if err := client.Exec(ctx, "CREATE TABLE "+orphan+
+		" (event_date Date, message String) ENGINE = MergeTree ORDER BY event_date"); err != nil {
+		t.Fatalf("creating the superseded table fixture: %v", err)
+	}
+	if err := client.Exec(ctx, "INSERT INTO "+orphan+
+		" SELECT today(), toString(number) FROM numbers(1000)"); err != nil {
+		t.Fatalf("filling the superseded table fixture: %v", err)
+	}
+
+	dropped, err := client.ReclaimOrphanedSystemLogs(ctx)
+	if err != nil {
+		t.Fatalf("ReclaimOrphanedSystemLogs: %v", err)
+	}
+	var found *OrphanedSystemLog
+	for i, table := range dropped {
+		if table.Name == "text_log_99" {
+			found = &dropped[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("the superseded table was not collected; the sweep dropped %+v", dropped)
+	}
+	if found.Bytes <= 0 {
+		t.Errorf("the superseded table reports %d bytes, so an operator reading the status "+
+			"is told an upgrade reclaimed nothing", found.Bytes)
+	}
+
+	gone, err := client.Query(ctx,
+		"SELECT count() FROM system.tables WHERE database = 'system' AND name = 'text_log_99'")
+	if err != nil {
+		t.Fatalf("reading back the dropped table: %v", err)
+	}
+	if strings.TrimSpace(gone) != "0" {
+		t.Errorf("system.text_log_99 is still there after the sweep reported dropping it")
+	}
+
+	// And the live table, which is the one the platform's own diagnostics are
+	// read from, is untouched: a sweep that took it would delete the log
+	// somebody is in the middle of reading.
+	live, err := client.Query(ctx,
+		"SELECT count() FROM system.tables WHERE database = 'system' AND name = 'text_log'")
+	if err != nil {
+		t.Fatalf("reading back the live table: %v", err)
+	}
+	if strings.TrimSpace(live) != "1" {
+		t.Error("system.text_log is gone: the sweep matched the live table, not only the " +
+			"superseded copy of it")
+	}
+
+	// Twice, because it runs on every reconcile: the second pass finds
+	// nothing of its own to do.
+	again, err := client.ReclaimOrphanedSystemLogs(ctx)
+	if err != nil {
+		t.Fatalf("a second sweep: %v", err)
+	}
+	for _, table := range again {
+		if table.Name == "text_log_99" {
+			t.Error("the second sweep dropped the fixture again, so the first did not")
+		}
+	}
+}

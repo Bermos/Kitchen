@@ -82,6 +82,19 @@ const (
 	// certificate is somebody else's to manage, or a bundled store somebody
 	// has deliberately left in the clear.
 	SecretKeyCertificateSecret = "certificateSecret"
+
+	// SecretKeySystemLogsBounded says that this release runs the store and
+	// owns its config.d, where it puts the file that bounds every
+	// `system.*_log` table with a TTL. It is the second key here addressed to
+	// the operator rather than to any client, and what it grants is narrow:
+	// permission to drop the tables ClickHouse renamed away when those TTLs
+	// first arrived, which is the only way an existing installation gets the
+	// space back (#530).
+	//
+	// Absent — an external ClickHouse — means the operator sweeps nothing.
+	// A store the platform did not configure has renamed tables for reasons
+	// that are not this platform's, and they are not its to delete.
+	SecretKeySystemLogsBounded = "systemLogsBounded"
 )
 
 // The two schemes the HTTP interface may be reached on.
@@ -120,6 +133,13 @@ type Config struct {
 	// Empty verifies against the host's roots. Verification itself is not
 	// optional either way.
 	CAFile string
+
+	// SystemLogsBounded is the chart's statement that it runs this store and
+	// gives its system log tables a TTL — see SecretKeySystemLogsBounded. It
+	// is what decides whether the operator may collect the tables those TTLs
+	// orphaned; false for an external store, and for a connection built in
+	// code.
+	SystemLogsBounded bool
 }
 
 // ConfigFromSecret reads the connection details the chart wrote.
@@ -132,6 +152,8 @@ func ConfigFromSecret(secret *corev1.Secret) (Config, error) {
 		Password: string(secret.Data[SecretKeyPassword]),
 		Scheme:   string(secret.Data[SecretKeyScheme]),
 		CAFile:   string(secret.Data[SecretKeyCAFile]),
+
+		SystemLogsBounded: string(secret.Data[SecretKeySystemLogsBounded]) == "true",
 	}
 	if cfg.Scheme == "" {
 		cfg.Scheme = SchemeHTTP

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"time"
 
@@ -308,14 +309,117 @@ func (r *KitchenReconciler) reconcileTelemetrySchema(
 		return false
 	}
 
-	if err := clickhouse.New(cfg).EnsureTelemetrySchema(ctx, model); err != nil {
+	client := clickhouse.New(cfg)
+	if err := client.EnsureTelemetrySchema(ctx, model); err != nil {
 		setCond(condTelemetrySchema, metav1.ConditionFalse, "SchemaNotApplied", err.Error())
 		return false
 	}
 
+	r.reclaimSystemLogs(ctx, kitchen, cfg, client)
+
 	setCond(condTelemetrySchema, metav1.ConditionTrue, "SchemaApplied",
 		describeTelemetryRetention(model))
 	return true
+}
+
+// reclaimSystemLogs collects the ClickHouse system log tables the chart's TTLs
+// orphaned, and records what came back.
+//
+// The chart bounds every `system.*_log` table with a TTL, and ClickHouse
+// applies a changed definition by renaming the table it had rather than
+// altering it. The renamed table is written to by nothing, expires by nothing
+// and is dropped by nothing — so without this an installation that has been
+// running a while gets the fix and keeps every byte it was about. Doing it
+// here rather than in an upgrade note is the whole of "nothing needs kubectl":
+// there is no `kubectl exec` into the store in the normal running of this
+// platform, and reclaiming a volume is about as normal as it gets.
+//
+// It is not part of the TelemetrySchemaReady condition. A store that refuses
+// the drop is a store whose schema is applied and whose telemetry is being
+// collected, and turning the platform's own readiness on a cleanup would be
+// the wrong answer twice over — the message goes on the status instead, and
+// the next reconcile tries again.
+func (r *KitchenReconciler) reclaimSystemLogs(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	cfg clickhouse.Config,
+	client *clickhouse.Client,
+) {
+	if !cfg.SystemLogsBounded {
+		// An external store. Its system tables are somebody else's, and a
+		// table renamed there was not renamed by anything this platform did.
+		return
+	}
+
+	log := logf.FromContext(ctx)
+	dropped, err := client.ReclaimOrphanedSystemLogs(ctx)
+	if len(dropped) == 0 && err == nil {
+		// The ordinary case on every reconcile after the first. Nothing to
+		// record and nothing to say.
+		if kitchen.Status.SystemLogs != nil {
+			kitchen.Status.SystemLogs.Message = ""
+		}
+		return
+	}
+
+	status := kitchen.Status.SystemLogs
+	if status == nil {
+		status = &kitchenv1alpha1.SystemLogStatus{}
+		kitchen.Status.SystemLogs = status
+	}
+	if len(dropped) > 0 {
+		names := make([]string, 0, len(dropped))
+		var reclaimed int64
+		for _, orphan := range dropped {
+			names = append(names, orphan.Name)
+			reclaimed += orphan.Bytes
+		}
+		status.LastReclaimed = ptr.To(metav1.Now())
+		status.Tables = recordReclaimedTables(status.Tables, names)
+		status.BytesReclaimed += reclaimed
+		log.Info("collected superseded clickhouse system log tables",
+			"tables", names, "bytesReclaimed", reclaimed)
+	}
+	status.Message = ""
+	if err != nil {
+		status.Message = err.Error()
+		log.Error(err, "could not collect the superseded clickhouse system log tables")
+	}
+}
+
+// maxReclaimedTablesRecorded bounds the list on the status. A name is one of
+// twelve log tables and a suffix the server reuses, so in practice the list
+// settles at a handful; the cap is there so that nothing about a store the
+// operator does not control can make a status object grow forever.
+const maxReclaimedTablesRecorded = 24
+
+// recordReclaimedTables folds this sweep's tables into the ones already
+// recorded, in name order and without repeats.
+//
+// It accumulates rather than replaces for the reason the sweep runs on every
+// reconcile at all: ClickHouse renames each log the first time that log is
+// next written, so the pass that reclaims the volume and the pass that
+// collects the last quiet table are usually hours apart. A list holding only
+// the last pass would name `error_log_0` and four megabytes, and say nothing
+// about the eleven gigabytes that came back this morning — which is precisely
+// the question the field exists to answer.
+func recordReclaimedTables(recorded, dropped []string) []string {
+	seen := make(map[string]bool, len(recorded)+len(dropped))
+	all := make([]string, 0, len(recorded)+len(dropped))
+	for _, name := range append(append([]string{}, recorded...), dropped...) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		all = append(all, name)
+	}
+	// Oldest first if the cap bites: what was collected most recently is what
+	// somebody watching an upgrade is looking for.
+	if len(all) > maxReclaimedTablesRecorded {
+		all = all[len(all)-maxReclaimedTablesRecorded:]
+	}
+	slices.Sort(all)
+	return all
 }
 
 func (r *KitchenReconciler) ensurePlatformNamespace(ctx context.Context) error {

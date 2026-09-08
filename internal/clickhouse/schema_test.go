@@ -620,6 +620,23 @@ func TestConfigFromSecret(t *testing.T) {
 	if cfg.Host != "kitchen-clickhouse.kitchen-system.svc" || cfg.HTTPPort != "8123" {
 		t.Errorf("unexpected config %+v", cfg)
 	}
+	// The chart writes this key only for a store it runs itself, and what it
+	// grants is permission to drop tables. An external store's secret carries
+	// no such key, and the default has to be the one that touches nothing.
+	if cfg.SystemLogsBounded {
+		t.Error("a secret that says nothing about the store's system logs was read as " +
+			"permission to drop tables in it")
+	}
+	secret.Data[SecretKeySystemLogsBounded] = []byte("true")
+	bounded, err := ConfigFromSecret(secret)
+	if err != nil {
+		t.Fatalf("ConfigFromSecret: %v", err)
+	}
+	if !bounded.SystemLogsBounded {
+		t.Error("the chart says it bounds this store's system log tables and the operator " +
+			"never collects the ones those bounds orphan")
+	}
+	delete(secret.Data, SecretKeySystemLogsBounded)
 
 	delete(secret.Data, SecretKeyHost)
 	delete(secret.Data, SecretKeyUsername)
