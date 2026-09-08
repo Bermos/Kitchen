@@ -531,11 +531,15 @@ jobs:
 
           CONFIG_D = "/etc/clickhouse-server/config.d"
           # rendered file -> the files that must be in config.d, each by subPath
+          # kitchen-system-logs.xml is on every one of them: the TTLs that
+          # bound ClickHouse's own system.*_log tables are shipped by the
+          # chart and are not a value anybody turns off (#530).
           cases = {
-              "/tmp/ch-tls.yaml": ["kitchen-tls.xml"],
-              "/tmp/ch-tls-extra.yaml": ["kitchen-tls.xml", "logger.xml"],
-              "/tmp/ch-plain.yaml": [],
-              "/tmp/ch-plain-extra.yaml": ["logger.xml"],
+              "/tmp/ch-tls.yaml": ["kitchen-system-logs.xml", "kitchen-tls.xml"],
+              "/tmp/ch-tls-extra.yaml": ["kitchen-system-logs.xml", "kitchen-tls.xml",
+                                         "logger.xml"],
+              "/tmp/ch-plain.yaml": ["kitchen-system-logs.xml"],
+              "/tmp/ch-plain-extra.yaml": ["kitchen-system-logs.xml", "logger.xml"],
           }
           for path, expected in cases.items():
               documents = [d for d in yaml.safe_load_all(open(path)) if d]
@@ -1678,6 +1682,117 @@ jobs:
             echo "::error::the default ClickHouse user still accepts passwordless logins"
             exit 1
           fi
+
+          # #530: the chart's own file in config.d, which nothing but a
+          # kubelet can prove arrived. Both halves of it are asserted at the
+          # server rather than in the rendered manifest — a mount that fails
+          # to project leaves a running store with the image's defaults, and
+          # every render check in this workflow would still pass.
+          ch --user kitchen --password "${password}" --query 'SYSTEM FLUSH LOGS'
+          ttl=$(ch --user kitchen --password "${password}" --query "
+            SELECT engine_full FROM system.tables
+            WHERE database = 'system' AND name = 'text_log'")
+          case "${ttl}" in
+            *"TTL event_date + toIntervalDay(3)"*) ;;
+            *)
+              echo "::error::system.text_log has no TTL (${ttl}); ClickHouse's own logs grow" \
+                   "until they fill the telemetry volume, which is #530 all over again."
+              exit 1
+              ;;
+          esac
+          # And the level the rows are written at, which is where the volume
+          # went: at `trace` this table took 137M rows in 24 days. Both
+          # numbers, because a text_log nothing has written to yet would
+          # answer "no trace lines" whatever level the server is logging at.
+          levels=$(ch --user kitchen --password "${password}" --query "
+            SELECT count(), countIf(level IN ('Trace', 'Debug'))
+            FROM system.text_log FORMAT TSV")
+          written=$(echo "${levels}" | cut -f1)
+          traced=$(echo "${levels}" | cut -f2)
+          echo "system.text_log holds ${written} rows, ${traced} of them trace or debug"
+          [ "${written}" -gt 0 ] || {
+            echo "::error::system.text_log is empty, so it can say nothing about the level" \
+                 "the store is logging at."
+            exit 1
+          }
+          [ "${traced}" = 0 ] || {
+            echo "::error::the store logged ${traced} trace lines into system.text_log, so" \
+                 "the shipped logger level never reached it."
+            exit 1
+          }
+          # The operator sweeps the tables those TTLs orphan on every
+          # reconcile of the schema, and says so on the singleton when the
+          # store refuses it. A fresh install has nothing to collect, so what
+          # is asserted is that the sweep is not being refused — a store that
+          # would not answer it here is one that would never reclaim anything
+          # on the upgrade this exists for.
+          swept=$(kubectl get kitchen default \
+            -o jsonpath='{.status.systemLogs.message}' 2>/dev/null || true)
+          [ -z "${swept}" ] || {
+            echo "::error::the operator cannot collect the superseded system log tables:" \
+                 "${swept}"
+            exit 1
+          }
+
+      - name: Verify the superseded system log tables are collected
+        run: |
+          set -euo pipefail
+          # #530, the other half: the chart's TTLs make ClickHouse rename the
+          # log table it already had and start a fresh one, and without
+          # something dropping the renamed copy an upgrade reclaims nothing at
+          # all. The operator drops it on its next reconcile of the telemetry
+          # schema. A *fresh* install never renames anything — the TTLs are
+          # there before the first table is created — so the superseded copy is
+          # made here, in the shape the server makes it, and what is asserted
+          # is that the platform collects it and says so.
+          password=$(kubectl -n kitchen-system get secret kitchen-clickhouse \
+            -o jsonpath='{.data.password}' | base64 -d)
+          ch() {
+            kubectl -n kitchen-system exec sts/kitchen-clickhouse -- \
+              clickhouse-client --secure --accept-invalid-certificate \
+              --user kitchen --password "${password}" "$@"
+          }
+          ch --query "DROP TABLE IF EXISTS system.text_log_99 SYNC"
+          ch --query "CREATE TABLE system.text_log_99 (event_date Date, message String)
+                      ENGINE = MergeTree ORDER BY event_date"
+          ch --query "INSERT INTO system.text_log_99
+                      SELECT today(), toString(number) FROM numbers(1000)"
+
+          # Ask for a reconcile rather than waiting on the requeue interval.
+          kubectl annotate kitchen default \
+            kitchen.bermos.dev/reclaim-probe="$(date +%s)" --overwrite
+
+          collected=""
+          for _ in $(seq 60); do
+            collected=$(kubectl get kitchen default \
+              -o jsonpath='{.status.systemLogs.tables}' 2>/dev/null || true)
+            case "${collected}" in *text_log_99*) break ;; esac
+            sleep 2
+          done
+          echo "status.systemLogs: $(kubectl get kitchen default \
+            -o jsonpath='{.status.systemLogs}' 2>/dev/null || true)"
+          case "${collected}" in
+            *text_log_99*) ;;
+            *)
+              kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100 || true
+              echo "::error::the operator did not collect the superseded system log table," \
+                   "so an upgrade to this release reclaims none of the volume it is about."
+              exit 1
+              ;;
+          esac
+          # Said, and done: the table is gone, and the live one is not.
+          left=$(ch --query "SELECT count() FROM system.tables
+                             WHERE database = 'system' AND name = 'text_log_99'")
+          [ "${left}" = 0 ] || {
+            echo "::error::the status names text_log_99 as collected and the table is still there"
+            exit 1
+          }
+          live=$(ch --query "SELECT count() FROM system.tables
+                             WHERE database = 'system' AND name = 'text_log'")
+          [ "${live}" = 1 ] || {
+            echo "::error::system.text_log itself was dropped; the sweep matched the live table"
+            exit 1
+          }
 
       - name: Verify the audit log can be read
         run: |

@@ -76,6 +76,11 @@ type fakeTelemetryStore struct {
 	expired           int64
 	oldest            string
 	expiredPartitions string
+
+	// orphanRows is what the superseded-system-log sweep's read answers with,
+	// as ClickHouse's default TSV. Empty — which is every test in this file —
+	// is a store with nothing to collect (#530, systemlogs_test.go).
+	orphanRows string
 }
 
 func newFakeTelemetryStore(t *testing.T) *fakeTelemetryStore {
@@ -92,6 +97,10 @@ func newFakeTelemetryStore(t *testing.T) *fakeTelemetryStore {
 		case strings.Contains(query, "AS oldest"):
 			_, _ = io.WriteString(w, `{"rows":4200,"expired":`+
 				strconv.FormatInt(store.expired, 10)+`,"oldest":"`+store.oldest+`"}`)
+		case strings.Contains(query, "match(name,"):
+			// The superseded-log sweep's read, told apart from every other
+			// read of system.tables by the pattern only it carries.
+			_, _ = io.WriteString(w, store.orphanRows)
 		}
 	}))
 	t.Cleanup(store.server.Close)

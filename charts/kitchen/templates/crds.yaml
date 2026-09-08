@@ -8221,6 +8221,48 @@ spec:
                     - input
                     x-kubernetes-list-type: map
                 type: object
+              systemLogs:
+                description: |-
+                  SystemLogs reports what the operator has collected from ClickHouse's
+                  own diagnostic tables — the ones the chart bounds with a TTL and the
+                  server orphans when it does. Absent means nothing has ever needed
+                  collecting, which is what a fresh installation looks like.
+                properties:
+                  bytesReclaimed:
+                    description: |-
+                      BytesReclaimed is what they occupied, summed over every sweep this
+                      installation has done rather than only the last, because what an
+                      operator wants to read is how much of the volume came back.
+                    format: int64
+                    type: integer
+                  lastReclaimed:
+                    description: |-
+                      LastReclaimed is when the operator last dropped something. Absent means
+                      it never has — no upgrade has orphaned a table here.
+                    format: date-time
+                    type: string
+                  message:
+                    description: |-
+                      Message explains a sweep that could not be done — a store that refused
+                      the drop. Empty means the last sweep completed, whether or not it found
+                      anything.
+                    type: string
+                  tables:
+                    description: |-
+                      Tables are every superseded table this installation has collected, in
+                      name order — cumulative like BytesReclaimed below, and for the same
+                      reason: the renames arrive one at a time as each log is next written,
+                      so the sweep that reclaimed the volume and the sweep that collected the
+                      last quiet table are usually hours apart, and a list scoped to the most
+                      recent one would name a four-megabyte table and hide eleven gigabytes.
+
+                      It stays short on its own — a name is `<one of twelve log tables>_<n>`
+                      and the server reuses the lowest free suffix — and is capped regardless,
+                      oldest dropped first, so a status object cannot grow without bound.
+                    items:
+                      type: string
+                    type: array
+                type: object
             type: object
         type: object
     served: true

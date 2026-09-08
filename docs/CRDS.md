@@ -337,6 +337,11 @@ status:
         rows: 41203311
         oldest: 2026-08-10T04:11:02Z    # the claim the rule makes: nothing older than this
         expired: 0                      # rows still past the horizon; a small number is normal
+  systemLogs:                           # ClickHouse's own diagnostic tables, collected. Absent means
+    lastReclaimed: 2026-09-08T09:12:44Z # nothing has ever needed collecting, which is a fresh install
+    tables: [text_log_0, trace_log_0]   # every superseded table collected so far, not only the last
+    bytesReclaimed: 11453000000         # sweep's — both accumulate, because the renames arrive one
+    message: ""                         # at a time and what an operator asks is how much came back
   backup:                               # what the schedule has actually been doing — the half of this
     schedule: 0 3 * * *                 # feature that matters most, because a backup system's
     suspended: false                    # characteristic failure is six weeks of no archive that
@@ -569,6 +574,26 @@ Exception's `autoRollback`. `status.compliance.rescan` reports whether it is
 running at all, for the same reason the other two report: an installation
 that believes it is being re-checked and is not should hear it from the
 platform. See [COMPLIANCE.md](COMPLIANCE.md) §9.
+
+`status.systemLogs` is the other half of a chart change, and it is here rather
+than in an upgrade note because reclaiming a volume is not something a running
+installation should need `kubectl exec` for. The chart gives every
+`system.*_log` table in the bundled store a TTL — without one they grow
+forever, and on the installation that prompted it they were 88% of a 20 GiB
+volume against 1.68 GiB of actual telemetry. But a TTL is part of a system log
+table's definition, and ClickHouse applies a changed definition by *renaming*
+the table it had rather than altering it: the superseded copy is written to by
+nothing, expires by nothing and would keep every byte the change was about. The
+operator drops those whenever it reconciles the telemetry schema, and this
+records what came back. It sweeps only a store the chart runs — the connection
+secret's `systemLogsBounded` key is that statement — and only tables named
+after the ones the chart bounds, with the numeric suffix the server itself
+adds. It is a sweep on every reconcile rather than a one-shot because the
+renames arrive one at a time, as each log is next written, which is also why
+`tables` and `bytesReclaimed` accumulate rather than describing the last pass.
+Dropping a superseded table deletes the rows in it: that is what is being
+reclaimed. Reading this needs `kubectl` today, which is a gap against the
+platform's own premise and is #554.
 
 `observability` is one retention over a store that two things write. An
 OpenTelemetry collector DaemonSet fills the logs, traces and metrics tables

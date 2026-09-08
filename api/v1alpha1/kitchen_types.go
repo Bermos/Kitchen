@@ -1342,6 +1342,13 @@ type KitchenStatus struct {
 	// +optional
 	ClockSync *ClockSyncStatus `json:"clockSync,omitempty"`
 
+	// SystemLogs reports what the operator has collected from ClickHouse's
+	// own diagnostic tables — the ones the chart bounds with a TTL and the
+	// server orphans when it does. Absent means nothing has ever needed
+	// collecting, which is what a fresh installation looks like.
+	// +optional
+	SystemLogs *SystemLogStatus `json:"systemLogs,omitempty"`
+
 	// Signals reports the background evaluation loop's last round: when it
 	// ran, how many conditions it holds open, and which inputs it could not
 	// read. Absent means no round has completed — the loop is off, the
@@ -1349,6 +1356,53 @@ type KitchenStatus struct {
 	// has only just become the leader.
 	// +optional
 	Signals *SignalEvaluationStatus `json:"signals,omitempty"`
+}
+
+// SystemLogStatus is the record of the telemetry store's own diagnostic
+// tables being collected.
+//
+// The chart gives every `system.*_log` table a TTL, and ClickHouse applies a
+// changed definition by renaming the table it already had rather than altering
+// it. The renamed table is never written to again and never expires, so on an
+// installation that has been running a while the bytes the TTL was added for
+// are still on the volume afterwards — 14.8 GiB of a 20Gi volume, on the
+// installation this was measured on. The operator drops them, and this is what
+// it dropped.
+//
+// It is a record and not a gate: the sweep runs whenever the telemetry schema
+// is reconciled, because the renames appear one at a time as each log is next
+// written rather than all at once, and a store with nothing to collect is one
+// read of `system.tables` that returns no rows.
+type SystemLogStatus struct {
+	// LastReclaimed is when the operator last dropped something. Absent means
+	// it never has — no upgrade has orphaned a table here.
+	// +optional
+	LastReclaimed *metav1.Time `json:"lastReclaimed,omitempty"`
+
+	// Tables are every superseded table this installation has collected, in
+	// name order — cumulative like BytesReclaimed below, and for the same
+	// reason: the renames arrive one at a time as each log is next written,
+	// so the sweep that reclaimed the volume and the sweep that collected the
+	// last quiet table are usually hours apart, and a list scoped to the most
+	// recent one would name a four-megabyte table and hide eleven gigabytes.
+	//
+	// It stays short on its own — a name is `<one of twelve log tables>_<n>`
+	// and the server reuses the lowest free suffix — and is capped regardless,
+	// oldest dropped first, so a status object cannot grow without bound.
+	// +optional
+	Tables []string `json:"tables,omitempty"`
+
+	// BytesReclaimed is what they occupied, summed over every sweep this
+	// installation has done rather than only the last, because what an
+	// operator wants to read is how much of the volume came back.
+	// +optional
+	BytesReclaimed int64 `json:"bytesReclaimed,omitempty"`
+
+	// Message explains a sweep that could not be done — a store that refused
+	// the drop. Empty means the last sweep completed, whether or not it found
+	// anything.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // SignalEvaluationStatus is the background evaluation loop's own report.

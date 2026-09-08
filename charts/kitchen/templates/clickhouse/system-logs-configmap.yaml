@@ -1,0 +1,84 @@
+{{- include "kitchen.validate" . -}}
+{{- if .Values.clickhouse.enabled }}
+{{- /*
+What stops ClickHouse's own diagnostics filling the telemetry volume (#530).
+
+Most of these tables are created without a TTL and grow forever, and the server
+logs at `trace`, so `system.text_log` records every trace line the server
+emits. On a 24-day-old install that was 88% of a 20Gi volume — 14.8 GiB of
+`system.*` against 1.68 GiB of the telemetry Kitchen actually collects.
+Kitchen's own retention was working exactly as designed; nothing bounded these.
+
+Three of the twelve do arrive bounded, checked against the image the chart
+pins: `query_log` and `processors_profile_log` at 30 days, and
+`asynchronous_insert_log` at 3. This file keeps or tightens every one of them
+and loosens none — 30 days of `processors_profile_log` is a row per processor
+per query kept for a month, and `asynchronous_insert_log` stays at the image's
+own 3 so that the chart is not quietly *relaxing* a bound somebody upstream
+chose.
+
+The intervals are fixed here rather than exposed as values, and
+`kitchen.observability.clickhouse.retentionDays` does not govern them: this is
+the platform's own diagnostics, kept for as long as somebody debugging the
+platform needs them, not the user's telemetry. Long enough to answer "what
+happened last night" and, for the error and query logs, "what happened last
+week"; nowhere near long enough to matter to a disk.
+
+An installation that wants different numbers sets `clickhouse.extraConfig`
+with a filename that sorts after this one — `zz-system-logs.xml` is the
+obvious choice — because ClickHouse merges config.d in filename order and the
+last value for an element wins.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kitchen.clickhouseFullname" . }}-system-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: clickhouse
+data:
+  kitchen-system-logs.xml: |
+    <clickhouse>
+        <!-- The image logs at `trace`, and text_log records every line of it:
+             137M rows in 24 days on the install this was measured on. At
+             `information` the same server writes what an operator reading
+             along would want and nothing else. The file log in
+             /var/log/clickhouse-server follows the same level, and it
+             rotates; these tables do not. -->
+        <logger>
+            <level>information</level>
+            <console_log_level>information</console_log_level>
+        </logger>
+        <!-- All twelve carry `event_date`, so one expression bounds each of
+             them. A TTL declared here is applied to the table ClickHouse
+             creates for the log; changing one makes the server rename the
+             table it already had and start a fresh one, which is why the
+             operator reclaims what the rename orphans. -->
+        <!-- The high-volume ones: every log line, every sampled stack, and a
+             row per metric per second. -->
+        <text_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></text_log>
+        <trace_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></trace_log>
+        <metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></metric_log>
+        <asynchronous_metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></asynchronous_metric_log>
+        <query_metric_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></query_metric_log>
+        <background_schedule_pool_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></background_schedule_pool_log>
+        <!-- A row per processor per query, which is only ever read while
+             looking at a query that is still recent. The image keeps it for
+             30 days. -->
+        <processors_profile_log><ttl>event_date + INTERVAL 1 DAY DELETE</ttl></processors_profile_log>
+        <!-- The image's own 3 days, kept rather than moved: this file
+             tightens the bounds it finds and loosens none. -->
+        <asynchronous_insert_log><ttl>event_date + INTERVAL 3 DAY DELETE</ttl></asynchronous_insert_log>
+        <!-- A week, because these are what a question about last Tuesday's
+             ingest is answered from. query_log arrives at the image's 30,
+             which is three weeks of every statement the platform ran. -->
+        <query_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_log>
+        <query_views_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></query_views_log>
+        <part_log><ttl>event_date + INTERVAL 7 DAY DELETE</ttl></part_log>
+        <!-- The smallest table and the one worth keeping longest: a count per
+             error code per hour, which is how a fault that started a
+             fortnight ago is found at all. -->
+        <error_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></error_log>
+    </clickhouse>
+{{- end }}
