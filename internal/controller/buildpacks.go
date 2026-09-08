@@ -49,6 +49,16 @@ const (
 	cnbUID = int64(1001)
 	cnbGID = int64(1000)
 
+	// herokuUID and herokuGID are the same two numbers for HerokuBuilderImage,
+	// and they are not the same two numbers. Heroku's builder enters as
+	// 1000:1000 where Paketo's enters as 1001:1000, which is exactly the
+	// mismatch that kills a lifecycle run in `Privileges()` — a pod that
+	// entered as one unprivileged user cannot setuid to another. So the pod's
+	// user follows the builder it runs rather than being a constant of the
+	// platform.
+	herokuUID = int64(1000)
+	herokuGID = int64(1000)
+
 	// Where the clone lands and where the lifecycle assembles the image.
 	// Both are emptyDir volumes: a build gets its own, and nothing survives
 	// it. What survives a build is the cache image the lifecycle exports —
@@ -88,6 +98,33 @@ const (
 // rather than leaving one object per build behind in the application
 // namespace.
 func buildPlatformEnvName(jobName string) string { return jobName + "-platform" }
+
+// cnbBuilder is one Cloud Native Buildpacks builder: the image the five
+// lifecycle phases run out of, and the unprivileged user that image enters
+// as. The two travel together because they cannot disagree — the lifecycle
+// drops to the builder's own user before it runs anything from the
+// repository, and a pod that entered as a different one dies there.
+type cnbBuilder struct {
+	Image    string
+	UID, GID int64
+}
+
+// buildpacksBuilder is which builder a build runs, from what detection made
+// of the repository.
+//
+// Paketo's is the platform's builder and answers for everything it can build.
+// The second is reached only where the first has no path at all: a Node
+// repository locked by pnpm, which Paketo would install with npm against a
+// lockfile npm never wrote (#568). A build with no detected framework — an
+// explicit `strategy: buildpacks` over a repository detection did not
+// recognise — is the zero Framework, and lands on Paketo's, which is where it
+// has always landed.
+func buildpacksBuilder(detected framework.Framework) cnbBuilder {
+	if detected.Builder == framework.BuilderHeroku {
+		return cnbBuilder{Image: HerokuBuilderImage, UID: herokuUID, GID: herokuGID}
+	}
+	return cnbBuilder{Image: BuildpacksBuilderImage, UID: cnbUID, GID: cnbGID}
+}
 
 // buildpacksPod is a build that hands the repository to the Cloud Native
 // Buildpacks lifecycle: no Dockerfile, no instructions of any kind — the
@@ -136,14 +173,25 @@ func buildPlatformEnvName(jobName string) string { return jobName + "-platform" 
 // of it is in this spec, though the pod is where it is read: it reaches the
 // buildpacks as a directory of files, which is the only channel they have,
 // and the pod names the object it is mounted from. See buildPlatformEnvName.
+//
+// Detection also decides *which* builder those five phases run out of, and
+// that one is in this spec, because it is the image every phase names and the
+// user the pod enters as. See buildpacksBuilder.
 func buildpacksPod(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 	plan buildPlan,
+	detected framework.Framework,
 	cache *kitchenv1alpha1.BuildCacheStatus,
 	credentials registryCredentialsForPod,
 	gitSecret string,
 ) corev1.PodTemplateSpec {
+	// Which builder runs, and as whom. Detection chooses it, because the
+	// choice is made by the same reading of the same directory that chooses
+	// everything else the lifecycle is told — and because the builder and its
+	// user are one decision: entering as the other builder's user is a build
+	// that dies before it starts.
+	builder := buildpacksBuilder(detected)
 	// The clone lands the whole repository and the lifecycle is pointed
 	// inside it: the build root is what is built, exactly as it is for the
 	// container strategy, which reaches the same meaning by scoping its git
@@ -229,7 +277,7 @@ func buildpacksPod(
 	phase := func(name string, mounts []corev1.VolumeMount, credential string, args ...string) corev1.Container {
 		return corev1.Container{
 			Name:         name,
-			Image:        BuildpacksBuilderImage,
+			Image:        builder.Image,
 			Command:      []string{"/cnb/lifecycle/" + name},
 			Args:         append([]string{"-no-color"}, args...),
 			Env:          lifecycleEnv(credential),
@@ -247,8 +295,8 @@ func buildpacksPod(
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
 			SecurityContext: &corev1.PodSecurityContext{
-				RunAsUser:  ptr.To(cnbUID),
-				RunAsGroup: ptr.To(cnbGID),
+				RunAsUser:  ptr.To(builder.UID),
+				RunAsGroup: ptr.To(builder.GID),
 			},
 			InitContainers: []corev1.Container{
 				clone,

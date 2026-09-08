@@ -607,6 +607,78 @@ var _ = Describe("Build Controller", func() {
 			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning))
 		})
 
+		It("builds a pnpm repository on the builder that has a pnpm buildpack", func() {
+			source = &fakeSource{files: map[string]string{
+				"package.json":   `{"dependencies":{"nuxt":"3.14.0"},"scripts":{"build":"nuxt build"}}`,
+				"pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+			}}
+
+			reconcileOnce()
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			pod := job.Spec.Template.Spec
+
+			// No Paketo builder carries a pnpm buildpack, so one would run
+			// `npm install` against a lockfile npm never wrote (#568).
+			for _, phase := range append(pod.InitContainers[1:], pod.Containers...) {
+				Expect(phase.Image).To(Equal(HerokuBuilderImage), phase.Name)
+			}
+			// The pod's user follows the builder: Heroku's enters as
+			// 1000:1000 where Paketo's enters as 1001:1000, and a lifecycle
+			// that cannot setuid to its own user dies before it starts.
+			Expect(*pod.SecurityContext.RunAsUser).To(Equal(herokuUID))
+			Expect(*pod.SecurityContext.RunAsGroup).To(Equal(herokuGID))
+			// The clone runs as the same user for the reason it always
+			// does: the buildpacks write into the directory it checked out.
+			Expect(pod.InitContainers[0].Image).To(Equal(GitCloneImage))
+
+			// Heroku's buildpack reads package.json for the package manager,
+			// the Node version and the build script, so the only thing in
+			// the platform directory is the platform's own heap cap.
+			files := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Namespace: jobKey.Namespace, Name: buildPlatformEnvName(jobKey.Name),
+			}, files)).To(Succeed())
+			Expect(files.Data).To(HaveKey("NODE_OPTIONS"))
+			for key := range files.Data {
+				Expect(key).NotTo(HavePrefix("BP_"), "Heroku's builder reads no BP_ variable")
+			}
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.DetectedFramework).To(Equal(framework.Nuxt))
+			// The lockfile was honoured, so nothing is said about it.
+			Expect(meta.FindStatusCondition(build.Status.Conditions, condLockfileHonoured)).To(BeNil())
+		})
+
+		It("says so when the builder that can serve a front-end cannot read its lockfile", func() {
+			source = &fakeSource{files: map[string]string{
+				"package.json":   `{"devDependencies":{"vite":"5.4.0"},"scripts":{"build":"vite build"}}`,
+				"pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+			}}
+
+			reconcileOnce()
+
+			// A Vite bundle is served by a Paketo web-server buildpack that
+			// has no equivalent in the other builder, so it stays where it
+			// is — and gets npm's resolution of package.json rather than
+			// what its lockfile pins.
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			Expect(job.Spec.Template.Spec.Containers[0].Image).To(Equal(BuildpacksBuilderImage))
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildRunning),
+				"the build still runs: this is what those repositories have always got")
+			cond := meta.FindStatusCondition(build.Status.Conditions, condLockfileHonoured)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(reasonNoLockfileBuildpack))
+			Expect(cond.Message).To(ContainSubstring("pnpm"))
+		})
+
 		It("keeps letting a Dockerfile win, and says that is what it found", func() {
 			source = &fakeSource{files: map[string]string{
 				"Dockerfile":   "FROM scratch\n",
@@ -2401,7 +2473,7 @@ func mountsBuildContext(mounts []corev1.VolumeMount, readOnly bool) bool {
 
 func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
+	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
 		credentialsWithRead("creds", ""), "kitchen-git-gh")
 	clone := pod.Spec.InitContainers[0]
 
@@ -2433,7 +2505,7 @@ func TestBuildpacksPodGivesTheCloneTheTokenToAskWith(t *testing.T) {
 
 func TestBuildpacksPodClonesAnonymouslyWithoutAToken(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
+	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
 		credentialsWithRead("creds", ""), "")
 	clone := pod.Spec.InitContainers[0]
 

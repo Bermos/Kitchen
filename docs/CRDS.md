@@ -1646,7 +1646,8 @@ running.
 
 Which job that is comes from the strategy. `dockerfile` runs **BuildKit** on the
 repository's own Dockerfile. `buildpacks` runs the **Cloud Native Buildpacks** lifecycle
-(Paketo's jammy builder) over the repository. Either way the job clones the commit in an
+(Paketo's jammy builder, or Heroku's where the repository is locked by pnpm — see
+[which builder](#which-builder-runs)) over the repository. Either way the job clones the commit in an
 init container and hands the builder a directory: BuildKit can fetch a git context
 itself, but the credential for a private repository can only be given to it as a build
 secret, which the repository's own Dockerfile could mount straight back out — and it is
@@ -1752,7 +1753,46 @@ then `go.mod`, `requirements.txt`/`pyproject.toml`/`Pipfile`, `Gemfile`,
 `pom.xml`/`build.gradle`, a `.csproj`, and last a bare `index.html`. Whatever it finds
 lands in `status.detectedFramework`, and the build page shows it.
 
-What detection finds is also what the lifecycle is told, because the Cloud Native
+### Which builder runs
+
+There are two, and the second exists for one repository shape the first cannot build.
+
+**Paketo's `builder-jammy-base` is the platform's builder** and answers for everything
+it can build: every language above, and every framework whose image serves a directory
+of files rather than starting a process of its own — those are served by a Paketo
+web-server buildpack that has no equivalent anywhere else.
+
+**Heroku's `builder:24` builds a Node repository locked by pnpm.** No Paketo builder
+carries a pnpm buildpack — not the pinned one, not the current one, not `-full`;
+`paketo-buildpacks/nodejs` has three groups and they are yarn, npm and bare node. A
+pnpm repository falls into the npm group, where `npm-install` detects on `package.json`
+alone, reports `package-lock.json -> "Not found"` and runs `npm install` anyway: the
+lockfile the application was tested against is ignored and the versions are resolved
+again from scratch, and on a dependency tree npm's own resolver cannot read it dies
+inside npm with a message that names neither npm nor pnpm (#568). `heroku/nodejs`
+selects npm, yarn or pnpm from the repository and installs with it.
+
+Which one runs follows from what was detected, and so does what it is told. Heroku's
+builder is handed no `BP_*` variable at all, and that is the point rather than an
+omission: it reads `package.json` itself for the package manager, the Node version and
+the `build` script, and it keeps the Node runtime for launch unconditionally — so the
+`BP_LAUNCHPOINT` dance below is not needed there either. The heap cap still reaches it,
+because that one is the platform's own ceiling rather than anything the repository said.
+
+Two things follow that are worth knowing before a build surprises somebody:
+
+- **The pod's user follows the builder.** Heroku's enters as `1000:1000` where Paketo's
+  enters as `1001:1000`, and a lifecycle that cannot `setuid` to its own user dies
+  before it starts. The clone runs as the same user for the reason it always does.
+- **A pnpm front-end does not move**, because the NGINX that serves it is a Paketo
+  buildpack. It is built where it has always been built — with npm resolving
+  `package.json` afresh — and the Build says so: `LockfileHonoured: False`, with a
+  reason of `NoLockfileBuildpack`, naming the tool that locked it. That is a warning
+  and not a refusal: it is what those repositories have been getting all along, and
+  most of them build. The same condition is set for a repository locked by **bun**,
+  which neither builder can install.
+
+What detection finds is also what a Paketo build is told, because the Cloud Native
 Buildpacks lifecycle takes its whole configuration as `BP_*` variables and there is no
 other channel to say any of it:
 
@@ -1762,7 +1802,7 @@ other channel to say any of it:
 | `BP_NODE_VERSION` | every Node framework whose manifest names `engines.node` | build and run under that range, rather than under whatever is newest that day |
 | `BP_LAUNCHPOINT`, `BP_VERIFY_LAUNCHPOINT` | the frameworks that build a server of their own into a directory — Nuxt, SvelteKit, NestJS, Astro with the Node adapter | start *that* file, and do not look for it before the build has written it — which is what puts a Node runtime and the launch `node_modules` in the image at all (see below) |
 | `BP_WEB_SERVER`, `BP_WEB_SERVER_ROOT`, `BP_WEB_SERVER_ENABLE_PUSH_STATE` | the frameworks with no server of their own — a Vite or create-react-app bundle, an Astro site with no adapter, a directory that is already a website | serve that directory with NGINX on `$PORT`, answering every path with `index.html` where the application routes in the browser |
-| `NODE_OPTIONS=--max-old-space-size=…` | every framework whose *build* runs under Node, the static ones included | hold the heap to three quarters of `Kitchen.spec.builds.resources.memory` — V8 sizes its old space from the machine rather than from the cgroup, so an uncapped front-end build grows past the limit and is killed with exit 137 and no explanation |
+| `NODE_OPTIONS=--max-old-space-size=…` | every framework whose *build* runs under Node, the static ones included — **on either builder** | hold the heap to three quarters of `Kitchen.spec.builds.resources.memory` — V8 sizes its old space from the machine rather than from the cgroup, so an uncapped front-end build grows past the limit and is killed with exit 137 and no explanation |
 
 They reach the buildpacks as **files**, not as variables on the build pod. The
 lifecycle rebuilds the environment it runs each buildpack in from an include list of

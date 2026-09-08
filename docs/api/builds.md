@@ -450,6 +450,38 @@ one; without a message it is an installation that asked for no caching.
 `mode` is empty on a buildpacks build: the lifecycle has one cache image and no
 `max`/`min` to choose between.
 
+## When the lockfile was not the one the build installed from
+
+A JavaScript repository commits a lockfile so that the versions it was tested
+against are the versions it ships. The platform has two buildpacks builders and
+between them they read npm's lockfile, yarn's and pnpm's — a repository locked
+by pnpm is built by Heroku's builder for exactly that reason
+([which builder](../CRDS.md#which-builder-runs)). Two cases are left over, and a
+build in either says so:
+
+```json
+{
+  "type": "LockfileHonoured",
+  "status": "False",
+  "reason": "NoLockfileBuildpack",
+  "message": "the build root is locked by pnpm, and no buildpacks builder that can build a vite project has a pnpm buildpack — its dependencies were resolved from package.json instead, so the versions built are not the versions the lockfile pins. Commit a package-lock.json or a yarn.lock to pin them, or add a Dockerfile and set the project's build strategy to one that suits it"
+}
+```
+
+- **A front-end locked by pnpm.** A Vite, create-react-app or adapterless Astro
+  build is served by NGINX, and the buildpack that configures it exists only in
+  Paketo's builder — so the build cannot move to the one that reads pnpm's
+  lockfile without producing an image with nothing to start.
+- **Anything locked by bun**, which neither builder can install.
+
+The condition is absent on every other build, and it is a **warning rather than
+a refusal**: the build runs and usually succeeds. What it produces is an image
+whose dependencies were resolved from `package.json` afresh, which is what those
+repositories have been getting all along — and the two ways that goes wrong, a
+version drifting under an application nobody changed and a stack trace from
+inside npm on a repository that does not use npm, are both a long way from the
+cause.
+
 ## What a build pod holds, and what the repository can read
 
 A build runs the repository's own code — its Dockerfile, or the buildpacks that

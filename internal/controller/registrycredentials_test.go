@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/framework"
 )
 
 // Which credential each container of a build or a scan pod holds (#424).
@@ -111,7 +112,7 @@ func TestBuildpacksPodKeepsTheCredentialOutOfTheRepositorysOwnBuild(t *testing.T
 	if !credentials.scoped() {
 		t.Fatal("the fixture's registry issues no read-only credential, so this test asserts nothing")
 	}
-	pod := buildpacksPod(project, build, testWebPlan(project, build), nil, credentials, "").Spec
+	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil, credentials, "").Spec
 
 	// detect and build run the buildpacks, which run the repository's own
 	// build: `npm install` and whatever its lifecycle scripts do. Neither
@@ -219,7 +220,7 @@ func TestBuildpacksPodGivesTheAnalyzerTheCredentialItValidatesTheTagWith(t *test
 		t.Fatal("a `-read` Secret exists and the build did not resolve a narrower credential")
 	}
 
-	pod := buildpacksPod(project, build, testWebPlan(project, build), nil, credentials, "").Spec
+	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil, credentials, "").Spec
 
 	// The assertion #534 is about, made twice: the volume the analyzer
 	// mounts, and the Secret behind it. The second is what the phase
@@ -249,7 +250,7 @@ func TestBuildpacksPodGivesTheAnalyzerTheCredentialItValidatesTheTagWith(t *test
 // every phase reads with the connection's own, which is what it did before.
 func TestBuildpacksPodFallsBackToTheConnectionsOwnCredential(t *testing.T) {
 	project, build := buildFixtures()
-	pod := buildpacksPod(project, build, testWebPlan(project, build), nil,
+	pod := buildpacksPod(project, build, testWebPlan(project, build), framework.Framework{}, nil,
 		credentialsWithRead("kitchen-registry-ghcr", ""), "").Spec
 
 	for _, volume := range []string{volumeDockerConfig, volumeDockerConfigRead} {

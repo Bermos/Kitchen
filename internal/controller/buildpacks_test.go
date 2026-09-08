@@ -157,7 +157,7 @@ func TestBuildpacksPodTellsEveryPhaseWhereTheServerWillBe(t *testing.T) {
 	}
 	pod := buildpacksPod(
 		&kitchenv1alpha1.Project{}, &kitchenv1alpha1.Build{}, plan,
-		nil, registryCredentialsForPod{}, "",
+		framework.Framework{}, nil, registryCredentialsForPod{}, "",
 	)
 
 	// The one volume the directory comes from, and the object it names.

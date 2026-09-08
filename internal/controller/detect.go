@@ -52,6 +52,21 @@ import (
 // declared.
 const condConfigHonoured = "ConfigHonoured"
 
+// condLockfileHonoured is set on a Build whose build root is locked by a
+// package manager the builder it ran on has no buildpack for. It is False in
+// exactly that case and absent otherwise, for the reason condConfigHonoured
+// is: a condition on every build would be noise rather than an answer.
+//
+// It is the sibling of that condition in the other way too — it is a warning,
+// not a failure. The build runs, and on most dependency trees it succeeds:
+// what it produces is an image whose dependencies were resolved from
+// `package.json` afresh rather than taken from the lockfile committed beside
+// it. That is worth a line on the object because the two ways it goes wrong
+// are both a long way from the cause — a version drifting under an
+// application nobody changed, or a stack trace from inside npm on a repository
+// that does not use npm (#568).
+const condLockfileHonoured = "LockfileHonoured"
+
 // errSourceUnreadable is the repository not being readable right now, which
 // is the one detection failure the build reconciler tells apart: it keeps a
 // Build queued rather than failing a commit for something the commit did not
@@ -441,6 +456,46 @@ func noteIgnoredSecurity(
 		"build", build.Name, "project", project.Name, "file", config.Path, "ignored", asked)
 	meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
 		Type: condConfigHonoured, Status: metav1.ConditionFalse, Reason: reasonSecurityCeiling,
+		Message: message, ObservedGeneration: build.Generation,
+	})
+}
+
+// noteLockfile says out loud that the build root's lockfile was not the one
+// its build installed from.
+//
+// Every JavaScript repository commits a lockfile, and the reason it does is
+// that resolving `package.json` again is not the same operation: it takes
+// whatever satisfies the ranges *today*, which is how an application nobody
+// changed starts failing. Paketo's builder has a buildpack for npm's lockfile
+// and one for yarn's and none for pnpm's or bun's, and what it does with a
+// repository it cannot read the lockfile of is run `npm install` on it
+// anyway — silently on most dependency trees, and on some of them with a
+// crash from inside npm's resolver that names neither npm nor pnpm (#568).
+//
+// pnpm has somewhere else to go, and detection sends it there. This is for
+// what is left: a pnpm front-end, which cannot move because the web server
+// that serves it is a Paketo buildpack with no equivalent in the other
+// builder, and bun, which no builder the platform has can install at all. The
+// build is not refused — it is what those repositories have been getting all
+// along, and refusing it now would break every one of them that works.
+//
+// It is a condition on the Build rather than an event for the reason the
+// security note beside it is: it has to still be there when somebody comes
+// looking, months later, for why a version moved.
+func noteLockfile(ctx context.Context, build *kitchenv1alpha1.Build, detected framework.Framework) {
+	if detected.HonoursLockfile() {
+		return
+	}
+	message := fmt.Sprintf(
+		"the build root is locked by %s, and no buildpacks builder that can build a %s project has a %s buildpack — "+
+			"its dependencies were resolved from package.json instead, so the versions built are not the versions "+
+			"the lockfile pins. Commit a package-lock.json or a yarn.lock to pin them, or add a Dockerfile and set "+
+			"the project's build strategy to one that suits it",
+		detected.PackageManager, detected.Name, detected.PackageManager)
+	logf.FromContext(ctx).Info("build ignored the repository's lockfile",
+		"build", build.Name, "framework", detected.Name, "packageManager", detected.PackageManager)
+	meta.SetStatusCondition(&build.Status.Conditions, metav1.Condition{
+		Type: condLockfileHonoured, Status: metav1.ConditionFalse, Reason: reasonNoLockfileBuildpack,
 		Message: message, ObservedGeneration: build.Generation,
 	})
 }

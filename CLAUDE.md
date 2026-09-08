@@ -550,6 +550,22 @@ through its Go types, to avoid tying the build to its release cadence.
   the same user too, because buildpacks write into the application directory
   (npm's modules, the Node buildpack's start script), so source owned by anyone
   else fails the build halfway through.
+- **There are two buildpacks builders, and which one runs is decided by
+  detection.** Paketo's is the platform's and builds everything it can;
+  `heroku/builder:24` builds the one shape it cannot — a Node repository
+  locked by pnpm, which no Paketo builder has a buildpack for and which
+  `npm-install` therefore resolves from `package.json` afresh, ignoring the
+  lockfile (#568). The two are not interchangeable in either direction:
+  Heroku's enters as **1000:1000** rather than 1001:1000, so `herokuUID`/
+  `herokuGID` sit beside `cnbUID`/`cnbGID` and the pod's user follows the
+  builder; and Heroku's reads `package.json` itself for the package manager,
+  the Node version and the build script, so **every `BP_*` variable is Paketo
+  vocabulary and reaches nothing there** — `framework.Detect` chooses the
+  builder and what it is told together, in one place, for that reason. A
+  framework whose image is *served* rather than started stays on Paketo
+  whatever locked it, because `BP_WEB_SERVER` has no equivalent in the other
+  builder; that build says `LockfileHonoured: False` on the Build instead of
+  moving.
 - **A private registry needs the credential twice: to push and to pull.** The
   build syncs the registry Connection's docker config into the application
   namespace, and the Environment's Deployment names that same Secret as its
