@@ -255,6 +255,36 @@ stopped being true is `—` rather than the number it used to be.
 `design.test.ts` requires the control on every view that calls `usePoll`, and
 requires that nothing but `PageHeader` places it.
 
+## The overlay layer
+
+Every overlay Nuxt UI opens — a dropdown menu, a select, a modal — is
+teleported to the end of `<body>` and given no z-index of its own: it is meant
+to win on document order alone. Under this shell it does not. The drawer is
+`fixed z-50`, and a z-index beats document order however late the element
+arrives, so the overlay is painted underneath the rail that opened it. The
+failure says nothing — the menu opens, `aria-expanded` says so, the items are
+laid out and focusable, and the screen looks like a control that does not
+work. That is what the project switcher was.
+
+So the order is named once, in
+[`assets/main.css`](../ui/src/assets/main.css), and it has three layers and
+no more:
+
+| Layer | z-index | What is in it |
+|---|---|---|
+| The drawer's backdrop | 40 | `AppShell.vue`, below `lg` only |
+| The rail | 50 | `AppShell.vue` |
+| Everything portalled | 60 | The popper wrapper, and a modal's overlay and content |
+
+Nuxt UI's toaster sits at 100 above all of them, which is right: a toast is
+readable while a modal is open.
+
+**A screen writes no z-index.** The two in `AppShell.vue` are the shell's
+chrome and the only ones the dashboard has; anything a screen opens is in the
+layer above them already. A third would be one screen deciding its own place
+in an order the other twenty-two never stated, which is the drift this guide
+exists to stop — `design.test.ts` holds this half.
+
 ## Sections inside a page
 
 [`PageSection`](../ui/src/components/PageSection.vue) is the same shape one

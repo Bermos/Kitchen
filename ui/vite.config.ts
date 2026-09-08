@@ -28,6 +28,13 @@ export default defineConfig(({ mode }) => ({
       "/api": process.env.VITE_API_PROXY ?? "http://localhost:8082",
     },
   },
+  test: {
+    // `design.test.ts` reads `assets/main.css` to check that the overlay
+    // layer named there stays above the shell's chrome. Vitest stubs every
+    // stylesheet to the empty string unless told otherwise, and a rule read
+    // as "" is a rule that passes without being checked.
+    css: true,
+  },
   build: {
     // The operator embeds the built UI; keep the output deterministic.
     outDir: "dist",
