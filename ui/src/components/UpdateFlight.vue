@@ -2,7 +2,15 @@
 import { computed, ref } from "vue";
 import { api, type PlatformUpdate } from "../lib/api";
 import { timeAgo } from "../lib/format";
-import { PLATFORM_NAMESPACE, frozen, settled, versionLabel, type UpdateStage } from "../lib/updates";
+import {
+  PLATFORM_NAMESPACE,
+  frozen,
+  partitionWarnings,
+  settled,
+  versionLabel,
+  warmingUpLine,
+  type UpdateStage,
+} from "../lib/updates";
 import { useAsync, usePoll } from "../lib/useAsync";
 import ComponentChecklist from "./ComponentChecklist.vue";
 import UpdateLogs from "./UpdateLogs.vue";
@@ -47,6 +55,13 @@ const components = computed(() => status.data.value?.components ?? []);
 // What the cluster is complaining about inside the upgrade's own window.
 // Warnings only, by design — this is what is going wrong, never a narration of
 // what is going right, so it renders nothing at all when nothing is wrong.
+//
+// Which is why the window's warnings are not shown as they arrive: applying the
+// chart restarts every platform workload, and a restarting pod refuses
+// connections on its own port for its first few seconds. The kubelet records
+// each refusal as `Unhealthy`, so the healthiest possible upgrade fills this
+// panel with probe failures. `partitionWarnings` gives those the same grace the
+// checklist below already gives a component short of its pods.
 const warnings = useAsync(async () => {
   // An update that has not started has no window to ask over, and asking
   // without one would answer with warnings from before it — which would be
@@ -55,7 +70,9 @@ const warnings = useAsync(async () => {
   return api.platformEvents({ namespace: PLATFORM_NAMESPACE, since: props.update.startedAt, limit: 20 });
 });
 usePoll(() => void warnings.refresh(), 15000, () => !done.value && !!props.update.startedAt);
-const events = computed(() => warnings.data.value?.items ?? []);
+const split = computed(() => partitionWarnings(warnings.data.value?.items, props.stage));
+const events = computed(() => split.value.wrong);
+const starting = computed(() => warmingUpLine(split.value.starting));
 
 /**
  * Where the upgrade is, in the words of somebody watching it happen.
@@ -257,6 +274,11 @@ const surveyMessage = computed(() => {
         </RouterLink>
       </div>
     </div>
+
+    <!-- What was held back, in the tone of a fact rather than of a warning. It
+         is said rather than simply omitted so that a panel with nothing in it
+         reads as the screen having looked, not as the screen not knowing. -->
+    <p v-if="starting" class="text-[11px] text-dimmed leading-relaxed">{{ starting }}</p>
 
     <!-- The output goes through the API like everything else, so during the
          blackout there is nothing to read it with. Saying so is better than a
