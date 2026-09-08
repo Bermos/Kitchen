@@ -18,6 +18,7 @@ package signals
 
 import (
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -165,9 +166,20 @@ func Deliveries(audience Audience) []Audience {
 }
 
 // episode is a condition the tracker currently believes is open.
+//
+// readAt is when the finding it carries was read, and it is not the same
+// question as openedAt: the opening instant is the condition's identity, and
+// the reading is what it looked like the last time a round evaluated it. A
+// rule whose whole content is a moving number — a volume at 85% when it opened
+// and at 98% now — has two answers to "what does it say", and separating them
+// is what lets a reader be given the current one and told which it is. It is
+// zero for an episode seeded from the history by [Tracker.Restore], because
+// what that carries is the opening's own text and this process has not
+// evaluated anything yet.
 type episode struct {
 	finding  Finding
 	openedAt time.Time
+	readAt   time.Time
 }
 
 // Tracker turns a sequence of rounds into a sequence of transitions.
@@ -179,7 +191,14 @@ type episode struct {
 type Tracker struct {
 	versions map[ID]int
 	tiers    map[ID]Tiers
-	open     map[TransitionKey]episode
+
+	// mu guards open alone. The loop is the only writer and it is
+	// single-goroutine, so this exists for the readers: [Tracker.SignalStarts]
+	// and [Tracker.CurrentReadings] are asked by whoever holds the tracker,
+	// and the API server asks the second of them from a request's goroutine
+	// while a round may be in progress.
+	mu   sync.RWMutex
+	open map[TransitionKey]episode
 }
 
 // NewTracker builds a tracker over a catalogue. The catalogue is read for two
@@ -206,6 +225,8 @@ func NewTracker(catalogue *Registry) *Tracker {
 // — records what changed while it was not looking rather than re-announcing
 // everything the previous leader had already announced.
 func (t *Tracker) Restore(open []Transition) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.open = make(map[TransitionKey]episode, len(open))
 	for _, transition := range open {
 		openedAt := transition.OpenedAt
@@ -217,7 +238,11 @@ func (t *Tracker) Restore(open []Transition) {
 }
 
 // Open is how many deliveries the tracker currently holds open.
-func (t *Tracker) Open() int { return len(t.open) }
+func (t *Tracker) Open() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.open)
+}
 
 // Observe diffs one round against the last and returns what changed, in a
 // stable order.
@@ -250,16 +275,19 @@ func (t *Tracker) Observe(round Findings, now time.Time) []Transition {
 	transitions := make([]Transition, 0, 8)
 	next := make(map[TransitionKey]episode, len(current))
 
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	for key, finding := range current {
 		if was, already := t.open[key]; already {
 			// Still true: no transition, and the opening time is kept. The
 			// finding itself is refreshed, because a detail that has moved —
 			// twelve restarts rather than four — is what the resolving row
 			// should carry.
-			next[key] = episode{finding: finding, openedAt: was.openedAt}
+			next[key] = episode{finding: finding, openedAt: was.openedAt, readAt: now}
 			continue
 		}
-		next[key] = episode{finding: finding, openedAt: now}
+		next[key] = episode{finding: finding, openedAt: now, readAt: now}
 		transitions = append(transitions, t.transition(StateOpen, key, finding, now, now))
 	}
 

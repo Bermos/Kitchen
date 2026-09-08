@@ -602,6 +602,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Background evaluation of the signal catalogue: the same rules the
+	// screens ask, run on an interval under the same leader lease, diffed
+	// against the previous round and recorded as transitions. It is what
+	// makes "this has been failing for four hours and nobody has touched it"
+	// answerable at all — a round evaluated for a screen is thrown away with
+	// the response. It idles until the Kitchen object names a store to record
+	// into, so it is added unconditionally like the collectors above.
+	//
+	// It is built here rather than inline in its own Add below for the reason
+	// the flow collector above is: the API holds on to it. The history says
+	// what a condition looked like when it fired, and this is the only thing
+	// in the process that knows what the same condition says now.
+	evaluation := &detection.Loop{
+		// The cached client, unlike the API's gather of the same catalogue:
+		// a warm informer over the cluster's objects is a permanent cost, and
+		// a reader that asks every minute for as long as the operator runs is
+		// exactly what pays for one.
+		Client: mgr.GetClient(),
+		// The follower's loss ledger, for the same reason the API gets it:
+		// nothing else sees what Hubble reported dropping, and the loop runs
+		// on the leader, which is where the follower runs too.
+		Ingest: api.FlowIngest(flowCollector),
+		// Where a recorded transition goes out. The loop is the only writer
+		// of the history, so it is the only place a delivery can be queued
+		// exactly once per transition.
+		Notifier: notifier,
+	}
+
 	// The REST API. It authenticates every request against the platform's
 	// identity provider, which it resolves from the Kitchen object at
 	// request time — so it can be added here without waiting for the
@@ -649,6 +677,14 @@ func main() {
 		// because it did no following — which is why the screen says which
 		// window the counts cover rather than presenting them as a total.
 		Flows: flowCollector,
+		// The evaluation loop, for one read: what its most recent round saw
+		// about the conditions that are open. An alert's durable row is the
+		// record of the instant it fired, which is what a history should be
+		// and not what the alerts screen is asking — so the words on an open
+		// row come from here. This replica runs the loop only while it holds
+		// the lease; a replica that does not answers nothing, and every open
+		// row then carries the reading it opened with and says so.
+		Detection: evaluation,
 	}); err != nil {
 		setupLog.Error(err, "unable to add the api server to manager")
 		os.Exit(1)
@@ -725,28 +761,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Background evaluation of the signal catalogue: the same rules the
-	// screens ask, run on an interval under the same leader lease, diffed
-	// against the previous round and recorded as transitions. It is what
-	// makes "this has been failing for four hours and nobody has touched it"
-	// answerable at all — a round evaluated for a screen is thrown away with
-	// the response. It idles until the Kitchen object names a store to record
-	// into, so it is added unconditionally like the collectors above.
-	if err := mgr.Add(&detection.Loop{
-		// The cached client, unlike the API's gather of the same catalogue:
-		// a warm informer over the cluster's objects is a permanent cost, and
-		// a reader that asks every minute for as long as the operator runs is
-		// exactly what pays for one.
-		Client: mgr.GetClient(),
-		// The follower's loss ledger, for the same reason the API gets it:
-		// nothing else sees what Hubble reported dropping, and the loop runs
-		// on the leader, which is where the follower runs too.
-		Ingest: api.FlowIngest(flowCollector),
-		// Where a recorded transition goes out. The loop is the only writer
-		// of the history, so it is the only place a delivery can be queued
-		// exactly once per transition.
-		Notifier: notifier,
-	}); err != nil {
+	// The evaluation loop, built above where the API server could be handed
+	// it, and added here where it has always been added: it is leader-elected
+	// and the manager starts what it is given in the order it is given it.
+	if err := mgr.Add(evaluation); err != nil {
 		setupLog.Error(err, "unable to add the signal evaluation loop to manager")
 		os.Exit(1)
 	}

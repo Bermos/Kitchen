@@ -17,6 +17,7 @@ limitations under the License.
 package signals
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -357,5 +358,113 @@ func TestACorrelationsListsSurviveTheRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(back[0], transition) {
 		t.Errorf("the round trip changed it:\n got %+v\nwant %+v", back[0], transition)
+	}
+}
+
+// What the condition says now, which is not what the row that recorded it
+// says (#532).
+//
+// A transition is written once, at the instant the condition opened, and that
+// is what a record of a moment should be. But every rule whose whole content
+// is a moving number — a volume filling, a node saturating — then has an open
+// row carrying the least alarming value the condition ever had, and the alerts
+// screen was rendering exactly that. The tracker already refreshes the episode
+// each round; these are the reads that let a screen ask it.
+const (
+	volumeAtOpening = "17Gi of 20Gi used on claim data-clickhouse-0"
+	volumeNow       = "17.8Gi of 20Gi used on claim data-clickhouse-0"
+)
+
+// filling is the issue's own condition: one volume, one operator delivery, and
+// a detail that moves while the condition stays open.
+func filling(detail string) Finding {
+	finding := fire("pvc.filling", SeverityWarning, Scope{Kind: ScopeVolume, Name: "data-clickhouse-0"},
+		transitionRoundOne, "volume filling", detail, "/platform/storage")
+	finding.Audience = AudienceOperator
+	return finding
+}
+
+// The reading a round takes is held per episode and dated at that round, while
+// the transition the history keeps is left exactly as it was written.
+func TestTheTrackerHoldsTheCurrentReadingOfAnOpenCondition(t *testing.T) {
+	tracker := trackerOver(t, testSignal("pvc.filling", AudienceOperator, 1))
+	opening := tracker.Observe(Findings{filling(volumeAtOpening)}, transitionRoundOne)
+	if len(opening) != 1 || opening[0].Detail != volumeAtOpening {
+		t.Fatalf("the condition opened with what the volume then held: %+v", opening)
+	}
+
+	if transitions := tracker.Observe(Findings{filling(volumeNow)}, transitionRoundTwo); len(transitions) != 0 {
+		t.Fatalf("a fuller volume is the same condition, not a new one: %+v", transitions)
+	}
+	readings, err := tracker.CurrentReadings(context.Background())
+	if err != nil {
+		t.Fatalf("reading process memory cannot fail: %v", err)
+	}
+	key := TransitionKey{Fingerprint: opening[0].Fingerprint, Audience: AudienceOperator}
+	reading, held := readings[key]
+	if !held {
+		t.Fatalf("an open condition this process evaluated has a current reading: %+v", readings)
+	}
+	if reading.Finding.Detail != volumeNow {
+		t.Errorf("the reading is the round's, not the opening's: %+v", reading)
+	}
+	if !reading.At.Equal(transitionRoundTwo) {
+		t.Errorf("and it is dated at the round that took it: %v", reading.At)
+	}
+	// The row already in the history is untouched by any of that: it says
+	// what the condition looked like when it fired, which is the question it
+	// answers.
+	if opening[0].Detail != volumeAtOpening || !opening[0].OpenedAt.Equal(transitionRoundOne) {
+		t.Errorf("the opening row is the record of a moment: %+v", opening[0])
+	}
+}
+
+// A tracker that has seeded itself from the history holds no reading of its
+// own, and must not offer the opening's words as one: that would answer "this
+// is what the condition says now" with the very row a reader is trying to get
+// past.
+func TestARestoredTrackerHoldsNoReadingOfItsOwn(t *testing.T) {
+	tracker := trackerOver(t, testSignal("pvc.filling", AudienceOperator, 1))
+	opening := tracker.Observe(Findings{filling(volumeAtOpening)}, transitionRoundOne)
+
+	restored := trackerOver(t, testSignal("pvc.filling", AudienceOperator, 1))
+	restored.Restore(opening)
+	if restored.Open() != 1 {
+		t.Fatalf("the condition is open as far as the history is concerned: %d", restored.Open())
+	}
+	readings, err := restored.CurrentReadings(context.Background())
+	if err != nil {
+		t.Fatalf("reading process memory cannot fail: %v", err)
+	}
+	if len(readings) != 0 {
+		t.Errorf("nothing here has been evaluated yet, and saying otherwise would be a guess: %+v", readings)
+	}
+}
+
+// When the condition resolves, the row the history keeps is the resolving one,
+// and it carries what the condition last said rather than what it first said —
+// which is the half of this the tracker has always done. The reading goes with
+// the episode.
+func TestAResolvingRowCarriesWhatTheConditionLastSaid(t *testing.T) {
+	tracker := trackerOver(t, testSignal("pvc.filling", AudienceOperator, 1))
+	tracker.Observe(Findings{filling(volumeAtOpening)}, transitionRoundOne)
+	tracker.Observe(Findings{filling(volumeNow)}, transitionRoundTwo)
+
+	resolved := tracker.Observe(nil, transitionRoundTwo.Add(time.Minute))
+	if len(resolved) != 1 || resolved[0].State != StateResolved {
+		t.Fatalf("the condition is gone, and that is one row: %+v", resolved)
+	}
+	if resolved[0].Detail != volumeNow {
+		t.Errorf("the resolving row says what it last said: %+v", resolved[0])
+	}
+	if !resolved[0].OpenedAt.Equal(transitionRoundOne) {
+		t.Errorf("how long it lasted is still one row: %+v", resolved[0])
+	}
+	readings, err := tracker.CurrentReadings(context.Background())
+	if err != nil {
+		t.Fatalf("reading process memory cannot fail: %v", err)
+	}
+	if len(readings) != 0 {
+		t.Errorf("nothing is open, so there is nothing to have a current reading: %+v", readings)
 	}
 }

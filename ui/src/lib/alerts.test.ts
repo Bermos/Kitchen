@@ -6,6 +6,7 @@ import {
   audienceLabel,
   defaultSilenceUntil,
   mitigationSentence,
+  readingSentence,
   silenced,
   sortAlerts,
   tierLabel,
@@ -163,5 +164,31 @@ describe("audiences", () => {
   it("are named for whose row it is", () => {
     expect(audienceLabel("developer")).toBe("Project");
     expect(audienceLabel("operator")).toBe("Operator");
+  });
+});
+
+describe("when the reading is from", () => {
+  // #532: the age on the row is the condition's, and the figure in the detail
+  // is the reading's. A volume ten hours open showing 85% while the storage
+  // screen showed 89% was one row saying both without distinguishing them.
+  it("dates the reading the platform last took", () => {
+    const taken = new Date(Date.now() - 120_000).toISOString();
+    expect(readingSentence(alert({ reading: "round", readingAt: taken }))).toBe("reading taken 2 mins ago");
+  });
+
+  // A row nothing holds a newer reading of keeps the words it opened with,
+  // and says so rather than presenting them as current.
+  it("says when the words are the ones it opened with", () => {
+    const opened = new Date(Date.now() - 10 * 3600_000).toISOString();
+    expect(readingSentence(alert({ reading: "opened", readingAt: opened }))).toBe(
+      "reading from when this opened, 10 hours ago",
+    );
+  });
+
+  // A symptom row's sentence is the platform's own words rather than a
+  // reading of anything, so it carries no date and the line disappears.
+  it("says nothing about a row that is not a reading", () => {
+    expect(readingSentence(alert({ symptom: true }))).toBe("");
+    expect(readingSentence(alert({ reading: "round" }))).toBe("");
   });
 });

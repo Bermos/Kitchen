@@ -6,6 +6,7 @@ import {
   audienceLabel,
   defaultSilenceUntil,
   mitigationSentence,
+  readingSentence,
   silenced,
   sortAlerts,
   tierIcon,
@@ -32,6 +33,15 @@ import { evidenceLabel, evidenceLocation, severityLabel } from "../lib/signals";
  * meant to do about this. Then what it is, then what is already being done
  * about it — a row nobody is acting on and a row somebody is are the two
  * states a triage is trying to tell apart, and until now they looked the same.
+ *
+ * ## The two ages on a row, and why both are said
+ *
+ * The number on the right is the **condition's** age — how long this has been
+ * open — and the line under the detail is when the **reading** was taken. They
+ * are different questions for every rule whose content is a moving number: a
+ * volume that opened at 85% and is now at 89% is one condition ten hours old
+ * carrying a figure two minutes old, and until both were said the alerts
+ * screen and the storage screen read as disagreeing about the same volume.
  *
  * ## What a row lets you do
  *
@@ -206,6 +216,13 @@ async function confirmSilence(): Promise<void> {
 
               <p class="text-sm text-toned break-words">{{ alert.detail }}</p>
 
+              <!-- When the words above were read. The age on the right is the
+                   condition's, and a figure that moves while the condition
+                   stays open needs a date of its own. -->
+              <p v-if="readingSentence(alert)" class="text-[11px] text-dimmed">
+                {{ readingSentence(alert) }}
+              </p>
+
               <p class="text-[11px] text-dimmed font-mono truncate">
                 {{ alert.symptom ? "" : alert.signal }}
                 <template v-if="!alert.symptom && (alert.scope.project || alert.scope.environment)"> · </template>
@@ -224,7 +241,9 @@ async function confirmSilence(): Promise<void> {
 
             <span
               class="shrink-0 text-xs text-dimmed tabular-nums whitespace-nowrap"
-              :title="alert.openedAt ? `first seen ${alert.openedAt}` : `firing since ${alert.since}`"
+              :title="alert.openedAt
+                ? `open since ${alert.openedAt} — how long the condition has lasted, not how old the reading is`
+                : `firing since ${alert.since}`"
             >
               {{ uptime(alert.openedAt || alert.since) }}
             </span>

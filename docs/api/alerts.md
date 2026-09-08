@@ -76,6 +76,8 @@ every other read here.
       "evidence": "/environments/shop-production",
       "since": "2026-04-01T11:40:00Z",
       "openedAt": "2026-04-01T11:41:00Z",
+      "reading": "round",
+      "readingAt": "2026-04-01T12:00:00Z",
       "actionable": true,
       "mitigation": {
         "acknowledged": true,
@@ -102,6 +104,56 @@ thin: the conditions are right and nothing carries an age, because how long
 something has been true is the one thing an evaluator that runs when somebody
 looks cannot know. Rows in an evaluated answer are not `actionable`, and
 `message` says so.
+
+### The two times on a row are two different questions
+
+`openedAt` is the **condition's**: when this platform first saw it, and
+therefore how long it has been going on. `readingAt` is the **reading's**: when
+the words in `title` and `detail` were taken. They are the same instant for a
+condition that has just opened and nothing like it afterwards, and every rule
+whose content is a moving number depends on the difference — a volume that
+opened at 85% and is now at 89% is one condition ten hours old carrying a
+figure two minutes old.
+
+**While a condition is open, `title` and `detail` are the current round's.**
+The durable transition is written once, at the instant the condition fired, and
+is deliberately never rewritten: it is the record of that moment, and it is
+what the row carries once the condition has resolved. The open row is given the
+platform's most recent reading on the way out instead, and says which reading
+it ended up with:
+
+| `reading` | What the words are | `readingAt` |
+|---|---|---|
+| `round` | what the condition says now, from the loop's most recent round | when that round ran |
+| `opened` | what it said when it fired, because nothing here holds a newer reading | when it opened |
+
+`opened` is an ordinary answer and not a degraded one: the loop is
+leader-elected, so a replica that does not hold the lease has no round of its
+own; a leader that has just restarted has seeded itself from the history and
+evaluated nothing yet; and a condition that resolved between the last round and
+this read is gone from memory before it is gone from the list. All three are
+honestly answered by *this is what it said when it opened*, which is what the
+field is for — the previous behaviour was the same words with nothing saying
+so ([#532](https://github.com/Bermos/Kitchen/issues/532)).
+
+**What moves is the sentence and what it is a sentence about**: `title`,
+`detail`, and — for a correlation — `confidence`, `projects` and `correlates`.
+A `platform.correlated` row is raised at a rung the round decides, over an
+affected set that grows and shrinks with it, so a row reading *4 projects
+failing together* over the two projects the history recorded would be the same
+disagreement one field further in. All five are descriptive: none of them is
+read by the tier, the escalation clock or the sort.
+
+**`severity`, `tier`, `scope`, `since`, `fingerprint` and `openedAt` are the
+history's.** Those decide what escalates, what sorts first and what a
+mitigation is about, and a row that quietly re-tiered itself between two reads
+would be a different feature with the paging policy in its blast radius. A
+condition whose severity has genuinely moved crosses a threshold and opens a
+delivery of its own.
+
+A **symptom row** carries neither field: its sentence is the platform's own
+words about a project rather than a reading of anything, so there is nothing to
+date.
 
 ## How a tier is arrived at
 
@@ -253,7 +305,8 @@ anything is done to one row of it. A command would be a table printed once,
 and the useful half of it is the sorting.
 
 `kitchen api` reaches all five routes authenticated, which is what makes them
-scriptable today:
+scriptable today — including `readingAt`, which is the field a script
+comparing figures wants and `openedAt` is not:
 
 ```sh
 kitchen api GET /alerts | jq '.items[] | select(.tier == "page")'

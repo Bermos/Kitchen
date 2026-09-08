@@ -3726,6 +3726,10 @@ export interface Mitigation {
   claimedAt?: string;
 }
 
+/** Which reading a row's words are: the platform's most recent one, or the
+ * one the condition opened with. */
+export type AlertReading = "round" | "opened";
+
 /**
  * One open delivery as its reader sees it (GET /alerts).
  *
@@ -3743,6 +3747,14 @@ export interface Alert extends Finding {
    * nobody acknowledging it. The second is zero once anybody has. */
   openedAt?: string;
   unmitigatedSeconds?: number;
+
+  /** Where the title and detail come from, and when that reading was taken.
+   * `round` is what the platform last saw; `opened` is what the condition
+   * fired with, which is what a row carries when nothing holds a newer
+   * reading of it. The row already shows an age and it is the condition's, so
+   * a number that has moved since it opened needs a date of its own. */
+  reading?: AlertReading;
+  readingAt?: string;
 
   /** Past the escalation window with nobody acknowledging. On the owner's row
    * it means "this is being repeated"; on the operator's, "this was added to

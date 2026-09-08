@@ -536,6 +536,19 @@ key — the newest row per `(fingerprint, audience)`, kept when it is an
 opening — which is what the API reads and what a restarted operator seeds
 itself from.
 
+**An opening row is never rewritten, and that is why `GET /alerts` overlays
+the current reading.** `title` and `detail` on an `open` row are what the
+condition looked like the instant it fired, which for every rule whose content
+is a moving number — `pvc.filling`, `store.disk`, `node.saturated` — is the
+least alarming value it ever had. The loop's tracker refreshes each open
+episode every round in memory, so the alerts read asks it for the words and
+leaves the row alone, dating what it serves (`reading`, `readingAt` — see
+[the alerts API](api/alerts.md)). The alternative, a write per round per open
+finding, would turn the argMax above into an argMax over a table that grows
+with time rather than with change; and the resolving row already carries what
+the condition last said, which is the same refresh reaching the history at the
+one moment the history is being added to.
+
 Migration honesty: the schema mechanism is `CREATE TABLE IF NOT EXISTS` plus
 TTL reconciliation — it never reshapes an existing table. Every table above
 is new, so this design needs no migration machinery; the reserved `trace_id`

@@ -26,6 +26,7 @@
  */
 
 import type { Alert, Audience, Tier } from "./api";
+import { timeAgo } from "./format";
 import type { Tone } from "./status";
 
 /** What a tier is called on screen. */
@@ -130,6 +131,29 @@ export function mitigationSentence(alert: Alert): string {
     return `${how} ${state.acknowledgedBy ?? "somebody"}`;
   }
   return "";
+}
+
+/**
+ * When the words on a row were read.
+ *
+ * It is not the question the age on the row answers, and that was the whole
+ * bug: the age is the *condition's* — ten hours open — and it sat next to a
+ * figure that was the reading's. A volume that opened at 85% and had since
+ * filled to 89% went on saying 85% with nothing distinguishing "85% now" from
+ * "85% when this opened", so this screen and the storage one read as
+ * disagreeing (#532).
+ *
+ * The API now sends the reading it last took, and says which it is. `opened`
+ * is not a failure: nothing holds a newer reading of a condition that has just
+ * been handed over, or one that resolved between the platform's last look and
+ * this one, and saying so is better than dating it as if it were current.
+ */
+export function readingSentence(alert: Alert): string {
+  if (!alert.reading || !alert.readingAt) return "";
+  if (alert.reading === "opened") {
+    return `reading from when this opened, ${timeAgo(alert.readingAt)}`;
+  }
+  return `reading taken ${timeAgo(alert.readingAt)}`;
 }
 
 /** Whether a silence stands on this delivery right now. An expired silence is

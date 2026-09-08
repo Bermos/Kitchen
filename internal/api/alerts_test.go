@@ -17,8 +17,10 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +46,19 @@ func recordedBoth(opened time.Time) []clickhouse.SignalTransition {
 	operator := recordedCrashLoop("operator", opened)
 	operator.Tier = string(signals.TierTicket)
 	return []clickhouse.SignalTransition{developer, operator}
+}
+
+// recordedNodeNotReady is a platform condition scoped to a project's
+// namespace: the operator's to act on, and the project's to be told about as a
+// symptom.
+func recordedNodeNotReady(opened time.Time) clickhouse.SignalTransition {
+	const node = "node-1"
+	transition := recordedCrashLoop(string(signals.AudienceOperator), opened)
+	transition.Signal = "node.notready"
+	transition.Fingerprint = "node.notready/" + node
+	transition.Node = node
+	transition.Title = node + " is not ready"
+	return transition
 }
 
 // mitigationBody is a write's request body.
@@ -258,12 +273,8 @@ func TestAPlatformConditionReachesTheProjectAsASymptom(t *testing.T) {
 	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
 	recordRound(t, h, time.Now().Add(-30*time.Second))
 
-	platform := recordedCrashLoop("operator", time.Now().Add(-4*time.Minute))
-	platform.Signal = "node.notready"
-	platform.Fingerprint = "node.notready/node-1"
+	platform := recordedNodeNotReady(time.Now().Add(-4 * time.Minute))
 	platform.Tier = string(signals.TierPage)
-	platform.Node = "node-1"
-	platform.Title = "node-1 is not ready"
 	h.logs.openTransitions = []clickhouse.SignalTransition{platform}
 
 	body := decode[alertsBody](t, h.do(t, http.MethodGet, alertsPath, ""))
@@ -366,5 +377,287 @@ func TestASilenceCanBeLiftedBeforeItExpires(t *testing.T) {
 	if len(h.logs.mitigationWritten) != 2 {
 		t.Errorf("both decisions are on the record, not one overwriting the other: %+v",
 			h.logs.mitigationWritten)
+	}
+}
+
+// The reading on an open row, which is not the row the history keeps (#532).
+//
+// `pvc.filling` is the case the issue is about and the shape of every rule
+// whose whole content is a moving number: the volume was 85% full when the
+// condition opened and 89% full ten hours later, and the durable transition —
+// written once, at the instant it fired — says 85% for as long as it stays
+// open.
+const (
+	correlatedFingerprint = "platform.correlated/2"
+	fillingFingerprint    = "pvc.filling/" + feedProject + "/data-" + feedProject
+	fillingWhenOpened     = "volume 85% full"
+	fillingNow            = "volume 89% full"
+	fillingDetailThen     = "17Gi of 20Gi used on claim data-" + feedProject
+	fillingDetailNow      = "17.8Gi of 20Gi used on claim data-" + feedProject
+)
+
+// recordedFilling is that condition as the loop wrote it when it fired.
+func recordedFilling(opened time.Time) clickhouse.SignalTransition {
+	return clickhouse.SignalTransition{
+		At:          opened,
+		State:       "open",
+		Signal:      "pvc.filling",
+		Fingerprint: fillingFingerprint,
+		Audience:    string(signals.AudienceOperator),
+		Tier:        string(signals.TierTicket),
+		Version:     1,
+		Severity:    string(signals.SeverityWarning),
+		Scope:       string(signals.ScopeVolume),
+		Project:     feedProject,
+		Name:        "data-" + feedProject,
+		Title:       fillingWhenOpened,
+		Detail:      fillingDetailThen,
+		Evidence:    "/platform/storage",
+		Since:       opened,
+		OpenedAt:    opened,
+	}
+}
+
+// currentReading is what the tracker would answer for that condition now.
+func currentReading(at time.Time) signals.CurrentReading {
+	return signals.CurrentReading{
+		Finding: signals.Finding{
+			Signal:      "pvc.filling",
+			Severity:    signals.SeverityWarning,
+			Scope:       signals.Scope{Kind: signals.ScopeVolume, Project: feedProject, Name: "data-" + feedProject},
+			Audience:    signals.AudienceOperator,
+			Tier:        signals.TierTicket,
+			Fingerprint: fillingFingerprint,
+			Title:       fillingNow,
+			Detail:      fillingDetailNow,
+		},
+		At: at,
+	}
+}
+
+// trackerReadings is a detection loop this process holds, for the one read the
+// alerts list makes of it. `readings` being nil is an ordinary answer and not
+// an error — a replica that is not the leader runs no loop at all.
+type trackerReadings struct {
+	readings map[signals.TransitionKey]signals.CurrentReading
+	err      error
+	reads    int
+}
+
+func (t *trackerReadings) CurrentReadings(
+	context.Context,
+) (map[signals.TransitionKey]signals.CurrentReading, error) {
+	t.reads++
+	return t.readings, t.err
+}
+
+// The bug, and the fix. The stored row says 85% because that is what the
+// volume held when the condition opened; the platform's most recent round says
+// 89%, which is what /platform/storage was showing on the next screen. The
+// list carries the round's words, and the condition's own identity — when it
+// opened, and therefore how long it has been open — is untouched by that.
+func TestAnOpenAlertCarriesTheCurrentRoundsReading(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	opened := time.Now().Add(-10 * time.Hour).UTC().Truncate(time.Second)
+	round := time.Now().Add(-30 * time.Second).UTC().Truncate(time.Second)
+	recordRound(t, h, round)
+	h.logs.openTransitions = []clickhouse.SignalTransition{recordedFilling(opened)}
+	loop := &trackerReadings{readings: map[signals.TransitionKey]signals.CurrentReading{
+		{Fingerprint: fillingFingerprint, Audience: signals.AudienceOperator}: currentReading(round),
+	}}
+	h.server.Detection = loop
+
+	body := decode[alertsBody](t, h.do(t, http.MethodGet, alertsPath, ""))
+	if len(body.Items) != 1 {
+		t.Fatalf("one open delivery: %+v", body.Items)
+	}
+	item := body.Items[0]
+	if item.Title != fillingNow || item.Detail != fillingDetailNow {
+		t.Errorf("the row says what the volume holds now, not what it held when this opened: %+v", item)
+	}
+	if !item.OpenedAt.Equal(opened) {
+		t.Errorf("the reading moved and the condition did not: %v, opened %v", item.OpenedAt, opened)
+	}
+	if item.Reading != readingRound || !item.ReadingAt.Equal(round) {
+		t.Errorf("the row says when its figures are from, so the age beside them is not read as theirs: %+v", item)
+	}
+	if item.Severity != signals.SeverityWarning || item.Tier != signals.TierTicket {
+		t.Errorf("only the words move: severity and tier are the history's, and decide what escalates: %+v", item)
+	}
+	// The durable row is the record of a moment and is not rewritten for
+	// being read: nothing here writes, and what the history holds still says
+	// what the condition looked like when it fired.
+	if h.logs.openTransitions[0].Title != fillingWhenOpened ||
+		h.logs.openTransitions[0].Detail != fillingDetailThen {
+		t.Errorf("the transition row is the historical record: %+v", h.logs.openTransitions[0])
+	}
+	if loop.reads != 1 {
+		t.Errorf("one read of the round per answer: %d", loop.reads)
+	}
+}
+
+// A delivery the loop no longer holds — it resolved between the round that
+// recorded it and this read, or this process is not the one running the loop —
+// keeps the words the history has. That is the honest answer and it is
+// labelled as one: the row says the figures are the ones it opened with, and
+// dates them at the opening rather than at now.
+func TestAnAlertTheLoopHoldsNoReadingOfKeepsTheOpeningsWords(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	opened := time.Now().Add(-10 * time.Hour).UTC().Truncate(time.Second)
+	recordRound(t, h, time.Now().Add(-30*time.Second))
+	h.logs.openTransitions = []clickhouse.SignalTransition{recordedFilling(opened)}
+	// A loop that is running and holds some other condition, which is the
+	// resolved case: the map answers, and this key is not in it.
+	h.server.Detection = &trackerReadings{readings: map[signals.TransitionKey]signals.CurrentReading{
+		{Fingerprint: "node.silent/node-b", Audience: signals.AudienceOperator}: currentReading(time.Now()),
+	}}
+
+	body := decode[alertsBody](t, h.do(t, http.MethodGet, alertsPath, ""))
+	if len(body.Items) != 1 {
+		t.Fatalf("one open delivery: %+v", body.Items)
+	}
+	item := body.Items[0]
+	if item.Title != fillingWhenOpened || item.Detail != fillingDetailThen {
+		t.Errorf("nothing holds a newer reading, so the row is the history's: %+v", item)
+	}
+	if item.Reading != readingOpened || !item.ReadingAt.Equal(opened) {
+		t.Errorf("and the row says so rather than dating the opening's figures at now: %+v", item)
+	}
+}
+
+// The same answer with no loop in this process at all: a replica that does not
+// hold the lease, or a leader that has restarted and not yet evaluated
+// anything. Both are ordinary states and neither is an error — the list is
+// what it always was, with the row saying which reading it is.
+func TestAnAlertOnAProcessRunningNoRoundSaysWhereItsWordsCameFrom(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	opened := time.Now().Add(-10 * time.Hour).UTC().Truncate(time.Second)
+	recordRound(t, h, time.Now().Add(-30*time.Second))
+	h.logs.openTransitions = []clickhouse.SignalTransition{recordedFilling(opened)}
+	h.server.Detection = nil
+
+	res := h.do(t, http.MethodGet, alertsPath, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET %s = %d: %s", alertsPath, res.Code, res.Body.String())
+	}
+	body := decode[alertsBody](t, res)
+	if len(body.Items) != 1 {
+		t.Fatalf("one open delivery: %+v", body.Items)
+	}
+	if body.Items[0].Title != fillingWhenOpened || body.Items[0].Reading != readingOpened {
+		t.Errorf("no round of its own is answered with the opening's words, marked as such: %+v", body.Items[0])
+	}
+}
+
+// A write answers with the delivery as it now reads, and "now" has to mean the
+// same thing it means in the list — otherwise a row would change its figures
+// under somebody for pressing a button on it.
+func TestAnAcknowledgementAnswersWithTheReadingTheListShowed(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	opened := time.Now().Add(-10 * time.Hour).UTC().Truncate(time.Second)
+	round := time.Now().Add(-30 * time.Second).UTC().Truncate(time.Second)
+	recordRound(t, h, round)
+	h.logs.openTransitions = []clickhouse.SignalTransition{recordedFilling(opened)}
+	h.server.Detection = &trackerReadings{readings: map[signals.TransitionKey]signals.CurrentReading{
+		{Fingerprint: fillingFingerprint, Audience: signals.AudienceOperator}: currentReading(round),
+	}}
+
+	body := fmt.Sprintf(`{"fingerprint": %q, "audience": %q}`, fillingFingerprint, signals.AudienceOperator)
+	res := h.do(t, http.MethodPost, ackPath, body)
+	if res.Code != http.StatusOK {
+		t.Fatalf("POST %s = %d: %s", ackPath, res.Code, res.Body.String())
+	}
+	acked := decode[alertView](t, res)
+	if acked.Title != fillingNow || acked.Reading != readingRound || !acked.ReadingAt.Equal(round) {
+		t.Errorf("the row that comes back is the row that was pressed: %+v", acked)
+	}
+	if !acked.OpenedAt.Equal(opened) {
+		t.Errorf("acknowledging a condition does not restart it: %+v", acked)
+	}
+}
+
+// The affected set travels with the sentence that describes it.
+//
+// `platform.correlated` is raised at a rung the round decides — its
+// confidence, its projects and the rules it stands in front of are all
+// recomputed every evaluation — so a row whose words said "four projects" over
+// the two the history recorded would be the same disagreement one field
+// further in.
+func TestACorrelationsAffectedSetMovesWithItsSentence(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	opened := time.Now().Add(-40 * time.Minute).UTC().Truncate(time.Second)
+	round := time.Now().Add(-30 * time.Second).UTC().Truncate(time.Second)
+	recordRound(t, h, round)
+
+	recorded := recordedFilling(opened)
+	recorded.Signal = "platform.correlated"
+	recorded.Fingerprint = correlatedFingerprint
+	recorded.Scope = string(signals.ScopePlatform)
+	recorded.Project = ""
+	recorded.Name = ""
+	recorded.Title = "2 projects failing together"
+	recorded.Detail = "no shared node, no shared dependency, and no change of ours"
+	recorded.Confidence = string(signals.ConfidenceCoincidence)
+	recorded.Projects = feedProject + ",billing"
+	recorded.Correlates = "workload.crashloop"
+	h.logs.openTransitions = []clickhouse.SignalTransition{recorded}
+
+	current := currentReading(round)
+	current.Finding.Signal = "platform.correlated"
+	current.Finding.Scope = signals.Scope{Kind: signals.ScopePlatform}
+	current.Finding.Fingerprint = correlatedFingerprint
+	current.Finding.Title = "4 projects failing together"
+	current.Finding.Detail = "all four depend on the same claim"
+	current.Finding.Confidence = signals.ConfidenceDependency
+	current.Finding.Projects = []string{feedProject, "billing", "docs", "search"}
+	current.Finding.Correlates = []signals.ID{"workload.crashloop", "pvc.filling"}
+	h.server.Detection = &trackerReadings{readings: map[signals.TransitionKey]signals.CurrentReading{
+		{Fingerprint: correlatedFingerprint, Audience: signals.AudienceOperator}: current,
+	}}
+
+	body := decode[alertsBody](t, h.do(t, http.MethodGet, alertsPath, ""))
+	if len(body.Items) != 1 {
+		t.Fatalf("one open delivery: %+v", body.Items)
+	}
+	item := body.Items[0]
+	if item.Title != "4 projects failing together" {
+		t.Fatalf("the sentence is the round's: %+v", item)
+	}
+	if len(item.Projects) != 4 {
+		t.Errorf("and it is a sentence about the round's affected set: %+v", item.Projects)
+	}
+	if item.Confidence != signals.ConfidenceDependency {
+		t.Errorf("the rung the round climbed to, not the one it opened at: %+v", item)
+	}
+	if len(item.Correlates) != 2 {
+		t.Errorf("the rules the correlation stands in front of move with it: %+v", item.Correlates)
+	}
+	if !item.OpenedAt.Equal(opened) {
+		t.Errorf("a wider correlation is the same condition, still open since it opened: %+v", item)
+	}
+}
+
+// A symptom row is the platform's own sentence about a project rather than a
+// reading of anything, so it carries neither field — and `readingAt` has to be
+// absent rather than the zero instant, which is what `omitempty` on a struct
+// would have served.
+func TestASymptomRowCarriesNoReading(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	recordRound(t, h, time.Now().Add(-30*time.Second))
+	h.logs.openTransitions = []clickhouse.SignalTransition{
+		recordedNodeNotReady(time.Now().Add(-4 * time.Minute)),
+	}
+
+	res := h.do(t, http.MethodGet, alertsPath, "")
+	raw := res.Body.String()
+	body := decode[alertsBody](t, res)
+	if len(body.Items) != 1 || !body.Items[0].Symptom {
+		t.Fatalf("a member sees the symptom row and not the condition: %+v", body.Items)
+	}
+	if body.Items[0].Reading != "" {
+		t.Errorf("the platform's own words are not a reading of anything: %+v", body.Items[0])
+	}
+	if strings.Contains(raw, "readingAt") || strings.Contains(raw, "0001-01-01") {
+		t.Errorf("an absent instant is absent, not the zero one: %s", raw)
 	}
 }
