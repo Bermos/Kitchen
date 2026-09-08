@@ -339,11 +339,22 @@ func (r *KitchenReconciler) reconcileTelemetrySchema(
 // collected, and turning the platform's own readiness on a cleanup would be
 // the wrong answer twice over — the message goes on the status instead, and
 // the next reconcile tries again.
+//
+// What it records is written to the API server here rather than being left to
+// the reconcile's own status update at the end, because a DROP cannot be done
+// again: the tables are gone, so the next sweep finds nothing and writes
+// nothing. That end-of-reconcile update carries the resourceVersion the pass
+// started with, and the singleton reconciles in bursts — anything else that
+// writes it in between costs the pass a conflict, which is ordinarily just a
+// requeue and here would be the only evidence that a volume came back (#562).
+// A merge patch carries no such precondition, so it cannot be the thing that
+// loses the race. The in-memory status is left holding the same values, so
+// the update at the end of the reconcile is consistent with it either way.
 func (r *KitchenReconciler) reclaimSystemLogs(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
 	cfg clickhouse.Config,
-	client *clickhouse.Client,
+	store *clickhouse.Client,
 ) {
 	if !cfg.SystemLogsBounded {
 		// An external store. Its system tables are somebody else's, and a
@@ -352,7 +363,7 @@ func (r *KitchenReconciler) reclaimSystemLogs(
 	}
 
 	log := logf.FromContext(ctx)
-	dropped, err := client.ReclaimOrphanedSystemLogs(ctx)
+	dropped, err := store.ReclaimOrphanedSystemLogs(ctx)
 	if len(dropped) == 0 && err == nil {
 		// The ordinary case on every reconcile after the first. Nothing to
 		// record and nothing to say.
@@ -362,6 +373,7 @@ func (r *KitchenReconciler) reclaimSystemLogs(
 		return
 	}
 
+	before := kitchen.DeepCopy()
 	status := kitchen.Status.SystemLogs
 	if status == nil {
 		status = &kitchenv1alpha1.SystemLogStatus{}
@@ -384,6 +396,23 @@ func (r *KitchenReconciler) reclaimSystemLogs(
 	if err != nil {
 		status.Message = err.Error()
 		log.Error(err, "could not collect the superseded clickhouse system log tables")
+	}
+	if len(dropped) == 0 {
+		// Nothing irreversible happened: a sweep that only has a complaint to
+		// make can wait for the reconcile's own status update, and say it
+		// again next pass if that update is the one that loses.
+		return
+	}
+	if patchErr := r.Status().Patch(ctx, kitchen, client.MergeFrom(before)); patchErr != nil {
+		// Not a failed reconcile, for the reason the drop is not part of the
+		// readiness condition. The record stays on the in-memory status, so
+		// the update at the end of this pass may still carry it; if that also
+		// fails, this is what the next round reports.
+		log.Error(patchErr, "could not record the collected system log tables on the kitchen")
+		if status.Message == "" {
+			status.Message = "the tables collected on the last sweep could not be " +
+				"recorded: " + patchErr.Error()
+		}
 	}
 }
 

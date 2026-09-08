@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -93,8 +94,6 @@ func telemetryFixtures(t *testing.T, store *fakeTelemetryStore, bounded bool) (
 	if err := kitchenv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-
 	kitchen := &kitchenv1alpha1.Kitchen{
 		ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},
 		Spec:       kitchenv1alpha1.KitchenSpec{BaseDomain: "example.com"},
@@ -102,8 +101,23 @@ func telemetryFixtures(t *testing.T, store *fakeTelemetryStore, bounded bool) (
 	kitchen.Spec.Observability.ClickHouse.SecretRef = &kitchenv1alpha1.LocalObjectReference{
 		Name: retentionSecretName,
 	}
+
+	// The singleton is on the API server, because what the sweep records it
+	// now writes there itself rather than leaving it to the end of the
+	// reconcile (#562) — and reading it back is what gives the object in hand
+	// the resourceVersion a reconcile would be holding.
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(secret, kitchen).
+		WithStatusSubresource(&kitchenv1alpha1.Kitchen{}).
+		Build()
+	if err := c.Get(context.Background(), singletonKey, kitchen); err != nil {
+		t.Fatalf("reading back the singleton: %v", err)
+	}
 	return &KitchenReconciler{Client: c}, kitchen
 }
+
+// singletonKey addresses the one Kitchen object every test here reconciles.
+var singletonKey = types.NamespacedName{Name: KitchenSingletonName}
 
 // noConditions is the setCond a test passes when the conditions are not what
 // it is asking about.
@@ -238,5 +252,76 @@ func TestTheRecordedTableListIsBounded(t *testing.T) {
 	again := recordReclaimedTables(recorded, []string{recorded[0]})
 	if len(again) != len(recorded) {
 		t.Errorf("recording %q again grew the list to %d", recorded[0], len(again))
+	}
+}
+
+// The record of a drop is durable the moment the drop happened, because the
+// drop is not something a later pass can do again (#562).
+//
+// The reconcile writes the whole status once, at the end, with the
+// resourceVersion it read at the start — so anything else writing the
+// singleton during the pass costs it that update. For everything else on the
+// status that is a requeue and a recomputation; for this it was the only
+// evidence that a volume came back, and the next sweep finds the tables
+// already gone and writes nothing. The kind job caught it as a poll for
+// status.systemLogs.tables that never came true against a store whose table
+// had been dropped two minutes earlier.
+func TestTheReclaimRecordSurvivesAConflictingStatusUpdate(t *testing.T) {
+	store := newFakeTelemetryStore(t)
+	store.orphanRows = supersededRows
+	r, kitchen := telemetryFixtures(t, store, true)
+	ctx := context.Background()
+
+	// Somebody else writes the singleton while the sweep is in flight —
+	// another controller, a watch-driven pass of this one, the API. From here
+	// on the object the reconcile is holding is a resourceVersion behind.
+	store.onDrop = func() {
+		moved := &kitchenv1alpha1.Kitchen{}
+		if err := r.Get(ctx, singletonKey, moved); err != nil {
+			t.Errorf("reading the singleton to move it: %v", err)
+			return
+		}
+		moved.Annotations = map[string]string{"kitchen.bermos.dev/moved-by": "somebody-else"}
+		if err := r.Update(ctx, moved); err != nil {
+			t.Errorf("moving the singleton on: %v", err)
+		}
+	}
+
+	if !r.reconcileTelemetrySchema(ctx, kitchen, noConditions) {
+		t.Fatal("the telemetry schema was not applied against the fake store")
+	}
+
+	// The reconcile's own status update, exactly as Reconcile makes it at the
+	// end of the pass. Whether it succeeds is not what this test is about:
+	// what the sweep collected has to be on the API server either way.
+	updateErr := r.Status().Update(ctx, kitchen)
+
+	stored := &kitchenv1alpha1.Kitchen{}
+	if err := r.Get(ctx, singletonKey, stored); err != nil {
+		t.Fatalf("reading the singleton back: %v", err)
+	}
+	recorded := stored.Status.SystemLogs
+	if recorded == nil {
+		t.Fatalf("system.%s was dropped and the singleton says nothing about it; the "+
+			"reconcile's status update answered %v, and no later sweep can record it "+
+			"because the table is already gone", supersededTable, updateErr)
+	}
+	if len(recorded.Tables) != 1 || recorded.Tables[0] != supersededTable {
+		t.Errorf("status.systemLogs.tables on the API server is %v, want [%s]",
+			recorded.Tables, supersededTable)
+	}
+	if recorded.BytesReclaimed != 1200 {
+		t.Errorf("status.systemLogs.bytesReclaimed on the API server is %d, want 1200",
+			recorded.BytesReclaimed)
+	}
+	if recorded.LastReclaimed == nil {
+		t.Error("status.systemLogs.lastReclaimed on the API server is unset after a drop")
+	}
+
+	// And the in-memory status the rest of the reconcile goes on writing says
+	// the same thing, so the update at the end of the pass cannot walk it back.
+	inMemory := kitchen.Status.SystemLogs
+	if inMemory == nil || len(inMemory.Tables) != 1 || inMemory.Tables[0] != supersededTable {
+		t.Errorf("the reconcile is holding %+v, which is not what it wrote", inMemory)
 	}
 }

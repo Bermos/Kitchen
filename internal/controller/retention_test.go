@@ -81,6 +81,11 @@ type fakeTelemetryStore struct {
 	// as ClickHouse's default TSV. Empty — which is every test in this file —
 	// is a store with nothing to collect (#530, systemlogs_test.go).
 	orphanRows string
+
+	// onDrop, if set, runs as each DROP arrives and before it is answered,
+	// which is how systemlogs_test.go puts somebody else's write to the
+	// singleton in the middle of a sweep (#562).
+	onDrop func()
 }
 
 func newFakeTelemetryStore(t *testing.T) *fakeTelemetryStore {
@@ -90,6 +95,10 @@ func newFakeTelemetryStore(t *testing.T) *fakeTelemetryStore {
 		body, _ := io.ReadAll(r.Body)
 		query := string(body)
 		store.statements = append(store.statements, query)
+
+		if store.onDrop != nil && strings.HasPrefix(query, "DROP TABLE IF EXISTS system.") {
+			store.onDrop()
+		}
 
 		switch {
 		case strings.Contains(query, "FROM system.parts"):
