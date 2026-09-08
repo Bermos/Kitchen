@@ -1752,11 +1752,15 @@ jobs:
               clickhouse-client --secure --accept-invalid-certificate \
               --user kitchen --password "${password}" "$@"
           }
-          ch --query "DROP TABLE IF EXISTS system.text_log_99 SYNC"
-          ch --query "CREATE TABLE system.text_log_99 (event_date Date, message String)
-                      ENGINE = MergeTree ORDER BY event_date"
-          ch --query "INSERT INTO system.text_log_99
-                      SELECT today(), toString(number) FROM numbers(1000)"
+          # One statement, not three: the sweep under test runs on every
+          # reconcile, and on kind a reconcile comes every thirty seconds for
+          # as long as the ACME certificate stays unissued, so a table created
+          # in one exec and filled in the next can be collected in between —
+          # the operator doing its job, and the fixture failing for it (#556).
+          ch --query "CREATE TABLE IF NOT EXISTS system.text_log_99
+                      ENGINE = MergeTree ORDER BY event_date
+                      AS SELECT today() AS event_date, toString(number) AS message
+                      FROM numbers(1000)"
 
           # Ask for a reconcile rather than waiting on the requeue interval.
           kubectl annotate kitchen default \
@@ -1769,8 +1773,9 @@ jobs:
             case "${collected}" in *text_log_99*) break ;; esac
             sleep 2
           done
-          echo "status.systemLogs: $(kubectl get kitchen default \
-            -o jsonpath='{.status.systemLogs}' 2>/dev/null || true)"
+          reclaimed=$(kubectl get kitchen default \
+            -o jsonpath='{.status.systemLogs}' 2>/dev/null || true)
+          echo "status.systemLogs: ${reclaimed}"
           case "${collected}" in
             *text_log_99*) ;;
             *)
