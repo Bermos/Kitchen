@@ -21,14 +21,6 @@ export const PROJECT_ROLES = ["viewer", "developer", "admin"] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
 
 /**
- * The platform scopes a platform credential may hold. Unordered, unlike the
- * roles: scopes do not contain one another, so there is no comparison to make
- * between two of them — a credential holds a set, and a route names one.
- */
-export const PLATFORM_SCOPES = ["platform.read", "compliance.read", "backup.run"] as const;
-export type PlatformScope = (typeof PLATFORM_SCOPES)[number];
-
-/**
  * What a route asks of its caller.
  *
  * - "authenticated" — any valid token. The caller's own identity is the whole of it.
@@ -59,16 +51,6 @@ export interface Requirement {
    * a caller holding a valid token.
    */
   doing?: string;
-  /**
-   * The platform scope that reaches this route as well as the operator role,
-   * for the handful of rows that name one. Absent everywhere else, which is
-   * how the API spells "no platform credential may ever reach this".
-   *
-   * The dashboard reads it to say what a scope is for: the Credentials screen
-   * lists the operations each scope reaches, out of this table, rather than
-   * asking somebody to pick from a vocabulary with nothing beside it.
-   */
-  scope?: PlatformScope;
 }
 
 /** Every pattern the API serves, spelled as the API's own table spells it. */
@@ -199,9 +181,6 @@ export type Route =
   | "POST /api/v1/platform/backup/runs"
   | "GET /api/v1/settings"
   | "PATCH /api/v1/settings"
-  | "GET /api/v1/platform/credentials"
-  | "POST /api/v1/platform/credentials"
-  | "DELETE /api/v1/platform/credentials/{name}"
   | "GET /api/v1/updates"
   | "POST /api/v1/updates"
   | "GET /api/v1/updates/{name}"
@@ -263,7 +242,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/projects/{name}/releases": { kind: "projectRole", role: "viewer", doing: "reading a project's releases" },
   "GET /api/v1/projects/{name}/environments": { kind: "projectRole", role: "viewer", doing: "reading a project's environments" },
   "POST /api/v1/projects/{name}/environments": { kind: "projectRole", role: "developer", doing: "declaring an environment" },
-  "GET /api/v1/projects/{name}/audit-pack": { kind: "operator", doing: "exporting a project's audit pack", scope: "compliance.read" },
+  "GET /api/v1/projects/{name}/audit-pack": { kind: "operator", doing: "exporting a project's audit pack" },
   "GET /api/v1/projects/{name}/members": { kind: "projectRole", role: "viewer", doing: "reading a project's members" },
   "POST /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "adding somebody to a project" },
   "PATCH /api/v1/projects/{name}/members": { kind: "projectRole", role: "admin", doing: "changing somebody's role on a project" },
@@ -331,18 +310,18 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/decisions/{id}": { kind: "visibleProjects" },
   "POST /api/v1/decisions/{id}/replay": { kind: "visibleProjects" },
   "GET /api/v1/policy/bundles": { kind: "operator", doing: "listing the platform's policy bundles" },
-  "GET /api/v1/compliance": { kind: "operator", doing: "reading the platform's compliance posture", scope: "compliance.read" },
+  "GET /api/v1/compliance": { kind: "operator", doing: "reading the platform's compliance posture" },
   "GET /api/v1/compliance/inventory": { kind: "visibleProjects" },
   "GET /api/v1/compliance/drift": { kind: "visibleProjects" },
   "GET /api/v1/compliance/criticality": { kind: "visibleProjects" },
   "GET /api/v1/compliance/dependents": { kind: "visibleProjects" },
-  "GET /api/v1/access/identities": { kind: "operator", doing: "reading who holds what on the platform", scope: "compliance.read" },
-  "GET /api/v1/access/reviews": { kind: "operator", doing: "reading the platform's access recertifications", scope: "compliance.read" },
+  "GET /api/v1/access/identities": { kind: "operator", doing: "reading who holds what on the platform" },
+  "GET /api/v1/access/reviews": { kind: "operator", doing: "reading the platform's access recertifications" },
   "POST /api/v1/access/reviews": { kind: "operator", doing: "opening an access recertification" },
-  "GET /api/v1/access/reviews/{name}": { kind: "operator", doing: "reading an access recertification", scope: "compliance.read" },
+  "GET /api/v1/access/reviews/{name}": { kind: "operator", doing: "reading an access recertification" },
   "PATCH /api/v1/access/reviews/{name}": { kind: "operator", doing: "deciding an access recertification" },
   "GET /api/v1/audit": { kind: "visibleProjects" },
-  "GET /api/v1/audit/verify": { kind: "operator", doing: "verifying the audit log's chain", scope: "compliance.read" },
+  "GET /api/v1/audit/verify": { kind: "operator", doing: "verifying the audit log's chain" },
   "GET /api/v1/metrics/overview": { kind: "visibleProjects" },
   "GET /api/v1/traffic": { kind: "visibleProjects" },
   "GET /api/v1/traces": { kind: "visibleProjects" },
@@ -354,28 +333,25 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/alerts/silence": { kind: "visibleProjects" },
   "POST /api/v1/alerts/unsilence": { kind: "visibleProjects" },
   "POST /api/v1/alerts/claim": { kind: "operator", doing: "claiming an escalated alert" },
-  "GET /api/v1/platform/signals": { kind: "operator", doing: "reading the platform's signals", scope: "platform.read" },
-  "GET /api/v1/platform/nodes": { kind: "operator", doing: "reading the platform's nodes", scope: "platform.read" },
-  "GET /api/v1/platform/workloads": { kind: "operator", doing: "reading the platform's workloads", scope: "platform.read" },
-  "GET /api/v1/platform/edge": { kind: "operator", doing: "reading the platform's edge", scope: "platform.read" },
-  "GET /api/v1/platform/storage": { kind: "operator", doing: "reading the platform's storage", scope: "platform.read" },
-  "GET /api/v1/platform/events": { kind: "operator", doing: "reading the platform's cluster events", scope: "platform.read" },
-  "GET /api/v1/platform/ingest": { kind: "operator", doing: "reading the platform's ingest", scope: "platform.read" },
-  "GET /api/v1/platform/retention": { kind: "operator", doing: "reading the platform's retention", scope: "platform.read" },
+  "GET /api/v1/platform/signals": { kind: "operator", doing: "reading the platform's signals" },
+  "GET /api/v1/platform/nodes": { kind: "operator", doing: "reading the platform's nodes" },
+  "GET /api/v1/platform/workloads": { kind: "operator", doing: "reading the platform's workloads" },
+  "GET /api/v1/platform/edge": { kind: "operator", doing: "reading the platform's edge" },
+  "GET /api/v1/platform/storage": { kind: "operator", doing: "reading the platform's storage" },
+  "GET /api/v1/platform/events": { kind: "operator", doing: "reading the platform's cluster events" },
+  "GET /api/v1/platform/ingest": { kind: "operator", doing: "reading the platform's ingest" },
+  "GET /api/v1/platform/retention": { kind: "operator", doing: "reading the platform's retention" },
   "PATCH /api/v1/platform/retention": { kind: "operator", doing: "changing the platform's retention" },
   "GET /api/v1/platform/policy": { kind: "operator", doing: "reading the platform's signal policy" },
   "PATCH /api/v1/platform/policy": { kind: "operator", doing: "changing the platform's signal policy" },
-  "GET /api/v1/platform/backup": { kind: "operator", doing: "reading what a platform backup would carry", scope: "backup.run" },
-  "POST /api/v1/platform/backup": { kind: "operator", doing: "exporting the platform's state", scope: "backup.run" },
+  "GET /api/v1/platform/backup": { kind: "operator", doing: "reading what a platform backup would carry" },
+  "POST /api/v1/platform/backup": { kind: "operator", doing: "exporting the platform's state" },
   "PUT /api/v1/platform/backup/destination": { kind: "operator", doing: "setting where the platform's backups are written" },
   "DELETE /api/v1/platform/backup/destination": { kind: "operator", doing: "removing where the platform's backups are written" },
-  "GET /api/v1/platform/backup/runs": { kind: "operator", doing: "reading what the platform's backup destination holds", scope: "backup.run" },
-  "POST /api/v1/platform/backup/runs": { kind: "operator", doing: "running the platform's backup now", scope: "backup.run" },
+  "GET /api/v1/platform/backup/runs": { kind: "operator", doing: "reading what the platform's backup destination holds" },
+  "POST /api/v1/platform/backup/runs": { kind: "operator", doing: "running the platform's backup now" },
   "GET /api/v1/settings": { kind: "operator", doing: "reading the platform's settings" },
   "PATCH /api/v1/settings": { kind: "operator", doing: "changing the platform's settings" },
-  "GET /api/v1/platform/credentials": { kind: "operator", doing: "reading the platform's credentials" },
-  "POST /api/v1/platform/credentials": { kind: "operator", doing: "issuing a platform credential" },
-  "DELETE /api/v1/platform/credentials/{name}": { kind: "operator", doing: "revoking a platform credential" },
   "GET /api/v1/updates": { kind: "operator", doing: "reading the platform's updates" },
   "POST /api/v1/updates": { kind: "operator", doing: "upgrading the platform" },
   "GET /api/v1/updates/{name}": { kind: "operator", doing: "reading a platform update" },

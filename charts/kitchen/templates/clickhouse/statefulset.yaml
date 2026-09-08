@@ -23,14 +23,8 @@ spec:
         app.kubernetes.io/component: clickhouse
       {{- if or .Values.clickhouse.extraConfig .Values.clickhouse.podAnnotations (eq (include "kitchen.clickhouseTLSEnabled" .) "true") }}
       annotations:
-        {{- if .Values.clickhouse.extraConfig }}
-        # The rendered ConfigMap, not the values it came from: every value goes
-        # through `tpl`, so what lands in config.d can change while the value
-        # itself does not. Each file is mounted by subPath below, and the
-        # kubelet never re-projects one of those into a running container — so
-        # a change nothing hashed would sit in the ConfigMap and never reach
-        # the server.
-        checksum/config: {{ include (print $.Template.BasePath "/clickhouse/configmap.yaml") . | sha256sum }}
+        {{- with .Values.clickhouse.extraConfig }}
+        checksum/config: {{ toYaml . | sha256sum }}
         {{- end }}
         {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
         # ClickHouse reads its configuration at startup, and this file is what
@@ -144,29 +138,20 @@ spec:
               mountPath: /tmp
             - name: logs
               mountPath: /var/log/clickhouse-server
-            {{- with .Values.clickhouse.extraConfig }}
-            # One file per key, by subPath, never the directory. A ConfigMap
-            # mounted over config.d itself hides the image's own config.d,
-            # which is where `listen_host` comes from — a store nothing in the
-            # cluster can reach — and neither order saves it: written before
-            # the TLS file below, the kubelet has to bind-mount
-            # kitchen-tls.xml into a directory that is now the ConfigMap's,
-            # where no such file exists, and the pod never starts ("not a
-            # directory"); written after it, the mount succeeds and swallows
-            # the TLS file, and the server comes up in the clear saying
-            # nothing. Anything else this chart drops into config.d goes in
-            # the same way.
-            {{- range $filename, $content := . }}
+            {{- if .Values.clickhouse.extraConfig }}
+            # Ahead of the TLS file below, and that order is load bearing: the
+            # kubelet mounts these in the order they are written, so a whole
+            # directory mounted over config.d *after* a file was bind-mounted
+            # into it would hide the file — and a ClickHouse whose TLS
+            # configuration went missing serves the image's defaults, which
+            # are plaintext, without saying anything.
             - name: config
-              mountPath: /etc/clickhouse-server/config.d/{{ $filename }}
-              subPath: {{ $filename | quote }}
-              readOnly: true
-            {{- end }}
+              mountPath: /etc/clickhouse-server/config.d
             {{- end }}
             {{- if eq (include "kitchen.clickhouseTLSEnabled" .) "true" }}
             # One file, by subPath, so the image's own config.d — which is
             # where `listen_host` comes from — is still there underneath. A
-            # directory mounted here would hide it, and a ClickHouse listening
+            # directory mount here would hide it, and a ClickHouse listening
             # on localhost alone is a store nothing in the cluster can reach.
             - name: tls-config
               mountPath: /etc/clickhouse-server/config.d/kitchen-tls.xml

@@ -1028,9 +1028,7 @@ clickhouse:
       drop:
         - ALL
   # -- XML dropped into /etc/clickhouse-server/config.d, as filename -> content.
-  # Values are passed through `tpl`. Each key is mounted as its own file, so
-  # the image's own configuration in that directory — `listen_host` among it —
-  # and the platform's TLS file are both still there beside it.
+  # Values are passed through `tpl`.
   extraConfig: {}
   # -- Extra environment variables for the ClickHouse container.
   extraEnv: []

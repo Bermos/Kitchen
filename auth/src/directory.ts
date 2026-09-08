@@ -15,12 +15,6 @@ import {
 	type ProjectKey,
 } from "./keys.js";
 import { log } from "./log.js";
-import {
-	createPlatformKey,
-	deletePlatformKey,
-	listPlatformKeys,
-	type PlatformKey,
-} from "./platformkeys.js";
 
 /**
  * The operator's own corner of the identity provider.
@@ -38,11 +32,10 @@ import {
  * It is deliberately narrow. Over accounts it only reads — who exists, and
  * who holds an address — because an account nobody can enumerate is an
  * operator list nobody can seed (issue #104) and a people-picker that cannot
- * resolve an address (issue #106). The only things it writes are credentials
- * and the accounts that own them — a project's CI key (issue #111) and the
- * platform's own (issue #349) — which the operator cannot do for itself: a key
- * has to exist at the issuer, because the issuer is where a key is verified
- * and where revoking one takes effect.
+ * resolve an address (issue #106). The one thing it writes is a CI key and
+ * the machine account that owns it (issue #111), which the operator cannot
+ * do for itself: a key has to exist at the issuer, because the issuer is
+ * where a key is verified and where revoking one takes effect.
  */
 export const KITCHEN_API_PREFIX = "/kitchen";
 
@@ -110,9 +103,6 @@ const routes: KitchenRoute[] = [
 	{ method: "GET", path: `${KITCHEN_API_PREFIX}/keys`, handle: getKeys },
 	{ method: "POST", path: `${KITCHEN_API_PREFIX}/keys`, handle: postKey },
 	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/keys`, handle: deleteKey },
-	{ method: "GET", path: `${KITCHEN_API_PREFIX}/platform-keys`, handle: getPlatformKeys },
-	{ method: "POST", path: `${KITCHEN_API_PREFIX}/platform-keys`, handle: postPlatformKey },
-	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/platform-keys`, handle: removePlatformKey },
 	{ method: "PUT", path: `${KITCHEN_API_PREFIX}/clients`, handle: putClient },
 	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/clients`, handle: removeClient },
 ];
@@ -328,54 +318,6 @@ async function deleteKey(auth: Auth, _config: Config, request: KitchenRequest): 
 	const removed: ProjectKey | null = await deleteProjectKey(auth, project, name);
 	if (!removed) {
 		return { status: 404, body: { error: `${project} has no key called ${name}` } };
-	}
-	return { status: 200, body: removed };
-}
-
-/**
- * The platform's own machine credentials: the list, the one it hands out, and
- * the one it takes back (issue #349).
- *
- * They are a second path rather than a project on the one above, because a
- * platform credential is not a project's key and must never be reachable as
- * one. A credential is addressed by its name alone — the local part of its
- * account's address, which is what makes the name unique.
- *
- * Nothing here says what a credential may *do*. The scopes live on the Kitchen
- * singleton, which is the operator's state and not the issuer's; this endpoint
- * issues and revokes, exactly as the CI key one does.
- */
-async function getPlatformKeys(auth: Auth, _config: Config, _request: KitchenRequest): Promise<KitchenResponse> {
-	return { status: 200, body: { keys: await listPlatformKeys(auth) } };
-}
-
-async function postPlatformKey(auth: Auth, _config: Config, request: KitchenRequest): Promise<KitchenResponse> {
-	const name = text(request.body.name);
-	const refusal = badLabel("name", name);
-	if (refusal) {
-		return refusal;
-	}
-
-	try {
-		return { status: 201, body: await createPlatformKey(auth, name) };
-	} catch (error) {
-		if (error instanceof KeyExistsError) {
-			return { status: 409, body: { error: error.message } };
-		}
-		throw error;
-	}
-}
-
-async function removePlatformKey(auth: Auth, _config: Config, request: KitchenRequest): Promise<KitchenResponse> {
-	const name = (request.query.get("name") ?? "").trim();
-	const refusal = badLabel("name", name);
-	if (refusal) {
-		return refusal;
-	}
-
-	const removed: PlatformKey | null = await deletePlatformKey(auth, name);
-	if (!removed) {
-		return { status: 404, body: { error: `the platform has no credential called ${name}` } };
 	}
 	return { status: 200, body: removed };
 }

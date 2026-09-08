@@ -68,21 +68,6 @@ type PolicyRoute struct {
 	// "changing the platform's settings". Empty for the kinds that never
 	// refuse a caller who holds a valid token.
 	Doing string
-	// Scope is the platform scope that reaches this route as well as the
-	// operator role, in the wire form a grant is written in. Empty for every
-	// route no platform credential may reach, which is almost all of them.
-	//
-	// The dashboard reads it to say what a scope is *for* on the screen that
-	// issues a credential: a list of scopes with nothing beside them asks
-	// somebody to pick from a vocabulary they have no way to evaluate, and the
-	// operations each one reaches are already written down here.
-	Scope string
-	// ResolvesProject is whether the row resolves a project — which for a
-	// scoped row is what a credential's project allowlist is checked against.
-	// It is a boolean rather than the resolver itself because the resolver is
-	// a function that reads the cluster, and nothing outside the API can act
-	// on one.
-	ResolvesProject bool
 }
 
 // Policy is the whole of what the dashboard's generated copy is made of: the
@@ -95,12 +80,7 @@ type Policy struct {
 	// rather than a second opinion about which role outranks which.
 	PlatformRoles []string
 	ProjectRoles  []string
-	// PlatformScopes is the whole scope vocabulary, in access.Scopes' order.
-	// It is here rather than derived from the routes so that a scope no route
-	// names yet still reaches the dashboard — and so that the screen offering
-	// them cannot offer one the API has never heard of.
-	PlatformScopes []string
-	Routes         []PolicyRoute
+	Routes        []PolicyRoute
 }
 
 // PolicyTable is the enforcement table as data, for the generator that gives
@@ -142,26 +122,14 @@ func PolicyTable() (Policy, error) {
 					"as one anybody may call", row.Pattern, row.Requires.Kind)
 		}
 		routes = append(routes, PolicyRoute{
-			Pattern:         row.Pattern,
-			Kind:            kind,
-			Role:            row.Requires.Role.String(),
-			Doing:           row.Requires.Doing,
-			Scope:           row.Requires.Scope.String(),
-			ResolvesProject: row.Requires.Project.Resolve != nil,
+			Pattern: row.Pattern,
+			Kind:    kind,
+			Role:    row.Requires.Role.String(),
+			Doing:   row.Requires.Doing,
 		})
 	}
 
-	scopes := make([]string, 0, len(access.Scopes()))
-	for _, scope := range access.Scopes() {
-		scopes = append(scopes, scope.String())
-	}
-
-	return Policy{
-		PlatformRoles:  platform,
-		ProjectRoles:   project,
-		PlatformScopes: scopes,
-		Routes:         routes,
-	}, nil
+	return Policy{PlatformRoles: platform, ProjectRoles: project, Routes: routes}, nil
 }
 
 // policyKind names a requirement kind, and reports false for one nothing here

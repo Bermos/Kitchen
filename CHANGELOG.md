@@ -1,20 +1,5 @@
 # Changelog
 
-## [0.39.0](https://github.com/Bermos/Kitchen/compare/v0.38.0...v0.39.0) (2026-09-07)
-
-
-### Features
-
-* **claims:** a binding to another project's offering is requested, and approved ([#524](https://github.com/Bermos/Kitchen/issues/524)) ([42f583a](https://github.com/Bermos/Kitchen/commit/42f583aa00a9123022390e7da4b9cf92402114e5))
-* **cli:** warn when the CLI is older than the installation ([#535](https://github.com/Bermos/Kitchen/issues/535)) ([12d39ea](https://github.com/Bermos/Kitchen/commit/12d39eab42274d15817308cf8b21b63bdb4b212c))
-* **ui:** a project switcher, and a shell that remembers which project you were in ([#536](https://github.com/Bermos/Kitchen/issues/536)) ([47e5213](https://github.com/Bermos/Kitchen/commit/47e52137f7f05f485ead9c267dceb034e91c3b09))
-* **ui:** make creating a project a screen, and ask for its compliance declarations ([#528](https://github.com/Bermos/Kitchen/issues/528)) ([e8280c7](https://github.com/Bermos/Kitchen/commit/e8280c7fbc77ddab21dae9678825f563573719e2))
-
-
-### Bug fixes
-
-* **build:** give the buildpacks analyze phase the credential that can push ([#537](https://github.com/Bermos/Kitchen/issues/537)) ([038bbcd](https://github.com/Bermos/Kitchen/commit/038bbcd5a59b25e0e42581115a938cbb38306901)), closes [#534](https://github.com/Bermos/Kitchen/issues/534)
-
 ## [0.38.0](https://github.com/Bermos/Kitchen/compare/v0.37.0...v0.38.0) (2026-09-07)
 
 

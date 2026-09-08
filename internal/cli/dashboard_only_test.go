@@ -19,8 +19,6 @@ package cli
 import (
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 // What the platform commands say when the credential in hand cannot run them
@@ -33,104 +31,168 @@ import (
 // and the exit status underneath it, which does not move: this is a permission
 // failure and a script branching on 4 must keep getting 4.
 
-// declaringCommand is a command that declares itself the dashboard's, built
-// here rather than taken from the tree.
-//
-// **No command in the CLI declares it any more**: #349 built the credential
-// that runs the four families #208 found, and their declarations came off with
-// it. What is left is the mechanism, and the rule that decides when a command
-// owes a declaration — TestDashboardOnlyMatchesTheAPIsTable, which reads the
-// API's own table. So these test the mechanism against a command made for the
-// purpose: a test that could only run against a real declarer would have been
-// deleted along with the last one, taking the guard with it.
-func declaringCommand(screen, path string) *cobra.Command {
-	cmd := &cobra.Command{Use: "example"}
-	return describe(cmd, meta{
-		Output: output{Mode: outputNone},
-		Needs:  needs{Auth: true, Platform: onlyInTheDashboard(screen, path)},
-	})
+// refusedAsAMember answers every call the way the API refuses a project key.
+func refusedAsAMember(h *harness, message string) {
+	h.platform.refuseStatus = 403
+	h.platform.refuseMessage = message
 }
 
-// The refusal a declaring command gets: the API's own sentence, the exit
-// status a permission failure has always had, and the half the API cannot know
-// — that no credential this CLI can store would have worked, and where the
-// operation does exist.
 func TestPlatformCommandRefusalNamesTheDashboard(t *testing.T) {
-	screen, path := "Platform → Credentials", "/platform/credentials"
-	cmd := declaringCommand(screen, path)
-	refused := &failure{
-		Code:    codeForbidden,
-		Status:  403,
-		Message: "issuing a platform credential needs the operator role; you are a member",
-	}
-
-	explained := dashboardOnlyRefusal(cmd, refused)
-	// The code — and so the exit status — does not move: a script branching on
-	// 4 keeps getting 4, because this is a permission failure and nothing else.
-	if explained.Code != codeForbidden || explained.Status != 403 {
-		t.Fatalf("the refusal changed shape: %+v", explained)
-	}
-	if explained.Message != refused.Message {
-		t.Errorf("message %q, want the API's own %q", explained.Message, refused.Message)
-	}
-	if !strings.Contains(explained.Hint, screen) || !strings.Contains(explained.Hint, path) {
-		t.Errorf("the hint does not name the screen or the path: %q", explained.Hint)
-	}
-	if !strings.Contains(explained.Hint, "operator role") ||
-		!strings.Contains(explained.Hint, "platform credential") {
-		t.Errorf("the hint does not give the reason: %q", explained.Hint)
-	}
-}
-
-// It is the refusal that is explained, and only that. A failure of another
-// kind says what went wrong and nothing about the dashboard: a note that
-// appears on every failure is one nobody reads on the one that means it.
-func TestOnlyAForbiddenIsExplained(t *testing.T) {
-	cmd := declaringCommand("Platform → Credentials", "/platform/credentials")
-	for _, f := range []*failure{
-		{Code: codeUnavailable, Status: 503, Message: "the telemetry store did not answer"},
-		{Code: codeNotFound, Status: 404, Message: "no such project"},
+	for _, want := range []struct {
+		command []string
+		screen  string
+		path    string
+		refusal string
+	}{
+		{
+			command: []string{"retention", "--json"},
+			screen:  "Platform → Settings, under Retention",
+			path:    "/platform/settings",
+			refusal: "reading the platform's retention needs the operator role; you are a member",
+		},
+		{
+			command: []string{"backup", "--json"},
+			screen:  "Platform → Backup",
+			path:    "/platform/backup",
+			refusal: "exporting the platform's state needs the operator role; you are a member",
+		},
+		{
+			command: []string{"access", "identities", "--json"},
+			screen:  "Platform → Audit, under Access recertification",
+			path:    "/platform/audit",
+			refusal: "reading who holds what on the platform needs the operator role; you are a member",
+		},
+		{
+			command: []string{"audit-pack", "--project", "shop",
+				"--from", "2026-01-01", "--to", "2026-04-01", "--json"},
+			screen:  "Platform → Audit, under Audit pack",
+			path:    "/platform/audit",
+			refusal: "exporting a project's audit pack needs the operator role; you are a member",
+		},
 	} {
-		if hint := dashboardOnlyRefusal(cmd, f).Hint; hint != "" {
-			t.Errorf("%s was explained as a permission problem: %q", f.Code, hint)
-		}
+		t.Run(want.command[0], func(t *testing.T) {
+			h := newHarness(t)
+			refusedAsAMember(h, want.refusal)
+
+			// The exit status is the one a permission failure has always had.
+			if code := h.run(want.command...); code != exitForbidden {
+				t.Fatalf("exit %d, want %d: %s", code, exitForbidden, h.stdout.String())
+			}
+			refused := h.failure()
+			if refused.Code != codeForbidden {
+				t.Errorf("code %q, want %q", refused.Code, codeForbidden)
+			}
+			if refused.Status != 403 {
+				t.Errorf("status %d, want 403", refused.Status)
+			}
+			// The API's own sentence survives: it names the operation.
+			if refused.Message != want.refusal {
+				t.Errorf("message %q, want the API's own %q", refused.Message, want.refusal)
+			}
+			// And the half the API cannot know: why no key would have worked,
+			// and where the operation does exist.
+			if !strings.Contains(refused.Hint, want.screen) {
+				t.Errorf("the hint does not name the screen %q: %q", want.screen, refused.Hint)
+			}
+			if !strings.Contains(refused.Hint, want.path) {
+				t.Errorf("the hint does not name the path %q: %q", want.path, refused.Hint)
+			}
+			if !strings.Contains(refused.Hint, "a role on one project") ||
+				!strings.Contains(refused.Hint, "operator role") {
+				t.Errorf("the hint does not give the reason: %q", refused.Hint)
+			}
+		})
 	}
 }
 
-// And a command that does not declare it is left alone, whatever it was
-// refused for: a developer refused a write on their own project needs a role,
-// not a screen.
-func TestACommandThatDoesNotDeclareItIsLeftAlone(t *testing.T) {
-	cmd := describe(&cobra.Command{Use: "example"}, meta{
-		Output: output{Mode: outputNone},
-		Needs:  needs{Auth: true},
-	})
-	refused := &failure{
-		Code:    codeForbidden,
-		Status:  403,
-		Message: "changing a project's environment variables needs developer; you are a viewer",
+// On a terminal the same sentence is what a person reads, under the API's.
+func TestPlatformCommandRefusalReachesAPersonToo(t *testing.T) {
+	h := newHarness(t)
+	refusedAsAMember(h, "reading the platform's retention needs the operator role; you are a member")
+
+	if code := h.run("retention"); code != exitForbidden {
+		t.Fatalf("exit %d, want %d", code, exitForbidden)
 	}
-	if hint := dashboardOnlyRefusal(cmd, refused).Hint; hint != "" {
+	printed := h.stderr.String()
+	if !strings.Contains(printed, "needs the operator role") {
+		t.Errorf("the API's sentence is missing: %s", printed)
+	}
+	if !strings.Contains(printed, "Platform → Settings, under Retention (/platform/settings)") {
+		t.Errorf("the screen is missing: %s", printed)
+	}
+	if !strings.Contains(h.stdout.String(), "") || h.stdout.Len() != 0 {
+		t.Errorf("a failure wrote to stdout in text mode: %s", h.stdout.String())
+	}
+}
+
+// It is the refusal that is explained, not everything that goes wrong. A
+// platform command that fails for another reason says what went wrong and
+// nothing about the dashboard — a note that appears on every failure is one
+// nobody reads on the one that needs it.
+func TestOnlyTheRefusalNamesTheDashboard(t *testing.T) {
+	h := newHarness(t)
+	h.platform.refuseStatus = 503
+	h.platform.refuseMessage = "the telemetry store is not installed"
+
+	if code := h.run("retention", "--json"); code != exitUnavailable {
+		t.Fatalf("exit %d, want %d: %s", code, exitUnavailable, h.stdout.String())
+	}
+	if hint := h.failure().Hint; strings.Contains(hint, "dashboard") {
+		t.Errorf("an unavailable store was explained as a permission problem: %q", hint)
+	}
+}
+
+// And a project command's 403 is left alone: a developer refused a write on
+// their own project needs a role, not a screen.
+func TestAProjectCommandsRefusalIsLeftAlone(t *testing.T) {
+	h := newHarness(t)
+	refusedAsAMember(h, "changing a project's environment variables needs developer; you are a viewer")
+
+	if code := h.run("env", "set", "PORT=8080", "--project", "shop", "--json"); code != exitForbidden {
+		t.Fatalf("exit %d, want %d: %s", code, exitForbidden, h.stdout.String())
+	}
+	if hint := h.failure().Hint; strings.Contains(hint, "dashboard") {
 		t.Errorf("a project refusal was answered with the platform's statement: %q", hint)
 	}
 }
 
-// Nothing declares it today, and the schema says so. A command that starts to
-// is caught by TestDashboardOnlyMatchesTheAPIsTable, which reads the API's own
-// table rather than a list kept here — this is the other direction: if one
-// appears, docs/CLI.md has to grow the section that explains it.
+// The schema carries the statement per command, which is the half a machine
+// reads: a caller can tell before running anything that this one will not work
+// with the credential it holds, and say where it does.
 func TestSchemaPublishesTheDashboardOnlyStatement(t *testing.T) {
 	document := tree(t)
 
+	wanted := map[string]string{
+		"kitchen retention":         "/platform/settings",
+		"kitchen backup":            "/platform/backup",
+		"kitchen backup list":       "/platform/backup",
+		"kitchen backup run":        "/platform/backup",
+		"kitchen audit-pack":        "/platform/audit",
+		"kitchen access":            "/platform/audit",
+		"kitchen access identities": "/platform/audit",
+		"kitchen access reviews":    "/platform/audit",
+		"kitchen access show":       "/platform/audit",
+	}
+	found := map[string]string{}
 	for _, command := range document.Commands {
 		if command.Needs.Platform == nil {
 			continue
 		}
+		found[command.Path] = command.Needs.Platform.Path
 		if command.Needs.Platform.Why != dashboardOnlyReason {
 			t.Errorf("%s gives its own reason: %q", command.Path, command.Needs.Platform.Why)
 		}
-		t.Errorf("%s says it is the dashboard's, and nothing does since #349 — if that is right, "+
-			"give it a section in docs/CLI.md and say so here", command.Path)
+	}
+	for path, screen := range wanted {
+		if found[path] != screen {
+			t.Errorf("%s publishes %q, want %q", path, found[path], screen)
+		}
+	}
+	for path := range found {
+		if _, expected := wanted[path]; !expected {
+			t.Errorf("%s says it is the dashboard's and this test did not expect it — if that is "+
+				"right, add it here and to docs/CLI.md", path)
+		}
 	}
 }
 

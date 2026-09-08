@@ -93,25 +93,16 @@ func (c Caller) access() access.Caller {
 	return access.Caller{Subject: c.Subject, Email: c.Email, EmailVerified: c.EmailVerified}
 }
 
-// isMachine reports whether this token was exchanged from a credential — a
-// project's CI key or one of the platform's own (#349) — rather than held by
-// somebody who signed in.
+// isMachine reports whether this token was exchanged from a CI key rather than
+// held by somebody who signed in.
 //
 // The address is the marker because it is the only one there is: a key becomes
 // a session at the issuer, so the token it produces is shaped like anybody
-// else's. Both kinds of account are created under a reserved domain
-// (idp.MachineAccountDomain and idp.PlatformAccountDomain, both `.local`,
-// RFC 6762) precisely so that they are recognisable, and the address is the
-// issuer's own record rather than anything the caller says about itself — a
-// person cannot register there, and a credential cannot register anywhere
-// else.
-//
-// The two domains answer the same here on purpose. What this question decides
-// is whether the caller may *widen its own access*, and creating a project is
-// that in both cases: the creator becomes the project's admin, and an admin
-// issues keys. A platform credential is scoped to operations an operator chose
-// for it, which is exactly the kind of bound that a project of its own would
-// walk around rather than meet.
+// else's. Machine accounts are created under a reserved domain
+// (idp.MachineAccountDomain, `.local`, RFC 6762) precisely so that they are
+// recognisable, and the address is the issuer's own record rather than
+// anything the caller says about itself — a person cannot register there, and
+// a key cannot register anywhere else.
 //
 // It is not a role and it never grants anything. Every role this caller holds
 // is resolved from the subject alone, exactly as before; this answers the one
@@ -127,16 +118,7 @@ func (c Caller) access() access.Caller {
 // account can only exist under this domain and a person can only exist
 // outside it.
 func (c Caller) isMachine() bool {
-	return idp.IsMachineAccount(c.Email) || idp.IsPlatformAccount(c.Email)
-}
-
-// isPlatformCredential reports whether this caller is one of the platform's
-// own credentials rather than a project's CI key. It exists for the refusals
-// that have to say which kind of credential is being refused — the two are
-// bounded by different things, and a message naming the wrong one sends
-// whoever is reading it to the wrong screen.
-func (c Caller) isPlatformCredential() bool {
-	return idp.IsPlatformAccount(c.Email)
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(c.Email)), "@"+idp.MachineAccountDomain)
 }
 
 // kitchenFrom is the Kitchen singleton the request was authenticated against —
@@ -161,72 +143,16 @@ type meView struct {
 	Name    string `json:"name,omitempty"`
 	// PlatformRole is "operator" or "member".
 	PlatformRole string `json:"platformRole"`
-	// Kind is what sort of caller this is: "person", "key" for a project's CI
-	// key, or "credential" for one of the platform's own (#349).
-	//
-	// It is answered because a credential asking who it is has no other way to
-	// find out — the address it would have to parse is a convention of the
-	// identity provider's, and `kitchen whoami` should not be reimplementing
-	// the domain rule to tell somebody which kind of thing they have pasted
-	// into a pipeline.
-	Kind string `json:"kind"`
-	// Scopes is what the caller holds on the platform beyond their role, and is
-	// absent for the overwhelming majority of callers, who hold none: a person
-	// holds a role, and reporting an empty list for them would read as somebody
-	// who has been granted nothing.
-	//
-	// It is resolved for **every** caller rather than only for a credential,
-	// because a grant in `spec.access.credentials` is resolved from the subject
-	// alone like every other grant here — an operator can write one naming a
-	// person, and a `/me` that reported scopes only for an address under the
-	// reserved domain would answer that person with a description of themselves
-	// that leaves out what they hold.
-	//
-	// It carries the *live* answer: a lapsed credential holds none, because the
-	// expiry is applied where the scopes are resolved. So `kitchen whoami` on a
-	// credential that stopped working answers the question it is being asked.
-	Scopes []string `json:"scopes,omitempty"`
-	// Projects is the allowlist a scoped, project-shaped route is narrowed to,
-	// absent when the caller's grant narrows nothing.
-	Projects []string `json:"projects,omitempty"`
 }
 
 func (s *Server) getMe(w http.ResponseWriter, req *http.Request) {
-	ctx := req.Context()
-	caller, _ := CallerFrom(ctx)
-	view := meView{
+	caller, _ := CallerFrom(req.Context())
+	writeJSON(w, http.StatusOK, meView{
 		Subject:      caller.Subject,
 		Email:        caller.Email,
 		Name:         caller.Name,
-		PlatformRole: platformRoleFrom(ctx).String(),
-		Kind:         callerKind(caller),
-	}
-	grant := access.ScopesFor(caller.access(), kitchenFrom(ctx), s.now())
-	for _, scope := range grant.Held() {
-		view.Scopes = append(view.Scopes, scope.String())
-	}
-	view.Projects = grant.Projects()
-	writeJSON(w, http.StatusOK, view)
-}
-
-// The three kinds of caller, as `/me` reports them.
-const (
-	callerKindPerson     = "person"
-	callerKindKey        = "key"
-	callerKindCredential = "credential"
-)
-
-// callerKind is what sort of thing is asking. It reads the address, which is
-// the issuer's own record of which kind of account this is — see isMachine.
-func callerKind(caller Caller) string {
-	switch {
-	case caller.isPlatformCredential():
-		return callerKindCredential
-	case caller.isMachine():
-		return callerKindKey
-	default:
-		return callerKindPerson
-	}
+		PlatformRole: platformRoleFrom(req.Context()).String(),
+	})
 }
 
 // issuerConfig is the platform's identity provider as the API needs to see it:
