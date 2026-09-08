@@ -44,6 +44,7 @@ package detection
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -150,7 +151,48 @@ type Loop struct {
 	// not evaluated yet and must seed itself from the store before it can
 	// tell a condition that just opened from one the last leader already
 	// recorded.
+	//
+	// mu guards the field rather than the tracker behind it, which holds its
+	// own lock. Both exist for the same reader: the API server, in the same
+	// process, asking [Loop.CurrentReadings] from a request's goroutine while
+	// a round may be replacing this pointer.
+	mu      sync.RWMutex
 	tracker *signals.Tracker
+}
+
+// The API server holds the loop as this interface and nothing else, and the
+// line that hands it over (`Detection:` in cmd/main.go) is wiring no test
+// reaches — like the flow collector beside it. This is the half of it a
+// compiler can hold: the loop is a [signals.CurrentSource] or the build stops.
+var _ signals.CurrentSource = (*Loop)(nil)
+
+// CurrentReadings is what this process's most recent round saw, for the alerts
+// screen: the conditions that are open, as they read now rather than as they
+// read when they fired. See [signals.CurrentSource] for why the screen wants
+// it and why an empty answer is an ordinary one.
+//
+// It is the loop's rather than the tracker's because the tracker is built on
+// the first round and replaced whenever a write to the history fails, so a
+// caller handed the tracker directly would be holding whichever one was
+// current when it was wired.
+func (l *Loop) CurrentReadings(ctx context.Context) (map[signals.TransitionKey]signals.CurrentReading, error) {
+	if l == nil {
+		return nil, nil
+	}
+	return l.currentTracker().CurrentReadings(ctx)
+}
+
+// currentTracker and setTracker are the guarded halves of the field above.
+func (l *Loop) currentTracker() *signals.Tracker {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.tracker
+}
+
+func (l *Loop) setTracker(tracker *signals.Tracker) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tracker = tracker
 }
 
 // NeedLeaderElection makes the loop a singleton across replicas.
@@ -266,7 +308,8 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 	// that has just won the lease, re-announcing every condition the previous
 	// leader already recorded. A seed that fails is a round that does not
 	// happen: opening everything again would be worse than recording nothing.
-	if l.tracker == nil {
+	tracker := l.currentTracker()
+	if tracker == nil {
 		open, err := store.OpenSignalTransitions(ctx)
 		// A table that does not exist yet is not a failed seed: it is an
 		// installation whose telemetry schema the Kitchen reconcile has not
@@ -277,14 +320,14 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 		if err != nil && !clickhouse.IsUnknownTable(err) {
 			return round, fmt.Errorf("cannot read back what is already open: %w", err)
 		}
-		tracker := signals.NewTracker(signals.Catalogue())
+		tracker = signals.NewTracker(signals.Catalogue())
 		tracker.Restore(signals.TransitionsFrom(open))
-		l.tracker = tracker
+		l.setTracker(tracker)
 	}
 
-	snapshot := signals.Gather(ctx, l.sources(store), signals.Options{})
+	snapshot := signals.Gather(ctx, l.sources(store, tracker), signals.Options{})
 	findings := signals.Catalogue().Evaluate(snapshot)
-	transitions := l.tracker.Observe(findings, snapshot.Now)
+	transitions := tracker.Observe(findings, snapshot.Now)
 
 	rows := signals.TransitionRows(transitions)
 	if err := store.InsertSignalTransitions(ctx, rows); err != nil {
@@ -293,7 +336,7 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 		// would be open in memory and absent from the history forever.
 		// Dropping the tracker makes the next round seed from the store
 		// again, which is the state the store is actually in.
-		l.tracker = nil
+		l.setTracker(nil)
 		return round, fmt.Errorf("the transitions could not be recorded: %w", err)
 	}
 
@@ -305,7 +348,7 @@ func (l *Loop) RoundOnce(ctx context.Context) (Round, error) {
 
 	round.Evaluated = true
 	round.Findings = len(findings.Firing())
-	round.Open = l.tracker.Open()
+	round.Open = tracker.Open()
 	round.Recorded = len(transitions)
 	round.Transitions = transitions
 	l.publish(ctx, round, snapshot)
@@ -341,7 +384,7 @@ func (l *Loop) notify(ctx context.Context, rows []clickhouse.SignalTransition, p
 
 // sources is where a round's snapshot comes from. It is the API's own wiring,
 // with one difference: the client is cached. See [Loop.Client].
-func (l *Loop) sources(store Store) signals.Sources {
+func (l *Loop) sources(store Store, tracker *signals.Tracker) signals.Sources {
 	sources := signals.Sources{
 		Client: l.Client,
 		Store:  store,
@@ -352,7 +395,7 @@ func (l *Loop) sources(store Store) signals.Sources {
 		// transitions table to every round to learn what this process has
 		// already. It is the previous round's answer, which is the right one:
 		// a condition this round has only just seen has no start yet.
-		Starts:      l.tracker,
+		Starts:      tracker,
 		HostMetrics: signals.StoreHostMetrics(store),
 		VolumeUsage: signals.StoreVolumeUsage(store),
 		Resolver:    l.Resolver,

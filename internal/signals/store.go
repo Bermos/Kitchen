@@ -135,6 +135,8 @@ func (t *Tracker) SignalStarts(context.Context) (map[string]time.Time, error) {
 	if t == nil {
 		return nil, nil
 	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	starts := make(map[string]time.Time, len(t.open))
 	for key, episode := range t.open {
 		if episode.openedAt.IsZero() {
@@ -147,6 +149,72 @@ func (t *Tracker) SignalStarts(context.Context) (map[string]time.Time, error) {
 		}
 	}
 	return starts, nil
+}
+
+// CurrentReading is one open condition as the platform last saw it: the
+// finding a round evaluated, and when that round read it.
+//
+// It is not what the history holds. A transition is written once, at the
+// instant the condition opened, and it is the record of that moment on
+// purpose; this is the answer to the other question, which is what the
+// condition says *now*.
+type CurrentReading struct {
+	// Finding is the condition as the most recent round that could evaluate
+	// it found it.
+	Finding Finding
+	// At is when that round was evaluated. It is per reading rather than one
+	// instant for the whole set, because a rule whose input went unreadable
+	// is carried forward with the last reading anybody took of it — which is
+	// older than the round, and saying otherwise would be dating a number
+	// that has not moved.
+	At time.Time
+}
+
+// CurrentSource is a read of the conditions a running detection loop holds
+// open, as of its most recent round.
+//
+// It exists for one screen and one problem. The alerts list reads the durable
+// `open` transitions, whose title and detail are the ones recorded when the
+// condition fired; for every rule whose whole content is a moving number that
+// is the least alarming value the condition ever had, shown indefinitely and
+// beside an age that belongs to the condition rather than to the reading. The
+// loop already holds the current answer in memory — [Tracker.Observe]
+// refreshes the episode every round — so this is a map lookup rather than a
+// second evaluation or a write per round per open finding.
+//
+// It answers what a process *knows*, so an empty answer is not an error and
+// must not be read as one: a replica that is not the leader runs no loop, and
+// a leader that has just restarted has seeded itself from the history and not
+// yet evaluated. Both mean "no reading of my own", and the caller shows the
+// opening's text and says so.
+type CurrentSource interface {
+	CurrentReadings(ctx context.Context) (map[TransitionKey]CurrentReading, error)
+}
+
+// CurrentReadings makes a [Tracker] a [CurrentSource]. Like [SignalStarts] it
+// reads process memory, so it never fails and never queries anything, and a
+// nil tracker answers "nothing known" rather than panicking — it reaches this
+// as a typed nil through the interface, where a nil check at the call site
+// cannot see it.
+//
+// An episode this process has not evaluated is left out. [Tracker.Restore]
+// seeds the open set from the history, and what those episodes carry is the
+// opening's own text: returning it here would answer "this is the current
+// reading" with the very row the caller is trying to get away from.
+func (t *Tracker) CurrentReadings(context.Context) (map[TransitionKey]CurrentReading, error) {
+	if t == nil {
+		return nil, nil
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	readings := make(map[TransitionKey]CurrentReading, len(t.open))
+	for key, episode := range t.open {
+		if episode.readAt.IsZero() {
+			continue
+		}
+		readings[key] = CurrentReading{Finding: episode.finding, At: episode.readAt.UTC()}
+	}
+	return readings, nil
 }
 
 // StoreStarts is the same answer read back out of the history, for a caller

@@ -127,6 +127,15 @@ type Server struct {
 	// stays quiet rather than reporting no loss it never measured.
 	Flows FlowFollower
 
+	// Detection is the background evaluation loop, for one read: what its
+	// most recent round saw about the conditions that are open. The durable
+	// history says what a condition looked like when it fired, which is what
+	// a record of a moment should say and not what the alerts screen is
+	// asking; this is where the current words come from. Nil — a replica that
+	// is not the leader, or a server wired without one — leaves every open
+	// row carrying the words it opened with, and the row says so.
+	Detection signals.CurrentSource
+
 	// Probes resolves the credential probe a connection test runs, the same
 	// way the ConnectionReconciler does. Nil means provider.Default; tests
 	// inject fakes.

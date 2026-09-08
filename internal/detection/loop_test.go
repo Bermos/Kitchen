@@ -513,6 +513,51 @@ func TestAnAlreadyOpenConditionIsNotReAnnounced(t *testing.T) {
 	}
 }
 
+// What the loop holds is readable while it runs, which is the whole of what
+// the alerts list asks it (#532): the history says what a condition looked
+// like when it fired, and this is the only thing in the process that knows
+// what the same condition says now.
+func TestTheLoopAnswersWhatItsLastRoundSaw(t *testing.T) {
+	store := &fakeStore{}
+	loop := loopOver(t, store, crashLoopingPod())
+	ctx := context.Background()
+
+	// Before a round there is nothing to hold, and that is an answer rather
+	// than an error: a replica that does not hold the lease runs no loop at
+	// all, and the caller shows the opening's words and says so.
+	before, err := loop.CurrentReadings(ctx)
+	if err != nil {
+		t.Fatalf("a loop that has not run answers nothing, and does not fail: %v", err)
+	}
+	if len(before) != 0 {
+		t.Errorf("nothing has been evaluated yet: %+v", before)
+	}
+
+	round, err := loop.RoundOnce(ctx)
+	if err != nil {
+		t.Fatalf("the first round: %v", err)
+	}
+	readings, err := loop.CurrentReadings(ctx)
+	if err != nil {
+		t.Fatalf("reading what the round saw: %v", err)
+	}
+	if len(readings) != round.Open {
+		t.Fatalf("every open delivery has a reading: %d of %d", len(readings), round.Open)
+	}
+	for _, transition := range round.Transitions {
+		reading, held := readings[transition.Key()]
+		if !held {
+			t.Fatalf("the condition this round opened is one it holds: %+v", transition)
+		}
+		if reading.Finding.Fingerprint != transition.Fingerprint {
+			t.Errorf("the reading is of the condition it is keyed under: %+v", reading)
+		}
+		if reading.At.IsZero() {
+			t.Errorf("a reading is dated, or the screen cannot say when it is from: %+v", reading)
+		}
+	}
+}
+
 // The same round against a real ClickHouse, because the statements this loop's
 // writes and its seed are made of are the kind that read perfectly and fail —
 // a conditional TTL, an argMax per key, a column list that has drifted.

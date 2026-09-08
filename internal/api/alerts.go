@@ -89,7 +89,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, req *http.Request) {
 		Project:     project,
 	}
 	for _, alert := range s.visibleAlerts(ctx, round, project) {
-		body.Items = append(body.Items, alertViewOf(alert))
+		body.Items = append(body.Items, alertViewOf(alert, round.readingOf(alert)))
 		switch alert.Tier {
 		case signals.TierPage:
 			body.Counts.Page++
@@ -156,6 +156,26 @@ type alertView struct {
 	OpenedAt           time.Time `json:"openedAt,omitempty"`
 	UnmitigatedSeconds int64     `json:"unmitigatedSeconds,omitempty"`
 
+	// Reading and ReadingAt are where this row's words came from — the
+	// title, the detail and, on a correlation, the affected set they
+	// describe — and they are here because the row already carries an age
+	// that is not theirs. `openedAt` is the condition's, and a volume that opened at 85%
+	// and is now at 98% was showing the opening's number beside ten hours of
+	// the condition's age with nothing distinguishing the two — which read as
+	// the storage screen and the alerts screen disagreeing.
+	//
+	// `round` is the current round's reading of the condition, dated at the
+	// round that took it. `opened` is the one recorded when it fired, which
+	// is what a reader gets when this process holds no round of its own: a
+	// replica that is not the leader, an operator that has just restarted, or
+	// a condition that resolved between the round and this read.
+	Reading string `json:"reading,omitempty"`
+	// `omitzero` rather than `omitempty`: a time.Time is a struct and a
+	// struct is never empty, so omitempty would serve `0001-01-01T00:00:00Z`
+	// on every symptom row — which is the one kind of row documented as
+	// carrying neither field.
+	ReadingAt time.Time `json:"readingAt,omitzero"`
+
 	Escalated bool `json:"escalated,omitempty"`
 	Untended  bool `json:"untended,omitempty"`
 	// Note is the escalation sentence, in the issue's words.
@@ -190,13 +210,15 @@ type mitigationView struct {
 	ClaimedAt time.Time `json:"claimedAt,omitempty"`
 }
 
-func alertViewOf(alert signals.Alert) alertView {
+func alertViewOf(alert signals.Alert, read reading) alertView {
 	finding := alert.Finding
 	finding.Tier = alert.Tier
 	view := alertView{
 		Finding:    finding,
 		Base:       alert.Base,
 		OpenedAt:   alert.OpenedAt,
+		Reading:    read.from,
+		ReadingAt:  read.at,
 		Escalated:  alert.Escalated,
 		Untended:   alert.Untended,
 		Note:       alert.Note,
@@ -223,15 +245,46 @@ func alertViewOf(alert signals.Alert) alertView {
 	return view
 }
 
+// Where a row's title and detail come from, which is the one thing the alerts
+// list was not saying.
+const (
+	// readingRound is the current round's reading of the condition.
+	readingRound = "round"
+	// readingOpened is the reading recorded when the condition fired, shown
+	// when this process has no round of its own to overlay.
+	readingOpened = "opened"
+)
+
+// reading is that answer for one row: which of the two it is, and when it was
+// taken.
+type reading struct {
+	from string
+	at   time.Time
+}
+
 // alertRound is every open delivery on the platform, assessed — before any
 // question of who is allowed to read which of them.
 type alertRound struct {
-	open    []signals.Transition
-	alerts  []signals.Alert
-	at      time.Time
-	source  string
-	message string
-	now     time.Time
+	open   []signals.Transition
+	alerts []signals.Alert
+	// readings says, per delivery, where the title and detail on it came
+	// from. A key with no entry — a symptom row, whose words are the
+	// platform's own and not a reading of anything — carries neither field.
+	readings map[signals.TransitionKey]reading
+	at       time.Time
+	source   string
+	message  string
+	now      time.Time
+}
+
+// readingOf is what to say about where one alert's words came from. Symptom
+// rows answer with nothing: their sentence is written by the platform rather
+// than read off the cluster, so dating it would be dating a constant.
+func (r alertRound) readingOf(alert signals.Alert) reading {
+	if alert.Symptom {
+		return reading{}
+	}
+	return r.readings[alert.Key()]
 }
 
 // alertRound reads the open deliveries and folds in what people have done.
@@ -242,6 +295,10 @@ type alertRound struct {
 // conditions are right, and nothing carries an age, because how long something
 // has been true is the one thing an evaluator that runs when somebody looks
 // cannot know. The rows are then not actionable, and `message` says so.
+//
+// The recorded rows are then given the current round's words. See
+// [Server.refreshOpen] for why the history is read for what is open and asked
+// again for what it says.
 func (s *Server) alertRound(ctx context.Context) (alertRound, error) {
 	now := time.Now().UTC()
 	round := alertRound{now: now}
@@ -255,6 +312,7 @@ func (s *Server) alertRound(ctx context.Context) (alertRound, error) {
 		round.open = signals.TransitionsFrom(rows)
 		round.at = status.LastEvaluated.Time
 		round.source = sourceRecorded
+		round.readings = s.refreshOpen(ctx, round.open)
 	} else {
 		snapshot := signals.Gather(ctx, s.signalSources(ctx), signals.Options{})
 		findings := signals.Catalogue().Evaluate(snapshot).Firing()
@@ -264,6 +322,12 @@ func (s *Server) alertRound(ctx context.Context) (alertRound, error) {
 		round.open = signals.NewTracker(signals.Catalogue()).Observe(findings, snapshot.Now)
 		round.at = snapshot.Now
 		round.source = sourceEvaluated
+		// Every row here was read by the round that is answering the request,
+		// so there is no older copy for any of them to be confused with.
+		round.readings = make(map[signals.TransitionKey]reading, len(round.open))
+		for _, transition := range round.open {
+			round.readings[transition.Key()] = reading{from: readingRound, at: snapshot.Now}
+		}
 		round.message = "background evaluation is not recording, so these conditions carry no history: " +
 			"nothing can be acknowledged or silenced until it does"
 	}
@@ -292,6 +356,112 @@ func (s *Server) alertRound(ctx context.Context) (alertRound, error) {
 		}
 	}
 	return round, nil
+}
+
+// refreshOpen gives each recorded open delivery the words of the round the
+// platform is in now, and says which reading every row ended up with.
+//
+// The transitions are the history's, and the history is right to be what it
+// is: a row is written once, at the instant the condition opened, and it is
+// the record of that moment. But a rule whose whole content is a moving number
+// — a volume filling, a node saturating — then shows the least alarming value
+// the condition ever had for as long as it stays open, next to an age that
+// belongs to the condition and reads as the number's. That is what made the
+// alerts screen and the storage screen appear to disagree (#532).
+//
+// So the durable row is left alone and the reading is overlaid on the way out,
+// out of the detection loop's own memory: [signals.Tracker] already refreshes
+// every open episode each round, so this costs a map lookup rather than a
+// write per round per open finding.
+//
+// **The sentence and what it is a sentence about, and nothing else.** Title
+// and detail move, and so do `confidence`, `projects` and `correlates`: a
+// cross-project correlation raised at the second rung names a set that grows
+// and shrinks with the round, and a row whose words said *four projects* over
+// a list of two would be a worse answer than the stale one it replaced. All
+// five are descriptive — none of them is read by [signals.Assess], the
+// escalation clock or the sort.
+//
+// Severity, tier, scope, since, the fingerprint and `openedAt` stay the
+// history's. Those are the row's identity and its urgency, and they decide
+// what escalates, what pages and what sorts first; a row that quietly
+// re-tiered itself between two reads would be a different feature, and one
+// whose blast radius is the paging policy. A condition whose severity has
+// genuinely moved opens a delivery of its own.
+//
+// A delivery this process holds no reading of keeps the opening's words and is
+// marked as carrying them: a replica that is not the leader runs no loop, a
+// leader that has just restarted has seeded itself from the history and
+// evaluated nothing yet, and a condition that resolved since the round is gone
+// from memory before it is gone from the history. All three are honestly
+// answered by "this is what it said when it opened", and never by a guess.
+// It writes the words into the transitions it is handed, which are this
+// request's own copies of the recorded rows and go no further than the
+// response.
+func (s *Server) refreshOpen(ctx context.Context, open []signals.Transition) map[signals.TransitionKey]reading {
+	readings := make(map[signals.TransitionKey]reading, len(open))
+	current := s.currentReadings(ctx)
+	for i := range open {
+		key := open[i].Key()
+		latest, held := current[key]
+		if !held {
+			readings[key] = reading{from: readingOpened, at: openedInstant(open[i])}
+			continue
+		}
+		open[i].Title = latest.Finding.Title
+		open[i].Detail = latest.Finding.Detail
+		// The affected set travels with the sentence that describes it. A
+		// correlation's rung, its projects and the rules it stands in front
+		// of are what the sentence is *about*, and leaving them behind would
+		// re-create the disagreement one field further in.
+		open[i].Confidence = latest.Finding.Confidence
+		open[i].Projects = latest.Finding.Projects
+		open[i].Correlates = latest.Finding.Correlates
+		readings[key] = reading{from: readingRound, at: latest.At}
+	}
+	return readings
+}
+
+// refreshDelivery is the same overlay for the one delivery a write answers
+// with. It is here so that the row a screen gets back from pressing Ack says
+// what the row it pressed the button on said — the same rule that makes both
+// alerts screens one component.
+func (s *Server) refreshDelivery(
+	ctx context.Context, delivery signals.Transition,
+) (signals.Transition, reading) {
+	one := []signals.Transition{delivery}
+	readings := s.refreshOpen(ctx, one)
+	return one[0], readings[one[0].Key()]
+}
+
+// currentReadings is what the detection loop in this process last saw, or
+// nothing.
+//
+// Nothing is an ordinary answer and never an error: this replica may not be
+// the one running the loop, and the read is an improvement to a row that is
+// already correct. A failure to obtain it degrades to the opening's words with
+// the row saying so, which is exactly what the platform knew before it asked.
+func (s *Server) currentReadings(ctx context.Context) map[signals.TransitionKey]signals.CurrentReading {
+	if s.Detection == nil {
+		return nil
+	}
+	readings, err := s.Detection.CurrentReadings(ctx)
+	if err != nil {
+		s.log().V(1).Info("the current round could not be read, so open alerts carry the "+
+			"reading they opened with", "reason", err.Error())
+		return nil
+	}
+	return readings
+}
+
+// openedInstant is when a recorded row's words were read, which for an open
+// transition is when it opened. `At` is the fallback for a history written
+// before the column existed.
+func openedInstant(transition signals.Transition) time.Time {
+	if !transition.OpenedAt.IsZero() {
+		return transition.OpenedAt.UTC()
+	}
+	return transition.At.UTC()
 }
 
 // visibleAlerts narrows a round to what one caller may read, and adds the rows
@@ -463,18 +633,27 @@ func (s *Server) writeMitigation(w http.ResponseWriter, req *http.Request, kind 
 	}
 
 	// The delivery as it now reads, so a screen does not have to guess what
-	// its own write did to the tier.
+	// its own write did to the tier — and in the words the list showed it,
+	// because a row that read differently for having been acted on would be
+	// the disagreement this endpoint exists to prevent, in one component.
+	//
+	// The answer alone. Everything above this line — the audit entry's
+	// sentence, the mitigation row — is about the delivery *the history
+	// holds*, and carries what the condition said when it opened for the same
+	// reason the transition itself does: it is the record of a moment, and it
+	// is what a later reader correlates against.
+	delivery, read := s.refreshDelivery(ctx, delivery)
 	states := map[signals.TransitionKey]signals.MitigationState{}
 	if records, err := store.SignalMitigations(ctx); err == nil {
 		states = signals.FoldMitigations(signals.MitigationsFrom(records))
 	}
 	for _, alert := range signals.Assess([]signals.Transition{delivery}, states, s.signalPolicy(ctx), now) {
 		if alert.Key() == delivery.Key() {
-			writeJSON(w, http.StatusOK, alertViewOf(alert))
+			writeJSON(w, http.StatusOK, alertViewOf(alert, read))
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, alertViewOf(signals.Alert{Finding: delivery.Finding()}))
+	writeJSON(w, http.StatusOK, alertViewOf(signals.Alert{Finding: delivery.Finding()}, read))
 }
 
 // openDelivery resolves the recorded delivery a write names, or answers the
