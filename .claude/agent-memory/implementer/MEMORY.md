@@ -32,6 +32,8 @@ lesson, dated, under the heading it belongs to. Merge duplicates; do not drop.
 - 2026-09-08: A CI assertion of the form "no rows at level X" over a ClickHouse system table passes vacuously against an empty table. Select `count()` alongside the filtered count and require both.
 - 2026-09-08: envtest runs **no garbage collector and no storage-protection controller**, so `--cascade=orphan` leaves the object with its `orphan` finalizer forever and every PVC keeps `pvc-protection`. A spec that deletes either and a next spec that recreates it under the same name fails with a 409 nobody expects — strip finalizers in `AfterEach` and wait for the object to go, or drive the delete/recreate path over two reconciles as the production code does.
 - 2026-09-08: The API server refuses a size change to an **unbound** PVC — "spec is immutable after creation except resources.requests … for bound claims" — so any expansion path needs the claim Bound, in the fixture and in the code's own precondition. A Pending fixture makes the whole feature look broken for the wrong reason.
+- 2026-09-08: Before writing "none of these has a TTL out of the box", read the image's own config: `docker run --rm --entrypoint sh <image> -c 'grep -n <ttl> /etc/clickhouse-server/config.xml'`. The pinned ClickHouse already bounds `query_log` and `processors_profile_log` at 30 days and `asynchronous_insert_log` at 3 — shipping the issue's suggested 7 for the last one would have been the chart *loosening* an upstream bound.
+- 2026-09-08: A controller method called from one place and asserted nowhere is invisible to the whole suite. Prove the wiring by commenting the call out and watching the new test fail — and drive the test through the reconcile function, not the helper, or the mutation still passes.
 
 ## Tooling and environment
 
@@ -55,6 +57,7 @@ lesson, dated, under the heading it belongs to. Merge duplicates; do not drop.
 - 2026-09-08: **Helm 4 applies server-side** (field manager `helm`, operation `Apply`); Helm 3 three-way merges. Both reject a changed `spec.volumeClaimTemplates`, and under Helm 4 an object recreated by anything else conflicts on that field forever — recreate it under the manager that owned it through an Apply (read `metadata.managedFields`), not with a plain create and not by stripping managedFields (that leaves a `before-first-apply` owner which conflicts just the same).
 - 2026-09-08: `lookup` in a chart template answers an empty map under `helm template`, `--dry-run` and a first install, so a helper that falls back to the value is inert in every CI render — which makes it the way to keep an immutable field out of an upgrade's patch. It does need the caller to be able to `get` the kind in the release namespace.
 - 2026-09-08: `npx prettier` in `ui/` finds no repo config and reformats to 80 columns; the repo is hand-formatted at ~120. Running it over an existing file turns a 40-line change into a 340-line one — do not.
+- 2026-09-08: `internal/controller` already has a `fakeTelemetryStore` (retention_test.go) that fronts an httptest ClickHouse; a second fake with the same name is a redeclaration error, and extending the existing one (one field, one `case`) is both the fix and the better answer. Check for an existing fake in the package before writing one.
 
 ## Rebase and merge
 
