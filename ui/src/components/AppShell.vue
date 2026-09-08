@@ -437,7 +437,14 @@ const userMenu = computed(() => [
 
 <template>
   <div class="min-h-screen flex">
-    <!-- The drawer's backdrop, and the largest possible target for closing it. -->
+    <!-- The drawer's backdrop, and the largest possible target for closing it.
+
+         It and the rail below it are the only two z-indices in the dashboard,
+         and they are the shell's *chrome* — everything a screen opens over
+         them is portalled to the end of `<body>`, where `assets/main.css`
+         names one overlay layer above both. A third z-index anywhere here
+         would be a screen deciding its own place in that order, which is how
+         the switcher came to be painted under the rail that holds it. -->
     <div
       v-if="sidebarOpen"
       class="fixed inset-0 z-40 bg-black/60 lg:hidden"

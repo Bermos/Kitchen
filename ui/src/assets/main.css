@@ -50,3 +50,28 @@ body {
   color: var(--ui-text);
   font-family: var(--font-sans);
 }
+
+/*
+ * The overlay layer.
+ *
+ * Every overlay Nuxt UI opens — a dropdown menu, a select, a modal — is
+ * teleported to the end of `<body>` and given no z-index of its own: it is
+ * meant to win on document order alone. That is not enough underneath a shell
+ * whose drawer is `fixed z-50`, because a z-index beats document order however
+ * late the element arrives, and the failure is silent in the worst way: the
+ * menu opens, `aria-expanded` says so, its items are laid out and focusable —
+ * and the sidebar is painted over all of it. That is the whole of the project
+ * switcher looking like a control that does nothing.
+ *
+ * So the layer is named once, above the shell's chrome (backdrop 40, drawer
+ * 50) and below the toaster Nuxt UI puts at 100, rather than every screen
+ * guessing. `!important` because Reka writes `z-index: auto` into the popper
+ * wrapper's style attribute, and `body >` because these are the portalled
+ * roots — the popper wrapper, and a modal's overlay and content — not the
+ * content nested inside them.
+ */
+body > [data-reka-popper-content-wrapper],
+body > [data-slot="overlay"],
+body > [data-dismissable-layer] {
+  z-index: 60 !important;
+}

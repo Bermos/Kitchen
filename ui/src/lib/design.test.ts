@@ -35,6 +35,10 @@ const componentSources = import.meta.glob("../components/*.vue", {
   import: "default",
   eager: true,
 }) as Record<string, string>;
+const styleSources = import.meta.glob("../assets/*.css", { query: "?raw", import: "default", eager: true }) as Record<
+  string,
+  string
+>;
 
 /**
  * Screens that are not pages: they render outside the shell's content column
@@ -407,6 +411,62 @@ describe("the palette", () => {
     const template = file.source.slice(file.source.indexOf("<template>"));
     const found = template.match(new RegExp(PALETTE, "g"));
     expect(found, `${file.name}: colours are the tokens in assets/main.css, not Tailwind's palette`).toBeNull();
+  });
+});
+
+describe("the overlay layer", () => {
+  /**
+   * A class that decides paint order: `z-50`, `-z-10`, `z-[60]`, and the same
+   * behind a variant (`lg:z-auto`).
+   */
+  const Z_UTILITY = /(?:^|:)-?z-(?:\[[^\]]+\]|\d+|auto)$/;
+
+  /** Every z-index utility a file's template asks for, static or bound. */
+  function zClassesOf(file: { name: string; source: string }): string[] {
+    const found: string[] = [];
+    walk(templateOf(file), (node) => {
+      const bound = (node.props ?? [])
+        .filter((p) => p.type === DIRECTIVE && (p.name === "class" || (p.name === "bind" && p.arg?.content === "class")))
+        .flatMap((p) => (p.exp?.content ?? "").split(/[^\w[\]:./-]+/));
+      for (const token of [...classes(node), ...bound]) if (Z_UTILITY.test(token)) found.push(token);
+    });
+    return found;
+  }
+
+  /** The value of a `z-*` utility, as the number it paints at. */
+  function zValue(utility: string): number {
+    const bare = utility.slice(utility.lastIndexOf(":") + 1);
+    const inner = bare.replace(/^-?z-/, "").replace(/^\[|\]$/g, "");
+    return (bare.startsWith("-") ? -1 : 1) * Number(inner);
+  }
+
+  // What `assets/main.css` gives everything Nuxt UI teleports to the end of
+  // `<body>`. Nuxt UI ships those overlays with no z-index of their own —
+  // they are meant to win on document order — which a `fixed z-50` rail beats
+  // in silence: the menu opens, its items are laid out and focusable, and the
+  // rail is painted over all of it.
+  const overlay = Number(/z-index:\s*(\d+)\s*!important/.exec(Object.values(styleSources)[0] ?? "")?.[1]);
+
+  it("is named once, in assets/main.css", () => {
+    expect(overlay, "assets/main.css names the layer every portalled overlay is raised to").toBeGreaterThan(0);
+  });
+
+  it("is above the shell's chrome, which is the only chrome there is", () => {
+    const shell = everything.find((file) => file.name === "AppShell.vue")!;
+    const chrome = zClassesOf(shell).map(zValue).sort((a, b) => a - b);
+    // The backdrop under the drawer, and the drawer. A third would be
+    // something else in the shell claiming a place in this order.
+    expect(chrome, "the shell's chrome is the drawer's backdrop and the rail").toEqual([40, 50]);
+    for (const z of chrome) expect(z, `the chrome stays under the overlay layer at ${overlay}`).toBeLessThan(overlay);
+  });
+
+  it.each(everything.filter((file) => file.name !== "AppShell.vue"))("$name writes no z-index", (file) => {
+    expect(
+      zClassesOf(file),
+      `${file.name}: paint order is the shell's — the overlay layer in assets/main.css is already above ` +
+        `everything a screen opens, and a z-index here is one screen deciding an order the others never stated ` +
+        `(docs/UI.md, "The overlay layer")`,
+    ).toEqual([]);
   });
 });
 
