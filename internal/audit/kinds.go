@@ -58,6 +58,22 @@ const (
 	// singleton's.
 	KindRetention = "Retention"
 
+	// KindPlatformCredential is a platform credential issued or revoked
+	// (#349): the machine credential a scheduled job or an agent holds to
+	// reach a scoped part of the platform's own surface.
+	//
+	// Its own kind for the reason KindRetention is. "Which credentials has
+	// this platform issued, what were they scoped to, and when was each one
+	// taken back" is the question an auditor asks about non-human access, and
+	// it has to be one query. Recorded as KindKitchen — which is the object
+	// the grant is written on — it would be true and unfindable, sitting
+	// among every settings change the installation ever made.
+	//
+	// The record's name is the singleton's, because that is the object that
+	// changed; what it was about is in the details, where the credential's
+	// name, its scopes and its expiry are.
+	KindPlatformCredential = "PlatformCredential"
+
 	// KindProjectSecret is the third such kind: a credential a project gave
 	// its own application — a database it runs itself, a third-party API key
 	// — being set, replaced or deleted. The record carries the secret's name

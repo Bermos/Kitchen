@@ -69,9 +69,17 @@ Store an API key for an installation and check that it works.
 
 The key is exchanged at the platform's identity provider for a short-lived
 token, which is what the API sees; the key itself never reaches the operator.
-Issue one from a project's People tab in the dashboard, or with
-POST /projects/{name}/keys — it is a machine account with a role on that one
-project, so a key can deploy the project it was made for and nothing else.
+
+There are two kinds, and which one to use is decided by what the credential is
+for. A project API key — a project's People tab, or POST /projects/{name}/keys
+— holds a role on that one project, so it can deploy the project it was made
+for and nothing else. A platform credential — Platform → Credentials, or
+POST /platform/credentials — holds scopes on the platform itself, which is what
+runs "kitchen retention", "kitchen backup", "kitchen access" and
+"kitchen audit-pack". It holds no project role and no operator role, it is
+narrowed to the operations it was issued with, and it expires.
+
+"kitchen whoami" says which one is stored and what it holds.
 
 There is no browser sign-in: the platform's identity provider implements no
 device authorization grant, so there is nothing for the CLI to open a browser
@@ -332,10 +340,14 @@ func newWhoamiCommand(r *Runtime) *cobra.Command {
 		Long: strings.TrimSpace(`
 Ask the platform who this credential belongs to.
 
-The answer is the account's subject, address and platform role. What it may do
-to a project is the project's own answer — every project payload carries the
-calling account's role on it, so "kitchen projects" is the other half of this
-question.`),
+The answer is the account's subject, address and platform role, and which of
+the three kinds of caller it is: a person, a project's CI key, or one of the
+platform's own credentials. A platform credential is also told what it holds —
+the scopes, live, so one that has expired is answered as holding none.
+
+What it may do to a project is the project's own answer — every project payload
+carries the calling account's role on it, so "kitchen projects" is the other
+half of this question.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			client, err := r.client()
@@ -350,10 +362,26 @@ question.`),
 				return err
 			}
 			return r.printer().document(who, func(s tui.Styles) string {
-				return fmt.Sprintf("%s\n%s %s\n%s %s\n",
+				lines := fmt.Sprintf("%s\n%s %s\n%s %s\n",
 					s.Title.Render(accountName(who)),
 					s.Key.Render("subject      "), who.Subject,
 					s.Key.Render("platform role"), who.PlatformRole)
+				if who.Kind != "" {
+					lines += fmt.Sprintf("%s %s\n", s.Key.Render("kind         "), who.Kind)
+				}
+				// Printed for a credential whatever it holds, and for anybody
+				// else only when they hold something. The API answers no
+				// scopes for a credential that has lapsed — which is the
+				// answer somebody running this is most often looking for, so
+				// it is said rather than left as an absent line.
+				if who.Kind == kindCredential || len(who.Scopes) > 0 {
+					lines += fmt.Sprintf("%s %s\n", s.Key.Render("scopes       "), heldScopes(who))
+					if len(who.Projects) > 0 {
+						lines += fmt.Sprintf("%s %s\n",
+							s.Key.Render("projects     "), strings.Join(who.Projects, ", "))
+					}
+				}
+				return lines
 			})
 		}),
 	}
@@ -363,6 +391,25 @@ question.`),
 		Needs:    needs{Auth: true},
 		Examples: []example{{"Check the credential works", "kitchen whoami --json"}},
 	})
+}
+
+// kindCredential is what `/me` calls one of the platform's own credentials.
+// The other two values — `person` and `key` — are printed as they arrive and
+// need no constant here, because nothing branches on them.
+const kindCredential = "credential"
+
+// heldScopes is what a credential holds, and the sentence a credential that
+// holds nothing gets instead of an empty line.
+//
+// "none" is not a formatting nicety: the API applies a credential's expiry
+// where it resolves the scopes, so a lapsed credential answers with no scopes
+// at all — and somebody running `kitchen whoami` because their job started
+// getting 403s is asking exactly this question.
+func heldScopes(who *account) string {
+	if len(who.Scopes) == 0 {
+		return "none — this credential has expired, or its grant was removed"
+	}
+	return strings.Join(who.Scopes, ", ")
 }
 
 // accountName is what to call somebody: their address when the token carried

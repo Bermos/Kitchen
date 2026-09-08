@@ -88,8 +88,7 @@ See docs/api/platform.md.`),
 	return describe(cmd, meta{
 		Calls:  []string{"GET /api/v1/platform/retention"},
 		Output: output{Mode: outputDocument, Kind: "retention"},
-		Needs: needs{Auth: true,
-			Platform: onlyInTheDashboard("Platform → Settings, under Retention", "/platform/settings")},
+		Needs:  needs{Auth: true},
 		Examples: []example{
 			{"Every class, with what the last sweep measured", "kitchen retention --json"},
 			{"Keep build logs for 90 days",
