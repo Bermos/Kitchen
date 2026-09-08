@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.1](https://github.com/Bermos/Kitchen/compare/v0.40.0...v0.40.1) (2026-09-08)
+
+
+### Bug fixes
+
+* **operator:** build a pnpm repository on a builder that has a pnpm buildpack ([#569](https://github.com/Bermos/Kitchen/issues/569)) ([07f8bf0](https://github.com/Bermos/Kitchen/commit/07f8bf0ef0efc164fa4d4daa0db3205bef101a2d)), closes [#568](https://github.com/Bermos/Kitchen/issues/568)
+
 ## [0.40.0](https://github.com/Bermos/Kitchen/compare/v0.39.0...v0.40.0) (2026-09-08)
 
 
