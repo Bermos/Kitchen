@@ -452,6 +452,18 @@ export const routes: RouteRecordRaw[] = [
     requires: "GET /api/v1/platform/policy",
   }),
   screen({
+    // What the platform has handed to things that are not people (#349): a
+    // scheduled job's credential, an agent's. It is the project Keys panel one
+    // level up and it is its own screen rather than a section of Settings,
+    // because Settings is one form about the installation and this is a list
+    // of grants with a life of their own — issued, narrowed, expiring, revoked.
+    path: "/platform/credentials",
+    name: "platform-credentials",
+    view: "PlatformCredentialsView.vue",
+    scope: "platform",
+    requires: "GET /api/v1/platform/credentials",
+  }),
+  screen({
     // The platform's own configuration — the `Kitchen` singleton — which is
     // as platform-scoped as anything under this prefix and used to sit in
     // the general navigation, where the one thing it told a developer was

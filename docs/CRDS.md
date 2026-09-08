@@ -85,6 +85,12 @@ spec:
     operators:                          # everything, everywhere, plus admin on every project
       - subject: user_01H8X…            # the issuer's `sub`, or an address — see below
         email: anna@example.com         # informational, so the YAML reads
+    credentials:                        # machine credentials holding scopes rather than a role
+      - subject: user_01H8Y…            # the account the platform created to own the credential
+        email: nightly@platform.kitchen.local
+        scopes: [platform.read]         # platform.read | compliance.read | backup.run
+        expires: 2026-10-07T09:14:00Z   # required; a lapsed entry grants nothing, and is swept
+        projects: [shop]                # optional: narrows the scoped routes about one project
   builds:
     defaultStrategy: auto               # dockerfile | buildpacks | auto (what a project on "auto" takes)
     concurrency: 2                      # builds running at once; read with resources below — the two
@@ -494,6 +500,28 @@ and lock an upgraded installation out of its own platform. See
 The entries name accounts the same way a Project's grants do, minus the role —
 `subject` plus an informational `email` — and the rule for what `subject` may
 hold is the same one, described under `Project` below.
+
+`access.credentials` is the other half of the same question, and is not a role
+at all: it is what a **platform credential** holds — a machine credential a
+scheduled job or an agent carries, granted named operations rather than a hat.
+`scopes` is one or more of `platform.read`, `compliance.read` and `backup.run`;
+what each reaches is decided by the API's own route table, and a route that
+names no scope is the operator's however this list grows.
+
+`expires` is required, and is applied where the scopes are *resolved* rather
+than only by whatever sweeps the list — so a lapsed entry grants nothing at
+this instant, on every replica, with nothing having had to run. An entry with
+no expiry recorded reads as lapsed rather than as eternal, which is the safe
+reading of an object written around the API server's own validation. The
+operator's access sweep then removes a lapsed entry and the account behind it.
+
+`projects` narrows the scoped routes that are about one project — today
+`GET /projects/{name}/audit-pack` — to the ones named; empty is every project.
+These entries are written by `POST /platform/credentials` and removed by
+`DELETE /platform/credentials/{name}`, which also create and revoke the
+credential at the identity provider: an entry written here by hand names an
+account that has no credential behind it and grants nothing to anybody. See
+[AUTH.md](AUTH.md#platform-credentials).
 
 Seeding reads the account directory the bundled identity provider serves, and
 **an installation federated to an issuer of its own has none**: OpenID Connect

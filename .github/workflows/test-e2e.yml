@@ -2374,6 +2374,40 @@ jobs:
             echo "the build was told ${name}=${got}"
           done
 
+          # And the credential half of the same pod, which is the *fallback*
+          # (#534). This project's registry connection has no
+          # `<credentials secret>-read` Secret beside it, so
+          # `credentialsWithRead` answers `Read == Push`: the pod's two
+          # docker-config volumes name one Secret, and every container in it
+          # holds something that can push whichever volume it mounts.
+          #
+          # That is worth asserting rather than assuming, because it is the
+          # condition under which no assertion about *which* phase holds
+          # which credential means anything — which is exactly how a phase
+          # given the credential that cannot push stayed green here for a
+          # release. The bpnode case above is the same pod against a registry
+          # that does issue a narrower credential; this is the other branch,
+          # and both are reachable installations.
+          secrets="$(jq -r '.spec.volumes | map(select(.name | startswith("docker-config")))
+            | map(.secret.secretName) | unique | join(",")' /tmp/nuxt-build-pod.json)"
+          echo "the pod's docker configs come from ${secrets}"
+          [ "${secrets}" = kitchen-registry-e2e-registry ] || {
+            echo "::error::a connection with no read-only credential resolved '${secrets}'," \
+                 "want the connection's own Secret named once"
+            exit 1
+          }
+          # The platform's own account of it. scopedCredentials is omitempty,
+          # so false is an absent field rather than the string "false".
+          scoped="$(kubectl -n kitchen-system get connection e2e-registry \
+            -o jsonpath='{.status.registry.scopedCredentials}')"
+          [ -z "${scoped}" ] || [ "${scoped}" = false ] || {
+            echo "::error::the connection reports scopedCredentials='${scoped}' for a registry" \
+                 "that was given no read-only credential"
+            kubectl -n kitchen-system get connection e2e-registry -o yaml
+            exit 1
+          }
+          echo "the connection reports no narrower credential, and the build took the fallback"
+
           # The deploy task, which is a command on an image whose entrypoint
           # is the buildpacks launcher. It connects to the claim's database
           # over a verified TLS connection and creates the table the

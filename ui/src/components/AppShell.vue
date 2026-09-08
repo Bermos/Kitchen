@@ -300,6 +300,16 @@ const nav = computed<NavItem[]>(() => {
         // by projects afterwards, which is the operator's standing exactly.
         { label: "Connections", icon: "i-lucide-plug", to: "/platform/connections", name: "platform-connections" },
         { label: "Backup", icon: "i-lucide-archive", to: "/platform/backup", name: "platform-backup" },
+        // What the platform has handed to things that are not people. It sits
+        // next to Connections rather than under Settings for the same reason
+        // Connections does: both are lists of credentials with a life of their
+        // own, and Settings is one form about the installation.
+        {
+          label: "Credentials",
+          icon: "i-lucide-key-round",
+          to: "/platform/credentials",
+          name: "platform-credentials",
+        },
         // What this installation counts as worth hearing, which is a
         // different question from what it is configured to run: the numbers
         // that decide whether several projects failing together is one
