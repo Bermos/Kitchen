@@ -182,10 +182,26 @@ func evaluatePVCFilling(snapshot *Snapshot) []Finding {
 					volume.Claim),
 				"nothing in the API server knows how full a volume is — this comes from the "+
 					"kubelet's volume stats, and it is the only warning there will be",
+				growableClause(volume.Namespace),
 			),
 			claimEvidence(volume.Namespace, volume.Claim)))
 	}
 	return findings
+}
+
+// growableClause names the lever, for the volumes that have one.
+//
+// Only the platform's own volumes do: growing one means rewriting the claim
+// template of the StatefulSet that made it, and a project's claim was made by
+// nothing here — `POST /platform/storage/claims/{name}/resize` does not find
+// it. A finding that told a project's owner to go and grow their volume would
+// be pointing at a button that is not there, which is the failure #533's
+// screen exists to stop making.
+func growableClause(namespace string) string {
+	if namespace != controller.PlatformNamespace {
+		return ""
+	}
+	return "whether this volume can be grown is on Platform → Storage, where this evidence lands"
 }
 
 func evaluateAttachFailed(snapshot *Snapshot) []Finding {
@@ -299,6 +315,12 @@ func evaluateStoreDisk(snapshot *Snapshot) []Finding {
 			retentionClause(snapshot),
 			"a full store stops accepting writes, which takes logs, metrics and requests down "+
 				"together and leaves every screen looking merely empty",
+			// The other lever, and the one this finding used to name nowhere
+			// (#533). Worded as where to look rather than as a promise: only
+			// a volume on a storage class that admits expansion can be grown
+			// at all, and that is a fact about the cluster this rule has no
+			// reading of. The screen it points at does, and says so.
+			"whether the volume itself can be grown is on Platform → Storage, where this evidence lands",
 		),
 		EvidencePlatformStorage)}
 }

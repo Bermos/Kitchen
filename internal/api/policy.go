@@ -730,6 +730,15 @@ func (s *Server) routes() []route {
 			operatorOr(access.ScopePlatformRead, "reading the platform's edge")},
 		{"GET /api/v1/platform/storage", s.platformStorage,
 			operatorOr(access.ScopePlatformRead, "reading the platform's storage")},
+		// Growing one of the platform's own volumes. It writes a size and
+		// nothing else: the expansion, the StatefulSet replacement and the
+		// wait are the operator's, because a claim template is immutable and
+		// Helm can do none of the three (#533). So it answers 202 and the
+		// outcome is read back off the row above. Operator alone rather than
+		// `platform.read`'s write twin, because this one takes the platform's
+		// telemetry store apart and puts it back.
+		{"POST /api/v1/platform/storage/claims/{name}/resize", s.resizePlatformVolume,
+			operatorOnly("growing one of the platform's volumes")},
 		{"GET /api/v1/platform/events", s.platformEvents,
 			operatorOr(access.ScopePlatformRead, "reading the platform's cluster events")},
 		{"GET /api/v1/platform/ingest", s.platformIngest,

@@ -318,7 +318,9 @@ the health of the one database Kitchen runs itself:
             "message": "this claim is not bound, so nothing that needs it can start; it names no storage class …"},
            {"namespace": "kitchen-system", "name": "data-kitchen-clickhouse-0",
             "phase": "Bound", "bound": true, "capacity": "50Gi",
-            "pods": ["kitchen-clickhouse-0"]}],
+            "pods": ["kitchen-clickhouse-0"], "expandable": true,
+            "resize": {"statefulSet": "kitchen-clickhouse", "desired": "80Gi",
+                       "phase": "Growing", "message": "growing from 50Gi to 80Gi"}}],
  "store": {"bytesOnDisk": 5368709120, "capacityBytes": 53687091200,
            "usage": {"usedBytes": 47781511168, "capacityBytes": 53687091200, "usedFraction": 0.89},
            "usedFraction": 0.89, "claim": "data-kitchen-clickhouse-0",
@@ -331,6 +333,72 @@ They are called volumes and not claims throughout, because `/claims` already
 means something else in this API — a `ResourceClaim`, the platform's own kind
 for a provisioned database — and two things called claims in one dashboard is
 one too many.
+
+`expandable` is whether the volume's storage class admits expansion, which is
+what decides whether growing it is an operation at all; it is absent, rather
+than false, where nobody could tell — the classes were unreadable, or the claim
+names one that is gone. `resize` is present only for the platform's own
+volumes, because a project's claim is not one this platform grows: it carries
+the StatefulSet the volume came from, the largest size anybody has asked for,
+and a phase with the sentence behind it: `Settled`, `Growing` (the platform is
+expanding the claims and rewriting the template), `Resizing` (it has done its
+half and the storage driver has not finished its — the row's `requested` is
+past its `capacity`, and the message carries the driver's own account),
+`Blocked`, or `Unknown` where a read failed. `Blocked` is a fact about the
+cluster and is never retried on a timer; `Unknown` always is.
+
+### Growing a platform volume
+
+`POST /platform/storage/claims/{name}/resize` asks for one of the platform's
+own volumes to be bigger. The name is the claim's, in `kitchen-system`:
+
+```json
+{"size": "80Gi"}
+```
+
+```json
+{"claim": "data-kitchen-clickhouse-0", "statefulSet": "kitchen-clickhouse",
+ "current": "50Gi", "desired": "80Gi",
+ "message": "the volume is being grown to 80Gi; kitchen-clickhouse is replaced with a matching claim template once the expansion is under way, and this screen reports the outcome"}
+```
+
+It answers `202`, and it writes a size and nothing else. A StatefulSet's
+`volumeClaimTemplates` are immutable, so growing one of these volumes means
+expanding every claim it made, orphan-deleting the StatefulSet and creating it
+again with a template that matches — three things Helm cannot do and the
+operator can, which is why the work is `KitchenReconciler`'s and the outcome is
+read back off `GET /platform/storage` as the `resize` block and off the
+`VolumesResized` condition on the Kitchen singleton.
+
+The same size is also set from the chart, as `clickhouse.persistence.size` and
+its three siblings, and neither overrules the other: **a volume is only ever
+grown, to the largest size anybody has asked for.** That is what makes a `helm
+upgrade` still carrying the old value harmless — it cannot undo a resize done
+from here — and it is why carrying the number back into the values afterwards
+is worth doing, so that the two agree. A volume larger than the chart asks for
+says so in `resize.message`.
+
+Five requests are refused rather than accepted and quietly abandoned:
+
+- a size at or below what the claim already requests (`400`) — shrinking a
+  volume means replacing it and restoring what was on it, which is not a
+  resize;
+- a size more than eight times what it requests now (`400`), naming the
+  ceiling. Growing a volume cannot be undone, and a step that large is more
+  likely a typed unit than a decision — grow it in steps instead;
+- a claim that is not bound (`400`). The API server refuses a size change to
+  an unbound claim outright, so the expansion has nowhere to happen yet;
+- a volume in `kitchen-system` that no platform StatefulSet created (`400`) —
+  storage somebody wrote for a project to mount, say. A claim in any other
+  namespace is a project's and is not this route's at all, so it answers
+  `404`, like everything else a caller may not act on;
+- a volume whose storage class does not allow expansion (`400`), naming the
+  class. That is the one refusal nothing on either side can work around.
+
+There is no `kitchen` command for it: it is an operator's one-off against their
+own installation, and `kitchen api POST
+/platform/storage/claims/data-kitchen-clickhouse-0/resize --data '{"size":
+"80Gi"}'` reaches it authenticated like any other route.
 
 An unbound volume names its own suspect: a claim Pending with no storage class
 is waiting for the cluster's default, and a cluster without one is the

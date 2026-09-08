@@ -311,6 +311,41 @@ jobs:
             fi
           done
 
+      - name: Check every persistence size also travels in a mutable field
+        run: |
+          set -euo pipefail
+          # The other half of the rule above. `volumeClaimTemplates` is
+          # immutable, so a *changed* size there is rejected exactly as a
+          # changed label is — which is why every one of these StatefulSets
+          # carries the size it was asked to be as an annotation, and renders
+          # the template's own size from the live object where there is one
+          # (`kitchen.persistenceSize`). The operator does the growing; without
+          # the annotation it would never learn that anything was asked for.
+          for spec in \
+            "templates/clickhouse/statefulset.yaml clickhouse.persistence.size" \
+            "templates/postgres/statefulset.yaml postgres.persistence.size" \
+            "templates/registry/statefulset.yaml registry.persistence.size" \
+            "templates/objectstore/statefulset.yaml objectStore.persistence.size"; do
+            set -- ${spec}
+            file="$1"; value="$2"
+            rendered=$(helm template kitchen charts/kitchen --namespace kitchen-system \
+              ${CHART_BASE} ${CHART_ACME} --set objectStore.enabled=true \
+              --set "${value}=123Gi" -s "${file}")
+            echo "${rendered}" | grep -q 'kitchen.bermos.dev/storage-size: "123Gi"' || {
+              echo "::error::${file} does not carry ${value} as an annotation, so a" \
+                   "changed size would reach the operator nowhere and the upgrade" \
+                   "would fail on the immutable claim template instead"
+              exit 1
+            }
+            # And a first install still renders the value into the template
+            # itself: `lookup` answers nothing where there is no cluster to ask,
+            # which is every render in this job as well as `helm install`.
+            echo "${rendered}" | grep -q 'storage: "123Gi"' || {
+              echo "::error::${file} does not render ${value} into its claim template"
+              exit 1
+            }
+          done
+
       - name: Check the platform namespace is admissible and survives uninstall
         run: |
           set -euo pipefail
@@ -2968,6 +3003,197 @@ jobs:
           }
           # `helm upgrade --wait` already required the auth Deployment to go
           # ready again, and readiness means it reached Postgres.
+
+      # kind's local-path class does not admit volume expansion, so on one leg
+      # the flag is turned on to make the whole path run — the orphan-delete,
+      # the recreate under Helm's own field manager, and the upgrade after it
+      # that would fail on a field conflict if any of that were wrong. The
+      # other leg keeps the class as kind ships it, which is what exercises the
+      # refusal. `allowVolumeExpansion` is mutable, so this needs no reinstall,
+      # and nothing here depends on the provisioner actually resizing anything:
+      # the claim's *request* is what the API server guards and what moves.
+      - name: Let the storage class expand
+        if: matrix.cni != 'cilium'
+        run: |
+          set -euo pipefail
+          class=$(kubectl -n kitchen-system get pvc data-kitchen-clickhouse-0 \
+            -o jsonpath='{.spec.storageClassName}')
+          kubectl patch storageclass "${class}" -p '{"allowVolumeExpansion":true}'
+          kubectl get storageclass "${class}" -o jsonpath='{.metadata.name} {.allowVolumeExpansion}{"\n"}'
+
+      # The operation #533 is about, end to end and in one command. A
+      # StatefulSet's claim template is immutable, so `helm upgrade --set
+      # clickhouse.persistence.size=…` used to fail on a rendered template that
+      # was otherwise correct — nothing short of a real API server tells you
+      # that, and nothing short of a real one tells you the fix works either.
+      - name: Verify a volume can be grown on a running install
+        run: |
+          set -euo pipefail
+          upgrade() {
+            helm upgrade kitchen /tmp/kitchen-next \
+              --namespace kitchen-system \
+              --set image.repository=kitchen --set image.tag=ci \
+              --set auth.image.repository=kitchen-auth --set auth.image.tag=ci \
+              ${CHART_BASE} ${CHART_ACME} ${CHART_EXTRA} \
+              --set replicaCount=2 \
+              --set clickhouse.persistence.size="$1" \
+              --wait --timeout 8m
+          }
+          # What the platform reports about this volume, and what is on it.
+          phase_of() {
+            kubectl get kitchen default \
+              -o jsonpath='{.status.storage.volumes[?(@.statefulSet=="kitchen-clickhouse")].phase}'
+          }
+          template_size() {
+            kubectl -n kitchen-system get sts kitchen-clickhouse \
+              -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}'
+          }
+          # What *Helm* submitted, which is a different question from what is
+          # live: the operator rewrites the claim template within a second of
+          # the annotation moving, so the live object is 80Gi almost at once
+          # and says nothing about whether the upgrade tried to change an
+          # immutable field. The release's own manifest is the record of what
+          # was applied, and it is the only place the claim is provable.
+          # The awk reads to the end rather than exiting on the match it
+          # wants: an `exit` closes the pipe, `helm` takes SIGPIPE, and under
+          # `pipefail` the whole step dies with 141 having asserted nothing.
+          submitted_size() {
+            helm get manifest kitchen --namespace kitchen-system \
+              | awk '/^# Source: kitchen\/templates\/clickhouse\/statefulset.yaml$/ { inside = 1 }
+                     inside && /^  volumeClaimTemplates:/ { claims = 1 }
+                     claims && !found && $1 == "storage:" { gsub(/"/, "", $2); size = $2; found = 1 }
+                     END { print size }'
+          }
+          claim_request() {
+            kubectl -n kitchen-system get pvc data-kitchen-clickhouse-0 \
+              -o jsonpath='{.spec.resources.requests.storage}'
+          }
+
+          before=$(template_size)
+          [ -n "${before}" ] || {
+            echo "::error::could not read the claim template's size before the upgrade"
+            exit 1
+          }
+          pod_before=$(kubectl -n kitchen-system get pod kitchen-clickhouse-0 -o jsonpath='{.metadata.uid}')
+          upgrade 80Gi || {
+            echo "::error::helm upgrade with a changed persistence size failed"
+            kubectl -n kitchen-system get sts kitchen-clickhouse -o yaml | head -60
+            exit 1
+          }
+          # The chart carries the new size as an annotation, which is mutable,
+          # and leaves the claim template exactly as it found it, which is not.
+          asked=$(kubectl -n kitchen-system get sts kitchen-clickhouse \
+            -o jsonpath='{.metadata.annotations.kitchen\.bermos\.dev/storage-size}')
+          [ "${asked}" = 80Gi ] || {
+            echo "::error::the upgrade did not carry the new size (annotation '${asked}')"
+            exit 1
+          }
+          # The claim template Helm rendered is the one that was already
+          # there, which is the whole of why the upgrade succeeded. Asserted
+          # against the release manifest rather than the live object, because
+          # by now the operator has very likely rewritten the live one.
+          rendered=$(submitted_size)
+          [ "${rendered}" = "${before}" ] || {
+            echo "::error::helm submitted a claim template of '${rendered}', not the live '${before}':" \
+                 "that is a change to an immutable field, and the upgrade only succeeded by luck"
+            helm get manifest kitchen --namespace kitchen-system \
+              | grep -A4 volumeClaimTemplates || true
+            exit 1
+          }
+
+          class=$(kubectl -n kitchen-system get pvc data-kitchen-clickhouse-0 \
+            -o jsonpath='{.spec.storageClassName}')
+          expands=$(kubectl get storageclass "${class}" -o jsonpath='{.allowVolumeExpansion}')
+          echo "storage class ${class} allowVolumeExpansion='${expands}'"
+
+          if [ "${expands}" = true ]; then
+            # The whole path: the claim's request is raised, and the
+            # StatefulSet is replaced with one whose template matches.
+            for _ in $(seq 1 30); do
+              # Both, not either: the claim's request moving is the
+              # platform's first half and the template being rewritten is its
+              # second, and a poll that stopped at the first would assert the
+              # replacement had happened without waiting for it.
+              if [ "$(claim_request)" = 80Gi ] && [ "$(template_size)" = 80Gi ]; then
+                break
+              fi
+              sleep 10
+            done
+            [ "$(claim_request)" = 80Gi ] || {
+              echo "::error::the volume was not grown (requests '$(claim_request)')"
+              kubectl get kitchen default -o jsonpath='{.status.storage}{"\n"}'
+              exit 1
+            }
+            [ "$(template_size)" = 80Gi ] || {
+              echo "::error::the claim template was not rewritten (still '$(template_size)')"
+              kubectl get kitchen default -o jsonpath='{.status.storage}{"\n"}'
+              exit 1
+            }
+            # The pods are orphaned, not rolled: the volume is expanded under a
+            # running process and there is no reason to stop it.
+            pod_after=$(kubectl -n kitchen-system get pod kitchen-clickhouse-0 -o jsonpath='{.metadata.uid}')
+            [ "${pod_before}" = "${pod_after}" ] || {
+              echo "::error::the replaced StatefulSet rolled its pod (${pod_before} -> ${pod_after})"
+              exit 1
+            }
+            # And the replacement went back under the field manager that owned
+            # the claim template, which is the only thing that keeps a later
+            # upgrade from failing with a server-side-apply conflict on it.
+            # `kubectl get -o json` strips managedFields unless it is asked
+            # for them, and the whole point of this assertion is who owns the
+            # claim template. The `// []` is belt to that: a jq that iterates
+            # null exits 5 and says nothing about the platform.
+            owner=$(kubectl -n kitchen-system get sts kitchen-clickhouse \
+              -o json --show-managed-fields | jq -r '
+              [ (.metadata.managedFields // [])[]
+                | select(.operation == "Apply")
+                | select((.fieldsV1 | tostring) | contains("volumeClaimTemplates"))
+                | .manager ] | join(" ")')
+            echo "claim template applied by: ${owner:-nobody}"
+            case "${owner}" in
+              *helm*) ;;
+              *)
+                echo "::error::the recreated StatefulSet is not owned by helm (${owner:-nobody})"
+                exit 1 ;;
+            esac
+            # The proof of it: another upgrade, which is what conflicts if the
+            # ownership was not preserved.
+            upgrade 80Gi || {
+              echo "::error::the upgrade after a resize failed — a field-manager conflict is the usual cause"
+              exit 1
+            }
+          else
+            # The other half of the contract: the upgrade still succeeds, and
+            # the platform says plainly why the volume did not grow rather than
+            # leaving somebody to guess.
+            for _ in $(seq 1 30); do
+              if [ "$(phase_of)" = Blocked ]; then
+                break
+              fi
+              sleep 10
+            done
+            phase=$(phase_of)
+            [ "${phase}" = Blocked ] || {
+              echo "::error::the platform reported phase '${phase}' for a volume it cannot grow"
+              kubectl get kitchen default -o jsonpath='{.status.storage}{"\n"}'
+              exit 1
+            }
+            message=$(kubectl get kitchen default \
+              -o jsonpath='{.status.storage.volumes[?(@.statefulSet=="kitchen-clickhouse")].message}')
+            case "${message}" in
+              *"${class}"*) ;;
+              *)
+                echo "::error::the refusal does not name the storage class: ${message}"
+                exit 1 ;;
+            esac
+            echo "reported: ${message}"
+            # And it touched nothing: the live claim template is where it
+            # was, because nothing grew and nothing was replaced.
+            [ "$(template_size)" = "${before}" ] || {
+              echo "::error::the claim template moved from ${before} to $(template_size) without an expansion"
+              exit 1
+            }
+          fi
 
       - name: Uninstall the release
         run: |

@@ -4096,6 +4096,18 @@ export interface VolumeUsage {
   usedFraction: number;
 }
 
+/** What the platform is doing about one volume's size. Present only for the
+ * platform's own volumes — a project's claim is not one this platform grows. */
+export interface VolumeResize {
+  statefulSet: string;
+  /** The largest size anybody has asked for: the chart's, or this API's. */
+  desired?: string;
+  /** `Settled`, `Growing` (the platform's half), `Resizing` (the storage
+   * driver's half), `Blocked`, or `Unknown` where a read failed. */
+  phase?: string;
+  message?: string;
+}
+
 /** One PersistentVolumeClaim and what mounts it. Called a volume throughout,
  * because `/claims` already means a `ResourceClaim` in this API. */
 export interface PlatformVolume {
@@ -4110,9 +4122,22 @@ export interface PlatformVolume {
   capacity?: string;
   pods?: string[];
   usage?: VolumeUsage;
+  /** Whether the storage class admits expansion. Absent, rather than false,
+   * where nobody could tell — which is not a reason to grey a button out. */
+  expandable?: boolean;
+  resize?: VolumeResize;
   /** Why an unbound claim is unbound — including the missing-default-
    * StorageClass install the prerequisites warn about. */
   message?: string;
+}
+
+/** What a `202` from the resize route carries. */
+export interface VolumeResizeAccepted {
+  claim: string;
+  statefulSet: string;
+  current: string;
+  desired: string;
+  message: string;
 }
 
 /** The telemetry store's own state: how full its disk is, and how much of that
@@ -5630,6 +5655,12 @@ export const api = {
     return request<PlatformEdge>("GET", `/platform/edge?${params}`);
   },
   platformStorage: () => request<PlatformStorage>("GET", "/platform/storage"),
+  // Answers 202: the operator expands every claim the workload made and
+  // replaces the workload with a matching claim template, because that field
+  // is immutable and Helm can do neither. The outcome comes back on the row's
+  // `resize` block above.
+  resizePlatformVolume: (name: string, size: string) =>
+    request<VolumeResizeAccepted>("POST", `/platform/storage/claims/${encodeURIComponent(name)}/resize`, { size }),
   platformEvents: (query: PlatformEventQuery = {}) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) {

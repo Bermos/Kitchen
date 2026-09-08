@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute } from "vue-router";
-import { api } from "../lib/api";
+import { api, type PlatformVolume } from "../lib/api";
 import { compactCount, formatBytes, formatDurationSeconds, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
 import { FLOWS_LOST_FIRING, flowsUnderReporting, formatFraction } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
+import GrowVolumeModal from "../components/GrowVolumeModal.vue";
 import PageHeader from "../components/PageHeader.vue";
 import StatusDot from "../components/StatusDot.vue";
 import WrittenVolumesPanel from "../components/WrittenVolumesPanel.vue";
@@ -81,6 +82,36 @@ const ledger = computed(() => {
   if (loss.lossless) return "Nothing was reported lost in the follower's trailing window.";
   return `Something was lost, below the ${FLOWS_LOST_FIRING} events in a window the platform calls under-reporting: what survived is correct, and there are simply that many fewer rows than there were requests.`;
 });
+
+/** Whether the size this volume was asked to be is larger than the size it is,
+ * which is the platform's half of the work. */
+function growing(volume: PlatformVolume): boolean {
+  const desired = volume.resize?.desired;
+  if (!desired || volume.resize?.phase !== "Growing") return false;
+  return desired !== (volume.capacity || volume.requested);
+}
+
+/** Whether the storage driver is still catching up: the claim asks for more
+ * than it has been given. The row draws both numbers for exactly this case —
+ * one of them is what an operator was promised and the other is what is
+ * actually there, and a row showing one of them cannot say which. */
+function resizing(volume: PlatformVolume): boolean {
+  if (volume.resize?.phase !== "Resizing") return false;
+  return Boolean(volume.requested && volume.capacity && volume.requested !== volume.capacity);
+}
+
+/** What the platform is doing about this volume's size, in one line, or nothing
+ * where there is nothing to say. A volume at the size it was asked to be says
+ * nothing at all: a row that reports agreement on every line is a row nobody
+ * reads the exceptions out of. */
+function resizeNote(volume: PlatformVolume): string {
+  const resize = volume.resize;
+  if (!resize) return "";
+  if (resize.message) return resize.message;
+  return resize.desired && (resize.phase === "Growing" || resize.phase === "Resizing")
+    ? `growing to ${resize.desired}`
+    : "";
+}
 
 function highlighted(volume: { namespace: string; name: string }): boolean {
   if (!claim.value) return false;
@@ -164,11 +195,12 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
                 <th class="px-3 py-2 font-medium text-right">Size</th>
                 <th class="px-3 py-2 font-medium">Used</th>
                 <th class="px-3 py-2 font-medium">Mounted by</th>
+                <th class="px-3 py-2 font-medium"><span class="sr-only">Grow</span></th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!volumes.length">
-                <td colspan="7" class="px-3 py-8 text-center text-muted">
+                <td colspan="8" class="px-3 py-8 text-center text-muted">
                   {{ loading ? "Loading…" : "This platform holds no volumes." }}
                 </td>
               </tr>
@@ -202,6 +234,16 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
                   <td class="px-3 py-2 font-mono text-xs text-dimmed">{{ volume.storageClass || "—" }}</td>
                   <td class="px-3 py-2 text-right font-mono text-xs tabular-nums text-toned">
                     {{ volume.capacity || volume.requested || "—" }}
+                    <!-- The size it was asked to be, drawn only while it differs from the size it is. -->
+                    <!-- A volume being grown is the platform working, not a
+                         caution: docs/UI.md gives a working state neither
+                         colour, and the API classifies the finding as
+                         information for the same reason. -->
+                    <p v-if="resizing(volume)" class="text-[11px] text-muted">
+                      {{ volume.requested }} asked of the driver
+                    </p>
+                    <p v-else-if="growing(volume)" class="text-[11px] text-muted">&rarr; {{ volume.resize?.desired }}</p>
+                    <p v-else-if="volume.expandable === false" class="text-[11px] text-dimmed">fixed size</p>
                   </td>
                   <td class="px-3 py-2">
                     <FillBar
@@ -213,10 +255,28 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
                   <td class="px-3 py-2 font-mono text-[11px] text-dimmed break-all">
                     {{ (volume.pods ?? []).join(", ") || "nothing" }}
                   </td>
+                  <td class="px-3 py-2 text-right">
+                    <!-- Only the platform's own volumes: a project's claim is not one this platform grows,
+                         and a button whose Save is always a refusal is a screen that lies. -->
+                    <GrowVolumeModal v-if="volume.resize" :volume="volume" @grown="refresh" />
+                  </td>
                 </tr>
                 <tr v-if="volume.message" :key="`${volume.namespace}/${volume.name}-message`" class="border-b border-muted last:border-0">
-                  <td colspan="7" class="px-3 pb-2.5 text-xs" :class="volume.bound ? 'text-muted' : 'text-error'">
+                  <td colspan="8" class="px-3 pb-2.5 text-xs" :class="volume.bound ? 'text-muted' : 'text-error'">
                     {{ volume.message }}
+                  </td>
+                </tr>
+                <tr
+                  v-if="resizeNote(volume)"
+                  :key="`${volume.namespace}/${volume.name}-resize`"
+                  class="border-b border-muted last:border-0"
+                >
+                  <td
+                    colspan="8"
+                    class="px-3 pb-2.5 text-xs"
+                    :class="volume.resize?.phase === 'Blocked' ? 'text-warning' : 'text-muted'"
+                  >
+                    {{ resizeNote(volume) }}
                   </td>
                 </tr>
               </template>
@@ -336,7 +396,9 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
         default, and a cluster without one is the first-install hang the prerequisites warn about. Fill is measured at
         {{ formatFraction(0.85) }} — the same threshold the <span class="font-mono">pvc.filling</span> and
         <span class="font-mono">store.disk</span> rules fire on, so a bar that has just turned amber and a finding on
-        the problems list are the same number.
+        the problems list are the same number. Growing one of the platform's own volumes expands it and rewrites the
+        declaration behind it, which is why the platform does it rather than the chart; a volume whose storage allows no
+        expansion is fixed at the size it was made, and says so.
       </p>
     </template>
   </div>

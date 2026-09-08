@@ -200,6 +200,15 @@ spec:
         format: grype-json              # grype-json, trivy-json or osv-json
         args: [-o, json, --file, $(KITCHEN_FINDINGS), "sbom:$(KITCHEN_SBOM)"]
         timeoutSeconds: 900
+  storage:                              # how big the platform's own volumes should be, by the name of
+    volumes:                            # the StatefulSet whose claim template they came from. This is
+      kitchen-clickhouse: 80Gi          # what POST /platform/storage/claims/{name}/resize writes; the
+                                        # chart says the same thing on each StatefulSet, as the
+                                        # kitchen.bermos.dev/storage-size annotation, and the platform
+                                        # grows to the larger of the two. A volume is only ever grown:
+                                        # a claim template is immutable, so growing one means expanding
+                                        # every claim it made and replacing the StatefulSet, which is
+                                        # Helm's constraint and not the operator's (#533)
   retention:                            # how long each class is kept; absent = inherit
     containerLogs: 14                   # empty inherits observability.clickhouse.retentionDays,
     buildLogs: 180                      # as flows, metrics, traces, requests, clusterEvents, signals
@@ -326,6 +335,23 @@ status:
       lastSweep: 2026-08-24T03:14:00Z
       environments: 42                  # deployed pairs the last pass considered
       scanning: 4                       # how many had a scan in flight when it finished
+  storage:                              # the size of each of the platform's own volumes against the
+    volumes:                            # size that was asked for, and what stands between the two
+      - statefulSet: kitchen-clickhouse
+        component: clickhouse
+        claims: [data-kitchen-clickhouse-0]
+        current: 80Gi                   # the smallest size any of those claims asks for
+        capacity: 50Gi                  # and the smallest any of them has actually been given;
+                                        # a volume is Settled only once this has caught up, so a
+                                        # claim stuck in ControllerResizeFailed cannot read as done
+        desired: 80Gi                   # the largest size anybody asked for
+        storageClass: longhorn
+        expandable: true                # false is the one refusal nothing can work around; absent
+                                        # means nobody could tell, which is not the same answer
+        phase: Resizing                 # Settled, Growing (the platform's half), Resizing (the
+                                        # driver's half), Blocked, or Unknown for a read that failed
+                                        # — Blocked is never retried, Unknown always is
+        message: data-kitchen-clickhouse-0 asks for 80Gi and has 50Gi; the driver has not finished expanding it
   retention:
     lastSweep: 2026-08-24T03:00:00Z
     auditFloorOverridden: false

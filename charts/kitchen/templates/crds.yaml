@@ -7503,6 +7503,37 @@ spec:
                         type: string
                     type: object
                 type: object
+              storage:
+                description: |-
+                  Storage is how big the platform's own volumes should be — the one
+                  dimension of a running installation that Helm cannot change, because
+                  a StatefulSet's volumeClaimTemplates are immutable and every one of
+                  the platform's own volumes lives in one.
+
+                  It is here rather than only in the chart's values because it is the
+                  lever an operator reaches for at the moment `pvc.filling` fires, and
+                  reaching for it must not mean four kubectl invocations against the
+                  cluster this platform exists to abstract away (#533). The chart still
+                  declares its own answer, on each StatefulSet; this is what the API and
+                  the dashboard write, and the larger of the two is what the platform
+                  grows to.
+                properties:
+                  volumes:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Volumes is the size to grow to, keyed by the name of the StatefulSet
+                      whose volumeClaimTemplates the volume came from. It is a map and not a
+                      list because a Kitchen is a custom resource, so `helm upgrade` patches
+                      it as a JSON merge patch — which replaces an array wholesale and merges
+                      an object key by key. A list would let a chart-side change to one
+                      component silently drop the size somebody set for another.
+                    type: object
+                type: object
               tls:
                 description: |-
                   TLSSpec configures platform-wide TLS defaults. acme mode cannot be
@@ -8219,6 +8250,91 @@ spec:
                     type: array
                     x-kubernetes-list-map-keys:
                     - input
+                    x-kubernetes-list-type: map
+                type: object
+              storage:
+                description: |-
+                  Storage reports the size of each of the platform's own volumes
+                  against the size that was asked for, and what stands between the two.
+                properties:
+                  volumes:
+                    description: |-
+                      Volumes is one entry per platform StatefulSet that declares a size,
+                      in name order.
+                    items:
+                      description: |-
+                        PlatformVolumeStatus is one platform StatefulSet's volume: how big it is,
+                        how big it was asked to be, and what stands between the two.
+                      properties:
+                        capacity:
+                          description: |-
+                            Capacity is the smallest size any of them has actually been given.
+                            It lags Current while the driver is expanding the volume, and a
+                            volume is only Settled once it has caught up — a claim stuck in
+                            `ControllerResizeFailed` has the request it asked for and not the
+                            space, and judging it by the request alone would report it finished.
+                            Absent until something has bound.
+                          type: string
+                        claims:
+                          description: |-
+                            Claims are the bound claims the template produced, by name. Empty
+                            before the first pod has ever run.
+                          items:
+                            type: string
+                          type: array
+                        component:
+                          description: |-
+                            Component it plays in the platform, from
+                            app.kubernetes.io/component — clickhouse, postgres, registry,
+                            objectstore. Empty for a workload that carries no such label.
+                          type: string
+                        current:
+                          description: |-
+                            Current is the smallest size any of those claims currently requests,
+                            which is the size the platform still has to grow.
+                          type: string
+                        desired:
+                          description: |-
+                            Desired is the largest size anybody has asked for: the chart's
+                            annotation, or spec.storage.volumes, whichever is bigger.
+                          type: string
+                        expandable:
+                          description: |-
+                            Expandable is a pointer so that `false` can be said. A class that
+                            does not admit expansion and a class nobody could read are different
+                            answers, and only one of them is a reason to grey a button out — the
+                            API row carries the same distinction.
+                          type: boolean
+                        message:
+                          description: |-
+                            Message explains a Blocked volume, and states the harmless case where
+                            what is running is larger than what the chart asks for.
+                          type: string
+                        phase:
+                          description: |-
+                            Phase is what the platform is doing about the gap, if any:
+                            `Settled` (nothing to do), `Growing` (the platform is expanding the
+                            claims and rewriting the template), `Resizing` (it has done its half
+                            and the storage driver has not finished its), `Blocked` (it cannot be
+                            done, and Message says why) or `Unknown` (a read failed, so nothing
+                            about this volume was assessed — unlike Blocked, that is retried).
+                          type: string
+                        statefulSet:
+                          description: StatefulSet the volume belongs to.
+                          type: string
+                        storageClass:
+                          description: |-
+                            StorageClass the claims are on, and whether it admits expansion at
+                            all. A class that does not is the one refusal the platform cannot
+                            work around: the volume can only be replaced, which is a restore and
+                            not a resize.
+                          type: string
+                      required:
+                      - statefulSet
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - statefulSet
                     x-kubernetes-list-type: map
                 type: object
               systemLogs:
