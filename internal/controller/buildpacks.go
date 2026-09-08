@@ -271,16 +271,14 @@ func buildpacksPod(
 				phase("builder", buildpackMounts, "", appArg, layersArg, platformArg),
 			},
 			Containers: []corev1.Container{
-				// The push. It is not the only container holding a
-				// credential that can write — analyze holds one too, to
-				// validate the tag it is handed — but it is the only phase
-				// that puts anything in the registry. Its report carries the
-				// digest of what it pushed; writing it to the termination log
-				// puts it exactly where the reconciler already reads
-				// BuildKit's metadata from — see digestFromTerminationMessage,
-				// which reads both shapes, and imageWithDigest, which reads
-				// the pod's containers rather than its init containers, so the
-				// phase that pushes has to be the pod's own container.
+				// The push, and the only container in the pod that can. Its
+				// report carries the digest of what it pushed; writing it to
+				// the termination log puts it exactly where the reconciler
+				// already reads BuildKit's metadata from — see
+				// digestFromTerminationMessage, which reads both shapes, and
+				// imageWithDigest, which reads the pod's containers rather
+				// than its init containers, so the phase that pushes has to
+				// be the pod's own container.
 				phase("exporter", pushMounts, credentials.Push,
 					append(cnbCacheArgs(cache), appArg, layersArg,
 						"-report="+terminationLogPath, plan.Tag)...),

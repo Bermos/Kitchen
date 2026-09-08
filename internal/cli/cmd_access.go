@@ -45,6 +45,13 @@ import (
 //	  [{"subject": "user_7", "grant": "shop", "decision": "revoke", "note": "left in June"}],
 //	  "close": true}'
 
+// accessInTheDashboard is where the four commands in this file point when the
+// platform refuses them, spelled once because it is one screen for all of
+// them: the recertification panel reads the survey and the cycles together.
+func accessInTheDashboard() *dashboardOnly {
+	return onlyInTheDashboard("Platform → Audit, under Access recertification", "/platform/audit")
+}
+
 func newAccessCommand(r *Runtime) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "access",
@@ -72,7 +79,7 @@ See docs/api/access.md for the bodies.`),
 
 	return describe(cmd, meta{
 		Output:   output{Mode: outputNone},
-		Needs:    needs{},
+		Needs:    needs{Platform: accessInTheDashboard()},
 		Examples: []example{{"Grants that look like they belong to nobody", "kitchen access identities --orphaned --json"}},
 	})
 }
@@ -156,7 +163,7 @@ list worth acting on.`),
 	return describe(cmd, meta{
 		Calls:  []string{"GET /api/v1/access/identities"},
 		Output: output{Mode: outputDocument, Kind: "identitySurvey"},
-		Needs:  needs{Auth: true},
+		Needs:  needs{Auth: true, Platform: accessInTheDashboard()},
 		Examples: []example{
 			{"Every grant on the platform", "kitchen access identities --json"},
 			{"The ones that look like they belong to nobody", "kitchen access identities --orphaned --json"},
@@ -244,7 +251,7 @@ what an overdue cycle costs is that somebody has to look.`),
 	return describe(cmd, meta{
 		Calls:  []string{"GET /api/v1/access/reviews"},
 		Output: output{Mode: outputDocument, Kind: "accessReviewList"},
-		Needs:  needs{Auth: true},
+		Needs:  needs{Auth: true, Platform: accessInTheDashboard()},
 		Examples: []example{
 			{"What is open", "kitchen access reviews --json"},
 			{"The whole register", "kitchen access reviews --historical --json"},
@@ -326,7 +333,7 @@ log, but there is nothing portable to hand an auditor.`),
 	return describe(cmd, meta{
 		Calls:    []string{"GET /api/v1/access/reviews/{name}"},
 		Output:   output{Mode: outputDocument, Kind: "accessReview"},
-		Needs:    needs{Auth: true},
+		Needs:    needs{Auth: true, Platform: accessInTheDashboard()},
 		Examples: []example{{"One cycle whole", "kitchen access show access-review-8x2kd --json"}},
 	})
 }

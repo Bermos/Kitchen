@@ -161,14 +161,6 @@ type accountDirectory interface {
 	Keys(ctx context.Context, project string) ([]idp.Key, error)
 	CreateKey(ctx context.Context, project, name string) (*idp.IssuedKey, error)
 	DeleteKey(ctx context.Context, project, name string) (*idp.Key, error)
-	// The platform's own credentials (#349). They are the same three
-	// operations one level up, and they are on this interface rather than on
-	// one of their own because they reach the same issuer through the same
-	// connection: a handler that has read a list and is about to write should
-	// not have to resolve the directory twice.
-	PlatformKeys(ctx context.Context) ([]idp.PlatformKey, error)
-	CreatePlatformKey(ctx context.Context, name string) (*idp.IssuedPlatformKey, error)
-	DeletePlatformKey(ctx context.Context, name string) (*idp.PlatformKey, error)
 }
 
 // errNoAccountDirectory is what a resolution answers on an installation whose

@@ -2075,59 +2075,6 @@ export interface NewKey {
   role?: string;
 }
 
-/**
- * One platform credential, as `GET /platform/credentials` lists it (#349).
- *
- * It is a CI key's shape one level up: a credential at the identity provider,
- * an account created to own it, and a grant on the object the access is about
- * — which here is the platform itself, so what it carries is *scopes* rather
- * than a role.
- *
- * There is no value here and there never is one again, for ProjectKey's
- * reason. `scopes` is read from the platform's grant rather than from anything
- * stored on the credential, so an **empty** list is a credential whose grant
- * has been removed: it authenticates and can do nothing, and the listing says
- * so. `expired` is answered rather than left to the reader to work out from
- * `expires`, because a lapsed credential is the state this screen exists to
- * make visible.
- */
-export interface PlatformCredential {
-  name: string;
-  subject: string;
-  email?: string;
-  scopes: string[];
-  projects?: string[];
-  expires?: string;
-  expired: boolean;
-  prefix?: string;
-  created: string;
-  lastUsed?: string;
-}
-
-/**
- * What `POST /platform/credentials` answers — the listing's shape plus the
- * credential itself, which appears in this response and in no other.
- */
-export interface IssuedPlatformCredential extends PlatformCredential {
-  key: string;
-}
-
-/**
- * What `POST /platform/credentials` takes.
- *
- * `scopes` has no default: there is no scope that is obviously the one
- * somebody meant, and defaulting either way would issue a credential that
- * silently is not the one that was asked for. `expiresInDays` defaults to 30
- * and is capped at 90. `projects` narrows the scoped routes that are about one
- * project; empty is every project.
- */
-export interface NewPlatformCredential {
-  name: string;
-  scopes: string[];
-  projects?: string[];
-  expiresInDays?: number;
-}
-
 /** A credential as the API accepts one — a token, a username and password,
  * or an S3 access key pair, depending on the provider. Write-only: the API
  * never reads it back. */
@@ -4989,24 +4936,6 @@ export const api = {
     request<void>(
       "DELETE",
       `/projects/${project}/keys/${encodeURIComponent(name)}`,
-    ),
-
-  // The platform's own credentials (#349) — the same three operations one
-  // level up, and the same rule about the value: issuing answers it once.
-  platformCredentials: () =>
-    list<PlatformCredential>("/platform/credentials")(),
-  createPlatformCredential: (credential: NewPlatformCredential) =>
-    request<IssuedPlatformCredential>(
-      "POST",
-      "/platform/credentials",
-      credential,
-    ),
-  // Answers 204. Revokes the credential first and takes the grant off after,
-  // for deleteKey's reason.
-  deletePlatformCredential: (name: string) =>
-    request<void>(
-      "DELETE",
-      `/platform/credentials/${encodeURIComponent(name)}`,
     ),
 
   projectBuilds: (name: string) => list<Build>(`/projects/${name}/builds`)(),

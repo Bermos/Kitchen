@@ -132,25 +132,12 @@ type requirement struct {
 	// ProjectRoleNone for every other kind.
 	Role access.ProjectRole
 	// Project resolves which Project the request is about. It is set for
-	// requireProjectRole, and for the one shape of requireOperator that is
-	// about a project rather than about the platform — where it is what a
-	// credential's project allowlist is checked against.
+	// requireProjectRole and empty otherwise.
 	Project projectResolver
 	// Doing names the operation in the words a refusal uses — "redeploying",
 	// "changing the platform's settings" — so that every 403 reads like a
 	// sentence without a per-handler string being written anywhere.
 	Doing string
-	// Scope is the platform scope that satisfies a requireOperator row for a
-	// caller who is not an operator, and access.ScopeNone — the zero value —
-	// for every row that no credential may ever reach.
-	//
-	// **The zero value is the whole of the blast-radius argument.** A platform
-	// credential is admitted by naming a scope on the row it is admitted at, so
-	// a route that says nothing about scopes is closed to every credential, now
-	// and after the next twenty routes are added. Opening one is an edit to
-	// this table, in the same line as the sentence that says what the route
-	// does, reviewed with it.
-	Scope access.Scope
 }
 
 // route is one registered pattern: what it answers on, what answers it, and
@@ -161,8 +148,8 @@ type route struct {
 	Requires requirement
 }
 
-// The eight requirement constructors. They exist so the table below is a list
-// of facts rather than of struct literals with five fields each, and so that a
+// The six requirement constructors. They exist so the table below is a list
+// of facts rather than of struct literals with four fields each, and so that a
 // requirement cannot be half-written: a project role always arrives with the
 // resolver that finds its project.
 
@@ -181,27 +168,6 @@ func anyPerson(doing string) requirement {
 // "<doing> needs the operator role".
 func operatorOnly(doing string) requirement {
 	return requirement{Kind: requireOperator, Doing: doing}
-}
-
-// operatorOr is the platform's surface, opened to a platform credential
-// holding `scope` as well (issue #349). `doing` completes the same sentence
-// operatorOnly's does, and the scope is what a refusal names when the caller
-// holds a credential and not this one.
-//
-// It is a separate constructor rather than an optional argument to
-// operatorOnly precisely so that the two are different to write and different
-// to read: adding a scope to a route is a visible edit rather than a fourth
-// field somebody could fill in without meaning to.
-func operatorOr(scope access.Scope, doing string) requirement {
-	return requirement{Kind: requireOperator, Doing: doing, Scope: scope}
-}
-
-// operatorOrOnProject is operatorOr for a route that is about one project.
-// `from` resolves which, and a credential narrowed to a list of projects
-// reaches it only for those — the one place a platform scope is not simply
-// platform-wide.
-func operatorOrOnProject(scope access.Scope, from projectResolver, doing string) requirement {
-	return requirement{Kind: requireOperator, Doing: doing, Scope: scope, Project: from}
 }
 
 // onProject wants a role on the project `from` resolves. `doing` completes
@@ -352,7 +318,7 @@ func (s *Server) routes() []route {
 		// promotions, the decisions, the exceptions, the drift, the project's
 		// own audit records — is already a viewer's read of its own.
 		{"GET /api/v1/projects/{name}/audit-pack", s.projectAuditPack,
-			operatorOrOnProject(access.ScopeComplianceRead, ofProject, "exporting a project's audit pack")},
+			operatorOnly("exporting a project's audit pack")},
 
 		// Membership. It is the project's own admin who adds and removes
 		// people, which is the whole point: an operator holds admin on every
@@ -630,8 +596,7 @@ func (s *Server) routes() []route {
 		// log is recording, how long it is kept, and the key evidence is
 		// signed under. That is the same shape as GET /settings, and it is
 		// the operator's for the same reason.
-		{"GET /api/v1/compliance", s.getCompliance,
-			operatorOr(access.ScopeComplianceRead, "reading the platform's compliance posture")},
+		{"GET /api/v1/compliance", s.getCompliance, operatorOnly("reading the platform's compliance posture")},
 		// The classification inventory is project data, not platform data:
 		// which classes and locations *your* environments and claims carry.
 		// It filters to the caller's projects like every cross-project read,
@@ -664,21 +629,20 @@ func (s *Server) routes() []route {
 		// model that has three. Who was *expected* to review is on the cycle;
 		// who actually decided is on every entry and in the audit log.
 		{"GET /api/v1/access/identities", s.listIdentities,
-			operatorOr(access.ScopeComplianceRead, "reading who holds what on the platform")},
+			operatorOnly("reading who holds what on the platform")},
 		{"GET /api/v1/access/reviews", s.listAccessReviews,
-			operatorOr(access.ScopeComplianceRead, "reading the platform's access recertifications")},
+			operatorOnly("reading the platform's access recertifications")},
 		{"POST /api/v1/access/reviews", s.openAccessReview,
 			operatorOnly("opening an access recertification")},
 		{"GET /api/v1/access/reviews/{name}", s.getAccessReview,
-			operatorOr(access.ScopeComplianceRead, "reading an access recertification")},
+			operatorOnly("reading an access recertification")},
 		{"PATCH /api/v1/access/reviews/{name}", s.reviewAccess,
 			operatorOnly("deciding an access recertification")},
 
 		{"GET /api/v1/audit", s.listAuditRecords, acrossProjects()},
 		// Verifying the chain is a statement about the whole log, including
 		// the records of platform changes a member never sees.
-		{"GET /api/v1/audit/verify", s.verifyAuditChain,
-			operatorOr(access.ScopeComplianceRead, "verifying the audit log's chain")},
+		{"GET /api/v1/audit/verify", s.verifyAuditChain, operatorOnly("verifying the audit log's chain")},
 		{"GET /api/v1/metrics/overview", s.metricsOverview, acrossProjects()},
 		{"GET /api/v1/traffic", s.traffic, acrossProjects()},
 
@@ -720,20 +684,13 @@ func (s *Server) routes() []route {
 
 		// The operator's own screens. Everything platform-scoped lives under
 		// this one prefix and nothing project-scoped does.
-		{"GET /api/v1/platform/signals", s.platformSignals,
-			operatorOr(access.ScopePlatformRead, "reading the platform's signals")},
-		{"GET /api/v1/platform/nodes", s.platformNodes,
-			operatorOr(access.ScopePlatformRead, "reading the platform's nodes")},
-		{"GET /api/v1/platform/workloads", s.platformWorkloads,
-			operatorOr(access.ScopePlatformRead, "reading the platform's workloads")},
-		{"GET /api/v1/platform/edge", s.platformEdge,
-			operatorOr(access.ScopePlatformRead, "reading the platform's edge")},
-		{"GET /api/v1/platform/storage", s.platformStorage,
-			operatorOr(access.ScopePlatformRead, "reading the platform's storage")},
-		{"GET /api/v1/platform/events", s.platformEvents,
-			operatorOr(access.ScopePlatformRead, "reading the platform's cluster events")},
-		{"GET /api/v1/platform/ingest", s.platformIngest,
-			operatorOr(access.ScopePlatformRead, "reading the platform's ingest")},
+		{"GET /api/v1/platform/signals", s.platformSignals, operatorOnly("reading the platform's signals")},
+		{"GET /api/v1/platform/nodes", s.platformNodes, operatorOnly("reading the platform's nodes")},
+		{"GET /api/v1/platform/workloads", s.platformWorkloads, operatorOnly("reading the platform's workloads")},
+		{"GET /api/v1/platform/edge", s.platformEdge, operatorOnly("reading the platform's edge")},
+		{"GET /api/v1/platform/storage", s.platformStorage, operatorOnly("reading the platform's storage")},
+		{"GET /api/v1/platform/events", s.platformEvents, operatorOnly("reading the platform's cluster events")},
+		{"GET /api/v1/platform/ingest", s.platformIngest, operatorOnly("reading the platform's ingest")},
 
 		// How long each class of what the platform keeps is kept, and how far
 		// back each class actually goes. The operator's, like every other
@@ -742,7 +699,7 @@ func (s *Server) routes() []route {
 		// from outside the platform, which somebody has to be able to fetch
 		// and cite.
 		{"GET /api/v1/platform/retention", s.getRetention,
-			operatorOr(access.ScopePlatformRead, "reading the platform's retention")},
+			operatorOnly("reading the platform's retention")},
 		{"PATCH /api/v1/platform/retention", s.patchRetention,
 			operatorOnly("changing the platform's retention")},
 
@@ -764,10 +721,8 @@ func (s *Server) routes() []route {
 		// both are the operator's and neither is anybody else's. There is no
 		// restore route: a restore happens into a cluster whose accounts are
 		// gone, so there is nobody left to authenticate. See internal/api/backup.go.
-		{"GET /api/v1/platform/backup", s.getBackup,
-			operatorOr(access.ScopeBackupRun, "reading what a platform backup would carry")},
-		{"POST /api/v1/platform/backup", s.createBackup,
-			operatorOr(access.ScopeBackupRun, "exporting the platform's state")},
+		{"GET /api/v1/platform/backup", s.getBackup, operatorOnly("reading what a platform backup would carry")},
+		{"POST /api/v1/platform/backup", s.createBackup, operatorOnly("exporting the platform's state")},
 		// The destination has an address of its own because it carries a
 		// credential, and PATCH /settings must never carry one. The schedule
 		// and the retention are ordinary settings and go through the route
@@ -780,36 +735,14 @@ func (s *Server) routes() []route {
 		// not from the platform's own belief about it, which is the only
 		// half a recovery cannot use.
 		{"GET /api/v1/platform/backup/runs", s.listBackupRuns,
-			operatorOr(access.ScopeBackupRun, "reading what the platform's backup destination holds")},
+			operatorOnly("reading what the platform's backup destination holds")},
 		{"POST /api/v1/platform/backup/runs", s.createBackupRun,
-			operatorOr(access.ScopeBackupRun, "running the platform's backup now")},
+			operatorOnly("running the platform's backup now")},
 
 		// Settings carry the base domain, the issuer and the gateway address,
 		// so even reading them is the operator's.
 		{"GET /api/v1/settings", s.getSettings, operatorOnly("reading the platform's settings")},
 		{"PATCH /api/v1/settings", s.patchSettings, operatorOnly("changing the platform's settings")},
-
-		// Platform credentials (#349): what a scheduled job or an agent holds
-		// to reach the scoped rows above without being handed the operator
-		// hat. They are the project keys' shape one level up — a credential at
-		// the issuer, an account created to own it, and a grant on the object
-		// the access is about — and the three routes look like the project's
-		// three for the same reason.
-		//
-		// **All three are operatorOnly, and none of them will ever carry a
-		// scope.** A credential that could issue credentials is a credential
-		// that can mint its own successors, outlive its own expiry by issuing
-		// a fresh one, and grant itself scopes nobody chose; it is the exact
-		// thing `POST /projects/{name}/keys` refuses an `admin` key to avoid,
-		// one level up and worth more. TestNoScopeReachesCredentialIssuance
-		// holds that, so it is a fact about the table rather than about
-		// whoever edits it next.
-		{"GET /api/v1/platform/credentials", s.listPlatformCredentials,
-			operatorOnly("reading the platform's credentials")},
-		{"POST /api/v1/platform/credentials", s.createPlatformCredential,
-			operatorOnly("issuing a platform credential")},
-		{"DELETE /api/v1/platform/credentials/{name}", s.deletePlatformCredential,
-			operatorOnly("revoking a platform credential")},
 
 		{"GET /api/v1/updates", s.listUpdates, operatorOnly("reading the platform's updates")},
 		{"POST /api/v1/updates", s.createUpdate, operatorOnly("upgrading the platform")},
@@ -1148,16 +1081,28 @@ func (s *Server) guard(requires requirement, handler http.HandlerFunc) http.Hand
 
 		case requirePerson:
 			if caller.isMachine() {
-				forbidden(w, fmt.Sprintf("%s is not something a credential may do: %s is %s",
-					requires.Doing, callerName(caller), callerCredentialKind(caller)))
+				forbidden(w, fmt.Sprintf(
+					"%s is not something a CI key may do: %s is a machine account, "+
+						"which holds a role on one project and no platform surface at all",
+					requires.Doing, callerName(caller)))
 				return
 			}
 
 		case requireOperator:
 			if !platform.AtLeast(access.PlatformOperator) {
-				if !s.allowedByScope(w, &req, requires, caller, kitchen, platform) {
-					return
+				if kitchen == nil || len(kitchen.Spec.Access.Operators) == 0 {
+					// An installation whose operator list has not been written
+					// yet has no operators, so the whole platform surface is
+					// refused to everybody. That is the safe direction and it
+					// is somebody else's job to fix (the upgrade seeds the
+					// list); what it must not be is a mystery, so it is said
+					// out loud rather than left to be inferred from a 403.
+					s.log().Info("refusing a platform operation: this installation lists no operators at all",
+						"path", req.URL.Path, "caller", callerName(caller))
 				}
+				forbidden(w, fmt.Sprintf("%s needs the operator role; you are a %s",
+					requires.Doing, platform))
+				return
 			}
 
 		case requireProjectRole:
@@ -1191,114 +1136,6 @@ func (s *Server) guard(requires requirement, handler http.HandlerFunc) http.Hand
 
 		handler(w, req)
 	}
-}
-
-// callerCredentialKind completes the refusal a credential gets from a route
-// only a person may call. The two kinds are bounded by different things and a
-// message naming the wrong one sends whoever is reading it to the wrong
-// screen.
-func callerCredentialKind(caller Caller) string {
-	if caller.isPlatformCredential() {
-		return "a platform credential, which holds the scopes an operator gave it and no role at all"
-	}
-	return "a machine account, which holds a role on one project and no platform surface at all"
-}
-
-// allowedByScope is the second answer a platform route has for a caller who is
-// not an operator: a platform credential holding the scope the row names
-// (issue #349). It answers the request itself when there is no such answer.
-//
-// The order of the refusals is the order of the questions, and each one is a
-// different sentence because they send whoever is reading the log somewhere
-// different:
-//
-//   - the row names no scope, so no credential could ever reach it;
-//   - the caller holds no credential at all, which is every person who is not
-//     an operator and is the refusal this route has always had;
-//   - the caller holds a credential, and not this scope — the one refusal that
-//     can name what was wanted and what is held, which is what issue #349 asks
-//     for ("a refusal names the scope that was wanted, the way an operator-only
-//     refusal names the role");
-//   - the caller holds the scope, and the route is about a project their
-//     credential was narrowed away from.
-//
-// It never widens anything: an operator has already been admitted by the
-// caller, and everything here is about a caller who would otherwise be refused.
-func (s *Server) allowedByScope(
-	w http.ResponseWriter,
-	req **http.Request,
-	requires requirement,
-	caller Caller,
-	kitchen *kitchenv1alpha1.Kitchen,
-	platform access.PlatformRole,
-) bool {
-	grant := access.ScopesFor(caller.access(), kitchen, s.now())
-	switch {
-	case requires.Scope == access.ScopeNone, grant.Empty():
-		s.noOperators(*req, caller, kitchen)
-		forbidden(w, fmt.Sprintf("%s needs the operator role; you are a %s", requires.Doing, platform))
-		return false
-	case !grant.Allows(requires.Scope):
-		forbidden(w, fmt.Sprintf("%s needs the operator role, or a platform credential scoped %s; "+
-			"this credential holds %s", requires.Doing, requires.Scope, scopeList(grant.Held())))
-		return false
-	}
-
-	if requires.Project.Resolve == nil {
-		return true
-	}
-	// The resolver may read the object that names the project, so the request
-	// carries somewhere to leave it — the handler that runs next would
-	// otherwise read the same object again. Today the one scoped route about a
-	// project resolves from the path and reads nothing, and this is here so
-	// that the next one does not have to notice.
-	*req = (*req).WithContext(withResolved((*req).Context()))
-	name, _, err := requires.Project.Resolve(s, *req)
-	if err != nil {
-		s.writeError(w, err)
-		return false
-	}
-	if !grant.AllowsProject(name) {
-		forbidden(w, fmt.Sprintf("%s is scoped %s on this credential, which was narrowed to %s",
-			requires.Doing, requires.Scope, strings.Join(grant.Projects(), ", ")))
-		return false
-	}
-	return true
-}
-
-// noOperators says out loud that this installation lists no operators at all,
-// on the one refusal where that is the whole explanation.
-//
-// An installation whose operator list has not been written yet has no
-// operators, so the platform surface is refused to everybody who holds no
-// credential for it. That is the safe direction and it is somebody else's job
-// to fix (the upgrade seeds the list); what it must not be is a mystery, so it
-// is said rather than left to be inferred from a 403.
-//
-// It is on the refusal path rather than beside the resolution deliberately: a
-// scoped credential succeeding on such an installation is not a refusal, and a
-// log line saying it was refused would be a false one.
-func (s *Server) noOperators(req *http.Request, caller Caller, kitchen *kitchenv1alpha1.Kitchen) {
-	if kitchen != nil && len(kitchen.Spec.Access.Operators) > 0 {
-		return
-	}
-	s.log().Info("refusing a platform operation: this installation lists no operators at all",
-		"path", req.URL.Path, "caller", callerName(caller))
-}
-
-// scopeList is how a refusal spells what a credential does hold, including the
-// case where it holds nothing at all — which reads better as a sentence than
-// as an empty list, and which grant.Empty() has already sent elsewhere for
-// every caller but one narrowed to zero recognised scopes.
-func scopeList(held []access.Scope) string {
-	if len(held) == 0 {
-		return nothingHeld
-	}
-	names := make([]string, 0, len(held))
-	for _, scope := range held {
-		names = append(names, scope.String())
-	}
-	return strings.Join(names, ", ")
 }
 
 // allowedOnProject resolves the request's project, decides, and reports

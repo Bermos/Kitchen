@@ -60,15 +60,6 @@ type stubDirectory struct {
 	keysErr   error
 	createErr error
 	deleteErr error
-
-	// The platform-credential half, which platformcredentials_test.go drives.
-	// It is the same three operations against one flat list, because a
-	// platform credential belongs to the platform rather than to a project.
-	platformKeys      []idp.PlatformKey
-	platformDeleted   []string
-	platformKeysErr   error
-	platformCreateErr error
-	platformDeleteErr error
 }
 
 func (d *stubDirectory) AccountByEmail(_ context.Context, email string) (*idp.Account, error) {

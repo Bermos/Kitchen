@@ -131,30 +131,6 @@ type SurveyInput struct {
 	Message string
 }
 
-// credentialRole is what a platform credential's survey row reports in the
-// column a person's row reports a role in: the scopes it holds, and the fact
-// that it has lapsed when it has.
-//
-// "expired" is part of the value rather than a flag of its own because the
-// survey's flags mean something specific — Inactive, Unknown and Orphaned are
-// all statements about whether anybody is behind a grant — and a lapsed
-// credential is a live grant that currently grants nothing, which is a
-// different thing and belongs where a reviewer reads what is held.
-func credentialRole(credential kitchenv1alpha1.PlatformCredential, at time.Time) string {
-	scopes := make([]string, 0, len(credential.Scopes))
-	for _, scope := range credential.Scopes {
-		scopes = append(scopes, string(scope))
-	}
-	held := strings.Join(scopes, " ")
-	if held == "" {
-		held = "no scope"
-	}
-	if Expired(credential, at) {
-		return held + " (expired)"
-	}
-	return held
-}
-
 // Survey materializes who holds what.
 //
 // The one judgement in it is the definition of an orphan, and it is the
@@ -198,20 +174,6 @@ func Survey(in SurveyInput) IdentitySurvey {
 	if in.Kitchen != nil {
 		for _, operator := range in.Kitchen.Spec.Access.Operators {
 			add(operator.Subject, operator.Email, PlatformGrant, PlatformOperator.String())
-		}
-		// Platform credentials are surveyed beside the operators, because they
-		// are the platform's other non-human access and the whole point of a
-		// recertification is that nobody has to remember they exist. A lapsed
-		// one is still surveyed: it holds nothing, but the grant is still on
-		// the object and "there is a credential here nobody has cleaned up" is
-		// exactly what a reviewer should see.
-		//
-		// The role a credential's row carries is its scopes, spelled the way
-		// they are written down. There is no role to report — that is the
-		// design — and reporting the empty string would put a row in front of
-		// a reviewer with nothing in the column they decide from.
-		for _, credential := range in.Kitchen.Spec.Access.Credentials {
-			add(credential.Subject, credential.Email, PlatformGrant, credentialRole(credential, in.At))
 		}
 	}
 	for i := range in.Projects {

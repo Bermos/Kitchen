@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -169,12 +168,10 @@ type AccessSweeper struct {
 	reported map[string]struct{}
 }
 
-// AccountDirectory is the slice of the identity provider this sweep needs: the
-// account list the survey reads, and the one write it makes — taking back a
-// platform credential that has lapsed. An interface so a test needs no issuer.
+// AccountDirectory is the slice of the identity provider the survey needs: an
+// interface so a test needs no issuer.
 type AccountDirectory interface {
 	Accounts(ctx context.Context) ([]idp.Account, error)
-	DeletePlatformKey(ctx context.Context, name string) (*idp.PlatformKey, error)
 }
 
 // ActivityStore is the slice of the telemetry store the survey needs.
@@ -235,9 +232,6 @@ type AccessSweepReport struct {
 	// platform does not recognise, and LastOutOfBand the newest such write.
 	OutOfBand     int
 	LastOutOfBand *time.Time
-	// CredentialsSwept is how many lapsed platform credentials this pass
-	// removed.
-	CredentialsSwept int
 	// Message explains a pass that could not do all of its work.
 	Message string
 }
@@ -255,17 +249,6 @@ func (s *AccessSweeper) SweepOnce(ctx context.Context) (AccessSweepReport, error
 	if err := s.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
 		return report, client.IgnoreNotFound(err)
 	}
-	// Expired platform credentials are swept first and outside the compliance
-	// gate below, because this is hygiene rather than a control: the *expiry*
-	// is enforced at every request by access.ScopesFor, so a lapsed credential
-	// already holds nothing whether or not this ever runs, and whether or not
-	// the access controls are turned on. What is left to do is take the dead
-	// entry off the platform and the account behind it off the issuer, so an
-	// installation does not accumulate accounts nothing will ever authenticate
-	// again. An installation that has turned the access controls off has the
-	// same interest in that as one that has not.
-	report.CredentialsSwept = s.sweepCredentials(ctx, kitchen)
-
 	cfg := kitchen.Spec.Compliance.Access
 	if !cfg.Enabled {
 		report.Message = "the access controls are turned off in spec.compliance.access: no cycle opens on " +
@@ -337,173 +320,6 @@ func (s *AccessSweeper) survey(
 		At:                 s.now(),
 		Message:            strings.Join(messages, "; "),
 	}), strings.Join(messages, "; ")
-}
-
-// sweepCredentials takes lapsed platform credentials off the platform: the
-// grant on the singleton, and the account behind it at the issuer.
-//
-// It is hygiene and not enforcement — access.ScopesFor already refuses a
-// lapsed credential at every request — which is what decides everything about
-// how it behaves. It is quiet: a pass that cannot reach the issuer removes
-// nothing and says so at V(1) rather than failing the sweep, because nothing is
-// getting through in the meantime. It is one patch: the credentials that
-// lapsed since the last pass go together, so the object is written once even
-// on the morning a batch of them expire.
-//
-// The record comes first for each one, as it does for every write the platform
-// makes. A credential whose removal the log will not record stays where it is
-// and is tried again next pass, holding nothing the whole time.
-func (s *AccessSweeper) sweepCredentials(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) int {
-	now := s.now()
-	lapsed := []kitchenv1alpha1.PlatformCredential{}
-	for _, credential := range kitchen.Spec.Access.Credentials {
-		if access.Expired(credential, now) {
-			lapsed = append(lapsed, credential)
-		}
-	}
-	if len(lapsed) == 0 {
-		return 0
-	}
-
-	directory, err := s.credentialDirectory(ctx, kitchen)
-	if err != nil {
-		logf.FromContext(ctx).V(1).Info("lapsed platform credentials were left in place: "+
-			"the identity provider could not be reached", "credentials", len(lapsed), "reason", err.Error())
-		return 0
-	}
-
-	base := kitchen.DeepCopy()
-	swept := 0
-	for _, credential := range lapsed {
-		name, named := idp.PlatformKeyName(credential.Email)
-		if !named {
-			// A grant somebody wrote by hand, naming no address this platform
-			// issued. The entry is still removed — it grants nothing and being
-			// past its expiry is not a state anything should stay in — but
-			// there is no account here to take back, and the record says so
-			// rather than implying one was.
-			logf.FromContext(ctx).Info("removing a lapsed platform credential that names no issued account",
-				"subject", credential.Subject)
-		}
-		if err := s.Audit.Record(ctx, credentialSweptTransition(kitchen, credential, name, named)); err != nil {
-			logf.FromContext(ctx).V(1).Info("a lapsed platform credential was left in place: "+
-				"the audit log would not record its removal", "subject", credential.Subject,
-				"reason", err.Error())
-			continue
-		}
-		if named {
-			switch _, err := directory.DeletePlatformKey(ctx, name); {
-			case err == nil, errors.Is(err, idp.ErrKeyNotFound):
-				// Already gone at the issuer is the end state this wanted.
-			default:
-				logf.FromContext(ctx).V(1).Info("a lapsed platform credential's account could not be "+
-					"removed at the identity provider; its grant is coming off anyway",
-					"credential", name, "reason", err.Error())
-			}
-		}
-		if at := indexOfCredential(kitchen, credential.Subject); at >= 0 {
-			kitchen.Spec.Access.Credentials = append(
-				kitchen.Spec.Access.Credentials[:at], kitchen.Spec.Access.Credentials[at+1:]...)
-		}
-		swept++
-	}
-	if swept == 0 {
-		return 0
-	}
-
-	if err := s.Patch(ctx, kitchen, client.MergeFrom(base)); err != nil {
-		logf.FromContext(ctx).V(1).Info("lapsed platform credentials were revoked but their grants "+
-			"are still on the platform", "credentials", swept, "reason", err.Error())
-		return 0
-	}
-	logf.FromContext(ctx).Info("swept lapsed platform credentials", "credentials", swept)
-	return swept
-}
-
-// indexOfCredential is where a subject's grant sits on the singleton, and -1
-// when it holds none.
-func indexOfCredential(kitchen *kitchenv1alpha1.Kitchen, subject string) int {
-	for i := range kitchen.Spec.Access.Credentials {
-		if kitchen.Spec.Access.Credentials[i].Subject == subject {
-			return i
-		}
-	}
-	return -1
-}
-
-// credentialDirectory resolves the identity provider the sweep revokes
-// through. It is the same resolution the survey's accounts() makes, kept
-// separate because the survey tolerates a directory that will not answer and
-// this simply does nothing until one does.
-func (s *AccessSweeper) credentialDirectory(
-	ctx context.Context, kitchen *kitchenv1alpha1.Kitchen,
-) (AccountDirectory, error) {
-	ref := kitchen.Spec.Auth.SecretRef
-	if ref == nil {
-		return nil, fmt.Errorf("this installation runs no identity provider of Kitchen's")
-	}
-	secret := &corev1.Secret{}
-	if err := s.Get(ctx, types.NamespacedName{Namespace: PlatformNamespace, Name: ref.Name}, secret); err != nil {
-		return nil, err
-	}
-	cfg, err := idp.ConfigFromSecret(secret)
-	if err != nil {
-		return nil, err
-	}
-	if s.Accounts != nil {
-		return s.Accounts(cfg), nil
-	}
-	return idp.New(cfg), nil
-}
-
-// credentialSweptTransition is the record a lapsed credential's removal makes.
-// It is classified `access` for the reason every credential record is: it is a
-// change to who may do what, and an auditor asking "when did that agent stop
-// being able to read the platform" has to find it.
-func credentialSweptTransition(
-	kitchen *kitchenv1alpha1.Kitchen,
-	credential kitchenv1alpha1.PlatformCredential,
-	name string,
-	named bool,
-) audit.Transition {
-	scopes := make([]string, 0, len(credential.Scopes))
-	for _, scope := range credential.Scopes {
-		scopes = append(scopes, string(scope))
-	}
-	details := map[string]any{
-		"credential": name,
-		"subject":    credential.Subject,
-		"scopes":     scopes,
-		"change":     "credential-expired",
-	}
-	if !credential.Expires.IsZero() {
-		details["expires"] = credential.Expires.UTC().Format(time.RFC3339)
-	}
-	if !named {
-		details["accountRemoved"] = false
-	}
-	return audit.Transition{
-		Object:     kitchen,
-		Kind:       audit.KindPlatformCredential,
-		Operation:  clickhouse.AuditDelete,
-		Controller: actorAccessReviewController,
-		Privileged: audit.PrivilegeAccess,
-		From:       strings.Join(scopes, ", "),
-		Reason: fmt.Sprintf(
-			"the platform credential %s expired and was removed, with the account that owned it",
-			credentialLabel(name, credential.Subject)),
-		Details: details,
-	}
-}
-
-// credentialLabel is how a record names a credential: by the name it was
-// issued under when the platform issued it, and by its subject when the grant
-// names no address this platform wrote.
-func credentialLabel(name, subject string) string {
-	if name != "" {
-		return name
-	}
-	return subject
 }
 
 // activity reads when each identity was last recorded doing something.

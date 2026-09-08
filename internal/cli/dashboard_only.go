@@ -25,24 +25,19 @@ import (
 // The commands no credential this CLI can store is able to run, and what they
 // say about themselves instead (#208).
 //
-// **No command declares this today, and that is the point of the mechanism
-// rather than a sign it is dead.** #208 found four command families calling
-// nothing but the platform's own surface, which the API answered to the
-// operator role alone — so they shipped unrunnable, and said so here. #349
-// built the credential that runs them: a platform credential holds *scopes*
-// on the platform, `kitchen login` stores one, and every route those four
-// families reach names a scope. The declarations came off with it.
+// `kitchen login` stores one kind of credential: an API key, which is a
+// machine account holding a role on **one project**. A handful of commands
+// call nothing but the platform's own surface, which the API answers to the
+// operator role alone — so those commands are in `--help`, in `kitchen
+// schema` and in the documentation, and there is no credential that can run
+// them. The bootstrap loop makes it worse rather than better: a key comes
+// from a project's key panel, which is a browser.
 //
-// What stays is the rule, held by TestDashboardOnlyMatchesTheAPIsTable: a
-// command all of whose routes are the operator's *and* name no scope cannot be
-// run by anything this CLI can hold, and it has to say so rather than shipping
-// silent. Issuing a credential is exactly such a command and is deliberately
-// not one — see docs/CLI.md, "Issuing a platform credential is the
-// dashboard's" — so the next command that qualifies will find the mechanism
-// here rather than having to invent it.
-//
-// Where a command does declare it, three things say the same sentence, and all
-// three come from here so they cannot come to say three different things:
+// The decision on #208 is that they are **the dashboard's for now**, stated
+// rather than left to be discovered: a platform-scoped key is the real answer
+// and is designed together with what a CI key is, since both reshape what a
+// key is. Until then, three things say the same sentence, and all three come
+// from here so they cannot come to say three different things:
 //
 //   - `--help` and `kitchen schema`'s description, through the paragraph
 //     describe appends to a command that declares itself this way;
@@ -72,9 +67,9 @@ type dashboardOnly struct {
 
 // dashboardOnlyReason is that one constant: why a stored credential cannot,
 // in the words the failure, the help and the schema all use.
-const dashboardOnlyReason = "this command calls the platform's own surface, and every route it reaches " +
-	"needs the operator role rather than a platform scope — so neither a project API key nor a platform " +
-	"credential `kitchen login` can store will run it"
+const dashboardOnlyReason = "a project API key holds a role on one project, and this command calls " +
+	"the platform's own surface, which needs the operator role — no credential `kitchen login` can " +
+	"store holds one"
 
 // onlyInTheDashboard is what a command declares in its metadata. Naming the
 // screen is the whole of what a caller has to be told beyond the reason, so it

@@ -114,14 +114,6 @@ domain?" and "may Anna deploy `billing`?":
 - the **project role**, per account per project, from `spec.access` on each
   `Project`. An operator holds `admin` on every project, present and future.
 
-Beside them, and not a third axis, are **platform scopes**: what a *platform
-credential* holds instead of a role, from `spec.access.credentials` on the
-singleton. A `Requires` of `operator or platform.read` means either satisfies
-the route. A person never holds a scope and a credential never holds a role, so
-the two never have to be compared — see
-[AUTH.md, "Platform credentials"](AUTH.md#platform-credentials) and
-[docs/api/platform.md](api/platform.md) for the routes that issue one.
-
 The `Requires` column on every endpoint below says which of the two it wants.
 An unqualified `viewer`, `developer` or `admin` is a **project** role, on the
 project the request is about — the path's for `/projects/{name}/…`, and
@@ -135,19 +127,11 @@ are not roles:
 | `any person` | a valid token that is not a CI key's. Not a role — a machine account already holds the role it needs; what this refuses is *widening* it. Three routes, and they are the create-a-project form: `POST /projects`, and the two fields it is filled in from (`GET /connections/{name}/repositories`, `POST /connections/{name}/detect`), which answer from the platform's own git credential |
 | `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
 | `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role, and any list inside it is narrowed to the projects they can see. Two routes: `GET /status` and `GET /connections` |
-| `operator or <scope>` | the operator role, **or** a platform credential holding that scope. A route that names no scope is the operator's and cannot be reached by any credential, which is why almost every operator row here says only `operator` |
 
 The whole table lives in one place in the operator — `internal/api/policy.go`,
 which every route is registered from — so a route cannot exist without a
 requirement, and the dashboard's copy of it is generated rather than written
 twice.
-
-**A route that names no scope can never be reached by a credential**, and that
-is the default rather than something to remember. Adding a scope to a route is
-an edit to `internal/api/policy.go` in the line that says what the route does;
-four categories will never carry one, and a test holds it: issuing a credential
-of either kind, `PATCH /settings` (it carries the operator list), `/updates`,
-and every connection write.
 
 **A requirement is a floor.** A route is the unit of authorization, so a
 condition that depends on the *body* of one request rather than on the route
@@ -175,20 +159,6 @@ which is what makes recovering itself the day job it is marked as.
 
 ```json
 {"error": "changing the platform's settings needs the operator role; you are a member"}
-```
-
-**And a scoped route names the scope**, the same way:
-
-```json
-{"error": "exporting the platform's state needs the operator role, or a platform credential scoped backup.run; this credential holds platform.read"}
-```
-
-A credential narrowed to named projects, asking about one it was narrowed away
-from, is told which it was narrowed to — the narrowing is not a secret from the
-credential it was applied to:
-
-```json
-{"error": "exporting a project's audit pack is scoped compliance.read on this credential, which was narrowed to billing, shop"}
 ```
 
 **`404` is what an object you hold no role on looks like.** Not `403`: on a
@@ -236,7 +206,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/projects/{name}/releases` | That project's releases, newest first | `viewer` |
 | GET | `/projects/{name}/environments` | That project's environments | `viewer` |
 | POST | `/projects/{name}/environments` | Declare one before anything deploys into it, with its bar already set. The type is derived from the project's promotion pipeline; the owners, requirements, `dataClass`, `residency`, `serves`, `criticality`, `rto` and `rpo` in the body are the owners' declaration and an environment that does not exist yet has none, so those are the operator's | `developer` to reach; the handler admits the declaration fields from operators alone |
-| GET | `/projects/{name}/audit-pack` | One project's whole compliance answer for one half-open window, signed and byte-reproducible: inventory, change log with author and approver, promotions and their decisions with reproduction inputs, the evidence index per artifact, exceptions, recertification cycles, drift, the audit log's slice and every signed statement carried whole. `?from=` and `?to=` are required; `?format=` is `json`, `dsse` or `html` | `operator` or `compliance.read`, which a credential may be narrowed to named projects for |
+| GET | `/projects/{name}/audit-pack` | One project's whole compliance answer for one half-open window, signed and byte-reproducible: inventory, change log with author and approver, promotions and their decisions with reproduction inputs, the evidence index per artifact, exceptions, recertification cycles, drift, the audit log's slice and every signed statement carried whole. `?from=` and `?to=` are required; `?format=` is `json`, `dsse` or `html` | `operator` |
 | GET | `/projects/{name}/requests` | What other projects have asked to bind of this one's offerings, oldest first — waiting, admitted or refused, each naming the project, the claim and the account that asked | `admin` |
 | PATCH | `/projects/{name}/requests/{claim}` | Admit one consumer to an offering, or withdraw one: `{"decision": "approved"}`, or `denied` with the `reason` the consumer reads on its claim | `admin` |
 | GET | `/projects/{name}/members` | Who holds a role on it — the readable form of `spec.access` | `viewer` |
@@ -300,14 +270,14 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | DELETE | `/notifications/subscriptions/{name}` | Delete it, its signing key and its delivery history | `admin` |
 | GET | `/notifications/deliveries` | Every delivery, newest first, dead letters included. `?subscription=`, `?phase=` | any account — filtered |
 | POST | `/notifications/deliveries/{name}/retry` | Put a dead letter back on the queue. `202` | `admin` |
-| GET | `/access/identities` | Who holds what on the platform right now, one row per grant, with last activity and whether anything is still behind it | `operator` or `compliance.read` |
-| GET | `/access/reviews` | The recertification register, newest first. `?historical=true` adds the closed cycles | `operator` or `compliance.read` |
+| GET | `/access/identities` | Who holds what on the platform right now, one row per grant, with last activity and whether anything is still behind it | `operator` |
+| GET | `/access/reviews` | The recertification register, newest first. `?historical=true` adds the closed cycles | `operator` |
 | POST | `/access/reviews` | Open a recertification cycle out of cadence; the snapshot is frozen on the spot | `operator` |
-| GET | `/access/reviews/{name}` | One cycle whole: the snapshot, every decision, and the artefact it produced | `operator` or `compliance.read` |
+| GET | `/access/reviews/{name}` | One cycle whole: the snapshot, every decision, and the artefact it produced | `operator` |
 | PATCH | `/access/reviews/{name}` | Record decisions, close the cycle, or both. Closing applies the revocations and mints the artefact | `operator` |
 | GET | `/audit` | The tamper-evident log of state transitions. `?kind=`, `?name=`, `?project=`, `?actor=`, `?privileged=true`, `?privilegeClass=`, `?since=`, `?until=`, `?limit=` | any account — filtered |
-| GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` or `compliance.read` |
-| GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, the key artifacts are signed under, and the conditions nobody has tended to | `operator` or `compliance.read` |
+| GET | `/audit/verify` | Re-derive the chain's hashes over a run and report every break. `?from=`, `?limit=` | `operator` |
+| GET | `/compliance` | What the platform is producing: whether the audit log is recording, decisions are stored, the key artifacts are signed under, and the conditions nobody has tended to | `operator` |
 | GET | `/compliance/inventory` | Every environment and claim with its data class, provenance and residency — the classification inventory, exportable in one request | any account — filtered |
 | GET | `/compliance/drift` | Deployed releases measured against their environment's bar today: what is running that no longer meets it, and whether each rule started failing after promotion or was waived there. `?project=`, `?environment=`, `?all=true` | any account — filtered |
 | GET | `/compliance/criticality` | The function-to-resource mapping: every designated function with the environments, releases, claims, connections, domains and third parties behind it. `?criticality=` narrows to a designation and worse, `?project=` to one | any account — filtered |
@@ -327,26 +297,23 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | POST | `/alerts/silence` | Quieten one delivery, with a reason and an expiry. Never reaches the other audience's row | as above |
 | POST | `/alerts/unsilence` | Lift a silence before it expires — a record, not a deletion | as above |
 | POST | `/alerts/claim` | Take the escalated ticket. Any operator; there is no rota | `operator` |
-| GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list | `operator` or `platform.read` |
-| GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything | `operator` or `platform.read` |
-| GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all | `operator` or `platform.read` |
-| GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates | `operator` or `platform.read` |
-| GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` or `platform.read` |
-| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` or `platform.read` |
-| GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` or `platform.read` |
-| GET | `/platform/retention` | How long each class of what the platform keeps is kept, and how far back each one actually goes | `operator` or `platform.read` |
+| GET | `/platform/signals` | Every finding firing anywhere on the platform, worst first — the problems list | `operator` |
+| GET | `/platform/nodes` | Per node: conditions, pods, and when its collector last shipped anything | `operator` |
+| GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all | `operator` |
+| GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates | `operator` |
+| GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` |
+| GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` |
+| GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` |
+| GET | `/platform/retention` | How long each class of what the platform keeps is kept, and how far back each one actually goes | `operator` |
 | PATCH | `/platform/retention` | Change any class's retention. Refuses an audit retention under the documented floor without an explicit override | `operator` |
 | GET | `/platform/policy` | What this installation counts as worth hearing: the correlation threshold and window, the escalation clock, the longest silence, and the three presets | `operator` |
 | PATCH | `/platform/policy` | Change any of those numbers, or rebase on a preset. Every finding records the values it was evaluated against | `operator` |
-| GET | `/platform/backup` | What an export would carry, what it would not, and whether this cluster can snapshot volumes | `operator` or `backup.run` |
-| POST | `/platform/backup` | Export the platform's state as one gzipped tar | `operator` or `backup.run` |
+| GET | `/platform/backup` | What an export would carry, what it would not, and whether this cluster can snapshot volumes | `operator` |
+| POST | `/platform/backup` | Export the platform's state as one gzipped tar | `operator` |
 | PUT | `/platform/backup/destination` | Set where scheduled archives are written, and what encrypts them there. Carries the bucket's credential and the archive's key; echoes neither | `operator` |
 | DELETE | `/platform/backup/destination` | Remove the destination and the credential this API wrote for it | `operator` |
-| GET | `/platform/backup/runs` | What the destination actually holds: key, size, time | `operator` or `backup.run` |
-| POST | `/platform/backup/runs` | Take a backup to the destination now. `202` with the Job's name | `operator` or `backup.run` |
-| GET | `/platform/credentials` | Every platform credential this installation has issued: its scopes, what it was narrowed to, when it expires, when it was last used. Never a value | `operator` |
-| POST | `/platform/credentials` | Issue one. The credential is in this response and in no other. Names no scope on purpose — no credential may mint another | `operator` |
-| DELETE | `/platform/credentials/{name}` | Revoke one and take its grant off the platform. `204` | `operator` |
+| GET | `/platform/backup/runs` | What the destination actually holds: key, size, time | `operator` |
+| POST | `/platform/backup/runs` | Take a backup to the destination now. `202` with the Job's name | `operator` |
 | GET | `/settings` | The platform's settings — the `Kitchen` singleton, operator list included | `operator` |
 | PATCH | `/settings` | Change the build and telemetry defaults, or who the operators are | `operator` |
 | GET | `/updates` | The platform's own version, what it can upgrade to, and every upgrade it has attempted. `?refresh=true` asks the registry again | `operator` |

@@ -61,26 +61,10 @@ var accessNow = time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 type stubAccountDirectory struct {
 	accounts []idp.Account
 	err      error
-
-	// The credential sweep's one write, and what it was asked to take back.
-	revoked    []string
-	revokeErr  error
-	revokeGone bool
 }
 
 func (d *stubAccountDirectory) Accounts(context.Context) ([]idp.Account, error) {
 	return d.accounts, d.err
-}
-
-func (d *stubAccountDirectory) DeletePlatformKey(_ context.Context, name string) (*idp.PlatformKey, error) {
-	d.revoked = append(d.revoked, name)
-	if d.revokeErr != nil {
-		return nil, d.revokeErr
-	}
-	if d.revokeGone {
-		return nil, idp.ErrKeyNotFound
-	}
-	return &idp.PlatformKey{Name: name, Email: idp.PlatformAddress(name)}, nil
 }
 
 type fakeActivityStore struct {
@@ -147,12 +131,6 @@ func newAccessFixtures(t *testing.T, extra ...client.Object) *accessFixtures {
 				"issuer": []byte("https://auth.example.com"),
 				"url":    []byte("http://auth.kitchen-system.svc:3000"),
 				"token":  []byte("service-token"),
-				// The operator's own credential at the issuer. Without it the
-				// secret does not resolve to a config at all, so every read
-				// through the directory — the survey's account list and the
-				// credential sweep's revocation alike — fails before it asks
-				// the stub anything.
-				"serviceKey": []byte("service-key"),
 			},
 		},
 		&kitchenv1alpha1.Project{
@@ -631,107 +609,5 @@ func TestADirectoryThatWillNotAnswerClaimsNoOrphans(t *testing.T) {
 	}
 	if report.Message == "" {
 		t.Error("the survey must say what it could not read")
-	}
-}
-
-// A lapsed platform credential is taken off the platform and off the issuer.
-// The expiry itself is enforced at every request (access.ScopesFor), so what
-// this proves is the hygiene half: nothing accumulates.
-func TestTheSweepRemovesLapsedPlatformCredentials(t *testing.T) {
-	fixtures := newAccessFixtures(t)
-	ctx := context.Background()
-	fixtures.grantCredentials(t,
-		expiringCredential("nightly", accessNow.Add(-time.Hour)),
-		expiringCredential("weekly", accessNow.Add(time.Hour)),
-	)
-
-	report, err := fixtures.sweeper.SweepOnce(ctx)
-	if err != nil {
-		t.Fatalf("SweepOnce: %v", err)
-	}
-	if report.CredentialsSwept != 1 {
-		t.Fatalf("want one credential swept, got %d", report.CredentialsSwept)
-	}
-	if len(fixtures.directory.revoked) != 1 || fixtures.directory.revoked[0] != "nightly" {
-		t.Fatalf("want the lapsed credential revoked at the issuer, got %v", fixtures.directory.revoked)
-	}
-
-	kitchen := &kitchenv1alpha1.Kitchen{}
-	if err := fixtures.client.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
-		t.Fatal(err)
-	}
-	left := kitchen.Spec.Access.Credentials
-	if len(left) != 1 || left[0].Subject != "sub-weekly" {
-		t.Fatalf("want only the live credential left, got %v", left)
-	}
-}
-
-// An issuer that will not answer leaves the grant exactly where it is. Nothing
-// is getting through in the meantime — the credential lapsed — so removing the
-// grant while the account stays behind would trade a tidy list for an account
-// nothing will ever clean up.
-func TestTheSweepLeavesLapsedCredentialsWhenTheIssuerIsUnreachable(t *testing.T) {
-	fixtures := newAccessFixtures(t)
-	ctx := context.Background()
-	fixtures.grantCredentials(t, expiringCredential("nightly", accessNow.Add(-time.Hour)))
-	fixtures.sweeper.Accounts = func(idp.Config) AccountDirectory { return fixtures.directory }
-	fixtures.directory.revokeErr = idp.ErrNoPlatformKeyDirectory
-
-	report, err := fixtures.sweeper.SweepOnce(ctx)
-	if err != nil {
-		t.Fatalf("SweepOnce: %v", err)
-	}
-	// The revocation was attempted and failed; the grant comes off anyway,
-	// because a grant that outlives its credential is the half that can still
-	// be acted on and the account is now the operator's to tidy.
-	if report.CredentialsSwept != 1 {
-		t.Fatalf("want the grant removed even so, got %d swept", report.CredentialsSwept)
-	}
-	kitchen := &kitchenv1alpha1.Kitchen{}
-	if err := fixtures.client.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
-		t.Fatal(err)
-	}
-	if len(kitchen.Spec.Access.Credentials) != 0 {
-		t.Fatalf("want no credential left, got %v", kitchen.Spec.Access.Credentials)
-	}
-}
-
-// A live credential is surveyed like every other identity, so a recertification
-// puts it in front of a reviewer with its scopes in the column they decide from.
-func TestALivePlatformCredentialIsSurveyed(t *testing.T) {
-	fixtures := newAccessFixtures(t)
-	fixtures.grantCredentials(t, expiringCredential("nightly", accessNow.Add(time.Hour)))
-
-	report, err := fixtures.sweeper.SweepOnce(context.Background())
-	if err != nil {
-		t.Fatalf("SweepOnce: %v", err)
-	}
-	if report.Identities != 3 {
-		t.Fatalf("want the credential surveyed beside the two grants, got %d identities", report.Identities)
-	}
-}
-
-// expiringCredential is one grant, named the way the platform names one.
-func expiringCredential(name string, expires time.Time) kitchenv1alpha1.PlatformCredential {
-	return kitchenv1alpha1.PlatformCredential{
-		AccessSubject: kitchenv1alpha1.AccessSubject{
-			Subject: "sub-" + name, Email: idp.PlatformAddress(name),
-		},
-		Scopes:  []kitchenv1alpha1.PlatformScope{kitchenv1alpha1.PlatformScopeRead},
-		Expires: metav1.NewTime(expires),
-	}
-}
-
-// grantCredentials puts credentials on the singleton these fixtures built.
-func (f *accessFixtures) grantCredentials(t *testing.T, entries ...kitchenv1alpha1.PlatformCredential) {
-	t.Helper()
-	kitchen := &kitchenv1alpha1.Kitchen{}
-	ctx := context.Background()
-	if err := f.client.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
-		t.Fatal(err)
-	}
-	kitchen.Spec.Access.Credentials = entries
-	if err := f.client.Update(ctx, kitchen); err != nil {
-		t.Fatal(err)
 	}
 }

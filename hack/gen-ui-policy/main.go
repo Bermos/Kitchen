@@ -126,11 +126,6 @@ func writeRoles(buf *bytes.Buffer, policy api.Policy) error {
 		return err
 	}
 
-	scopes, err := literalStrings(policy.PlatformScopes)
-	if err != nil {
-		return err
-	}
-
 	fmt.Fprintf(buf, `/** The platform roles, weakest first: exactly one per account. */
 export const PLATFORM_ROLES = [%s] as const;
 export type PlatformRole = (typeof PLATFORM_ROLES)[number];
@@ -139,15 +134,7 @@ export type PlatformRole = (typeof PLATFORM_ROLES)[number];
 export const PROJECT_ROLES = [%s] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
 
-/**
- * The platform scopes a platform credential may hold. Unordered, unlike the
- * roles: scopes do not contain one another, so there is no comparison to make
- * between two of them — a credential holds a set, and a route names one.
- */
-export const PLATFORM_SCOPES = [%s] as const;
-export type PlatformScope = (typeof PLATFORM_SCOPES)[number];
-
-`, platform, project, scopes)
+`, platform, project)
 	return nil
 }
 
@@ -192,16 +179,6 @@ export interface Requirement {
    * a caller holding a valid token.
    */
   doing?: string;
-  /**
-   * The platform scope that reaches this route as well as the operator role,
-   * for the handful of rows that name one. Absent everywhere else, which is
-   * how the API spells "no platform credential may ever reach this".
-   *
-   * The dashboard reads it to say what a scope is for: the Credentials screen
-   * lists the operations each scope reaches, out of this table, rather than
-   * asking somebody to pick from a vocabulary with nothing beside it.
-   */
-  scope?: PlatformScope;
 }
 
 `, kinds, api.PolicyAuthenticated, api.PolicyPerson, api.PolicyOperator,
@@ -289,13 +266,6 @@ func renderRoute(route api.PolicyRoute) (string, error) {
 			return "", err
 		}
 		fields = append(fields, fmt.Sprintf("doing: %s", doing))
-	}
-	if route.Scope != "" {
-		scope, err := literal(route.Scope)
-		if err != nil {
-			return "", err
-		}
-		fields = append(fields, fmt.Sprintf("scope: %s", scope))
 	}
 	return fmt.Sprintf("  %s: { %s },\n", pattern, strings.Join(fields, ", ")), nil
 }
