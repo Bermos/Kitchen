@@ -44,6 +44,8 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-08: A new `time.Time` response field carried `json:",omitempty"`, which never omits a struct, so every row with no reading served `readingAt: "0001-01-01T00:00:00Z"` while the new docs page said the field is absent there. Ask: is the new date field a `time.Time` with `omitempty` (never omitted) rather than `omitzero`, a pointer, or a string?
 
 >>>>>>> fb90652 (chore(agents): the #530 implementer's and the #546 reviewer's lessons)
+- 2026-09-08: A "put the object back under the field manager that owned it" design was defeated by its own sanitiser: `replacementFor` set `ManagedFields = nil` before `createStashedStatefulSet` read them with `applyOwnerOf`, so the apply branch was dead and every replacement was a plain `Create` — after which the next Helm 4 `helm upgrade` fails with `Apply failed with N conflicts`. The only test was `applyOwnerOf` on a hand-built object, never on the value the caller passes. Ask: does the unit test feed the function the object the production caller feeds it, or one built to make it pass?
+
 ## Chain links that were missed
 
 - 2026-09-06: A route landed without its `docs/API.md` row; a field landed without `docs/CRDS.md`; a chart value landed without its README row. The tests cover policy, schema and the dashboard's policy copy; the docs rows and the screen are what they cannot.
@@ -71,6 +73,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-08: A new singleton status field an operator is told to read with `kubectl get kitchen default -o jsonpath=...` in two docs, surfaced by no route and no screen, on a platform whose premise is that nothing needs kubectl; the body called the screen "a reasonable follow-up" and filed no issue. Ask: is the deferred surface an issue with a number, or a sentence in a PR body nobody will find?
 
 >>>>>>> fb90652 (chore(agents): the #530 implementer's and the #546 reviewer's lessons)
+- 2026-09-08: A chart template that renders from `lookup` makes the manifest a function of cluster state, so `helm upgrade --dry-run` (client-side, the default) and `helm rollback` no longer agree with the live object — rollback to any revision predating an operator-side resize fails with the very immutable-field error the feature exists to remove. Ask: for a `lookup`-based template, what do `--dry-run`, `helm diff`, Argo CD and `helm rollback` render, and does the README say?
+- 2026-09-08: A "done" status was computed from the PVC's `spec.resources.requests` and never its `status.capacity`, so a CSI expansion that is pending a pod restart or has failed is reported `Settled` with the condition True. Ask: does this status read the request somebody wrote or the capacity the cluster delivered?
+
 ## Decisions that should have been surfaced
 
 - 2026-09-07: A derived input (`store_volume_usage`) made a Critical rule answer "cannot be evaluated" *forever* on any installation that set `collector.metrics.kubelet.enabled: false` — plus a permanent `status.signals.unreadable` line, the same shape as the audit-table one. Ask: which supported chart value makes this new input dark, and does the body name that configuration rather than the abstraction?
@@ -91,6 +96,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-07: A template comment rewritten to "correct" it dropped the half the old one got right (that the other mount order fails *silently*, not with a crash) while the commit body stated both. Ask: is the corrected comment as true as the commit message that explains it?
 - 2026-09-07: A fix that widens which containers hold the pushing credential (one more lifecycle phase) is a security-posture change even when it restores a broken path; the body must state the new principle, not only the bug. Ask: after this fix, how many containers hold the credential that can push, and does a comment elsewhere still claim there is one?
+
+- 2026-09-08: A PR argued against `status.components` because "a blocked resize there would make ComponentsHealthy false and requeue forever, a permanent red dot for a fact rather than a fault" — then wrote the same state as a `False` condition with an unclassified reason (so `conditionSeverityOf` defaults it to `severityError`) and put it in the reconciler's requeue predicate. Ask: does the condition the PR actually writes reproduce the cost the PR says it avoided by not writing a component row?
+- 2026-09-08: A monotonic "only ever grown" write with no upper bound and no route, command or screen that lowers it again: a mistyped `800Gi` raises the PVC request (which Kubernetes will not let you lower) and is recoverable only by `kubectl edit` on the singleton. Ask: for an irreversible write, what is the way back, and is it inside the product?
 
 ## Commit and title
 
