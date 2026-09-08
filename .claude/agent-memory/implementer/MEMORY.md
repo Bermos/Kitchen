@@ -34,6 +34,8 @@ lesson, dated, under the heading it belongs to. Merge duplicates; do not drop.
 - 2026-09-08: The API server refuses a size change to an **unbound** PVC — "spec is immutable after creation except resources.requests … for bound claims" — so any expansion path needs the claim Bound, in the fixture and in the code's own precondition. A Pending fixture makes the whole feature look broken for the wrong reason.
 - 2026-09-08: Before writing "none of these has a TTL out of the box", read the image's own config: `docker run --rm --entrypoint sh <image> -c 'grep -n <ttl> /etc/clickhouse-server/config.xml'`. The pinned ClickHouse already bounds `query_log` and `processors_profile_log` at 30 days and `asynchronous_insert_log` at 3 — shipping the issue's suggested 7 for the last one would have been the chart *loosening* an upstream bound.
 - 2026-09-08: A controller method called from one place and asserted nowhere is invisible to the whole suite. Prove the wiring by commenting the call out and watching the new test fail — and drive the test through the reconcile function, not the helper, or the mutation still passes.
+- 2026-09-08: A helper that nils `ManagedFields` on a copy kills every later read of the *field manager* off it — `replacementFor` nil-ed it and `applyOwnerOf` then always answered "", so the whole server-side-apply-under-the-original-owner branch was dead code that every test passed. Assert the ownership on the recreated object (`applyOwnerOf(restored)`), not just that the object came back.
+- 2026-09-08: A phase judged on `spec.resources.requests` reports a volume finished the moment the *request* moved; the driver's half is `status.capacity`, and a claim in `ControllerResizeFailed` has the request and not the space. Judge "done" on capacity, and carry the PVC's own condition message rather than composing one.
 
 ## Tooling and environment
 
@@ -78,6 +80,9 @@ lesson, dated, under the heading it belongs to. Merge duplicates; do not drop.
 - 2026-09-08: A wholesale revert merged from a stale branch passes every required check — nothing in the suite can assert that a file another PR added still exists. Type and diff size are the only signals; a `chore` PR touching 61 files is the tell.
 
 ## Design rules that bit
+- 2026-09-08: A `False` condition whose reason is not in `conditionSeverities` is drawn as a fault *and* usually joins a requeue predicate, so "this is a fact, not a fault" has to be implemented in three places at once: an exported `Reason…` constant, a severity in the table, and a requeue that excludes it. A comment saying it is a fact is not the implementation.
+- 2026-09-08: A poll loop that breaks on "the field is non-empty" breaks immediately on the value the field already had. Poll for the *expected* value, not for presence.
+
 
 - 2026-09-07: The chart's inline test suite is the `run:` steps of the `lint` job in `.github/workflows/helm.yml` (`helm template` + `grep`, or a `python3 <<'CHECK'` heredoc with `yaml`); there is no separate test file under `charts/`. A new chart assertion goes there, next to the checks about the same template, and is worth running against the *old* template once to prove it fails.
 - 2026-09-07: `ServiceOffering`'s Go field names differ from their JSON ones on purpose — `Speaks`/`Authorization`/`VisibleTo` exist because `Protocol`, `Auth` and `Visibility` are already the methods that apply the defaults. A new field with a default-applying method (`contract` → `Contracts`) has to take the same dodge, and the CRD keeps the obvious spelling.
