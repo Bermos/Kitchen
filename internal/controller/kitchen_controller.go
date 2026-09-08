@@ -237,6 +237,7 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	idlingReady := r.reconcileKeda(ctx, kitchen, setCond)
 	databasesReady := r.reconcileDatabases(ctx, kitchen, setCond)
+	volumesResized := r.reconcilePlatformVolumes(ctx, kitchen, setCond)
 	programmed := r.observeGateway(ctx, kitchen, setCond)
 	componentsHealthy := r.surveyComponents(ctx, kitchen, setCond)
 	setCond(condReady, metav1.ConditionTrue, "Reconciled", "platform infrastructure is in place")
@@ -258,10 +259,11 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		"backupReady", backupReady,
 		"scaleToZeroReady", idlingReady,
 		"databasesReady", databasesReady,
+		"volumesResized", volumesResized,
 		"componentsHealthy", componentsHealthy)
 	if !programmed || !schemaReady || !gateReady || !registryReady || !objectStoreReady || !certReady ||
 		!internalCAReady || !complianceReady || !accessReady || !idlingReady || !databasesReady ||
-		!componentsHealthy {
+		!volumesResized || !componentsHealthy {
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

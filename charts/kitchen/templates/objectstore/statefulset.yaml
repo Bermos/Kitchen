@@ -13,6 +13,16 @@ metadata:
   labels:
     {{- include "kitchen.labels" . | nindent 4 }}
     app.kubernetes.io/component: objectstore
+  {{- if .Values.objectStore.persistence.enabled }}
+  annotations:
+    # The size this volume should be, which the claim template below cannot
+    # carry on an upgrade: `volumeClaimTemplates` is immutable, so a changed
+    # size there is rejected by the API server and the whole `helm upgrade`
+    # fails. An annotation is mutable, so this is what a changed
+    # `persistence.size` actually moves; the operator grows the claim and
+    # rewrites the template behind it (#533).
+    kitchen.bermos.dev/storage-size: {{ .Values.objectStore.persistence.size | quote }}
+  {{- end }}
 spec:
   replicas: 1
   serviceName: {{ include "kitchen.objectStoreFullname" . }}-headless
@@ -188,7 +198,11 @@ spec:
           {{- toYaml .Values.objectStore.persistence.accessModes | nindent 10 }}
         resources:
           requests:
-            storage: {{ .Values.objectStore.persistence.size | quote }}
+            # The live template's own size where the StatefulSet already
+            # exists, so that `helm upgrade` never submits a change to an
+            # immutable field. The size that was asked for is the annotation
+            # above, and the operator is what moves this one.
+            storage: {{ include "kitchen.persistenceSize" (dict "ctx" $ "name" (include "kitchen.objectStoreFullname" .) "size" .Values.objectStore.persistence.size) | quote }}
         {{- with .Values.objectStore.persistence.storageClass }}
         storageClassName: {{ . | quote }}
         {{- end }}

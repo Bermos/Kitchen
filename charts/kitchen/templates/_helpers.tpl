@@ -1340,3 +1340,41 @@ does not run in.
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+The size to render into a platform StatefulSet's volume claim template.
+
+`volumeClaimTemplates` is immutable, so `helm upgrade --set
+clickhouse.persistence.size=40Gi` on a running install used to fail on a
+rendered template that was otherwise correct — the API server refuses the
+change, and the whole upgrade with it (#533). This renders the size the live
+StatefulSet already has where there is one, so the upgrade submits no change to
+the immutable field and succeeds; the size that was actually asked for travels
+in the `kitchen.bermos.dev/storage-size` annotation, which is mutable, and
+`KitchenReconciler` is what grows the claim and rewrites the template behind it.
+It is under none of Helm's constraints, which is the same argument as
+`scaleToZero.install`.
+
+`lookup` answers an empty map wherever there is no cluster to ask — `helm
+template`, `--dry-run`, and a first install — so the value is what renders in
+every one of those, and CI's renders are unaffected. Verified against a real
+API server under Helm 4.2.2 (which applies server-side) and Helm 3.16 (which
+does not); both accept the upgrade, and both reject it without this.
+
+Takes a dict of `ctx` (the root context), `name` (the StatefulSet's) and `size`
+(the value).
+*/}}
+{{- define "kitchen.persistenceSize" -}}
+{{- $size := .size -}}
+{{- $live := lookup "apps/v1" "StatefulSet" .ctx.Release.Namespace .name -}}
+{{- if $live -}}
+{{- $templates := dig "spec" "volumeClaimTemplates" (list) $live -}}
+{{- if $templates -}}
+{{- $current := dig "spec" "resources" "requests" "storage" "" (index $templates 0) -}}
+{{- if $current -}}
+{{- $size = $current -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $size -}}
+{{- end -}}

@@ -1715,6 +1715,71 @@ Removing a CRD field still needs care: the API server rejects a stored object
 that no longer validates, so land conversion work before shipping a breaking
 schema.
 
+### Growing a platform volume
+
+Every store the chart ships — the telemetry store, the accounts database, the
+registry and the object store — keeps its data on a StatefulSet's
+`volumeClaimTemplates`, and that field is **immutable**: the API server refuses
+every change to it, so a bigger `clickhouse.persistence.size` on a running
+install used to fail the whole upgrade with an error about a field nobody had
+touched (#533).
+
+It no longer does, and neither the value nor the command changes:
+
+```sh
+helm upgrade kitchen ./charts/kitchen --namespace kitchen-system \
+  --reset-then-reuse-values --set clickhouse.persistence.size=80Gi
+```
+
+What changed is who does the work. The template renders the size the live
+StatefulSet already has, so the upgrade submits no change to the immutable
+field; the size that was asked for arrives as the
+`kitchen.bermos.dev/storage-size` annotation, and the operator expands every
+claim the template made, replaces the StatefulSet with a matching template and
+waits. The same thing happens from **Platform → Storage** in the dashboard,
+which is where somebody already is when a volume is filling up, and from `POST
+/platform/storage/claims/{name}/resize`.
+
+Three things follow from it:
+
+- **A volume is only ever grown**, to the largest size anybody has asked for.
+  A `helm upgrade` still carrying the old value cannot undo a resize done from
+  the dashboard — it says so on the Storage screen instead, and carrying the
+  number back into your values is what makes the two agree.
+- **The storage class has to allow expansion** (`allowVolumeExpansion: true`).
+  Where it does not, the upgrade still succeeds and the platform reports
+  `Blocked` on the Kitchen singleton's `status.storage` and on the Storage
+  screen, naming the class: a volume on a class that cannot expand can only be
+  replaced, which is a restore rather than a resize. Nothing retries a
+  `Blocked` volume on a timer — there is nothing to come back for until
+  something changes — so after turning `allowVolumeExpansion` on, ask for the
+  size again from the Storage screen or with another `helm upgrade`.
+- **Shrinking is not an operation.** The chart asking for less than is running
+  is reported and ignored. Growing one is also capped at eight times the
+  current size in a single step, because it cannot be undone.
+
+**After a resize, the chart's rendered manifest is a function of cluster
+state.** The claim template renders from the live StatefulSet, which is what
+makes the upgrade succeed at all, and it has three consequences worth knowing:
+
+- `helm rollback` to a revision recorded *before* the resize fails with the
+  immutable-field error, because that revision's manifest still carries the
+  old size. Roll back to a revision at or after the resize instead, or
+  re-render the release at the current values.
+- `helm upgrade --dry-run` and `helm diff` render the *value*, not the live
+  size, so after a resize they show a shrink of a field the real upgrade would
+  never submit. `--dry-run=server` renders against the API server and shows
+  the truth.
+- **A GitOps controller is not a renderer, it is an applier.** Argo CD and
+  Flux render the chart without asking the cluster and then apply what they
+  rendered, so after a resize their sync fails on the immutable field — with
+  the same error `helm upgrade` used to give — and keeps failing until the
+  values carry the new size. Install this platform through one and the rule
+  is simply that a resize is followed by the value: grow it from the
+  dashboard, then commit the number.
+- Carrying the number back into your values after a resize removes all three:
+  the value and the live size agree again, and every renderer agrees with them.
+
 ### Pinned policy bundles after an upgrade
 
 An environment whose requirements pin a policy bundle pins it **by digest**,

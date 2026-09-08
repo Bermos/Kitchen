@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -1179,6 +1180,21 @@ type KitchenSpec struct {
 	// +optional
 	Retention RetentionSpec `json:"retention,omitempty"`
 
+	// Storage is how big the platform's own volumes should be — the one
+	// dimension of a running installation that Helm cannot change, because
+	// a StatefulSet's volumeClaimTemplates are immutable and every one of
+	// the platform's own volumes lives in one.
+	//
+	// It is here rather than only in the chart's values because it is the
+	// lever an operator reaches for at the moment `pvc.filling` fires, and
+	// reaching for it must not mean four kubectl invocations against the
+	// cluster this platform exists to abstract away (#533). The chart still
+	// declares its own answer, on each StatefulSet; this is what the API and
+	// the dashboard write, and the larger of the two is what the platform
+	// grows to.
+	// +optional
+	Storage PlatformStorageSpec `json:"storage,omitempty"`
+
 	// Residency declares where this installation's data is located — the
 	// region or jurisdiction of the cluster itself, in the operator's own
 	// vocabulary ("CH", "eu-central-1"). It is the platform-wide default an
@@ -1193,6 +1209,102 @@ type KitchenSpec struct {
 	// status, which takes precedence over any declaration.
 	// +optional
 	Residency string `json:"residency,omitempty"`
+}
+
+// PlatformStorageSpec is how big the platform's own volumes should be.
+//
+// A volume is only ever grown. Two things ask for a size — the chart, on each
+// StatefulSet it renders, and this block, which is what `POST
+// /platform/storage/claims/{name}/resize` writes — and the platform grows to
+// the largest anybody has asked for. That is one rule rather than two seams
+// fighting: it makes a `helm upgrade` that still carries the old value
+// harmless, and it is the only rule under which shrinking a volume that holds
+// the platform's telemetry is never something a typo can do.
+type PlatformStorageSpec struct {
+	// Volumes is the size to grow to, keyed by the name of the StatefulSet
+	// whose volumeClaimTemplates the volume came from. It is a map and not a
+	// list because a Kitchen is a custom resource, so `helm upgrade` patches
+	// it as a JSON merge patch — which replaces an array wholesale and merges
+	// an object key by key. A list would let a chart-side change to one
+	// component silently drop the size somebody set for another.
+	// +optional
+	Volumes map[string]resource.Quantity `json:"volumes,omitempty"`
+}
+
+// PlatformStorageStatus is what the operator has done, or refused to do, about
+// the size of each of the platform's own volumes.
+type PlatformStorageStatus struct {
+	// Volumes is one entry per platform StatefulSet that declares a size,
+	// in name order.
+	// +optional
+	// +listType=map
+	// +listMapKey=statefulSet
+	Volumes []PlatformVolumeStatus `json:"volumes,omitempty"`
+}
+
+// PlatformVolumeStatus is one platform StatefulSet's volume: how big it is,
+// how big it was asked to be, and what stands between the two.
+type PlatformVolumeStatus struct {
+	// StatefulSet the volume belongs to.
+	StatefulSet string `json:"statefulSet"`
+
+	// Component it plays in the platform, from
+	// app.kubernetes.io/component — clickhouse, postgres, registry,
+	// objectstore. Empty for a workload that carries no such label.
+	// +optional
+	Component string `json:"component,omitempty"`
+
+	// Claims are the bound claims the template produced, by name. Empty
+	// before the first pod has ever run.
+	// +optional
+	Claims []string `json:"claims,omitempty"`
+
+	// Current is the smallest size any of those claims currently requests,
+	// which is the size the platform still has to grow.
+	// +optional
+	Current string `json:"current,omitempty"`
+
+	// Capacity is the smallest size any of them has actually been given.
+	// It lags Current while the driver is expanding the volume, and a
+	// volume is only Settled once it has caught up — a claim stuck in
+	// `ControllerResizeFailed` has the request it asked for and not the
+	// space, and judging it by the request alone would report it finished.
+	// Absent until something has bound.
+	// +optional
+	Capacity string `json:"capacity,omitempty"`
+
+	// Desired is the largest size anybody has asked for: the chart's
+	// annotation, or spec.storage.volumes, whichever is bigger.
+	// +optional
+	Desired string `json:"desired,omitempty"`
+
+	// StorageClass the claims are on, and whether it admits expansion at
+	// all. A class that does not is the one refusal the platform cannot
+	// work around: the volume can only be replaced, which is a restore and
+	// not a resize.
+	// +optional
+	StorageClass string `json:"storageClass,omitempty"`
+
+	// Expandable is a pointer so that `false` can be said. A class that
+	// does not admit expansion and a class nobody could read are different
+	// answers, and only one of them is a reason to grey a button out — the
+	// API row carries the same distinction.
+	// +optional
+	Expandable *bool `json:"expandable,omitempty"`
+
+	// Phase is what the platform is doing about the gap, if any:
+	// `Settled` (nothing to do), `Growing` (the platform is expanding the
+	// claims and rewriting the template), `Resizing` (it has done its half
+	// and the storage driver has not finished its), `Blocked` (it cannot be
+	// done, and Message says why) or `Unknown` (a read failed, so nothing
+	// about this volume was assessed — unlike Blocked, that is retried).
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// Message explains a Blocked volume, and states the harmless case where
+	// what is running is larger than what the chart asks for.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // ComponentStatus reports the runtime health of one platform workload.
@@ -1348,6 +1460,11 @@ type KitchenStatus struct {
 	// collecting, which is what a fresh installation looks like.
 	// +optional
 	SystemLogs *SystemLogStatus `json:"systemLogs,omitempty"`
+
+	// Storage reports the size of each of the platform's own volumes
+	// against the size that was asked for, and what stands between the two.
+	// +optional
+	Storage *PlatformStorageStatus `json:"storage,omitempty"`
 
 	// Signals reports the background evaluation loop's last round: when it
 	// ran, how many conditions it holds open, and which inputs it could not

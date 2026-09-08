@@ -73,6 +73,14 @@ func (s *Server) platformStorage(w http.ResponseWriter, req *http.Request) {
 
 	mounts := volumeMounts(pods.Items)
 	usage, unmeasured := s.volumeUsage(ctx)
+	// Whether a volume can be grown at all is a property of its storage
+	// class, and whether one is being grown is the operator's own record.
+	// Both are read once for the whole table rather than per row.
+	classes, classErr := s.expandableClasses(ctx)
+	if classErr != nil {
+		s.log().Error(classErr, "the storage classes could not be read")
+	}
+	resizes := s.volumeResizes(ctx)
 	body := platformStorageBody{
 		Items: make([]volumeView, 0, len(claims.Items)),
 		// Where nothing reads the kubelet's volume stats back out of the store,
@@ -85,6 +93,8 @@ func (s *Server) platformStorage(w http.ResponseWriter, req *http.Request) {
 		key := claim.Namespace + "/" + claim.Name
 		view := newVolumeView(claim, mounts[key])
 		view.Usage = usage[key]
+		view.Expandable = classes.expandsFor(view.StorageClass)
+		view.Resize = resizes[key]
 		body.Items = append(body.Items, view)
 		body.Volumes++
 		if !view.Bound {
@@ -155,6 +165,16 @@ type volumeView struct {
 	// stats out of the store. Absent, with the body's UsageMessage saying why,
 	// where nothing does.
 	Usage *volumeUsageView `json:"usage,omitempty"`
+	// Expandable is whether this volume's storage class admits expansion,
+	// which is what decides whether growing it is an operation at all. Absent
+	// where the classes could not be read or the claim names one that is
+	// gone — "nobody could tell" and "no" are not the same answer, and only
+	// one of them is worth greying a button out for.
+	Expandable *bool `json:"expandable,omitempty"`
+	// Resize is what the platform is doing about this volume's size. Present
+	// only for the platform's own volumes: a project's claim is not one this
+	// platform grows.
+	Resize *volumeResizeView `json:"resize,omitempty"`
 	// Message is why an unbound claim is unbound. A claim Pending with no
 	// storage class named is the missing-default-StorageClass install, which is
 	// worth saying in those words.

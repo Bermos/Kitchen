@@ -142,6 +142,22 @@ var conditionSeverities = map[conditionStatement]conditionSeverity{
 	{controller.ConditionClaimsBound, controller.ReasonNotAdmittedHere}:  severityInfo,
 	{controller.ConditionClaimsBound, controller.ReasonAwaitingApproval}: severityInfo,
 
+	// Growing one of the platform's own volumes (#533), in its four
+	// endings. None of them is a broken platform and one of them is not a
+	// problem at all: a volume on a storage class that does not admit
+	// expansion is a fact about the cluster somebody has to decide about,
+	// and a driver still expanding one is the platform working. The two
+	// that are faults are spelled out rather than left to the default,
+	// because "not every False is a fault" is not "no False is".
+	{controller.ConditionVolumesResized, controller.ReasonVolumesGrowing}:         severityInfo,
+	{controller.ConditionVolumesResized, controller.ReasonVolumeExpansionBlocked}: severityWarning,
+	{controller.ConditionVolumesResized, controller.ReasonVolumeSurveyFailed}:     severityError,
+	{controller.ConditionVolumesResized, controller.ReasonVolumeRestoreFailed}:    severityError,
+	// The two Trues, which say nothing and are listed because every
+	// exported reason has to be.
+	{controller.ConditionVolumesResized, controller.ReasonVolumesAtRequestedSize}: severityNone,
+	{controller.ConditionVolumesResized, controller.ReasonNoPlatformVolumes}:      severityNone,
+
 	// And the counter-case, spelled out rather than left to the default: an
 	// installation with no scheduled backup is unprotected, which is worth
 	// somebody's attention however green everything else is. "Not every

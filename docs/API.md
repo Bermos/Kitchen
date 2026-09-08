@@ -332,6 +332,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/platform/workloads` | Every workload and pod on the platform — and the workloads with no pods at all | `operator` or `platform.read` |
 | GET | `/platform/edge` | Cross-project traffic, the Gateway, the tunnel and the certificates | `operator` or `platform.read` |
 | GET | `/platform/storage` | Volumes and what mounts them, plus the telemetry store's own health | `operator` or `platform.read` |
+| POST | `/platform/storage/claims/{name}/resize` | Grow one of the platform's own volumes. `202`; the operator expands the claim and rewrites the StatefulSet behind it | `operator` |
 | GET | `/platform/events` | The cluster's Warning history, faceted. `?reason=`, `?kind=`, `?node=`, `?search=` | `operator` or `platform.read` |
 | GET | `/platform/ingest` | Collector presence and freshness, and what the flow follower lost | `operator` or `platform.read` |
 | GET | `/platform/retention` | How long each class of what the platform keeps is kept, and how far back each one actually goes | `operator` or `platform.read` |

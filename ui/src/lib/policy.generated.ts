@@ -185,6 +185,7 @@ export type Route =
   | "GET /api/v1/platform/workloads"
   | "GET /api/v1/platform/edge"
   | "GET /api/v1/platform/storage"
+  | "POST /api/v1/platform/storage/claims/{name}/resize"
   | "GET /api/v1/platform/events"
   | "GET /api/v1/platform/ingest"
   | "GET /api/v1/platform/retention"
@@ -359,6 +360,7 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/platform/workloads": { kind: "operator", doing: "reading the platform's workloads", scope: "platform.read" },
   "GET /api/v1/platform/edge": { kind: "operator", doing: "reading the platform's edge", scope: "platform.read" },
   "GET /api/v1/platform/storage": { kind: "operator", doing: "reading the platform's storage", scope: "platform.read" },
+  "POST /api/v1/platform/storage/claims/{name}/resize": { kind: "operator", doing: "growing one of the platform's volumes" },
   "GET /api/v1/platform/events": { kind: "operator", doing: "reading the platform's cluster events", scope: "platform.read" },
   "GET /api/v1/platform/ingest": { kind: "operator", doing: "reading the platform's ingest", scope: "platform.read" },
   "GET /api/v1/platform/retention": { kind: "operator", doing: "reading the platform's retention", scope: "platform.read" },
