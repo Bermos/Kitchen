@@ -495,3 +495,183 @@ func TestLaunchPointRefusesEverythingElse(t *testing.T) {
 		})
 	}
 }
+
+// Which tool locked the repository, from the lockfile at the build root.
+//
+// The lockfile is the signal rather than `packageManager` in the manifest,
+// because Heroku's builder refuses to install without one: a field naming
+// pnpm beside no pnpm-lock.yaml would send a repository to a builder that
+// then turns it away.
+func TestPackageManager(t *testing.T) {
+	for name, tc := range map[string]struct {
+		files []string
+		want  PackageManager
+	}{
+		"no lockfile says nothing":   {files: []string{"package.json"}, want: PackageManagerUnknown},
+		"package-lock.json is npm":   {files: []string{"package.json", "package-lock.json"}, want: NPM},
+		"npm-shrinkwrap.json is too": {files: []string{"package.json", "npm-shrinkwrap.json"}, want: NPM},
+		"yarn.lock is yarn":          {files: []string{"package.json", "yarn.lock"}, want: Yarn},
+		"pnpm-lock.yaml is pnpm":     {files: []string{"package.json", "pnpm-lock.yaml"}, want: PNPM},
+		"bun.lock is bun":            {files: []string{"package.json", "bun.lock"}, want: Bun},
+		"so is the binary bun.lockb": {files: []string{"package.json", "bun.lockb"}, want: Bun},
+		"two tools' lockfiles say nothing": {
+			files: []string{"package.json", "package-lock.json", "pnpm-lock.yaml"},
+			want:  PackageManagerUnknown,
+		},
+		"npm's own two lockfiles are still one answer": {
+			files: []string{"package.json", "package-lock.json", "npm-shrinkwrap.json"},
+			want:  NPM,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := packageManager(newFileSet(tc.files)); got != tc.want {
+				t.Errorf("packageManager(%v) = %q, want %q", tc.files, got, tc.want)
+			}
+		})
+	}
+}
+
+// Which builder each repository is built by, which is the whole of #568.
+//
+// A pnpm repository whose image starts a Node process of its own goes to
+// Heroku's builder, which installs with the package manager the repository
+// names. A pnpm repository whose image *serves a directory* cannot: the web
+// server serving it is a Paketo buildpack with no equivalent there, so it
+// stays where it is and the platform says so on the Build instead.
+func TestDetectBuilder(t *testing.T) {
+	const nuxt = `{"dependencies":{"nuxt":"3.14.0"},"scripts":{"build":"nuxt build"}}`
+	const vite = `{"devDependencies":{"vite":"5.4.0"},"scripts":{"build":"vite build"}}`
+
+	for name, tc := range map[string]struct {
+		signals     Signals
+		wantName    string
+		wantBuilder Builder
+		wantPM      PackageManager
+		wantHonours bool
+	}{
+		"a pnpm Nuxt repository is built by Heroku's builder": {
+			signals:     Signals{Files: []string{"package.json", "pnpm-lock.yaml"}, PackageJSON: []byte(nuxt)},
+			wantName:    Nuxt,
+			wantBuilder: BuilderHeroku,
+			wantPM:      PNPM,
+			wantHonours: true,
+		},
+		"an npm Nuxt repository is not moved": {
+			signals:     Signals{Files: []string{"package.json", "package-lock.json"}, PackageJSON: []byte(nuxt)},
+			wantName:    Nuxt,
+			wantBuilder: BuilderPaketo,
+			wantPM:      NPM,
+			wantHonours: true,
+		},
+		"nor is a yarn one": {
+			signals:     Signals{Files: []string{"package.json", "yarn.lock"}, PackageJSON: []byte(nuxt)},
+			wantName:    Nuxt,
+			wantBuilder: BuilderPaketo,
+			wantPM:      Yarn,
+			wantHonours: true,
+		},
+		"nor one that locked nothing at all": {
+			signals:     Signals{Files: []string{"package.json"}, PackageJSON: []byte(nuxt)},
+			wantName:    Nuxt,
+			wantBuilder: BuilderPaketo,
+			wantPM:      PackageManagerUnknown,
+			wantHonours: true,
+		},
+		"a pnpm front-end stays on the builder that can serve it": {
+			signals:     Signals{Files: []string{"package.json", "pnpm-lock.yaml"}, PackageJSON: []byte(vite)},
+			wantName:    Vite,
+			wantBuilder: BuilderPaketo,
+			wantPM:      PNPM,
+			wantHonours: false,
+		},
+		// Plain Node names no command of its own and leans on the image
+		// declaring a process. Heroku's buildpack reads the same signals
+		// Paketo's start buildpacks do — a start script, or an entry file —
+		// which are the shapes detection recognises it by, so moving it does
+		// not produce an image with nothing to start.
+		"a pnpm repository with only an entry file still moves": {
+			signals: Signals{
+				Files:       []string{"package.json", "server.js", "pnpm-lock.yaml"},
+				PackageJSON: []byte(`{"dependencies":{"express":"4.21.2"}}`),
+			},
+			wantName:    Node,
+			wantBuilder: BuilderHeroku,
+			wantPM:      PNPM,
+			wantHonours: true,
+		},
+		"a bun repository has nowhere to go": {
+			signals:     Signals{Files: []string{"package.json", "bun.lockb"}, PackageJSON: []byte(nuxt)},
+			wantName:    Nuxt,
+			wantBuilder: BuilderPaketo,
+			wantPM:      Bun,
+			wantHonours: false,
+		},
+		"a language with no lockfile of this kind is untouched": {
+			signals:     Signals{Files: []string{"go.mod"}},
+			wantName:    Go,
+			wantBuilder: BuilderPaketo,
+			wantPM:      PackageManagerUnknown,
+			wantHonours: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := Detect(tc.signals)
+			if !ok {
+				t.Fatalf("Detect(%v) recognised nothing", tc.signals.Files)
+			}
+			if got.Name != tc.wantName {
+				t.Fatalf("detected %q, want %q", got.Name, tc.wantName)
+			}
+			if got.Builder != tc.wantBuilder {
+				t.Errorf("builder is %q, want %q", got.Builder, tc.wantBuilder)
+			}
+			if got.PackageManager != tc.wantPM {
+				t.Errorf("package manager is %q, want %q", got.PackageManager, tc.wantPM)
+			}
+			if got.HonoursLockfile() != tc.wantHonours {
+				t.Errorf("HonoursLockfile() = %v, want %v", got.HonoursLockfile(), tc.wantHonours)
+			}
+		})
+	}
+}
+
+// Heroku's builder is told nothing, and that is deliberate rather than an
+// omission: it reads package.json for the package manager, the Node version
+// and the build script, and it keeps the Node runtime for launch whether or
+// not anything asked — so every BP_* name the Paketo path sets would be a
+// variable no buildpack in that builder reads.
+func TestHerokuBuildsAreConfiguredByTheRepository(t *testing.T) {
+	manifest := []byte(`{"dependencies":{"nuxt":"3.14.0"},` +
+		`"scripts":{"build":"nuxt build"},"engines":{"node":"22.x"}}`)
+
+	paketo, _ := Detect(Signals{
+		Files:       []string{"package.json", "package-lock.json"},
+		PackageJSON: manifest,
+	})
+	if len(paketo.BuildEnv) == 0 {
+		t.Fatal("the Paketo path must still tell its buildpacks what to build")
+	}
+
+	heroku, _ := Detect(Signals{
+		Files:       []string{"package.json", "pnpm-lock.yaml"},
+		PackageJSON: manifest,
+	})
+	if heroku.Builder != BuilderHeroku {
+		t.Fatalf("builder is %q, want %q", heroku.Builder, BuilderHeroku)
+	}
+	if len(heroku.BuildEnv) != 0 {
+		t.Errorf("Heroku's builder was handed %v, and reads none of it", heroku.BuildEnv)
+	}
+	// The heap cap is the platform's own and reaches every Node build
+	// whatever builds it, so this must stay true of the moved ones.
+	if !heroku.RunsNode {
+		t.Error("a pnpm Nuxt build still runs under Node, and still needs its heap capped")
+	}
+	// The name, the port and the command are the framework's identity and
+	// are read back from a Release long after the build: moving the builder
+	// must not move any of them.
+	if heroku.Name != paketo.Name || heroku.Port != paketo.Port ||
+		!slices.Equal(heroku.Command, paketo.Command) {
+		t.Errorf("the builder changed the framework's identity: %+v vs %+v", heroku, paketo)
+	}
+}

@@ -28,6 +28,7 @@ package framework
 import (
 	"encoding/json"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -42,6 +43,57 @@ type BuildVar struct {
 	Name  string
 	Value string
 }
+
+// PackageManager is what locked a JavaScript repository's dependencies, read
+// from the lockfile at the build root.
+//
+// It matters because a lockfile is a promise about the versions an
+// application was tested against, and only a builder carrying a buildpack for
+// the tool that wrote one can keep it. Handed a repository whose lockfile it
+// cannot read, Paketo's `npm-install` resolves `package.json` again from
+// scratch and installs whatever is newest — a build that is not reproducible
+// and ships versions nobody tried — or, on a tree npm's own resolver cannot
+// read, dies inside npm with a message about neither npm nor pnpm (#568).
+type PackageManager string
+
+const (
+	// PackageManagerUnknown is a build root with no lockfile at all, one
+	// carrying several tools' lockfiles — where nothing has been said and the
+	// platform builds the repository the way it always has — and every
+	// repository that is not a JavaScript one.
+	PackageManagerUnknown PackageManager = ""
+
+	NPM  PackageManager = "npm"
+	Yarn PackageManager = "yarn"
+	PNPM PackageManager = "pnpm"
+	Bun  PackageManager = "bun"
+)
+
+// Builder is which Cloud Native Buildpacks builder builds a repository.
+//
+// There are two, and the second exists for one reason: Paketo's builders
+// carry no pnpm buildpack — not the pinned one, not the newest one, not the
+// "full" one — so a pnpm repository built by one is built by npm against a
+// lockfile npm never wrote. Heroku's builder selects the package manager from
+// the repository itself and installs with it, which is the whole of the fix.
+//
+// It is a build-time fact like BuildEnv, not part of a framework's identity:
+// ByName resolves a Release long after the build and answers neither this nor
+// PackageManager, because neither is read again after the image exists.
+type Builder string
+
+const (
+	// BuilderPaketo is the platform's default builder and the zero value.
+	// It builds every language the platform recognises, and every framework
+	// whose image serves a directory of files rather than starting a process
+	// of its own — those are served by a Paketo web-server buildpack that has
+	// no equivalent anywhere else.
+	BuilderPaketo Builder = ""
+
+	// BuilderHeroku builds a Node repository that Paketo's builder cannot:
+	// one whose dependencies are locked by pnpm.
+	BuilderHeroku Builder = "heroku"
+)
 
 // Framework is one thing a repository can be recognised as.
 //
@@ -115,6 +167,45 @@ type Framework struct {
 	// be killed — which arrives as exit 137 and no explanation at all. See
 	// buildHeapMiB in the controller.
 	RunsNode bool
+
+	// PackageManager is what locked this repository's dependencies, empty
+	// where nothing did. Like BuildEnv it is a fact about the repository the
+	// build reads rather than part of the framework's identity, so ByName
+	// does not answer it.
+	PackageManager PackageManager
+
+	// Builder is which Cloud Native Buildpacks builder builds this
+	// repository, and is the zero value — Paketo's — for all but the case
+	// Paketo cannot build. It is on the framework rather than worked out in
+	// the reconciler because it is decided by the same reading of the same
+	// directory that decides everything else here, and because the builder
+	// and what the builder is told have to be chosen together: BuildEnv is
+	// the Paketo `BP_*` vocabulary, which means nothing to any other builder.
+	Builder Builder
+}
+
+// HonoursLockfile reports whether the builder that will build this repository
+// carries a buildpack for the tool that locked it — that is, whether the
+// versions the application was tested against are the versions it will be
+// built with.
+//
+// False is not a refusal. The build still runs, and usually still succeeds:
+// what it produces is an image whose dependencies were resolved from
+// `package.json` afresh rather than taken from the lockfile beside it. That
+// is worth saying out loud on the Build, which is why this is a question with
+// an answer rather than an error — see noteLockfile in the controller.
+func (f Framework) HonoursLockfile() bool {
+	switch f.PackageManager {
+	case PackageManagerUnknown, NPM, Yarn:
+		// Both builders install with either, and a repository that locked
+		// nothing has nothing to be honoured.
+		return true
+	case PNPM:
+		return f.Builder == BuilderHeroku
+	}
+	// Bun locks with neither, and no builder the platform has carries a bun
+	// buildpack: there is nowhere to send it.
+	return false
 }
 
 // Names of the frameworks the platform recognises. They are exported because
@@ -328,39 +419,121 @@ func detectNode(manifest []byte, files fileSet) (Framework, bool) {
 	// with an empty environment and its own `build` script never ran.
 	node := nodeEnv(pkg)
 
+	// Which tool wrote the lockfile beside the manifest, which is what
+	// decides whether Paketo's builder can install this repository's
+	// dependencies at all.
+	pm := packageManager(files)
+
+	// A framework whose image starts a Node process of its own can be built
+	// by either builder, so it is built by whichever keeps the repository's
+	// lockfile.
+	//
+	// Heroku's builder is told nothing: it reads `package.json` itself for
+	// all three things Paketo has to be handed — which package manager to
+	// install with, which Node version to install, and that there is a
+	// `build` script to run — and it keeps the Node runtime for launch
+	// unconditionally, so the BP_LAUNCHPOINT dance #440 needed there is not
+	// needed here either. Sending it the `BP_*` names would be neither read
+	// nor true.
+	//
+	// Plain Node is the one entry here that names no command of its own and
+	// relies on the image declaring a process — so what makes it safe to move
+	// is that Heroku's buildpack reads the same signals Paketo's start
+	// buildpacks do: a `start` script, and failing that an entry file
+	// (`server.js`, `index.js`, `main`), which are the shapes detection
+	// recognises it by. A builder that stopped doing so would turn that case
+	// into an image with `processes: []` and nothing to fall back on.
+	server := func(f Framework) (Framework, bool) {
+		f.PackageManager = pm
+		if pm == PNPM {
+			f.Builder = BuilderHeroku
+			return f, true
+		}
+		return withEnv(f, node), true
+	}
+	// A framework whose image serves a directory of files is built by
+	// Paketo's builder whatever locked it, because the web server serving
+	// that directory *is* a Paketo buildpack: there is no BP_WEB_SERVER
+	// anywhere else, and an image built without it has nothing to start. So
+	// a pnpm front-end is still installed by npm — the platform says so on
+	// the Build rather than quietly resolving it (see HonoursLockfile).
+	served := func(f Framework, web []BuildVar) (Framework, bool) {
+		f.PackageManager = pm
+		return withEnv(f, node, web), true
+	}
+
 	switch {
 	case deps["next"]:
-		return withEnv(catalogue[NextJS], node), true
+		return server(catalogue[NextJS])
 	case deps["nuxt"], deps["nuxt3"]:
-		return withEnv(catalogue[Nuxt], node), true
+		return server(catalogue[Nuxt])
 	case deps["@sveltejs/kit"]:
-		return withEnv(catalogue[SvelteKit], node), true
+		return server(catalogue[SvelteKit])
 	case deps["@remix-run/serve"], deps["@remix-run/node"]:
-		return withEnv(catalogue[Remix], node), true
+		return server(catalogue[Remix])
 	case deps["@nestjs/core"]:
-		return withEnv(catalogue[NestJS], node), true
+		return server(catalogue[NestJS])
 	case deps["astro"]:
 		// Astro is a static site generator until an adapter makes it a
 		// server, and the adapter is the only thing in the repository that
 		// says which of the two this is.
 		if deps["@astrojs/node"] {
-			return withEnv(catalogue[Astro], node), true
+			return server(catalogue[Astro])
 		}
-		return withEnv(catalogue[AstroStatic], node, nginx("dist", false)), true
+		return served(catalogue[AstroStatic], nginx("dist", false))
 	case deps["react-scripts"]:
-		return withEnv(catalogue[ReactApp], node, nginx("build", true)), true
+		return served(catalogue[ReactApp], nginx("build", true))
 	case deps["vite"]:
 		// Vite with none of the frameworks above is a single-page
 		// application: built to dist/, served as files, and routed entirely
 		// in the browser — which is what push-state is for.
-		return withEnv(catalogue[Vite], node, nginx("dist", true)), true
+		return served(catalogue[Vite], nginx("dist", true))
 	case pkg.Scripts["start"] != "", files.has("server.js"), files.has("index.js"), files.has("app.js"):
-		return withEnv(catalogue[Node], node), true
+		return server(catalogue[Node])
 	}
 	// A package.json with no start script and no recognised framework builds
 	// into nothing anyone can run, and saying so is the point of the
 	// feature.
 	return Framework{}, false
+}
+
+// packageManager reads the lockfile at the build root, which is the only
+// thing in a JavaScript repository that says which tool installs it and is
+// worth believing. `packageManager` in the manifest is a version pin the
+// builders read for themselves and is not enough on its own: Heroku's builder
+// requires a lockfile to install at all, so a field naming pnpm beside no
+// `pnpm-lock.yaml` would send a repository to a builder that then refuses it.
+//
+// Nothing recurses. A pnpm workspace locks at the repository root and a build
+// root inside it has no lockfile of its own, which reads as "nothing said"
+// here — the same answer detection gives to every other question it can only
+// see one directory's worth of.
+//
+// Several tools' lockfiles at once is also "nothing said" rather than a
+// winner picked here. The repository has not settled the question, and the
+// answer the platform can defend is the one it has always given: build it the
+// way it was built yesterday.
+func packageManager(files fileSet) PackageManager {
+	found := []PackageManager(nil)
+	for _, lock := range []struct {
+		file string
+		pm   PackageManager
+	}{
+		{"package-lock.json", NPM},
+		{"npm-shrinkwrap.json", NPM},
+		{"yarn.lock", Yarn},
+		{"pnpm-lock.yaml", PNPM},
+		{"bun.lock", Bun},
+		{"bun.lockb", Bun},
+	} {
+		if files.has(lock.file) && !slices.Contains(found, lock.pm) {
+			found = append(found, lock.pm)
+		}
+	}
+	if len(found) != 1 {
+		return PackageManagerUnknown
+	}
+	return found[0]
 }
 
 // nodeEnv is what the Node buildpacks are told about a repository: which

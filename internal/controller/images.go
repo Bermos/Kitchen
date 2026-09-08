@@ -101,6 +101,30 @@ const (
 	// this image's own unprivileged user.
 	BuildpacksBuilderImage = "paketobuildpacks/builder-jammy-base:0.4.625@sha256:5799343cd316c1a03fa3ff7ab0915d9e6d134e95df4583016d70c6f5330d3898"
 
+	// HerokuBuilderImage is the second Cloud Native Buildpacks builder, and
+	// it exists for one repository shape the first cannot build: a Node
+	// project whose dependencies are locked by pnpm.
+	//
+	// No Paketo builder carries a pnpm buildpack — not the pinned one, not
+	// the current one, not "full"; `paketo-buildpacks/nodejs` has three
+	// groups and they are yarn, npm and bare node. A pnpm repository falls
+	// into the npm group, where `npm-install` detects on `package.json`
+	// alone, reports `package-lock.json -> "Not found"` and runs
+	// `npm install` anyway: the lockfile the application was tested against
+	// is ignored, and on a tree npm's own resolver cannot read it dies inside
+	// npm instead (#568). `heroku/nodejs` selects npm, yarn or pnpm from the
+	// repository and installs with it.
+	//
+	// The tag names Heroku's base image rather than a build of the builder —
+	// it moves — so the digest is what pins it, as it is for every image
+	// here. Moving it means checking herokuUID and herokuGID in
+	// buildpacks.go, which are this image's own unprivileged user, and it
+	// means re-reading what the builder is *not* told: Heroku's buildpack
+	// takes the package manager, the Node version and the build script from
+	// `package.json` itself, so a variable added there is a variable nothing
+	// reads.
+	HerokuBuilderImage = "heroku/builder:24@sha256:e4ead318bb7027bf2b224569cf47b972c62226595d3dc2eba09f1ed912bb320d"
+
 	// GitCloneImage fetches the commit a build builds. It is a container of
 	// its own for both strategies, and for the same reason twice over: the
 	// CNB lifecycle only ever builds a directory that is already on disk,

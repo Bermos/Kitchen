@@ -187,6 +187,14 @@ const (
 	// existed would be a worse answer than a build that says what it did.
 	reasonSecurityCeiling = "SecurityCeiling"
 
+	// reasonNoLockfileBuildpack is a build root locked by a package manager
+	// no builder that can build this framework has a buildpack for, so the
+	// dependencies were resolved from the manifest instead of taken from the
+	// lockfile. Like the ceiling above, it is a fact recorded rather than a
+	// refusal: the build runs, and usually succeeds — with versions nobody
+	// tested (#568).
+	reasonNoLockfileBuildpack = "NoLockfileBuildpack"
+
 	// reasonBuildFailed marks the one failure that is the repository's own:
 	// the build ran and the image did not come out. Every other reason is
 	// the platform failing to run it at all, which reports differently on
@@ -593,6 +601,15 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		build.Status.Phase = kitchenv1alpha1.BuildRunning
 		build.Status.DetectedFramework = detected.Name
+		// Whether the lockfile the repository committed is the one this
+		// build installed from. It is recorded here, beside the framework
+		// that decided it, because it is a fact about the project's own
+		// image — the one `status.detectedFramework` is about. A workload's
+		// own build root still picks its own builder, since that is decided
+		// per plan; what it does not get is a second condition, because the
+		// Build has one set of them and four rows saying the same thing
+		// would bury the one somebody has to read.
+		noteLockfile(ctx, build, detected)
 		// What this build was told to produce, recorded at the moment it was
 		// told: the project's setting moves, and this build does not. This is
 		// the unit's own stage — the web process's, and the one every
@@ -993,7 +1010,7 @@ func (r *BuildReconciler) createJob(
 	heapMiB := buildHeapMiB(ctx, builds.Resources)
 	template := dockerfilePod(project, build, plan, cache, credentials.Push, gitSecret, r.platformAttestation(ctx))
 	if plan.Strategy == kitchenv1alpha1.BuildStrategyBuildpacks {
-		template = buildpacksPod(project, build, plan, cache, credentials, gitSecret)
+		template = buildpacksPod(project, build, plan, detected, cache, credentials, gitSecret)
 	}
 	// What a build may take, from the platform object rather than from
 	// anything the commit or the project can say. It is applied here rather
