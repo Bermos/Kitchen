@@ -569,7 +569,7 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 	// has no volume yet, so nothing measures it and it simply has no usage.
 	h.logs.volumeUsage = []clickhouse.VolumeUsage{{
 		Namespace: controller.PlatformNamespace, Claim: "data-kitchen-clickhouse-0",
-		Pod: "kitchen-clickhouse-0", CapacityBytes: 10 << 30, UsedBytes: 87 << 28,
+		Pod: "kitchen-clickhouse-0", CapacityBytes: 10 << 30, UsedBytes: (10 << 30) / 100 * 87,
 		UsedFraction: 0.87,
 	}}
 
@@ -597,7 +597,7 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 	if len(telemetry.Pods) != 1 || telemetry.Pods[0] != "kitchen-clickhouse-0" {
 		t.Errorf("a volume is worth nothing without what mounts it: %+v", telemetry)
 	}
-	// The store's own disk, judged against the claim underneath it.
+	// The store's own size, and the claim underneath it.
 	if body.Store.BytesOnDisk != 5<<30 || body.Store.CapacityBytes != 10<<30 {
 		t.Fatalf("the store's size and its volume both belong here: %+v", body.Store)
 	}
@@ -613,8 +613,27 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 		t.Errorf("this screen asked for the dashboard's overview %d times, and needs none of it",
 			h.logs.overviewReads)
 	}
-	if body.Store.UsedFraction < 0.49 || body.Store.UsedFraction > 0.51 {
-		t.Errorf("used against capacity is the number that matters: %+v", body.Store)
+	// Two numbers, and they answer two questions: how full the disk is, from
+	// the same kubelet stats the table draws, and how much of that is the
+	// telemetry's. Dividing the one by the other described neither, and read
+	// 8.4% on a volume 89% full (#531).
+	if body.Store.Usage == nil || body.Store.Usage.UsedFraction != 0.87 {
+		t.Fatalf("the store's fill is the kubelet's reading of its volume: %+v", body.Store)
+	}
+	if body.Store.Usage.UsedBytes != (10<<30)/100*87 || body.Store.Usage.CapacityBytes != 10<<30 {
+		t.Errorf("the disk's own two byte counts belong on the card: %+v", body.Store.Usage)
+	}
+	if body.Store.BytesOnDisk >= body.Store.Usage.UsedBytes {
+		t.Errorf("the telemetry is a part of what is on the disk, not the whole: %+v", body.Store)
+	}
+	if body.Store.UsageMessage != "" {
+		t.Errorf("the kubelet measured this volume, so there is nothing to apologise for: %q",
+			body.Store.UsageMessage)
+	}
+	// The flat field the endpoint has always had is kept, with the volume's
+	// meaning: a reader of it goes on working and now reads the disk.
+	if body.Store.UsedFraction != body.Store.Usage.UsedFraction {
+		t.Errorf("usedFraction is the volume's fill: %+v", body.Store)
 	}
 	// Fill comes off the store like everything else on this screen, so a claim
 	// the kubelet reported on carries a number rather than a message.
@@ -623,6 +642,72 @@ func TestPlatformStorageReportsUnboundClaimsAndTheStore(t *testing.T) {
 	}
 	if telemetry.Usage == nil || telemetry.Usage.UsedFraction < 0.86 || telemetry.Usage.UsedFraction > 0.88 {
 		t.Errorf("the claim's fill should be drawn: %+v", telemetry.Usage)
+	}
+}
+
+// A volume nothing measured must not draw as an empty one — on the store's own
+// card least of all, since it is the card a reader takes their headroom from.
+func TestPlatformStorageSaysWhenTheStoresDiskWasNotMeasured(t *testing.T) {
+	store := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: controller.PlatformNamespace,
+			Name:      "data-kitchen-clickhouse-0",
+		},
+		Status: corev1.PersistentVolumeClaimStatus{
+			Phase:    corev1.ClaimBound,
+			Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+		},
+	}
+
+	h := newHarness(t, nil, append(fixtures(), store)...)
+	h.logs.storeStats = clickhouse.StoreStats{BytesOnDisk: 5 << 30, RowsPerSecond: 42}
+	// The store answered, and reported no row for this claim.
+	h.logs.volumeUsage = nil
+
+	res := h.do(t, http.MethodGet, "/api/v1/platform/storage", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /platform/storage = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[platformStorageBody](t, res)
+	if body.Store.Usage != nil || body.Store.UsedFraction != 0 {
+		t.Fatalf("nothing measured the disk, so there is no fill to draw: %+v", body.Store)
+	}
+	if body.Store.UsageMessage == "" {
+		t.Error("an unmeasured disk says so; an empty one would be a claim nobody checked")
+	}
+	// The size the store reports of itself is still worth having: it is what
+	// retention governs, and it is not a fill level.
+	if body.Store.BytesOnDisk != 5<<30 || body.Store.CapacityBytes != 10<<30 {
+		t.Errorf("the store's own size survives an unmeasured disk: %+v", body.Store)
+	}
+}
+
+// A claim of the platform's own that has not bound is a volume that does not
+// exist yet, not a store on somebody else's disk — the screen tells them apart
+// by the claim's name, and an unbound one is still named.
+func TestPlatformStorageNamesAnUnboundStoreClaim(t *testing.T) {
+	pending := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: controller.PlatformNamespace,
+			Name:      "data-kitchen-clickhouse-0",
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending},
+	}
+
+	h := newHarness(t, nil, append(fixtures(), pending)...)
+	h.logs.storeStats = clickhouse.StoreStats{BytesOnDisk: 5 << 30}
+
+	res := h.do(t, http.MethodGet, "/api/v1/platform/storage", "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("GET /platform/storage = %d: %s", res.Code, res.Body.String())
+	}
+	body := decode[platformStorageBody](t, res)
+	if body.Store.Claim != "data-kitchen-clickhouse-0" || body.Store.CapacityBytes != 0 {
+		t.Fatalf("an unbound claim is named, with no capacity behind it: %+v", body.Store)
+	}
+	if !strings.Contains(body.Store.UsageMessage, "not bound") {
+		t.Errorf("the reason is the claim's, not a disk the platform does not own: %q",
+			body.Store.UsageMessage)
 	}
 }
 

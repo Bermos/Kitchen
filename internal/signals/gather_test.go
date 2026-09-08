@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -510,7 +511,7 @@ func TestGatherMarksTheUnwiredSourcesNotApplicable(t *testing.T) {
 // The store's own capacity comes from the API server, because ClickHouse knows
 // how much it has written and nothing about the disk underneath.
 func TestGatherReadsTheStoresCapacityFromItsClaim(t *testing.T) {
-	bound := claim(controller.PlatformNamespace, "data-kitchen-clickhouse-0", corev1.ClaimBound)
+	bound := claim(controller.PlatformNamespace, testStoreClaim, corev1.ClaimBound)
 	bound.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("50Gi")}
 
 	store := &stubStore{}
@@ -534,6 +535,179 @@ func TestGatherReadsTheStoresCapacityFromItsClaim(t *testing.T) {
 		t.Errorf("the store's health was read %d times, want exactly one narrow read",
 			store.storeStatsReads)
 	}
+}
+
+// measuredVolumes is a volume-stats source that answers with what it was given.
+type measuredVolumes []VolumeUsage
+
+func (v measuredVolumes) VolumeUsage(context.Context, time.Time) ([]VolumeUsage, error) {
+	return v, nil
+}
+
+// failingVolumes is the group being collected and refusing to answer.
+type failingVolumes struct{}
+
+func (failingVolumes) VolumeUsage(context.Context, time.Time) ([]VolumeUsage, error) {
+	return nil, errors.New("the kubelet is not answering")
+}
+
+// How full the store's disk is is the kubelet's reading of the whole volume,
+// matched to the store's claim by the gatherer — not the database's own size
+// over the claim's nominal capacity, which is a fraction of two different
+// things and read 8.4% on a volume 89% full (#531).
+func TestGatherMatchesTheStoresVolumeToItsClaim(t *testing.T) {
+	bound := claim(controller.PlatformNamespace, testStoreClaim, corev1.ClaimBound)
+	bound.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("20Gi")}
+
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false), &bound),
+		Store:  &stubStore{},
+		VolumeUsage: measuredVolumes{
+			{Namespace: controller.PlatformNamespace, Claim: testStoreClaim,
+				CapacityBytes: 20 << 30, UsedBytes: (20 << 30) / 100 * 89, UsedFraction: 0.89},
+			{Namespace: controller.AppNamespace(testProject), Claim: testClaim, UsedFraction: 0.10},
+		},
+		Now: func() time.Time { return testNow },
+	}, Options{})
+
+	if snapshot.Store.Claim != testStoreClaim || snapshot.Store.Volume == nil {
+		t.Fatalf("the store's own volume was not matched to its claim: %+v", snapshot.Store)
+	}
+	if snapshot.Store.Volume.UsedFraction != 0.89 {
+		t.Fatalf("fill = %v, want the kubelet's reading of the disk", snapshot.Store.Volume.UsedFraction)
+	}
+	// The database on that disk is a fraction of it, and the rule fires anyway.
+	if snapshot.Store.BytesOnDisk != testStoreBytes {
+		t.Fatalf("bytes on disk = %d, want what the store reported", snapshot.Store.BytesOnDisk)
+	}
+	finding := expectOne(t, evaluate(t, SignalStoreDisk, snapshot))
+	if finding.Severity != SeverityCritical {
+		t.Fatalf("severity = %q, want critical", finding.Severity)
+	}
+}
+
+// boundStoreClaim is the store's claim with a volume behind it.
+func boundStoreClaim(t *testing.T) *corev1.PersistentVolumeClaim {
+	t.Helper()
+	bound := claim(controller.PlatformNamespace, testStoreClaim, corev1.ClaimBound)
+	bound.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("20Gi")}
+	return &bound
+}
+
+// Nobody is measuring volumes — no source wired, or the collector's kubelet
+// group switched off. That is a gap in the installation rather than a fault in
+// it, so it is not-applicable exactly as it is for pvc.filling: a permanent
+// unknown condition over a deliberate setting is noise, and the rule stays
+// quiet instead.
+func TestGatherTreatsUncollectedVolumeStatsAsNotApplicable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source VolumeUsageSource
+	}{
+		{name: "nothing wired"},
+		// The kubelet group turned off answers, and answers with nothing.
+		{name: "collected by nobody", source: measuredVolumes{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := Gather(context.Background(), Sources{
+				Client:      testClient(t, kitchenSingleton(false), boundStoreClaim(t)),
+				Store:       &stubStore{},
+				VolumeUsage: tc.source,
+				Now:         func() time.Time { return testNow },
+			}, Options{})
+
+			state, reason := snapshot.inputState(InputStoreVolume)
+			if state != inputNotApplicable || reason == "" {
+				t.Fatalf("state = %v, reason = %q, want not-applicable with a reason", state, reason)
+			}
+			expectNone(t, evaluate(t, SignalStoreDisk, snapshot))
+			expectNone(t, evaluate(t, SignalPVCFilling, snapshot))
+		})
+	}
+}
+
+// The stats are being collected and this one claim has no row: the disk is
+// being measured and the store's is unseen, which is unreadable — the rule says
+// it could not see the disk rather than falling back to the ratio that missed a
+// volume 89% full.
+func TestGatherReportsTheStoresVolumeUnseenAmongOthers(t *testing.T) {
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false), boundStoreClaim(t)),
+		Store:  &stubStore{},
+		VolumeUsage: measuredVolumes{{
+			Namespace: controller.AppNamespace(testProject), Claim: testClaim, UsedFraction: 0.10,
+		}},
+		Now: func() time.Time { return testNow },
+	}, Options{})
+
+	state, reason := snapshot.inputState(InputStoreVolume)
+	if state != inputUnreadable || reason == "" {
+		t.Fatalf("state = %v, reason = %q, want unreadable with a reason", state, reason)
+	}
+	finding := expectOne(t, evaluate(t, SignalStoreDisk, snapshot))
+	if finding.Severity != SeverityUnknown {
+		t.Fatalf("severity = %q, want unknown", finding.Severity)
+	}
+	expectDetail(t, finding, "reports nothing rather than health")
+	// And the rule that is about every volume answers over the volumes it has.
+	expectNone(t, evaluate(t, SignalPVCFilling, snapshot))
+}
+
+// A volume-stats query that failed is the group being read and not answering,
+// which is the one case that is genuinely broken.
+func TestGatherReportsAFailedVolumeStatsRead(t *testing.T) {
+	snapshot := Gather(context.Background(), Sources{
+		Client:      testClient(t, kitchenSingleton(false), boundStoreClaim(t)),
+		Store:       &stubStore{},
+		VolumeUsage: failingVolumes{},
+		Now:         func() time.Time { return testNow },
+	}, Options{})
+
+	if state, _ := snapshot.inputState(InputStoreVolume); state != inputUnreadable {
+		t.Fatalf("state = %v, want unreadable", state)
+	}
+	finding := expectOne(t, evaluate(t, SignalStoreDisk, snapshot))
+	expectDetail(t, finding, "kubelet is not answering")
+}
+
+// A claim with no volume behind it yet is not a disk on somebody else's
+// cluster: pvc.pending is what says the claim never bound, in those words, and
+// this rule has nothing to measure rather than nothing of ours to measure.
+func TestGatherTreatsAnUnboundStoreClaimAsNothingToMeasureYet(t *testing.T) {
+	pending := claim(controller.PlatformNamespace, testStoreClaim, corev1.ClaimPending)
+	snapshot := Gather(context.Background(), Sources{
+		Client:      testClient(t, kitchenSingleton(false), &pending),
+		Store:       &stubStore{},
+		VolumeUsage: measuredVolumes{},
+		Now:         func() time.Time { return testNow },
+	}, Options{})
+
+	if snapshot.Store.Claim != testStoreClaim {
+		t.Fatalf("claim = %q, want the store's own claim named even unbound", snapshot.Store.Claim)
+	}
+	state, reason := snapshot.inputState(InputStoreVolume)
+	if state != inputNotApplicable || !strings.Contains(reason, "not bound") {
+		t.Fatalf("state = %v, reason = %q, want not-applicable naming the unbound claim", state, reason)
+	}
+	expectNone(t, evaluate(t, SignalStoreDisk, snapshot))
+	// The claim that never bound is still somebody's problem, and it is said
+	// once, by the rule whose subject it is.
+	expectOne(t, evaluate(t, SignalPVCPending, snapshot))
+}
+
+// An external store is a disk the platform does not own, which is not-applicable
+// rather than unreadable: there is nothing to see and no fault in not seeing it.
+func TestGatherTreatsAnExternalStoresDiskAsNotApplicable(t *testing.T) {
+	snapshot := Gather(context.Background(), Sources{
+		Client: testClient(t, kitchenSingleton(false)),
+		Store:  &stubStore{},
+		Now:    func() time.Time { return testNow },
+	}, Options{})
+
+	if state, _ := snapshot.inputState(InputStoreVolume); state != inputNotApplicable {
+		t.Fatalf("state = %v, want not-applicable", state)
+	}
+	expectNone(t, evaluate(t, SignalStoreDisk, snapshot))
 }
 
 // A narrowed gather is what the environment page asks for: one environment's

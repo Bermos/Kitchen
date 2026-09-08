@@ -290,12 +290,21 @@ type VolumeUsage struct {
 
 // StoreHealth is the telemetry store's own state.
 type StoreHealth struct {
-	// BytesOnDisk is what its active parts occupy.
+	// BytesOnDisk is what its active parts occupy — the `kitchen` database's,
+	// which is what retention governs and *not* how full the disk is. Anything
+	// else on the same volume, ClickHouse's own system tables included, is in
+	// neither this nor CapacityBytes.
 	BytesOnDisk uint64
-	// CapacityBytes is the size of the volume underneath, read from the claim
-	// in the platform namespace. Zero for an external store, where the platform
-	// does not own the disk and has no business judging it.
+	// CapacityBytes is the nominal size of the volume underneath, read from the
+	// claim in the platform namespace. Zero for an external store, where the
+	// platform does not own the disk and has no business judging it.
 	CapacityBytes uint64
+	// Claim is the name of that claim, empty for an external store.
+	Claim string
+	// Volume is how full that disk is, from the kubelet's own volume stats —
+	// everything written to it, which is what store.disk judges. Nil where
+	// nothing measured it, and [InputStoreVolume] then says why.
+	Volume *VolumeUsage
 	// RowsPerSecond is the recent ingest rate across the tables the operator
 	// writes and the collector fills.
 	RowsPerSecond float64

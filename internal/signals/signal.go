@@ -88,6 +88,15 @@ const (
 	InputVolumeStats Input = "kubelet_volume_stats"
 	InputFreshness   Input = "telemetry_freshness"
 	InputStore       Input = "clickhouse_system"
+	// InputStoreVolume is how full the disk the telemetry store writes to
+	// actually is: the kubelet's stats for the store's own claim, matched to
+	// it by the gatherer. It is its own input because it fails where
+	// [InputVolumeStats] does not — the volume group can be read in full and
+	// carry no row for that one claim — and because store.disk must say it
+	// cannot see the disk rather than fall back to the database's own size
+	// over the claim's nominal capacity, which is a fraction of two different
+	// things (#531).
+	InputStoreVolume Input = "store_volume_usage"
 	// InputAudit is the hash-chained record of what people did to the
 	// platform, which is the fourth leg of the correlation ladder's
 	// timeline: a settings change at 04:03 is a platform change like a

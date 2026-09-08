@@ -825,7 +825,7 @@ means it also surfaces on the environment's diagnostics strip.
 | `pvc.pending` | PVC unbound — message names the default-StorageClass suspect, the classic first-install hang | PVC status (API) |
 | `pvc.filling` | volume ≥ 85% used | `kubelet_stats` volume group (new) |
 | `volume.attach-failed` | FailedAttachVolume / FailedMount warnings | `k8s_events` — the CSI-misbehaving detector |
-| `store.disk` | ClickHouse data volume past threshold | `system.parts` + volume stats |
+| `store.disk` | the store's data volume past threshold, as the kubelet measures it (`system.parts` is the share of it that is telemetry, not the fill) | volume stats + `system.parts` |
 | `store.ingest-stalled` | newest row in `otel_logs` older than N minutes while pods run | store |
 | `ingest.flows-lost` | Relay reported lost events / follower reconnects with gaps | follower's own accounting (§3.2) |
 

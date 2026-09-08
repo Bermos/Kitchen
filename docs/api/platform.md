@@ -319,8 +319,10 @@ the health of the one database Kitchen runs itself:
            {"namespace": "kitchen-system", "name": "data-kitchen-clickhouse-0",
             "phase": "Bound", "bound": true, "capacity": "50Gi",
             "pods": ["kitchen-clickhouse-0"]}],
- "store": {"bytesOnDisk": 5368709120, "capacityBytes": 53687091200, "usedFraction": 0.1,
-           "claim": "data-kitchen-clickhouse-0", "rowsPerSecond": 42, "retentionDays": 30},
+ "store": {"bytesOnDisk": 5368709120, "capacityBytes": 53687091200,
+           "usage": {"usedBytes": 47781511168, "capacityBytes": 53687091200, "usedFraction": 0.89},
+           "usedFraction": 0.89, "claim": "data-kitchen-clickhouse-0",
+           "rowsPerSecond": 42, "retentionDays": 30},
  "flows": {"events": 0, "notices": 0, "reconnects": 0, "windowSeconds": 3600, "lossless": true},
  "usageMessage": "this installation has no telemetry store, so how full each volume is is unknown rather than zero …"}
 ```
@@ -336,12 +338,24 @@ first-install hang the prerequisites warn about. Each row's `usage` is the
 kubelet's own volume stats, read out of the store; where the store is absent or
 the query failed, every row's usage is missing and `usageMessage` says so once
 rather than a hundred empty bars saying nothing — and `filling` is a measured
-zero only while that field is empty. `store` is the telemetry store's own size
-against the volume underneath it, read from the same query the `store.disk`
-signal fires on, so the screen and the finding cannot disagree about the number. `capacityBytes` is zero for an external store — the platform
-does not own that disk and has no business judging it. `retentionDays` is the
-one knob every table's TTL is derived from, which is the horizon past which the
-store deliberately holds nothing.
+zero only while that field is empty. `store` is the telemetry store's own
+health, and it carries **two** sizes because they answer two questions. `usage`
+is how full the volume is, from the same kubelet stats every row above carries,
+matched to the store's claim — it is everything written to that disk, and it is
+what the `store.disk` signal fires on, so the screen and the finding cannot
+disagree about the number. `bytesOnDisk` is what the telemetry itself occupies,
+which is the number retention governs and not a fill level: anything else on the
+same volume is in neither it nor `capacityBytes`, and dividing the one by the
+other read 8.4% on a volume that was 89% full. `usage` is absent where nothing
+measured the disk and `usageMessage` says why, because an unmeasured volume must
+not render as an empty one. `usedFraction` is `usage.usedFraction` kept flat, so
+that a reader of the field this endpoint has always had goes on working — but
+**its meaning moved with this fix**: it is now how full the volume is, and no
+longer `bytesOnDisk` over `capacityBytes`. It is absent, like `usage`, where
+nothing measured the disk, so a zero there is a measured zero. `capacityBytes`
+is the claim's nominal size and is zero for an external store — the platform
+does not own that disk and has no business judging it. `retentionDays` is the one knob every table's TTL is derived
+from, which is the horizon past which the store deliberately holds nothing.
 
 `flows` is the loss the flow follower counted, and it is here as well as on
 `/platform/ingest` because losing rows before they are written and running out

@@ -75,12 +75,19 @@ func storageSignals() []Signal {
 		Requires: []Input{InputClusterEvents},
 		Evaluate: evaluateAttachFailed,
 	}, {
-		ID:       SignalStoreDisk,
-		Version:  2,
+		ID: SignalStoreDisk,
+		// Version 3: the fill it judges is the volume's, from the kubelet's
+		// stats for the store's claim, rather than the `kitchen` database's
+		// own parts over that claim's nominal capacity (#531).
+		Version:  3,
 		Audience: AudienceOperator,
 		Tiers:    Tiers{Operator: TierTicket},
-		Summary:  "the telemetry store's own volume is filling",
-		Requires: []Input{InputStore},
+		Summary:  "the volume the telemetry store writes to is filling",
+		// The volume reading alone. The store's own size is a clause of the
+		// detail, not a term of the judgement, so a `system.parts` read that
+		// failed must not turn a disk this rule can see perfectly well into an
+		// unknown.
+		Requires: []Input{InputStoreVolume},
 		Evaluate: evaluateStoreDisk,
 	}, {
 		ID:       SignalIngestStalled,
@@ -250,28 +257,59 @@ func claimFromMessage(message string) string {
 	return strings.Trim(name, `"`)
 }
 
+// evaluateStoreDisk judges the *volume*, not the database.
+//
+// The store's own size — the `kitchen` database's active parts — is what
+// retention governs, and it is the wrong numerator for a fill level: anything
+// else sharing the disk is in neither it nor the claim's nominal capacity, so
+// the ratio of the two read 8.4% on a volume that was 89% full and the rule
+// this platform has for exactly that outcome never fired (#531). The fill comes
+// from the kubelet's stats for the store's claim, which is the same reading the
+// storage table draws and which matches `df` inside the pod.
+//
+// The store's own size stays in the detail, because it is what says whether
+// retention is the lever: a disk that is full of telemetry is a retention
+// decision, and a disk that is full of something else is not. It is a clause
+// and not a term of the judgement, which is why the rule requires the volume
+// reading alone — a store that could not answer for itself does not stop this
+// rule seeing a full disk.
 func evaluateStoreDisk(snapshot *Snapshot) []Finding {
 	store := snapshot.Store
-	if store.CapacityBytes == 0 {
-		// An external store's disk is not the platform's to judge, and a
-		// percentage of an unknown capacity is not a number.
+	volume := store.Volume
+	if volume == nil || volume.CapacityBytes == 0 {
+		// Nothing measured the disk. The gatherer has marked
+		// [InputStoreVolume] and the rule reports that it could not be
+		// evaluated rather than reporting health it never read; this is the
+		// belt to that pair of braces.
 		return nil
 	}
-	used := float64(store.BytesOnDisk) / float64(store.CapacityBytes)
-	if used < StoreDiskFraction {
+	if volume.UsedFraction < StoreDiskFraction {
 		return nil
 	}
 	scope := Scope{Kind: ScopePlatform, Name: "store"}
 	return []Finding{fire(SignalStoreDisk, SeverityCritical, scope, snapshot.Now,
-		fmt.Sprintf("telemetry store %s full", percent(used)),
+		fmt.Sprintf("telemetry store's volume %s full", percent(volume.UsedFraction)),
 		sentence(
-			fmt.Sprintf("%s of %s used", bytes(float64(store.BytesOnDisk)),
-				bytes(float64(store.CapacityBytes))),
+			// "the store's volume" rather than "claim", because pvc.filling
+			// says the latter about the same claim and two findings on one
+			// screen should not open with the same words.
+			fmt.Sprintf("%s of %s used on the store's volume %s", bytes(float64(volume.UsedBytes)),
+				bytes(float64(volume.CapacityBytes)), volume.Claim),
+			storeShareClause(store),
 			retentionClause(snapshot),
 			"a full store stops accepting writes, which takes logs, metrics and requests down "+
 				"together and leaves every screen looking merely empty",
 		),
 		EvidencePlatformStorage)}
+}
+
+// storeShareClause says how much of the full disk the telemetry itself is,
+// which is the difference between a retention problem and a lodger.
+func storeShareClause(store StoreHealth) string {
+	if store.BytesOnDisk == 0 {
+		return ""
+	}
+	return fmt.Sprintf("the telemetry itself is %s of that", bytes(float64(store.BytesOnDisk)))
 }
 
 // retentionClause names the lever, since retention is the one thing that

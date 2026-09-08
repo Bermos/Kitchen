@@ -4103,11 +4103,24 @@ export interface PlatformVolume {
   message?: string;
 }
 
-/** The telemetry store's own state. */
+/** The telemetry store's own state: how full its disk is, and how much of that
+ * is the telemetry's. Two numbers, because anything else on the same volume is
+ * in neither `bytesOnDisk` nor `capacityBytes`. */
 export interface StoreHealth {
+  /** What the telemetry itself occupies — the store's active parts, which is
+   * what retention governs. Not the fill level. */
   bytesOnDisk: number;
-  /** Zero for an external store: the platform does not own that disk. */
+  /** The volume's nominal size, as the claim reports it. Zero for an external
+   * store: the platform does not own that disk. */
   capacityBytes?: number;
+  /** How full that volume actually is, from the same kubelet stats every row of
+   * the table carries. Absent, with `usageMessage` saying why, where nothing
+   * measured it. */
+  usage?: VolumeUsage;
+  usageMessage?: string;
+  /** `usage.usedFraction`, kept flat because it is the field this endpoint has
+   * always had. Its meaning moved: it is the volume's fill, not the store's own
+   * parts over the claim's capacity. */
   usedFraction?: number;
   claim?: string;
   rowsPerSecond: number;
