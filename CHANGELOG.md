@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.40.3](https://github.com/Bermos/Kitchen/compare/v0.40.2...v0.40.3) (2026-09-09)
+
+
+### Bug fixes
+
+* **deps:** move the whole Kubernetes stack to 1.35 ([#584](https://github.com/Bermos/Kitchen/issues/584)) ([7aef2e4](https://github.com/Bermos/Kitchen/commit/7aef2e4992f51c3c3d3313f5f32e4bbacb559314)), closes [#377](https://github.com/Bermos/Kitchen/issues/377)
+
+
+### Documentation
+
+* say each claim type once, and stop calling a closed gap open ([#582](https://github.com/Bermos/Kitchen/issues/582)) ([1d63483](https://github.com/Bermos/Kitchen/commit/1d6348378fcf156540f892bfe3fa44e2d646d942)), closes [#413](https://github.com/Bermos/Kitchen/issues/413)
+
 ## [0.40.2](https://github.com/Bermos/Kitchen/compare/v0.40.1...v0.40.2) (2026-09-09)
 
 
