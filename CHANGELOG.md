@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.40.4](https://github.com/Bermos/Kitchen/compare/v0.40.3...v0.40.4) (2026-09-09)
+
+
+### Bug fixes
+
+* **operator:** publish a verified domain on port 80 while its certificate issues ([#589](https://github.com/Bermos/Kitchen/issues/589)) ([a474221](https://github.com/Bermos/Kitchen/commit/a474221c1a76f10f35fc8d268c902bb2f9f13231)), closes [#573](https://github.com/Bermos/Kitchen/issues/573)
+
+
+### Documentation
+
+* **agents:** tell the orchestrator to close the fossil every cut leaves ([#587](https://github.com/Bermos/Kitchen/issues/587)) ([ac6b70a](https://github.com/Bermos/Kitchen/commit/ac6b70a91c4fc37925302d4eefcf3ea9c55bce21))
+
 ## [0.40.3](https://github.com/Bermos/Kitchen/compare/v0.40.2...v0.40.3) (2026-09-09)
 
 
