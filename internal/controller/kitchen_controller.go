@@ -209,11 +209,14 @@ func (r *KitchenReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	if err := r.applyGateway(ctx, kitchen); err != nil {
+	listeners, err := r.applyGateway(ctx, kitchen)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.applyHTTPSRedirect(ctx, kitchen); err != nil {
+	// The redirect is derived from the listeners the Gateway just got, so the
+	// names it sends to HTTPS and the names HTTPS answers for cannot drift.
+	if err := r.applyHTTPSRedirect(ctx, kitchen, listeners); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -481,7 +484,14 @@ func (r *KitchenReconciler) ensurePlatformNamespace(ctx context.Context) error {
 // their ACME HTTP-01 challenges arrive on port 80 with names outside the base
 // domain, and a *.<baseDomain> listener would refuse their routes outright.
 // Hostname scoping lives on the routes, which all declare theirs.
-func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) error {
+//
+// The listeners it wrote are handed back, because the redirect on port 80 is
+// derived from them: what may be redirected to HTTPS is exactly what an HTTPS
+// listener answers for (see applyHTTPSRedirect).
+func (r *KitchenReconciler) applyGateway(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+) ([]gatewayv1.Listener, error) {
 	wildcard := gatewayv1.Hostname("*." + kitchen.Spec.BaseDomain)
 	allowAll := &gatewayv1.AllowedRoutes{
 		Namespaces: &gatewayv1.RouteNamespaces{From: ptr.To(gatewayv1.NamespacesFromAll)},
@@ -511,7 +521,7 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 
 	domainListeners, err := r.domainListeners(ctx, kitchen, allowAll)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	listeners = append(listeners, domainListeners...)
 
@@ -533,7 +543,10 @@ func (r *KitchenReconciler) applyGateway(ctx context.Context, kitchen *kitchenv1
 		gw.Spec.Listeners = listeners
 		return nil
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return listeners, nil
 }
 
 // domainListeners builds one HTTPS listener per custom domain that is ready
@@ -676,18 +689,40 @@ func gatewaySection(kitchen *kitchenv1alpha1.Kitchen) *gatewayv1.SectionName {
 // listeners would otherwise win on hostname specificity and serve the real
 // thing over cleartext.
 //
+// It carries the hostnames of the Gateway's HTTPS listeners and no others,
+// which is the whole of what it is entitled to redirect. A name with no HTTPS
+// listener has nowhere to be redirected *to*, and one such name is load
+// bearing: a verified custom domain in acme mode has no listener until its
+// certificate exists, and that certificate is issued over HTTP-01 — the
+// challenge arrives on port 80 for exactly that hostname (#573). A catch-all
+// redirect answers it with a 301 to an HTTPS address that cannot exist until
+// the challenge it is redirecting has completed, and the ACME validator
+// follows the redirect into a port that has no listener for the name.
+//
+// So the port-80 path for a name the platform does not yet terminate TLS for
+// is left alone, which is what lets cert-manager's own solver HTTPRoute — the
+// only thing that should answer there — be the thing that answers. Once the
+// certificate lands, the domain gets its listener and joins this route, and
+// its plain-HTTP address starts redirecting like every other published name.
+//
 // In the other TLS modes port 80 is where the platform actually answers, so the
 // redirect is removed rather than left to loop.
 func (r *KitchenReconciler) applyHTTPSRedirect(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
+	listeners []gatewayv1.Listener,
 ) error {
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
 		Name:      httpsRedirectRouteName,
 		Namespace: PlatformNamespace,
 	}}
 
-	if kitchen.Spec.TLS.Mode != kitchenv1alpha1.TLSModeACME {
+	// No HTTPS listener means nowhere to send anyone, and an HTTPRoute with no
+	// hostnames matches every name that arrives — the catch-all this route is
+	// no longer allowed to be. So the route goes rather than being written
+	// empty.
+	hostnames := redirectableHostnames(listeners)
+	if kitchen.Spec.TLS.Mode != kitchenv1alpha1.TLSModeACME || len(hostnames) == 0 {
 		if err := r.Delete(ctx, route); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -706,9 +741,7 @@ func (r *KitchenReconciler) applyHTTPSRedirect(
 				SectionName: ptr.To(gatewayv1.SectionName(gatewayListenerHTTP)),
 			}},
 		}
-		// No hostnames: the listener's own *.<baseDomain> already scopes this,
-		// and anything else arriving on port 80 should be redirected too.
-		route.Spec.Hostnames = nil
+		route.Spec.Hostnames = hostnames
 		route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
 			Filters: []gatewayv1.HTTPRouteFilter{{
 				Type: gatewayv1.HTTPRouteFilterRequestRedirect,
@@ -723,6 +756,33 @@ func (r *KitchenReconciler) applyHTTPSRedirect(
 		return nil
 	})
 	return err
+}
+
+// redirectableHostnames is every name the shared Gateway terminates TLS for,
+// read off the listeners it was just given: the wildcard over the base domain,
+// and one per custom domain whose certificate exists.
+//
+// A listener with no hostname would mean "every name", which is precisely the
+// catch-all this exists to avoid, so it contributes nothing — and neither does
+// the plain HTTP listener, which is the one being redirected away from.
+//
+// An empty answer would make the route match every hostname, which is the
+// catch-all again, so the caller deletes the route rather than writing one.
+func redirectableHostnames(listeners []gatewayv1.Listener) []gatewayv1.Hostname {
+	hostnames := make([]gatewayv1.Hostname, 0, len(listeners))
+	seen := map[gatewayv1.Hostname]bool{}
+	for _, listener := range listeners {
+		if listener.Protocol != gatewayv1.HTTPSProtocolType ||
+			listener.Hostname == nil || *listener.Hostname == "" {
+			continue
+		}
+		if seen[*listener.Hostname] {
+			continue
+		}
+		seen[*listener.Hostname] = true
+		hostnames = append(hostnames, *listener.Hostname)
+	}
+	return hostnames
 }
 
 // certManagerGVK builds a reference to one of cert-manager's kinds. They are

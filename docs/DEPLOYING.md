@@ -403,6 +403,15 @@ platform. Create the record, and the `Verified`, `CertificateReady` and
 certificate is issued over HTTP-01 through the platform's Gateway, so it
 finishes only once the hostname resolves there.
 
+Between verification and issuance the hostname answers nothing — no `301`, no
+page — and that is the platform staying out of the way: the ACME challenge is
+answered on port 80 for this exact name, and anything of the platform's
+standing in front of it would break the issuance it is waiting for.
+`RouteProgrammed` reads `AwaitingCertificate` while that lasts. If it stays
+there, the thing to check is the `CertificateReady` message and whether
+`shop.example.com` really resolves to the platform's address from the public
+internet.
+
 The DNS records are yours. The platform never touches your zone.
 
 ## 9. When it breaks

@@ -36,6 +36,14 @@ absent, record present with the wrong value, or a lookup that failed.
 `acme` mode issuance runs over HTTP-01 through the shared Gateway, so it
 finishes only once the hostname resolves to the platform.
 
+While it is finishing, the hostname answers nothing — and `RouteProgrammed`
+says which half is missing with reason `AwaitingCertificate` rather than
+naming a listener that does not exist yet. Port 80 is left to cert-manager's
+challenge deliberately: the platform's HTTP→HTTPS redirect covers only the
+names it already terminates TLS for, because redirecting this one would send
+the ACME validator to an HTTPS address that only completing that challenge can
+create. Both conditions move when the certificate lands.
+
 `DELETE /domains/{name}` answers `202`: the operator's finalizer still has
 the domain's certificate and secret to remove, and the Gateway drops the
 hostname as the reconcilers catch up. The DNS records in your zone are yours;

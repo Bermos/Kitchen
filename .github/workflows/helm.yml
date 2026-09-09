@@ -1628,6 +1628,53 @@ jobs:
           kubectl get kitchen default \
             -o jsonpath='{.status.conditions[?(@.type=="CertificateReady")]}'
 
+      # The other half of edge TLS, and the one that used to deadlock (#573): a
+      # custom domain's certificate is issued over HTTP-01, the challenge for it
+      # arrives on port 80 for a hostname the platform has no HTTPS listener for
+      # yet, and a redirect that answered for every name arriving there sent the
+      # ACME validator to an HTTPS address only that challenge could create.
+      #
+      # This is asserted on a cluster rather than in a render because neither
+      # object is the chart's: the operator writes both, and it writes the
+      # redirect's hostnames out of the listeners it just gave the Gateway. No
+      # Domain is created — there is no zone here to verify one against, and one
+      # in acme mode would put a real order in front of Let's Encrypt for a name
+      # nobody in this job owns. What the redirect is scoped *to* is visible
+      # without one.
+      - name: Verify the port-80 redirect answers only for names HTTPS serves
+        run: |
+          set -euo pipefail
+          hostnames=""
+          for i in $(seq 60); do
+            hostnames=$(kubectl -n kitchen-system get httproute kitchen-https-redirect \
+              -o jsonpath='{.spec.hostnames[*]}' 2>/dev/null || true)
+            [ -n "${hostnames}" ] && break
+            [ "$i" = 60 ] && {
+              kubectl -n kitchen-system get httproute
+              kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+              echo "::error::the operator never published the port-80 redirect"
+              exit 1
+            }
+            sleep 5
+          done
+          echo "the redirect answers for: ${hostnames}"
+          [ "${hostnames}" = "*.apps.example.com" ] || {
+            echo "::error::the port-80 redirect answers for '${hostnames}';" \
+              "it may name only what an HTTPS listener serves, or it 301s a custom" \
+              "domain's ACME challenge into an address that challenge has to create (#573)"
+            exit 1
+          }
+          # And the listener it redirects away from stays catch-all. A hostname
+          # there would refuse cert-manager's solver route for any name outside
+          # the base domain outright, which is every custom domain there is.
+          http_hostname=$(kubectl -n kitchen-system get gateway kitchen \
+            -o jsonpath='{.spec.listeners[?(@.name=="http")].hostname}')
+          [ -z "${http_hostname}" ] || {
+            echo "::error::the port-80 listener names '${http_hostname}';" \
+              "a custom domain's HTTP-01 challenge route could not attach to it"
+            exit 1
+          }
+
       - name: Verify the REST API is shut without a token
         run: |
           set -euo pipefail

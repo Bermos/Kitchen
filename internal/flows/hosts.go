@@ -216,12 +216,20 @@ func (s HostSet) Len() int {
 //
 // A route with no hostnames publishes no name of its own — it serves whatever
 // its listener does — and is skipped rather than read as publishing
-// everything. The operator writes exactly one of those, the HTTPS redirect on
-// port 80, and treating it as a wildcard would silence the signal on every
-// acme installation.
+// everything, which would silence the signal outright.
+//
+// So is a route that only redirects, one step along from the same reason: it
+// does not serve the names it carries, it moves them to another address where
+// something either serves them or does not. The operator writes exactly one,
+// the port-80 redirect to HTTPS, and since #573 it names `*.<baseDomain>` —
+// every generated URL the platform will ever publish, the ones it has stopped
+// publishing included, which is precisely what this signal watches for.
 func PublishedHosts(routes []gatewayv1.HTTPRoute) HostSet {
 	set := HostSet{exact: make(map[string]struct{}, len(routes))}
 	for i := range routes {
+		if redirectsOnly(routes[i]) {
+			continue
+		}
 		for _, hostname := range routes[i].Spec.Hostnames {
 			host := NormaliseHost(string(hostname))
 			switch {
@@ -234,6 +242,31 @@ func PublishedHosts(routes []gatewayv1.HTTPRoute) HostSet {
 		}
 	}
 	return set
+}
+
+// redirectsOnly reports whether every rule of a route answers with a redirect
+// and none of them reaches a backend. A route with no rules reaches nothing
+// either, but it also redirects nothing, so it is not one of these.
+func redirectsOnly(route gatewayv1.HTTPRoute) bool {
+	if len(route.Spec.Rules) == 0 {
+		return false
+	}
+	for _, rule := range route.Spec.Rules {
+		if len(rule.BackendRefs) > 0 {
+			return false
+		}
+		redirects := false
+		for _, filter := range rule.Filters {
+			if filter.Type == gatewayv1.HTTPRouteFilterRequestRedirect {
+				redirects = true
+				break
+			}
+		}
+		if !redirects {
+			return false
+		}
+	}
+	return true
 }
 
 // hostIndex is the attribution table plus the policy that keeps it current. It

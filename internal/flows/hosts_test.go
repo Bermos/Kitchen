@@ -23,6 +23,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -66,6 +67,26 @@ func routeFor(name, project, environment string, hostnames ...string) gatewayv1.
 func platformRoute() gatewayv1.HTTPRoute {
 	route := routeFor("kitchen-api", "", "", dashboardHost)
 	route.Namespace = platformNS
+	return route
+}
+
+// redirectRoute is the operator's port-80 route as applyHTTPSRedirect writes
+// it: the wildcard over the base domain, redirected to HTTPS and reaching no
+// backend. It publishes no name of its own, which is what keeps
+// `edge.unrouted-hosts` able to see a generated hostname the platform has
+// stopped serving.
+func redirectRoute() gatewayv1.HTTPRoute {
+	route := routeFor("kitchen-https-redirect", "", "", "*.apps.example.com")
+	route.Namespace = platformNS
+	route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
+		Filters: []gatewayv1.HTTPRouteFilter{{
+			Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+			RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+				Scheme:     ptr.To("https"),
+				StatusCode: ptr.To(301),
+			},
+		}},
+	}}
 	return route
 }
 
@@ -143,8 +164,11 @@ func TestPublishedHostsCoversThePlatformsOwnSurfaces(t *testing.T) {
 	published := PublishedHosts([]gatewayv1.HTTPRoute{
 		routeFor(hostProduction, hostProject, hostProduction, productionHost, customHost),
 		platformRoute(),
-		// The HTTPS redirect on port 80: no hostname of its own.
-		routeFor("kitchen-https-redirect", "", ""),
+		// The HTTPS redirect on port 80. It carries the wildcard over the
+		// base domain and serves none of it.
+		redirectRoute(),
+		// And the shape it used to have, which must go on publishing nothing.
+		routeFor("kitchen-legacy-redirect", "", ""),
 	})
 
 	for _, tc := range []struct {
@@ -155,6 +179,10 @@ func TestPublishedHostsCoversThePlatformsOwnSurfaces(t *testing.T) {
 		{"a verified custom domain", customHost, true},
 		{"the dashboard", dashboardHost, true},
 		{"the dashboard, shouted and with a port", "KITCHEN.example.com:443", true},
+		// Under the base domain, and so under the redirect's wildcard: a
+		// generated hostname whose environment is gone is exactly what
+		// `edge.unrouted-hosts` is for, and the redirect must not cover it
+		// back into silence (#573).
 		{"a host nobody published", unroutedHost, false},
 		{"no host at all", "", false},
 	} {
@@ -165,8 +193,9 @@ func TestPublishedHostsCoversThePlatformsOwnSurfaces(t *testing.T) {
 		})
 	}
 
-	// A hostname-less route publishes no name of its own. Counting it as a
-	// wildcard would make every host published and the unrouted signal mute.
+	// Neither a hostname-less route nor a redirect publishes a name of its
+	// own. Counting either would make every host published and the unrouted
+	// signal mute.
 	if published.Len() != 3 {
 		t.Errorf("Len() = %d, want the three hostnames the routes name", published.Len())
 	}

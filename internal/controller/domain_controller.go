@@ -457,6 +457,19 @@ func (r *DomainReconciler) observeRoute(
 	// mode that is the per-domain listener; the other modes share the HTTP one.
 	section := gatewayListenerHTTP
 	if domainTLSMode(domain, kitchen) == kitchenv1alpha1.TLSModeACME {
+		// The listener does not exist until the certificate does, so before
+		// then there is no acceptance to wait for and saying there is reads
+		// as a deadlock (#573). What is actually happening is issuance, and
+		// the plain-HTTP address is deliberately left to the challenge that
+		// finishes it.
+		if !domainListenerReady(ctx, r.Client, domain, kitchen) {
+			setCond(condRouteProgrammed, metav1.ConditionFalse, "AwaitingCertificate", fmt.Sprintf(
+				"the route carries the hostname; %s joins the shared Gateway's HTTPS listeners once "+
+					"its certificate is issued. Until then the platform publishes nothing on port 80 "+
+					"for it, which is where the HTTP-01 challenge that issues it is answered",
+				domain.Spec.Hostname))
+			return false
+		}
 		section = domainListenerName(domain.Name)
 	}
 	for _, parent := range route.Status.Parents {
