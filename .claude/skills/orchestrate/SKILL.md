@@ -203,6 +203,24 @@ grammar** — prose quoting a Go or Gomega expression is exactly that shape. So:
 - A stale release pull request and a discarded commit look identical from
   outside — both leave the old body sitting there. The log tells them apart.
 
+**Every cut leaves a poisoned release pull request behind — close it.** Merging
+the release pull request pushes to `main`, which fires release-please at once,
+while the tag it needs is created minutes later at the end of the publish
+workflow. With no tag to anchor to it falls back to `bootstrap-sha`: on
+9 September the run after the 0.40.3 cut considered **1130 commits** and
+proposed `0.41.0` with a changelog re-listing a year of released history. The
+same thing happened after the 0.40.1 cut that morning. It is deterministic, not
+a race that sometimes loses.
+
+It does not clean itself up, because the next *correct* run only opens or
+updates a pull request when it finds something that moves a version — a batch of
+`chore` and `docs` finds nothing and leaves the fossil standing, open and green
+and plausible. So after confirming the release is live: **check for a release
+pull request whose parent is the release commit you just merged, and close it**,
+saying why. Leave the branch; the next `fix` or `feat` rebuilds it correctly.
+Never merge one whose changelog names versions that already shipped. Tracked as
+#586.
+
 **Read a red check's log before calling it anything, including a flake.** The
 same day, five CI failures across four pull requests were one Go module mirror
 incident (`proxy.golang.org` and `sum.golang.org`, `stream error … INTERNAL_ERROR;
