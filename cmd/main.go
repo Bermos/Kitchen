@@ -274,7 +274,7 @@ func main() {
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/metrics/server
+	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/metrics/server
 	// - https://book.kubebuilder.io/reference/metrics.html
 	metricsServerOptions := metricsserver.Options{
 		BindAddress:   metricsAddr,
@@ -286,7 +286,7 @@ func main() {
 		// FilterProvider is used to protect the metrics endpoint with authn/authz.
 		// These configurations ensure that only authorized users and service accounts
 		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/metrics/filters#WithAuthenticationAndAuthorization
+		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/metrics/filters#WithAuthenticationAndAuthorization
 		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
@@ -318,13 +318,21 @@ func main() {
 	}
 
 	// controller-runtime stopped enabling the client-side rate limiter by
-	// default in 0.21. `GetConfigOrDie` used to hand back a config bounded at
-	// 20 queries a second with a burst of 30, and now hands back one that is
-	// not bounded at all, leaving the API server's own priority and fairness
-	// queues to absorb whatever the operator asks of them. That is a change of
-	// behaviour for an installation that is already running, so the bound is
-	// restored here rather than dropped as a side effect of a dependency bump.
-	// Removing it is an operator's decision to take deliberately.
+	// default in 0.21: `GetConfigOrDie` used to hand back QPS 20 and burst 30,
+	// and now hands back a config with no client-side bound at all, leaving
+	// the API server's own priority and fairness queues to absorb whatever the
+	// operator asks of them. Upstream removed it deliberately and documents
+	// setting it back as the supported way to have it, so this is a choice
+	// rather than a workaround: the numbers are set here so that an
+	// installation behaves after the upgrade as it did before it, and removing
+	// them is an operator's decision to take on its own.
+	//
+	// Note what the two numbers bound. A `rest.Config`'s limiter is a token
+	// bucket per REST client, and controller-runtime builds one per GVK, so
+	// the figure is 20 queries a second for each kind the cached client
+	// reaches — plus a bucket of its own for the uncached reader and another
+	// for the pod-log clientset. It is a brake on any single kind running
+	// away, not a ceiling on the process.
 	restConfig := ctrl.GetConfigOrDie()
 	restConfig.QPS = 20
 	restConfig.Burst = 30
