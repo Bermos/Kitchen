@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.5](https://github.com/Bermos/Kitchen/compare/v0.40.4...v0.40.5) (2026-09-09)
+
+
+### Bug fixes
+
+* **chart:** admit the shared Gateway to cert-manager's HTTP-01 solvers so custom domains issue ([#591](https://github.com/Bermos/Kitchen/issues/591)) ([ab2973e](https://github.com/Bermos/Kitchen/commit/ab2973e7d91e87560278512b331c40017d8afc5b))
+
 ## [0.40.4](https://github.com/Bermos/Kitchen/compare/v0.40.3...v0.40.4) (2026-09-09)
 
 
