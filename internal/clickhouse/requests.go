@@ -185,7 +185,13 @@ type RequestListQuery struct {
 	// under a set of numbers is the same traffic those numbers are of. It is
 	// ignored where Route names one, for the reason RequestQuery gives.
 	ExcludeHealth []HealthRoute
-	Limit         int
+	// ExcludeHosts drops the hostnames the caller says this environment is not
+	// serving, for the same reason the health checks go: the rows under a set
+	// of numbers are the traffic those numbers are of. See
+	// RequestQuery.ExcludeHosts, including why a Route filter does not cancel
+	// it.
+	ExcludeHosts []string
+	Limit        int
 }
 
 // QueryRequests reads the raw rows a listing matches, newest first — which is
@@ -228,6 +234,9 @@ func (c *Client) QueryRequests(ctx context.Context, query RequestListQuery) ([]R
 		if condition := healthCondition(query.ExcludeHealth, "", params); condition != "" {
 			conditions = append(conditions, condition)
 		}
+	}
+	if condition := hostExclusion(query.ExcludeHosts, "", params); condition != "" {
+		conditions = append(conditions, condition)
 	}
 	if query.StatusClass > 0 {
 		conditions = append(conditions, "intDiv(status, 100) = {statusClass:UInt8}")

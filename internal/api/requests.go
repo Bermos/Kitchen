@@ -51,30 +51,44 @@ import (
 //   - For gRPC, no application errors. A failed gRPC call is an HTTP 200 with a
 //     `grpc-status` trailer the edge does not read, so its errors are
 //     transport-level here.
+//   - No upstream. A row says what was asked for and what came back, never
+//     which side answered — so a `404` the edge produced for a hostname it has
+//     no route for looks exactly like one the application served. Which
+//     hostnames the platform is routing *is* known, and that is what
+//     pendingdomains.go excludes on.
 //
 // The three aggregate reads are answered from the rollups and the listing from
 // the raw rows, which is why a year-wide summary is as cheap as an hour's and
 // why the listing's window is the shorter one: raw rows are kept for seven days.
 
-// requestQueryFrom reads the window, the route filter and the health-check
-// decision the request reads share. An absent window is the store's own
+// requestQueryFrom reads the window, the route filter and the two exclusion
+// decisions the request reads share. An absent window is the store's own
 // default — the hour ending now.
+//
+// Two kinds of row are left out of an environment's own numbers, and the views
+// that come back with the query are what the answer says about each: a number
+// that silently dropped rows is a number nobody can reconcile.
 //
 // The health check the platform makes of this application is not its traffic
 // (see healthchecks.go), so it is left out unless `?health=include` asks for
-// it. The view that comes back with the query is what the answer says about
-// that, and every one of these endpoints carries it: a number that silently
-// dropped rows is a number nobody can reconcile.
+// it. Traffic that arrived on a hostname attached to this environment that the
+// platform is not routing yet was answered by the edge and not by the
+// application (see pendingdomains.go), so it goes for the same reason unless
+// `?pending=include` asks for it.
 func (s *Server) requestQueryFrom(
 	req *http.Request, env *kitchenv1alpha1.Environment,
-) (clickhouse.RequestQuery, healthChecksView, error) {
+) (clickhouse.RequestQuery, requestScopeViews, error) {
 	since, until, err := windowFrom(req)
 	if err != nil {
-		return clickhouse.RequestQuery{}, healthChecksView{}, err
+		return clickhouse.RequestQuery{}, requestScopeViews{}, err
 	}
 	include, err := includeHealth(req)
 	if err != nil {
-		return clickhouse.RequestQuery{}, healthChecksView{}, err
+		return clickhouse.RequestQuery{}, requestScopeViews{}, err
+	}
+	includeUnpublished, err := includePending(req)
+	if err != nil {
+		return clickhouse.RequestQuery{}, requestScopeViews{}, err
 	}
 
 	// Every request read is project-scoped, and the project is the
@@ -82,7 +96,11 @@ func (s *Server) requestQueryFrom(
 	// resolves what it belongs to, the way the log and metric endpoints do.
 	project := &kitchenv1alpha1.Project{}
 	if err := s.get(req.Context(), env.Spec.ProjectRef.Name, project); err != nil {
-		return clickhouse.RequestQuery{}, healthChecksView{}, err
+		return clickhouse.RequestQuery{}, requestScopeViews{}, err
+	}
+	pending, err := s.pendingHostsOf(req.Context(), env)
+	if err != nil {
+		return clickhouse.RequestQuery{}, requestScopeViews{}, err
 	}
 
 	query := clickhouse.RequestQuery{
@@ -92,15 +110,34 @@ func (s *Server) requestQueryFrom(
 		Until:       until,
 		Route:       strings.TrimSpace(req.URL.Query().Get("route")),
 	}
-	health := healthChecksView{Route: healthRouteOf(project).Route}
+	views := requestScopeViews{
+		Health:         healthChecksView{Route: healthRouteOf(project).Route},
+		PendingDomains: pendingDomainsView{Hostnames: pending},
+	}
 	// A caller filtering to one route has named what they want counted, and
 	// the store ignores the exclusion in that case; saying `excluded` here
 	// would be the screen claiming something the numbers do not do.
-	if !include && health.Route != "" && query.Route == "" {
-		query.ExcludeHealth = []clickhouse.HealthRoute{{Project: project.Name, Route: health.Route}}
-		health.Excluded = true
+	if !include && views.Health.Route != "" && query.Route == "" {
+		query.ExcludeHealth = []clickhouse.HealthRoute{{Project: project.Name, Route: views.Health.Route}}
+		views.Health.Excluded = true
 	}
-	return query, health, nil
+	// The hostname exclusion is not cancelled by a route filter: the same
+	// template is served on every name the environment answers to, so naming
+	// one does not turn the unrouted names into what was asked for.
+	if !includeUnpublished && len(pending) > 0 {
+		query.ExcludeHosts = pending
+		views.PendingDomains.Excluded = true
+	}
+	return query, views, nil
+}
+
+// requestScopeViews is what the four request answers say about the traffic
+// they did not count. Both halves travel together because both reads resolve
+// them together, and a body carrying one without the other would be a number
+// explained halfway.
+type requestScopeViews struct {
+	Health         healthChecksView
+	PendingDomains pendingDomainsView
 }
 
 // writeRequestQueryError answers the two ways resolving one of these reads can
@@ -191,9 +228,10 @@ func (s *Server) environmentOf(w http.ResponseWriter, req *http.Request) *kitche
 // than the one that was asked for, and flattening it would lose that.
 type requestSummaryBody struct {
 	clickhouse.RequestSummary
-	Environment  string           `json:"environment"`
-	Edge         edgeView         `json:"edge"`
-	HealthChecks healthChecksView `json:"healthChecks"`
+	Environment    string             `json:"environment"`
+	Edge           edgeView           `json:"edge"`
+	HealthChecks   healthChecksView   `json:"healthChecks"`
+	PendingDomains pendingDomainsView `json:"pendingDomains"`
 }
 
 // environmentRequestSummary answers the four tiles the environment page leads
@@ -203,7 +241,7 @@ func (s *Server) environmentRequestSummary(w http.ResponseWriter, req *http.Requ
 	if env == nil {
 		return
 	}
-	query, health, err := s.requestQueryFrom(req, env)
+	query, views, err := s.requestQueryFrom(req, env)
 	if err != nil {
 		s.writeRequestQueryError(w, err)
 		return
@@ -222,7 +260,8 @@ func (s *Server) environmentRequestSummary(w http.ResponseWriter, req *http.Requ
 		RequestSummary: summary,
 		Environment:    env.Name,
 		Edge:           s.edgeOf(req.Context(), env),
-		HealthChecks:   health,
+		HealthChecks:   views.Health,
+		PendingDomains: views.PendingDomains,
 	})
 }
 
@@ -231,9 +270,10 @@ func (s *Server) environmentRequestSummary(w http.ResponseWriter, req *http.Requ
 // answered it.
 type requestSeriesBody struct {
 	clickhouse.RequestSeries
-	Environment  string           `json:"environment"`
-	Edge         edgeView         `json:"edge"`
-	HealthChecks healthChecksView `json:"healthChecks"`
+	Environment    string             `json:"environment"`
+	Edge           edgeView           `json:"edge"`
+	HealthChecks   healthChecksView   `json:"healthChecks"`
+	PendingDomains pendingDomainsView `json:"pendingDomains"`
 }
 
 // environmentRequestSeries answers traffic, error rate and the latency
@@ -243,7 +283,7 @@ func (s *Server) environmentRequestSeries(w http.ResponseWriter, req *http.Reque
 	if env == nil {
 		return
 	}
-	query, health, err := s.requestQueryFrom(req, env)
+	query, views, err := s.requestQueryFrom(req, env)
 	if err != nil {
 		s.writeRequestQueryError(w, err)
 		return
@@ -265,10 +305,11 @@ func (s *Server) environmentRequestSeries(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, requestSeriesBody{
-		RequestSeries: series,
-		Environment:   env.Name,
-		Edge:          s.edgeOf(req.Context(), env),
-		HealthChecks:  health,
+		RequestSeries:  series,
+		Environment:    env.Name,
+		Edge:           s.edgeOf(req.Context(), env),
+		HealthChecks:   views.Health,
+		PendingDomains: views.PendingDomains,
 	})
 }
 
@@ -286,10 +327,11 @@ var routeSorts = []string{
 // rows are aggregates over the same snapped window the summary reports, and
 // echoing a second copy of it invites the two to disagree.
 type requestRoutesBody struct {
-	Items        []clickhouse.RequestRoute `json:"items"`
-	Environment  string                    `json:"environment"`
-	Edge         edgeView                  `json:"edge"`
-	HealthChecks healthChecksView          `json:"healthChecks"`
+	Items          []clickhouse.RequestRoute `json:"items"`
+	Environment    string                    `json:"environment"`
+	Edge           edgeView                  `json:"edge"`
+	HealthChecks   healthChecksView          `json:"healthChecks"`
+	PendingDomains pendingDomainsView        `json:"pendingDomains"`
 }
 
 // environmentRequestRoutes answers one row per route template.
@@ -302,7 +344,7 @@ func (s *Server) environmentRequestRoutes(w http.ResponseWriter, req *http.Reque
 	if env == nil {
 		return
 	}
-	query, health, err := s.requestQueryFrom(req, env)
+	query, views, err := s.requestQueryFrom(req, env)
 	if err != nil {
 		s.writeRequestQueryError(w, err)
 		return
@@ -329,10 +371,11 @@ func (s *Server) environmentRequestRoutes(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, requestRoutesBody{
-		Items:        itemsOf(routes),
-		Environment:  env.Name,
-		Edge:         s.edgeOf(req.Context(), env),
-		HealthChecks: health,
+		Items:          itemsOf(routes),
+		Environment:    env.Name,
+		Edge:           s.edgeOf(req.Context(), env),
+		HealthChecks:   views.Health,
+		PendingDomains: views.PendingDomains,
 	})
 }
 
@@ -341,10 +384,11 @@ func (s *Server) environmentRequestRoutes(w http.ResponseWriter, req *http.Reque
 // the edge's answer belongs beside the rows: an empty list means one thing for
 // an environment on the edge and another for one that is not.
 type requestListBody struct {
-	Items        []clickhouse.Request `json:"items"`
-	Environment  string               `json:"environment"`
-	Edge         edgeView             `json:"edge"`
-	HealthChecks healthChecksView     `json:"healthChecks"`
+	Items          []clickhouse.Request `json:"items"`
+	Environment    string               `json:"environment"`
+	Edge           edgeView             `json:"edge"`
+	HealthChecks   healthChecksView     `json:"healthChecks"`
+	PendingDomains pendingDomainsView   `json:"pendingDomains"`
 }
 
 // environmentRequests answers the raw rows, newest first, and follows them live
@@ -355,7 +399,7 @@ func (s *Server) environmentRequests(w http.ResponseWriter, req *http.Request) {
 	if env == nil {
 		return
 	}
-	query, health, err := s.requestListFrom(req, env)
+	query, views, err := s.requestListFrom(req, env)
 	if err != nil {
 		s.writeRequestQueryError(w, err)
 		return
@@ -396,10 +440,11 @@ func (s *Server) environmentRequests(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, requestListBody{
-		Items:        itemsOf(rows),
-		Environment:  env.Name,
-		Edge:         s.edgeOf(req.Context(), env),
-		HealthChecks: health,
+		Items:          itemsOf(rows),
+		Environment:    env.Name,
+		Edge:           s.edgeOf(req.Context(), env),
+		HealthChecks:   views.Health,
+		PendingDomains: views.PendingDomains,
 	})
 }
 
@@ -407,18 +452,18 @@ func (s *Server) environmentRequests(w http.ResponseWriter, req *http.Request) {
 // window: a route template, a verb, a class of answer, and the failures alone.
 func (s *Server) requestListFrom(
 	req *http.Request, env *kitchenv1alpha1.Environment,
-) (clickhouse.RequestListQuery, healthChecksView, error) {
-	query, health, err := s.requestQueryFrom(req, env)
+) (clickhouse.RequestListQuery, requestScopeViews, error) {
+	query, views, err := s.requestQueryFrom(req, env)
 	if err != nil {
-		return clickhouse.RequestListQuery{}, healthChecksView{}, err
+		return clickhouse.RequestListQuery{}, requestScopeViews{}, err
 	}
 	limit, err := intParam(req, "limit", clickhouse.DefaultRequestLimit)
 	if err != nil {
-		return clickhouse.RequestListQuery{}, healthChecksView{}, err
+		return clickhouse.RequestListQuery{}, requestScopeViews{}, err
 	}
 	statusClass, err := statusClassParam(req)
 	if err != nil {
-		return clickhouse.RequestListQuery{}, healthChecksView{}, err
+		return clickhouse.RequestListQuery{}, requestScopeViews{}, err
 	}
 	return clickhouse.RequestListQuery{
 		Project:     query.Project,
@@ -429,13 +474,14 @@ func (s *Server) requestListFrom(
 		// The rows under a set of numbers are the traffic those numbers are
 		// of, so the listing drops what the aggregates dropped.
 		ExcludeHealth: query.ExcludeHealth,
+		ExcludeHosts:  query.ExcludeHosts,
 		// The follower canonicalises the verb before it stores it, so the
 		// filter matches the stored spelling rather than the typed one.
 		Method:      strings.ToUpper(strings.TrimSpace(req.URL.Query().Get("method"))),
 		StatusClass: statusClass,
 		OnlyErrors:  req.URL.Query().Get("errors") == "1",
 		Limit:       limit,
-	}, health, nil
+	}, views, nil
 }
 
 // statusClassParam reads `?status=`, which selects a class of answer rather

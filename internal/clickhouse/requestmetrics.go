@@ -139,6 +139,15 @@ type RequestQuery struct {
 	// route by name and was answered zero would be a screen arguing with
 	// itself.
 	ExcludeHealth []HealthRoute
+	// ExcludeHosts drops what arrived on hostnames the caller says this
+	// environment is not serving — see requesthosts.go for the predicate, and
+	// the API's pendingdomains.go for who decides which hostnames those are.
+	//
+	// Unlike ExcludeHealth it survives a Route filter, because a route
+	// template says nothing about the hostname it was asked on: an environment
+	// answers the same paths on every name attached to it, and one of those
+	// names not being routed yet does not make the route a different question.
+	ExcludeHosts []string
 }
 
 // requestScope is a resolved read: the window it covers, the rollup answering
@@ -209,6 +218,9 @@ func (q RequestQuery) scope(rollup string) (requestScope, error) {
 		scope.conditions = append(scope.conditions, "r.route = {route:String}")
 		scope.params["route"] = q.Route
 	} else if condition := healthCondition(q.ExcludeHealth, "r.", scope.params); condition != "" {
+		scope.conditions = append(scope.conditions, condition)
+	}
+	if condition := hostExclusion(q.ExcludeHosts, "r.", scope.params); condition != "" {
 		scope.conditions = append(scope.conditions, condition)
 	}
 	return scope, nil
@@ -370,14 +382,12 @@ func (c *Client) RequestSeries(ctx context.Context, query RequestSeriesQuery) (R
 	}
 	width := requestBucketSeconds(until.Sub(since), buckets)
 
-	scope, err := RequestQuery{
-		Project:       query.Project,
-		Environment:   query.Environment,
-		Since:         since,
-		Until:         until,
-		Route:         query.Route,
-		ExcludeHealth: query.ExcludeHealth,
-	}.scope(rollupForWidth(width))
+	// The embedded query with its window resolved, rather than a fresh one
+	// listing the fields it carries: a scope built field by field is a scope
+	// that silently drops the next filter anybody adds to RequestQuery.
+	resolved := query.RequestQuery
+	resolved.Since, resolved.Until = since, until
+	scope, err := resolved.scope(rollupForWidth(width))
 	if err != nil {
 		return RequestSeries{}, err
 	}

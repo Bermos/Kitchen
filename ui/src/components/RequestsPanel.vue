@@ -12,6 +12,7 @@ import {
   formatRate,
   formatSaturation,
   healthCheckNote,
+  pendingDomainsNote,
   rawRetentionStart,
   saturation,
   type SignalTile,
@@ -86,10 +87,22 @@ const windowStart = ref(new Date(Date.now() - rangeMinutes.value * 60_000).toISO
  */
 const countHealthChecks = ref(false);
 
+/**
+ * Whether traffic to a hostname this environment is not serving yet is counted.
+ * It is not, by default. A custom domain is attached to an environment's route
+ * before the platform is answering on it, and requests that arrive in between
+ * are answered by the platform's edge — an application that never saw them, on
+ * routes it never served. Left in, they are a route table row nobody wrote and
+ * a request count nobody made, on the screen of the person trying to work out
+ * why the domain will not come up.
+ */
+const countPendingDomains = ref(false);
+
 const scope = () => ({
   since: windowStart.value,
   route: selectedRoute.value ?? undefined,
   health: countHealthChecks.value ? ("include" as const) : undefined,
+  pending: countPendingDomains.value ? ("include" as const) : undefined,
 });
 
 const summary = useAsync(() => api.requestSummary(props.environment, scope()));
@@ -102,6 +115,7 @@ const routes = useAsync(() =>
     sort: sort.value,
     limit: 100,
     health: countHealthChecks.value ? "include" : undefined,
+    pending: countPendingDomains.value ? "include" : undefined,
   }),
 );
 // Saturation is the fourth golden signal, and it is the one the request
@@ -118,7 +132,16 @@ const protocols = useAsync(() =>
   // Health checks and all: this is a question about what the environment
   // *serves*, not about who visited it, and a probe negotiating HTTP/2 is as
   // good an answer as anyone else's.
-  api.requests(props.environment, { since: rawRetentionStart(), limit: PROTOCOL_SAMPLE, health: "include" }),
+  api.requests(props.environment, {
+    since: rawRetentionStart(),
+    limit: PROTOCOL_SAMPLE,
+    health: "include",
+    // But not the hostnames the platform answers for itself: a protocol the
+    // edge negotiated on a name this environment is not published on says
+    // nothing about what this environment serves, which is what the footnote
+    // is a statement about.
+    pending: "exclude",
+  }),
 );
 // Only for an environment the edge does not reach: what it wrote, since that is
 // what is real for a worker.
@@ -173,6 +196,12 @@ watch(sort, () => void routes.refresh());
 // The question changed, not the window: everything that answers it is re-read,
 // the route table included — it is where the check shows up largest.
 watch(countHealthChecks, () => {
+  void summary.refresh();
+  void series.refresh();
+  void routes.refresh();
+});
+// The same question asked of the other set of rows.
+watch(countPendingDomains, () => {
   void summary.refresh();
   void series.refresh();
   void routes.refresh();
@@ -311,6 +340,12 @@ const healthNote = computed(() =>
   healthCheckNote(summary.data.value?.healthChecks ?? series.data.value?.healthChecks, selectedRoute.value),
 );
 
+/** The hostnames these numbers are not of, and whether they were left out. Not
+ * suppressed by a route filter, because the API's exclusion is not either. */
+const pendingNote = computed(() =>
+  pendingDomainsNote(summary.data.value?.pendingDomains ?? series.data.value?.pendingDomains),
+);
+
 const resolution = computed(() => bucketLabel(series.data.value?.bucketSeconds));
 
 /** An installation that runs without telemetry has no requests to show, and a
@@ -424,6 +459,35 @@ function clock(iso: string | undefined): string {
           </template>
         </p>
 
+        <!-- A hostname attached to this environment that the platform is not
+             answering on yet. The requests are real and they are addressed
+             here; what they are not is anything this environment served, so
+             they are stated as the fact they are rather than left to be read
+             as the application's own traffic. -->
+        <p v-if="pendingNote" class="flex items-center gap-2 text-[11px] text-dimmed flex-wrap">
+          <template v-if="pendingNote.excluded">
+            <span>
+              Not counted here: requests to
+              <span class="font-mono text-muted">{{ pendingNote.hostnames.join(", ") }}</span
+              >, attached to this environment but not published yet — the platform's edge answers them, so this
+              environment never sees them.
+            </span>
+            <button class="underline underline-offset-2 hover:text-toned" @click="countPendingDomains = true">
+              Count them
+            </button>
+          </template>
+          <template v-else>
+            <span>
+              Counting requests to
+              <span class="font-mono text-muted">{{ pendingNote.hostnames.join(", ") }}</span
+              >, which the platform does not publish yet — its edge answers those, not this environment.
+            </span>
+            <button class="underline underline-offset-2 hover:text-toned" @click="countPendingDomains = false">
+              Leave them out
+            </button>
+          </template>
+        </p>
+
         <p v-if="state.kind === 'quiet'" class="text-xs text-muted">
           No traffic in this window. This environment is published on the shared Gateway — nothing was asked of it
           between {{ clock(summary.data.value?.since) }} and {{ clock(summary.data.value?.until) }}.
@@ -476,6 +540,7 @@ function clock(iso: string | undefined): string {
           :since="windowStart"
           :route="selectedRoute"
           :health="countHealthChecks ? 'include' : undefined"
+          :pending="countPendingDomains ? 'include' : undefined"
           @http2="listingSawHTTP2 = true"
         />
       </template>

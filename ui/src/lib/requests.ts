@@ -9,7 +9,7 @@
  * rate, and two of them rounding differently is two of them disagreeing.
  */
 
-import type { EdgeStatus, HealthChecks, PlatformEvent, RequestRow } from "./api";
+import type { EdgeStatus, HealthChecks, PendingDomains, PlatformEvent, RequestRow } from "./api";
 import { renderClause } from "./logquery";
 import type { Tone } from "./status";
 
@@ -84,6 +84,45 @@ export function healthCheckNote(
 ): HealthCheckNote | null {
   if (!health?.route || selectedRoute) return null;
   return { route: health.route, excluded: health.excluded };
+}
+
+/**
+ * What the requests section says about a hostname the platform is not serving
+ * yet.
+ *
+ * A custom domain joins its environment's route as soon as it is verified, and
+ * the platform starts answering on it only once the gateway has accepted that
+ * route — which for a domain waiting on its certificate can be a long while.
+ * Requests that arrive in between are addressed to this environment and
+ * answered by the platform's edge, which has no route for the name yet. They
+ * are the environment's traffic in the sense that they were meant for it, and
+ * not in the only sense the numbers are about: the application never saw them.
+ *
+ * So the API leaves them out and names the hostnames it left out, and the
+ * screen says which they are. Two rules, mirroring the health-check note:
+ *
+ *   - **Nothing is said where nothing is pending.** An environment whose every
+ *     hostname is being served has nothing left out.
+ *   - **It is said whether or not they were excluded.** The offer works both
+ *     ways — the note is the only thing on the screen that explains a route
+ *     nobody recognises, and the traffic is evidence while a domain is coming
+ *     up rather than something to hide.
+ *
+ * Unlike the health-check note it survives a route filter, because the API's
+ * exclusion does: a route template is served on every hostname an environment
+ * answers to, so naming one says nothing about which name was asked.
+ */
+export interface PendingDomainsNote {
+  /** The hostnames attached to this environment that it is not serving yet. */
+  hostnames: string[];
+  /** Whether the numbers beside the note left their traffic out. */
+  excluded: boolean;
+}
+
+export function pendingDomainsNote(pending: PendingDomains | undefined): PendingDomainsNote | null {
+  const hostnames = pending?.hostnames ?? [];
+  if (!hostnames.length) return null;
+  return { hostnames, excluded: pending?.excluded ?? false };
 }
 
 /** What the screen says when the platform is sure nothing publishes an
