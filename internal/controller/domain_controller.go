@@ -454,45 +454,78 @@ func (r *DomainReconciler) observeRoute(
 	}
 
 	// Accepted, on the listener this domain's traffic actually uses. In acme
-	// mode that is the per-domain listener; the other modes share the HTTP one.
+	// mode that is the per-domain listener once the certificate exists, and
+	// the shared HTTP one while it is being issued; the other modes are on
+	// the shared HTTP listener throughout.
 	section := gatewayListenerHTTP
+	awaitingCertificate := false
 	if domainTLSMode(domain, kitchen) == kitchenv1alpha1.TLSModeACME {
-		// The listener does not exist until the certificate does, so before
-		// then there is no acceptance to wait for and saying there is reads
-		// as a deadlock (#573). What is actually happening is issuance, and
-		// the plain-HTTP address is deliberately left to the challenge that
-		// finishes it.
-		if !domainListenerReady(ctx, r.Client, domain, kitchen) {
-			setCond(condRouteProgrammed, metav1.ConditionFalse, "AwaitingCertificate", fmt.Sprintf(
-				"the route carries the hostname; %s joins the shared Gateway's HTTPS listeners once "+
-					"its certificate is issued. Until then the platform publishes nothing on port 80 "+
-					"for it, which is where the HTTP-01 challenge that issues it is answered",
-				domain.Spec.Hostname))
+		if domainListenerReady(ctx, r.Client, domain, kitchen) {
+			section = domainListenerName(domain.Name)
+		} else {
+			awaitingCertificate = true
+		}
+	}
+	if awaitingCertificate {
+		// The per-domain HTTPS listener cannot exist until the certificate
+		// does, and the certificate is issued over HTTP-01 at this hostname
+		// on port 80 — so port 80 is what the route binds meanwhile (#573).
+		// The hostname is served in cleartext for that window, which is what
+		// an HTTP-01 challenge requires of any host answering it.
+		if accepted, cond := routeAcceptedOn(route, gatewayListenerHTTP); !accepted {
+			reason, message := "AwaitingGatewayAcceptance", fmt.Sprintf(
+				"the route carries the hostname; waiting for the gateway controller to accept it "+
+					"on listener %q, which answers the HTTP-01 challenge that issues the certificate",
+				gatewayListenerHTTP)
+			if cond != nil {
+				reason, message = "RouteNotAccepted", cond.Message
+			}
+			setCond(condRouteProgrammed, metav1.ConditionFalse, reason, message)
 			return false
 		}
-		section = domainListenerName(domain.Name)
+		setCond(condRouteProgrammed, metav1.ConditionFalse, "AwaitingCertificate", fmt.Sprintf(
+			"%s is published on port 80, where the HTTP-01 challenge that issues its certificate "+
+				"is answered; it moves to its own HTTPS listener, and port 80 becomes a redirect, "+
+				"once the certificate exists",
+			domain.Spec.Hostname))
+		return false
 	}
+	if accepted, cond := routeAcceptedOn(route, section); accepted {
+		setCond(condRouteProgrammed, metav1.ConditionTrue, "Accepted",
+			fmt.Sprintf("the gateway accepted the route for %s", domain.Spec.Hostname))
+		return true
+	} else if cond != nil {
+		setCond(condRouteProgrammed, metav1.ConditionFalse, "RouteNotAccepted", cond.Message)
+		return false
+	}
+	setCond(condRouteProgrammed, metav1.ConditionFalse, "AwaitingGatewayAcceptance", fmt.Sprintf(
+		"the route carries the hostname; waiting for the gateway controller to accept it on listener %q", section))
+	return false
+}
+
+// routeAcceptedOn reads whether the shared Gateway accepted a route on one of
+// its listeners. It answers three states, not two: accepted, refused with the
+// controller's own reason, and nothing said yet — which the caller reports as
+// waiting rather than as a refusal.
+func routeAcceptedOn(route *gatewayv1.HTTPRoute, section string) (bool, *metav1.Condition) {
 	for _, parent := range route.Status.Parents {
 		ref := parent.ParentRef
 		if string(ref.Name) != SharedGatewayName ||
 			ref.SectionName == nil || string(*ref.SectionName) != section {
 			continue
 		}
-		for _, cond := range parent.Conditions {
-			if cond.Type == string(gatewayv1.RouteConditionAccepted) {
-				if cond.Status == metav1.ConditionTrue {
-					setCond(condRouteProgrammed, metav1.ConditionTrue, "Accepted",
-						fmt.Sprintf("the gateway accepted the route for %s", domain.Spec.Hostname))
-					return true
-				}
-				setCond(condRouteProgrammed, metav1.ConditionFalse, "RouteNotAccepted", cond.Message)
-				return false
+		for i := range parent.Conditions {
+			cond := &parent.Conditions[i]
+			if cond.Type != string(gatewayv1.RouteConditionAccepted) {
+				continue
 			}
+			if cond.Status == metav1.ConditionTrue {
+				return true, nil
+			}
+			return false, cond
 		}
 	}
-	setCond(condRouteProgrammed, metav1.ConditionFalse, "AwaitingGatewayAcceptance", fmt.Sprintf(
-		"the route carries the hostname; waiting for the gateway controller to accept it on listener %q", section))
-	return false
+	return false, nil
 }
 
 // verificationInstructions is what the owner of the zone has to do, spelled
@@ -649,7 +682,21 @@ func domainRoutingFor(
 		if domainTLSMode(domain, kitchen) == kitchenv1alpha1.TLSModeACME {
 			if domainListenerReady(ctx, c, domain, kitchen) {
 				routing.sections = append(routing.sections, gatewayv1.SectionName(domainListenerName(domain.Name)))
+				continue
 			}
+			// Verified, and no certificate yet. The listener that will carry
+			// this hostname cannot exist until the certificate does, and the
+			// certificate is issued over HTTP-01 — which is answered on port
+			// 80, at this hostname. Binding the shared HTTP listener now is
+			// what breaks that circle (#573): until this, the hostname was
+			// carried by the route and bound to no listener at all, so the
+			// only address the challenge could arrive at answered nothing.
+			//
+			// The window closes on its own. The moment the secret exists the
+			// domain gets its own HTTPS listener above, and joins the port-80
+			// redirect's hostnames, so cleartext stops being served for it
+			// without anything else having to notice.
+			needsHTTP = true
 			continue
 		}
 		// none and cloudflared serve over port 80 at the Gateway.

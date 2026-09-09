@@ -36,13 +36,40 @@ absent, record present with the wrong value, or a lookup that failed.
 `acme` mode issuance runs over HTTP-01 through the shared Gateway, so it
 finishes only once the hostname resolves to the platform.
 
-While it is finishing, the hostname answers nothing — and `RouteProgrammed`
-says which half is missing with reason `AwaitingCertificate` rather than
-naming a listener that does not exist yet. Port 80 is left to cert-manager's
-challenge deliberately: the platform's HTTP→HTTPS redirect covers only the
-names it already terminates TLS for, because redirecting this one would send
-the ACME validator to an HTTPS address that only completing that challenge can
-create. Both conditions move when the certificate lands.
+While it is finishing, the hostname is published **on port 80**, in cleartext.
+That is not a gap in the design; it is what HTTP-01 requires of any host that
+answers a challenge. The certificate cannot be issued until the challenge is
+answered, the challenge is answered at this hostname on port 80, and the
+per-domain HTTPS listener cannot exist until the certificate does — so port 80
+is what the environment's route binds meanwhile. `RouteProgrammed` reports
+`AwaitingCertificate` and says so.
+
+The window closes by itself. The moment the secret exists the hostname moves to
+its own HTTPS listener and joins the port-80 redirect's names, so cleartext
+stops being served for it without anything having to be switched over. The
+redirect covers only the names the platform already terminates TLS for, because
+redirecting a name whose certificate is still being issued would send the ACME
+validator to an HTTPS address that only completing that challenge can create.
+
+### What each mode does on port 80
+
+The mode decides which listener on the shared Gateway carries the hostname, and
+therefore whether plain HTTP answers for it at all:
+
+| `tls` | Port 80 | Port 443 |
+| --- | --- | --- |
+| `acme`, certificate issued | redirects to HTTPS | the domain's own listener, its own certificate |
+| `acme`, awaiting certificate | **serves the environment**, and the HTTP-01 challenge | nothing — the listener does not exist yet |
+| `cloudflared` | **serves the environment** | nothing at the Gateway; the tunnel terminates TLS at Cloudflare's edge |
+| `none` | **serves the environment** | nothing |
+
+So `cloudflared` and `none` publish on port 80 from the moment the domain is
+verified and never stop, which is why a domain in either mode is reachable
+without an issuance step at all. Under `cloudflared` that is not cleartext on
+the internet — Cloudflare terminates TLS and the tunnel carries the request —
+but at the Gateway it is the same plain-HTTP listener. Under `none` it is
+cleartext end to end, which is the point of the mode and why it belongs on a
+private network or behind something else that terminates TLS.
 
 `RouteProgrammed` is also read by the environment's request endpoints. Once the
 environment's route carries the hostname, anything short of `True` means the

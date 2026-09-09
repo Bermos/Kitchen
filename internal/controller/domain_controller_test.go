@@ -372,24 +372,6 @@ var _ = Describe("Domain Controller", func() {
 		reconcileDomain()
 		Expect(condition(condRouteProgrammed).Reason).To(Equal("HostnamePending"))
 
-		By("naming the certificate, not the gateway, while no listener can exist yet")
-		Expect(k8sClient.Get(ctx, routeKey, route)).To(Succeed())
-		route.Spec.Hostnames = append(route.Spec.Hostnames, domainHostname)
-		Expect(k8sClient.Update(ctx, route)).To(Succeed())
-		reconcileDomain()
-		pending := condition(condRouteProgrammed)
-		Expect(pending.Reason).To(Equal("AwaitingCertificate"),
-			"there is nothing to be accepted on until the certificate exists, and blaming the "+
-				"gateway controller for it reads as a deadlock (#573)")
-		Expect(pending.Message).To(ContainSubstring("port 80"))
-
-		By("waiting for the gateway once the listener can exist")
-		Expect(k8sClient.Create(ctx, issuedSecret())).To(Succeed())
-		reconcileDomain()
-		Expect(condition(condRouteProgrammed).Reason).To(Equal("AwaitingGatewayAcceptance"))
-
-		By("counting only acceptance on the listener this domain's traffic uses")
-		Expect(k8sClient.Get(ctx, routeKey, route)).To(Succeed())
 		accepted := func(section string) []gatewayv1.RouteParentStatus {
 			return []gatewayv1.RouteParentStatus{{
 				ParentRef: gatewayv1.ParentReference{
@@ -406,6 +388,34 @@ var _ = Describe("Domain Controller", func() {
 				}},
 			}}
 		}
+		By("waiting on port 80 first, because that is where the challenge arrives")
+		Expect(k8sClient.Get(ctx, routeKey, route)).To(Succeed())
+		route.Spec.Hostnames = append(route.Spec.Hostnames, domainHostname)
+		Expect(k8sClient.Update(ctx, route)).To(Succeed())
+		reconcileDomain()
+		pending := condition(condRouteProgrammed)
+		Expect(pending.Reason).To(Equal("AwaitingGatewayAcceptance"))
+		Expect(pending.Message).To(ContainSubstring(gatewayListenerHTTP),
+			"before the certificate the hostname lives on the shared HTTP listener, and that "+
+				"is the acceptance worth waiting for")
+
+		By("naming the certificate, not the gateway, once port 80 is carrying it")
+		Expect(k8sClient.Get(ctx, routeKey, route)).To(Succeed())
+		route.Status.Parents = accepted(gatewayListenerHTTP)
+		Expect(k8sClient.Status().Update(ctx, route)).To(Succeed())
+		reconcileDomain()
+		pending = condition(condRouteProgrammed)
+		Expect(pending.Reason).To(Equal("AwaitingCertificate"),
+			"port 80 is published and answering the challenge; what is left is issuance (#573)")
+		Expect(pending.Message).To(ContainSubstring("port 80"))
+
+		By("waiting for the gateway again once the per-domain listener can exist")
+		Expect(k8sClient.Create(ctx, issuedSecret())).To(Succeed())
+		reconcileDomain()
+		Expect(condition(condRouteProgrammed).Reason).To(Equal("AwaitingGatewayAcceptance"))
+
+		By("counting only acceptance on the listener this domain's traffic uses")
+		Expect(k8sClient.Get(ctx, routeKey, route)).To(Succeed())
 		route.Status.Parents = accepted(gatewayListenerHTTPS)
 		Expect(k8sClient.Status().Update(ctx, route)).To(Succeed())
 		reconcileDomain()
@@ -626,21 +636,25 @@ var _ = Describe("Domain Controller", func() {
 			Expect(getRoute().Spec.Hostnames).To(ConsistOf(
 				gatewayv1.Hostname(projectName + ".apps.example.com")))
 
-			By("a verified domain's hostname joins, without its listener yet")
+			By("a verified domain's hostname joins, and is published on port 80 meanwhile")
 			markVerified()
 			reconcileEnv()
 			route := getRoute()
 			Expect(route.Spec.Hostnames).To(ConsistOf(
 				gatewayv1.Hostname(projectName+".apps.example.com"),
 				gatewayv1.Hostname(domainHostname)))
-			Expect(routeSectionNames(route)).To(ConsistOf(gatewayListenerHTTPS),
-				"the per-domain listener cannot exist before its secret, so the route does not name it")
+			Expect(routeSectionNames(route)).To(ConsistOf(gatewayListenerHTTPS, gatewayListenerHTTP),
+				"the per-domain HTTPS listener cannot exist before its certificate, and the "+
+					"certificate is issued over HTTP-01 at this hostname on port 80 — so port 80 "+
+					"is bound until it does, or the challenge has no address to arrive at (#573)")
 
 			By("binding the per-domain listener once the certificate secret exists")
 			Expect(k8sClient.Create(ctx, issuedSecret())).To(Succeed())
 			reconcileEnv()
 			Expect(routeSectionNames(getRoute())).To(ConsistOf(
-				gatewayListenerHTTPS, domainListenerName(domainName)))
+				gatewayListenerHTTPS, domainListenerName(domainName)),
+				"and port 80 is given up again, so the hostname stops being served in cleartext "+
+					"the moment it has a certificate to be served under")
 
 			By("dropping the hostname when the domain is deleted")
 			Expect(k8sClient.Delete(ctx, getDomain())).To(Succeed())
