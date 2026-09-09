@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.2](https://github.com/Bermos/Kitchen/compare/v0.40.1...v0.40.2) (2026-09-09)
+
+
+### Bug fixes
+
+* **api:** stop counting edge-answered requests as an environment's own traffic ([#578](https://github.com/Bermos/Kitchen/issues/578)) ([af2090e](https://github.com/Bermos/Kitchen/commit/af2090e10bc4fbb3018288170ac5ec52f41d3b2e)), closes [#574](https://github.com/Bermos/Kitchen/issues/574)
+
 ## [0.40.1](https://github.com/Bermos/Kitchen/compare/v0.40.0...v0.40.1) (2026-09-08)
 
 
