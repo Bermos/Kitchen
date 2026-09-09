@@ -17,11 +17,13 @@ for exactly the projects that arrived that way. The evidence is
 lab actually installs, every rendered object classified, and no chart of the
 five expressible whole at the time it was written.
 
-**Two of the four gaps it found have since closed.** A volume claim can
+**Three of the four gaps it found have since closed.** A volume claim can
 [bind a volume the platform did not create](api/claims.md#binding-a-volume-the-platform-did-not-create)
-([#346](https://github.com/Bermos/Kitchen/issues/346)), and `runtime.security`
+([#346](https://github.com/Bermos/Kitchen/issues/346)), `runtime.security`
 carries [`fsGroup`](CONFIG.md#runtime)
-([#347](https://github.com/Bermos/Kitchen/issues/347)). Sonarr and Plex — the
+([#347](https://github.com/Bermos/Kitchen/issues/347)), and a workload declares
+[what to make of a volume it cannot start on](api/projects.md#a-volume-the-process-cannot-start-on)
+([#348](https://github.com/Bermos/Kitchen/issues/348)). Sonarr and Plex — the
 two the spike put closest — now translate whole, which is why Sonarr is the
 worked example below. What is left is [What is still open](#what-is-still-open).
 
@@ -71,7 +73,16 @@ an install. And the shell scripts two of the five charts carry exist *only*
 because Helm cannot write a file into a PersistentVolumeClaim — which is what
 [`files`](api/files.md) does. What survives of them — the `mkdir` and the
 first-boot merge that a placed file is not — is
-[#348](https://github.com/Bermos/Kitchen/issues/348).
+[`runtime.init`](CONFIG.md#runtime)
+([#348](https://github.com/Bermos/Kitchen/issues/348)): directories created
+where they are absent, and files seeded in only where the destination does not
+exist. That is the first of the three answers the issue weighed — a step in
+the model rather than a task that mounts another process's volume — and it is
+declared rather than scripted, so no shell of the chart's survives the
+translation either. A seed is not a merge, and that is the one place the
+translation is narrower than the script it replaces: a key the chart's
+template gains later reaches a file the application already owns, and a seed
+leaves it alone.
 
 ## There is no chart, so what is the artifact
 
@@ -403,22 +414,11 @@ useful than a translation that publishes a URL and never finds the radio.
 
 ## What is still open
 
-- **[#348](https://github.com/Bermos/Kitchen/issues/348) — a volume that needs
-  directories made and owned before the process starts has no first run.**
-  `fsGroup` closed the ownership half of the common case; what is left is the
-  `mkdir`, and a first-boot merge into a file that may already be there. A
-  `task` cannot stand in, because it is a separate pod and a volume claim binds
-  to one process. The issue is filed as a three-way decision — a step in the
-  model, a task that may mount another process's volume, or a plain statement
-  that images which cannot start on an empty volume are out of scope — and it
-  is being settled rather than assumed, so this page will say which when it is.
-  Two of the spike's five charts need it; neither of the two translated above
-  does.
 - **A published port that is not HTTP.** Named by the spike as deserving a
   field and deliberately not filed with the others: it is a real feature with a
-  real cost, and it wants an argument of its own before it wants an issue. With
-  #348 it is what stands between Gitea — the third of the five — and a Kitchen
-  project.
+  real cost, and it wants an argument of its own before it wants an issue. It
+  is now the last of the spike's four gaps, and the only thing standing between
+  Gitea — the third of the five — and a Kitchen project.
 
 **What would reopen the decision**, from the spike, stated so it can be checked
 rather than re-argued: a different estate — render ten more charts and re-run
