@@ -6,25 +6,41 @@ Supersedes the 8 September checkpoint note, whose state is now folded in
 Maintainer's ask: work #573 and #574, cut a release and wait for it, then a
 batch of quick bugfixes "like #377".
 
-## Wave 1 — running
+## Wave 1 — landed
 
-| Issue | Branch / worktree | State |
+| Issue | PR | On main |
 | --- | --- | --- |
-| #573 custom-domain HTTP-01 deadlock | `claude/domain-http01-route-573` / `../kitchen-wt-573` | implementer dispatched |
-| #574 gateway 404s attributed to the environment | `claude/gateway-404-attribution-574` / `../kitchen-wt-574` | implementer dispatched |
+| #573 custom-domain HTTP-01 deadlock | #577 | `04cd19a` |
+| #574 gateway 404s attributed to the environment | #578 | `af2090e` |
 
-Neither may arm auto-merge: a release cut follows immediately and a feature
-landing mid-cut moves the release head.
+**#573 stays open deliberately.** #577 says `Refs`, not `Closes`. The redirect
+it scoped is wrong on its own terms — a 301 to an address the platform has no
+listener for — but the reporter's own two probes, one code block apart in the
+issue, show a `301` on the base domain and a bare `404` on the custom domain in
+the same minute, which means something more specific already owned that vhost
+on :80 and the redirect was never in front of the stuck hostname. The
+disambiguator is `kubectl get challenge -A -o wide`: cert-manager's self-check
+says `wrong status code '301', expected '200'` if the redirect was the cause,
+and anything else means the deadlock is elsewhere.
 
-## Release
+## Release — 0.40.2 cut
 
-`v0.40.1` is live with its chart and is `main`'s tip (`5127a6e`); there are no
-commits after it. Open release PR **#570 (0.41.0) is stale** — release-please
-created it at 07:28 UTC, five minutes before the `v0.40.1` tag existed, so it
-computed its range from an older baseline and its changelog re-lists releases
-back to 0.38.0. It will be recomputed when wave 1 lands. **Verify the
-changelog against `git log v0.40.1..origin/main` before merging it**, per the
-skill's step 5.2 — do not merge #570 as it stands.
+#570 merged as `e0bba91` after 17/17 green on a re-run of every
+`action_required` workflow on its own head. Its earlier 0.41.0 body was a
+fossil of the 07:25 run, five minutes before the `v0.40.1` tag existed; it
+rebuilt correctly to 0.40.2 once a parseable commit landed.
+
+**#577 is absent from the 0.40.2 notes and always will be, and that is
+recorded rather than hidden** — see #579. release-please could not parse
+`04cd19a`'s squash body (`unexpected token '(' at 42:22`, the nested parens in
+`NotTo(ContainElement(hostname))` inside a `* type(scope):` bullet), so it
+discarded the whole commit, reported `commits: 0`, and skipped — exiting 0 with
+a green tick. The maintainer chose to ship as-is over reverting and re-landing.
+`hack/check-commit-message.sh` checks subjects only, which is why nothing
+caught it; #579 carries the fix.
+
+**Squash bodies are now written by hand at merge time**, not left to GitHub's
+`* <commit subject>` concatenation, until #579 lands.
 
 ## Wave 2 — mapped, waiting on the release
 
