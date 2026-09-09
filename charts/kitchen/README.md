@@ -114,11 +114,17 @@ redirect to HTTPS: every route the platform creates names the Gateway's `https`
 listener explicitly, and the operator publishes a redirect route bound to
 `http`. That redirect carries **only the names the Gateway terminates TLS
 for** — `*.<baseDomain>`, and each custom domain whose certificate has been
-issued. A name with no HTTPS listener gets nothing on port 80 at all, which is
-deliberate: a custom domain's certificate is issued over an ACME HTTP-01
-challenge answered on port 80 for that exact hostname, and a `301` there would
-send the validator to an address only that challenge can create (#573). It
-also means a `host` set outside the base domain — `api.route.host`,
+issued. A verified custom domain still waiting for its certificate is
+deliberately not in that set, and its environment's route binds the `http`
+listener instead: the certificate is issued over an ACME HTTP-01 challenge
+answered on port 80 for that exact hostname, so the hostname has to answer
+there, and a `301` would send the validator to an address only that challenge
+can create (#573). The hostname is served in cleartext for that window and
+moves to its own HTTPS listener, and into the redirect, as soon as the
+certificate exists.
+
+A name that is not a Domain at all and has no HTTPS listener still gets nothing
+on port 80: a `host` set outside the base domain — `api.route.host`,
 `auth.route.host`, `webhookReceiver.route.host`, `registry.host`,
 `previewGate.host` — is unpublished on both ports, as it already was on 443.
 
