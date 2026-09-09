@@ -158,6 +158,16 @@ func startDirectory(ctx context.Context, namespace string, log logr.Logger) (pre
 	if err != nil {
 		return nil, err
 	}
+	// The gate is long-lived — a Deployment serving forward-auth decisions out
+	// of this cache — so it takes the same client-side bound the operator
+	// takes, and for the same reason: controller-runtime stopped setting one
+	// in 0.21, and an installation should behave after the upgrade as it did
+	// before it. The rate is nothing like a limit here, because a populated
+	// cache answers from memory and the two kinds are watched rather than
+	// polled; it is there so that a gate reconnecting its watches in a loop
+	// cannot do so as fast as it can dial.
+	restConfig.QPS = 20
+	restConfig.Burst = 30
 
 	platform, err := cluster.New(restConfig, func(o *cluster.Options) {
 		o.Scheme = scheme

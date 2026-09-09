@@ -188,6 +188,7 @@ var _ = Describe("Growing the platform's volumes", func() {
 		// An apply patch is sent as the object itself, so it has to say what
 		// kind it is; a typed object built in Go carries no TypeMeta.
 		set.TypeMeta = metav1.TypeMeta{APIVersion: appsv1.SchemeGroupVersion.String(), Kind: "StatefulSet"}
+		//nolint:staticcheck // matches the apply the code under test performs
 		ExpectWithOffset(1, k8sClient.Patch(ctx, set, client.Apply,
 			client.FieldOwner(manager), client.ForceOwnership)).To(Succeed())
 		created = append(created, set)
