@@ -495,6 +495,20 @@ through its Go types, to avoid tying the build to its release cadence.
   directly. It is deliberately not configurable.
 - **The platform namespace is `kitchen-system`**, also compiled in. The chart
   refuses to render elsewhere unless `namespaceCheck=false`.
+- **The platform namespace denies ingress by default, and a pod that turns up
+  there gets nothing until `templates/networkpolicy.yaml` names it.** That
+  includes pods nothing in this repository creates: cert-manager runs its
+  HTTP-01 solver in the Certificate's namespace, which is this one for every
+  custom domain, and the shared Gateway's Envoy is what has to reach it. The
+  day the default deny landed (#379), every custom domain's certificate
+  stopped issuing, and nothing said so — the solver ran, its HTTPRoute was
+  Accepted, the Domain read `Issuing`, and the `503` was on the Challenge
+  alone (#573). `kitchen-acme-solver-allow-published` is the rule; the Cilium
+  leg of the Helm workflow sends a request through the Gateway to a solver-
+  shaped pod so the rule cannot be lost quietly again. When something new is
+  reached *through the Gateway*, its allow rule takes no `from` at all — the
+  proxied traffic carries Cilium's reserved `ingress` identity, which no
+  `networking.k8s.io/v1` peer can select.
 - **The log collector needs Pod Security `privileged`**, because it mounts the
   node's `/var/log` and `baseline` forbids `hostPath` outright. The chart owns
   `kitchen-system` (`namespace.create`) so the level is set rather than

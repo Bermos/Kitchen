@@ -34,7 +34,12 @@ CNAME that both proves ownership and points traffic at the platform. The
 absent, record present with the wrong value, or a lookup that failed.
 `CertificateReady` and `RouteProgrammed` report the rest of the journey; in
 `acme` mode issuance runs over HTTP-01 through the shared Gateway, so it
-finishes only once the hostname resolves to the platform.
+finishes only once the hostname resolves to the platform. While it is
+`Issuing`, the message carries what cert-manager's own challenge says about
+itself — `wrong status code '503', expected '200'` is the Gateway unable to
+reach the solver, `404` is the hostname answered by something other than the
+platform — so the reason a domain is stuck is on the domain rather than two
+objects down in the cluster.
 
 While it is finishing, the hostname is published **on port 80**, in cleartext.
 That is not a gap in the design; it is what HTTP-01 requires of any host that

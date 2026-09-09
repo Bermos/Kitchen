@@ -174,6 +174,12 @@ var _ = Describe("Domain Controller", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: domainKey})
 			Expect(err).NotTo(HaveOccurred())
 		}
+		challenges := &unstructured.UnstructuredList{}
+		challenges.SetGroupVersionKind(acmeGVK("ChallengeList"))
+		Expect(k8sClient.List(ctx, challenges, client.InNamespace(PlatformNamespace))).To(Succeed())
+		for i := range challenges.Items {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &challenges.Items[i]))).To(Succeed())
+		}
 		for _, obj := range []client.Object{
 			domainCertificateObject(),
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretKey.Name, Namespace: secretKey.Namespace}},
@@ -269,6 +275,49 @@ var _ = Describe("Domain Controller", func() {
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal("Issuing"))
 		Expect(cond.Message).To(ContainSubstring("must resolve to the platform"))
+	})
+
+	It("puts the challenge's own reason on the domain while issuance is stuck", func() {
+		markVerified()
+
+		// What cert-manager writes while the Gateway cannot reach its solver:
+		// the Certificate says only that the secret does not exist, and the
+		// Challenge — which nothing but kubectl used to show — says why (#573).
+		const stuck = "Waiting for HTTP-01 challenge propagation: wrong status code '503', expected '200'"
+		challenge := &unstructured.Unstructured{}
+		challenge.SetGroupVersionKind(acmeGVK("Challenge"))
+		challenge.SetName(domainCertificateName(domainName) + "-1-476333852-2139790314")
+		challenge.SetNamespace(PlatformNamespace)
+		Expect(unstructured.SetNestedMap(challenge.Object, map[string]any{
+			"authorizationURL": "https://acme.example.org/acme/authz/1/2",
+			"url":              "https://acme.example.org/acme/chall/1/2/3",
+			"dnsName":          domainHostname,
+			"type":             "HTTP-01",
+			"token":            "ljimgGXXR96uStjNIOQ7ixIa0WVKFR-J7rI4rzbCbaw",
+			"key":              "ljimgGXXR96uStjNIOQ7ixIa0WVKFR-J7rI4rzbCbaw.ZNMyyFq0gPTAx1KgYlL393J6nRO5t5PMD4S6oH0hIug",
+			"issuerRef":        map[string]any{"name": acmeHTTP01ClusterIssuerName, "kind": "ClusterIssuer"},
+			"solver": map[string]any{"http01": map[string]any{"gatewayHTTPRoute": map[string]any{
+				"parentRefs": []any{map[string]any{"name": SharedGatewayName, "namespace": PlatformNamespace}},
+			}}},
+		}, "spec")).To(Succeed())
+		Expect(k8sClient.Create(ctx, challenge)).To(Succeed())
+		Expect(unstructured.SetNestedMap(challenge.Object, map[string]any{
+			"state": "pending", "presented": true, "processing": true, "reason": stuck,
+		}, "status")).To(Succeed())
+		Expect(k8sClient.Status().Update(ctx, challenge)).To(Succeed())
+
+		reconcileDomain()
+		cond := condition(condCertificateReady)
+		Expect(cond.Reason).To(Equal("Issuing"))
+		Expect(cond.Message).To(ContainSubstring("must resolve to the platform"))
+		Expect(cond.Message).To(ContainSubstring(stuck),
+			"the reason issuance is stuck is on the Challenge; the Domain is where people look")
+
+		By("dropping it once the challenge is valid, since it no longer explains anything")
+		Expect(unstructured.SetNestedField(challenge.Object, "valid", "status", "state")).To(Succeed())
+		Expect(k8sClient.Status().Update(ctx, challenge)).To(Succeed())
+		reconcileDomain()
+		Expect(condition(condCertificateReady).Message).NotTo(ContainSubstring(stuck))
 	})
 
 	It("verifies through a CNAME pointing into the base domain", func() {

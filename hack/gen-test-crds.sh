@@ -33,15 +33,20 @@ mkdir -p "${out_dir}"
 # whole document, and a metadata header carrying the chart's own labels and
 # resource policy. Both are stripped — the header is rebuilt as plain YAML,
 # and the schema below `spec:` is copied verbatim.
-for kind in certificates clusterissuers issuers; do
-  src="${work_dir}/cert-manager/templates/crd-cert-manager.io_${kind}.yaml"
+# Named group_plural, as the chart names them. The ACME Challenge is the odd
+# one out: the operator never writes one, but the Domain reconciler reads its
+# status.reason into CertificateReady, and a fixture with a misspelled field
+# should fail here the same way a misspelled spec would.
+for crd in cert-manager.io_certificates cert-manager.io_clusterissuers \
+           cert-manager.io_issuers acme.cert-manager.io_challenges; do
+  src="${work_dir}/cert-manager/templates/crd-${crd}.yaml"
   if [[ ! -f "${src}" ]]; then
     echo "error: ${src##*/} is not in cert-manager ${chart_version}" >&2
     exit 1
   fi
 
   {
-    echo "# cert-manager.io/${kind}, extracted from the cert-manager ${chart_version}"
+    echo "# ${crd%%_*}/${crd#*_}, extracted from the cert-manager ${chart_version}"
     echo "# sub-chart by hack/gen-test-crds.sh. DO NOT EDIT."
     awk '
       # Everything before the schema is the chart-templated metadata header.
@@ -55,7 +60,7 @@ for kind in certificates clusterissuers issuers; do
       body && $0 ~ /{{/ { next }                         # the closing conditional
       { print }
     ' "${src}"
-  } >"${out_dir}/cert-manager.io_${kind}.yaml"
+  } >"${out_dir}/${crd}.yaml"
 
-  echo "wrote test/crd/cert-manager/cert-manager.io_${kind}.yaml (cert-manager ${chart_version})"
+  echo "wrote test/crd/cert-manager/${crd}.yaml (cert-manager ${chart_version})"
 done

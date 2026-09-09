@@ -35,10 +35,14 @@
 #     and its webhook is called by the kube-apiserver, whose identity a plain
 #     NetworkPolicy cannot name any better than Envoy's. A default deny that
 #     caught it would stop every Certificate in the cluster being admitted,
-#     which is a long way from the problem this file exists for.
+#     which is a long way from the problem this file exists for. Its HTTP-01
+#     solvers are exempted separately, below, because they are not its
+#     workloads: they are Pods it creates here per challenge, carrying none
+#     of its labels, and the Gateway is what has to reach them.
 #
 # A component added to this namespace later gets nothing until it is named
-# here. That is the intended direction of the failure.
+# here. That is the intended direction of the failure — and it has happened
+# once already, to a Pod nobody added: see the solver rule below (#573).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -101,6 +105,41 @@ spec:
   ingress:
     - {}
 {{- end }}
+---
+# cert-manager's HTTP-01 solvers, which the exemption above does not cover.
+# Each pending challenge is a Pod cert-manager creates in the Certificate's
+# namespace — this one, for every custom domain — labelled with nothing but
+# its own `acme.cert-manager.io/*` keys, and the shared Gateway's Envoy is
+# what has to reach it: the challenge is published as an HTTPRoute on the
+# Gateway and the ACME validator arrives through it. Under the default deny
+# and without this rule the Pod runs, its route is Accepted, and Envoy answers
+# the challenge path with a 503 — which is how every custom domain's
+# certificate came to read `Issuing` for good (#573).
+#
+# The port is cert-manager's, not the chart's, so it is not pinned: the solver
+# listens on one port and serves one key authorization for one token, and a
+# pin would only turn a future cert-manager bump back into that bug. Nor is
+# the rule gated on `cert-manager.enabled` — an installation that brings its
+# own cert-manager still gets its solver Pods here, because this is where the
+# Certificate is.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kitchen.fullname" . }}-acme-solver-allow-published
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: acme-solver
+spec:
+  podSelector:
+    matchLabels:
+      # The one label every solver Pod carries (cert-manager's
+      # pkg/issuer/acme/http/pod.go); the other two vary per challenge.
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}
 ---
 # The operator: the REST API and the dashboard it serves, the git webhook
 # receiver, and the metrics endpoint. The first two are published on the

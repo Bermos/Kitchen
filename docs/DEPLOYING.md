@@ -408,9 +408,11 @@ page — and that is the platform staying out of the way: the ACME challenge is
 answered on port 80 for this exact name, and anything of the platform's
 standing in front of it would break the issuance it is waiting for.
 `RouteProgrammed` reads `AwaitingCertificate` while that lasts. If it stays
-there, the thing to check is the `CertificateReady` message and whether
-`shop.example.com` really resolves to the platform's address from the public
-internet.
+there, the thing to check is the `CertificateReady` message — it repeats what
+cert-manager's challenge reports, so a `404` there means the name is answered
+by something other than the platform, and a `503` means the Gateway could not
+reach the solver — and whether `shop.example.com` really resolves to the
+platform's address from the public internet.
 
 The DNS records are yours. The platform never touches your zone.
 

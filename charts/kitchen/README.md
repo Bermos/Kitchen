@@ -123,6 +123,14 @@ can create (#573). The hostname is served in cleartext for that window and
 moves to its own HTTPS listener, and into the redirect, as soon as the
 certificate exists.
 
+What answers that challenge is a Pod cert-manager creates in the platform
+namespace for the duration, and the Gateway has to be able to reach it: the
+namespace denies ingress by default, and `kitchen-acme-solver-allow-published`
+is the rule that admits the Gateway to those Pods. Without it the solver runs,
+its route is Accepted, and Envoy answers the challenge path with a `503` — the
+domain reads `CertificateReady: Issuing` forever, and the reason is on nothing
+but the Challenge, which is why the domain's condition now repeats it.
+
 A name that is not a Domain at all and has no HTTPS listener still gets nothing
 on port 80: a `host` set outside the base domain — `api.route.host`,
 `auth.route.host`, `webhookReceiver.route.host`, `registry.host`,

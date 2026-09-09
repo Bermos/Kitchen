@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -95,6 +96,7 @@ type DomainReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=domains/finalizers,verbs=update
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=environments;kitchens,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=acme.cert-manager.io,resources=challenges,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;delete
 
@@ -357,11 +359,18 @@ func (r *DomainReconciler) reconcileCertificate(
 		// HTTP-01 is the one challenge the platform can solve for a zone it
 		// does not control, and it only works once the hostname resolves to
 		// the shared Gateway. That dependency is this message's most likely
-		// cause, so it is named rather than left to cert-manager's text.
+		// cause, so it is named rather than left to cert-manager's text —
+		// and the challenge's own account of itself is appended, because the
+		// Certificate's says nothing past "Secret does not exist" and the
+		// answer has been two objects further down before (#573).
+		challenge := ""
+		if reason := r.pendingChallengeReason(ctx, domain.Spec.Hostname); reason != "" {
+			challenge = "; the HTTP-01 challenge reports: " + reason
+		}
 		setCond(condCertificateReady, metav1.ConditionFalse, "Issuing", fmt.Sprintf(
 			"%s — issuance is solved over HTTP-01 through the shared Gateway, so %s must "+
-				"resolve to the platform (the CNAME in status.verification) for it to finish",
-			message, domain.Spec.Hostname))
+				"resolve to the platform (the CNAME in status.verification) for it to finish%s",
+			message, domain.Spec.Hostname, challenge))
 		return false
 	}
 	setCond(condCertificateReady, metav1.ConditionTrue, "Issued", message)
@@ -410,6 +419,46 @@ func (r *DomainReconciler) applyDomainCertificate(
 		return nil, err
 	}
 	return cert, nil
+}
+
+// acmeGVK builds a reference to one of cert-manager's ACME kinds, which live
+// in their own group beside certManagerGVK's.
+func acmeGVK(kind string) schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: "acme.cert-manager.io", Version: "v1", Kind: kind}
+}
+
+// pendingChallengeReason is what cert-manager's own HTTP-01 challenge for the
+// hostname says about why it has not completed, or "" when there is nothing to
+// read. The Certificate's Ready message stops at "Issuing certificate as
+// Secret does not exist", which is true and says nothing; the reason lives on
+// the Challenge, two owner references down, and that is where "wrong status
+// code '503', expected '200'" — the Gateway unable to reach the solver — was
+// found by hand after three rounds of looking at the route instead (#573). So
+// it is read here and put on the Domain, where every client already looks.
+//
+// A Challenge is matched on spec.dnsName rather than on ownership: it is the
+// ACME account's view of the hostname, and the hostname is what this Domain
+// is about. A cluster without cert-manager has no such kind, and a message
+// that cannot be enriched is not an error.
+func (r *DomainReconciler) pendingChallengeReason(ctx context.Context, hostname string) string {
+	challenges := &unstructured.UnstructuredList{}
+	challenges.SetGroupVersionKind(acmeGVK("ChallengeList"))
+	if err := r.List(ctx, challenges, client.InNamespace(PlatformNamespace)); err != nil {
+		return ""
+	}
+	for i := range challenges.Items {
+		challenge := &challenges.Items[i]
+		dnsName, _, _ := unstructured.NestedString(challenge.Object, "spec", "dnsName")
+		state, _, _ := unstructured.NestedString(challenge.Object, "status", "state")
+		if dnsName != hostname || state == "valid" {
+			continue
+		}
+		reason, _, _ := unstructured.NestedString(challenge.Object, "status", "reason")
+		if reason != "" {
+			return reason
+		}
+	}
+	return ""
 }
 
 // observeRoute reports whether the platform is routing the hostname, reading

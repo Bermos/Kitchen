@@ -401,6 +401,20 @@ jobs:
                  "its admission webhook would stop answering the API server."
             exit 1
           }
+          # Its HTTP-01 solvers are Pods it creates per challenge, in this
+          # namespace, with none of its labels — so the exemption above does
+          # not reach them, and the shared Gateway has to. Without this rule
+          # every custom domain's certificate reads Issuing for good (#573).
+          echo "${policies}" | grep -q 'name: kitchen-acme-solver-allow-published' || {
+            echo "::error::no policy admits the shared Gateway to cert-manager's HTTP-01 solver" \
+                 "pods; no custom domain can get a certificate (#573)."
+            exit 1
+          }
+          echo "${policies}" | grep -q 'acme.cert-manager.io/http01-solver: "true"' || {
+            echo "::error::the solver policy does not select on the one label every" \
+                 "cert-manager solver pod carries, so it admits the Gateway to nothing."
+            exit 1
+          }
           # Neither store is published and neither may be named by an allow:
           # the platform-internal rule is all they get.
           for store in clickhouse postgres; do
@@ -1296,6 +1310,21 @@ jobs:
               images="${images} ${objectstore_image}"
               ;;
           esac
+          # The Cilium leg stands up an HTTP-01 solver from cert-manager's own
+          # image to prove the Gateway reaches one; the image is the one the
+          # bundled cert-manager would run, read off its controller's flag.
+          if [ "${{ matrix.cni }}" = cilium ]; then
+            solver_image=$(helm template kitchen charts/kitchen \
+              --namespace kitchen-system ${CHART_BASE} ${CHART_ACME} ${CHART_EXTRA} \
+              -s charts/cert-manager/templates/deployment.yaml \
+              | sed -n 's/.*--acme-http01-solver-image=\([^ "]*\).*/\1/p' | head -1)
+            [ -n "${solver_image}" ] || {
+              echo "::error::could not read the ACME solver image off cert-manager's deployment"
+              exit 1
+            }
+            echo "ACME solver image: ${solver_image}"
+            images="${images} ${solver_image}"
+          fi
           for image in ${images}; do
             for i in 1 2 3; do
               docker pull "${image}" && break
@@ -1434,7 +1463,12 @@ jobs:
             kitchen-auth-allow-published \
             kitchen-registry-allow-published \
             kitchen-collector-allow-otlp \
-            kitchen-preview-gate-allow-published
+            kitchen-preview-gate-allow-published \
+            kitchen-acme-solver-allow-published
+          # The solver policy is deliberately not in the loop below: it
+          # selects a pod that exists only while a challenge is pending, and
+          # whether it admits the Gateway to that pod is the challenge probe's
+          # question on the Cilium leg.
           selects() {
             selector=$(kubectl -n kitchen-system get networkpolicy "$1" -o json \
               | jq -r '.spec.podSelector.matchLabels | to_entries
@@ -1753,6 +1787,245 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The redirect probe above proves a name with no HTTPS listener is left
+      # alone on port 80. This proves what it is left alone *for*: that the
+      # thing answering the ACME challenge path for such a name is
+      # cert-manager's solver, reached through the Gateway, in a namespace
+      # whose default is to deny ingress. Every custom domain's certificate is
+      # issued exactly this way, and for five days none could be (#573): the
+      # solver Pod ran, its HTTPRoute was Accepted, and the platform's default
+      # deny dropped Envoy's connection to it — a 503 that read, from the
+      # outside, as if the application had answered. No render and no
+      # condition on the Domain could see it; only a request can.
+      #
+      # No Domain and no Let's Encrypt. The solver is stood up the way
+      # cert-manager stands one up — its own image, its own labels, a Service
+      # on its port, an HTTPRoute with the exact-path match it writes and no
+      # sectionName — and the request is the one the validator sends. Beside
+      # it stands the shape of an environment's route while its certificate
+      # is pending: the same hostname, a `/` prefix, bound to the `http`
+      # listener. The exact match has to win, or the application answers the
+      # challenge. A second solver stands for the renewal, sixty days on,
+      # when the hostname has its listener and port 80 for it is the
+      # redirect's: the exact match has to win there too, or the validator
+      # is sent to HTTPS, where no challenge is answered.
+      - name: Probe the HTTP-01 challenge path through the Gateway
+        if: matrix.cni == 'cilium'
+        run: |
+          set -euo pipefail
+          address=$(kubectl -n kitchen-system get gateway kitchen \
+            -o jsonpath='{.status.addresses[0].value}')
+          [ -n "${address}" ] || {
+            echo "::error::the shared Gateway published no address, so the challenge path could not be probed"
+            exit 1
+          }
+          solver_image=$(kubectl -n kitchen-system get deploy kitchen-cert-manager \
+            -o jsonpath='{.spec.template.spec.containers[0].args}' \
+            | tr ',' '\n' | sed -n 's/.*--acme-http01-solver-image=\([^"]*\).*/\1/p' | head -1)
+          [ -n "${solver_image}" ] || {
+            echo "::error::could not read the ACME solver image off the running cert-manager"
+            exit 1
+          }
+          # The application the environment-shaped route points at. Any
+          # published Service will do; the assertion is that it is not what
+          # answers the challenge path.
+          app_port=$(kubectl -n kitchen-system get svc kitchen-auth -o jsonpath='{.spec.ports[0].port}')
+          # A name under the base domain is one the redirect covers.
+          renewal_host="renew.$(kubectl get kitchen default -o jsonpath='{.spec.baseDomain}')"
+          token="probe-token-${RANDOM}${RANDOM}"
+          key="${token}.probe-key-authorization"
+          echo "solver image ${solver_image}, token ${token}"
+
+          # One solver, the way cert-manager stands one up, for one hostname.
+          solver() {
+            local name=$1 hostname=$2
+            kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ${name}
+            namespace: kitchen-system
+            labels:
+              acme.cert-manager.io/http01-solver: "true"
+              acme.cert-manager.io/http-domain: "${name}"
+              acme.cert-manager.io/http-token: "${name}"
+          spec:
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile: {type: RuntimeDefault}
+            containers:
+              - name: acmesolver
+                image: ${solver_image}
+                args:
+                  - --listen-port=8089
+                  - --domain=${hostname}
+                  - --token=${token}
+                  - --key=${key}
+                ports:
+                  - name: http
+                    containerPort: 8089
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities: {drop: [ALL]}
+                resources:
+                  requests: {cpu: 10m, memory: 64Mi}
+                  limits: {cpu: 100m, memory: 64Mi}
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${name}
+            namespace: kitchen-system
+          spec:
+            selector:
+              acme.cert-manager.io/http-domain: "${name}"
+              acme.cert-manager.io/http-token: "${name}"
+            ports:
+              - name: http
+                port: 8089
+                targetPort: 8089
+          ---
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: ${name}
+            namespace: kitchen-system
+            labels:
+              acme.cert-manager.io/http01-solver: "true"
+          spec:
+            parentRefs:
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: kitchen
+                namespace: kitchen-system
+            hostnames: [${hostname}]
+            rules:
+              - matches:
+                  - path:
+                      type: Exact
+                      value: /.well-known/acme-challenge/${token}
+                backendRefs:
+                  - name: ${name}
+                    port: 8089
+          EOF
+          }
+          # First issuance: a custom hostname with no HTTPS listener, and the
+          # environment's route beside it on port 80.
+          solver cm-acme-http-solver-probe shop.example.net
+          # Renewal: a hostname the platform already terminates TLS for, so
+          # port 80 is the redirect's — every name in the redirect is a
+          # certificate that will one day renew over this exact path, and a
+          # 301 there would send the validator to HTTPS, where nothing is
+          # listening for the challenge.
+          solver cm-acme-http-solver-renewal "${renewal_host}"
+          kubectl apply -f - <<EOF
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: acme-probe-environment
+            namespace: kitchen-system
+          spec:
+            parentRefs:
+              - group: gateway.networking.k8s.io
+                kind: Gateway
+                name: kitchen
+                namespace: kitchen-system
+                sectionName: http
+            hostnames: [shop.example.net]
+            rules:
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                backendRefs:
+                  - name: kitchen-auth
+                    port: ${app_port}
+          EOF
+          kubectl -n kitchen-system wait pod/cm-acme-http-solver-probe pod/cm-acme-http-solver-renewal \
+            --for=condition=Ready --timeout=120s
+          for route in cm-acme-http-solver-probe cm-acme-http-solver-renewal acme-probe-environment; do
+            for i in $(seq 30); do
+              accepted=$(kubectl -n kitchen-system get httproute "${route}" \
+                -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}' 2>/dev/null || true)
+              [ "${accepted}" = True ] && break
+              [ "$i" = 30 ] && {
+                kubectl -n kitchen-system get httproute "${route}" -o yaml
+                echo "::error::the Gateway never accepted route ${route}"
+                exit 1
+              }
+              sleep 2
+            done
+          done
+
+          kubectl -n kitchen-system run acme-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --command -- sh -ec "
+              # Two requests to port 80 for the same custom hostname, which
+              # only the two routes above carry. The challenge path must be
+              # answered by the solver with the key authorization and nothing
+              # else; the root must be answered by something — the
+              # environment's route is live while its certificate is pending,
+              # and a 503 here would mean the Gateway cannot reach the
+              # application either.
+              body=\$(curl -s --max-time 20 -H 'Host: shop.example.net' \
+                'http://${address}/.well-known/acme-challenge/${token}')
+              code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H 'Host: shop.example.net' \
+                'http://${address}/.well-known/acme-challenge/${token}')
+              echo \"challenge: HTTP \${code} body \${body}\"
+              [ \"\${code}\" = 200 ] && [ \"\${body}\" = '${key}' ] || {
+                echo 'the challenge path was not answered by the solver'
+                exit 1
+              }
+              root=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H 'Host: shop.example.net' \
+                'http://${address}/')
+              echo \"root: HTTP \${root}\"
+              case \"\${root}\" in
+                503|000) echo 'the environment-shaped route did not answer'; exit 1 ;;
+              esac
+              # The renewal shape: the same request for a name the port-80
+              # redirect covers. The solver's exact path has to outrank the
+              # redirect's prefix, and be reached.
+              body=\$(curl -s --max-time 20 -H 'Host: ${renewal_host}' \
+                'http://${address}/.well-known/acme-challenge/${token}')
+              code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H 'Host: ${renewal_host}' \
+                'http://${address}/.well-known/acme-challenge/${token}')
+              echo \"renewal: HTTP \${code} body \${body}\"
+              [ \"\${code}\" = 200 ] && [ \"\${body}\" = '${key}' ] || {
+                echo 'the challenge path for a name the redirect covers was not answered by the solver'
+                exit 1
+              }
+              echo acme-ok
+            "
+          phase=""
+          for _ in $(seq 60); do
+            phase=$(kubectl -n kitchen-system get pod acme-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-system logs acme-probe 2>&1 || true)
+          echo "probe phase=${phase}"
+          echo "${probe_output}"
+          status=0
+          case "${probe_output}" in
+            *acme-ok) ;;
+            *)
+              status=1
+              kubectl -n kitchen-system get pod cm-acme-http-solver-probe cm-acme-http-solver-renewal -o wide || true
+              kubectl -n kitchen-system logs cm-acme-http-solver-probe || true
+              kubectl -n kitchen-system get httproute cm-acme-http-solver-probe \
+                cm-acme-http-solver-renewal acme-probe-environment kitchen-https-redirect -o yaml || true
+              kubectl -n kitchen-system get networkpolicy || true
+              echo "::error::the ACME challenge path is not answered by cert-manager's solver" \
+                   "through the Gateway; no custom domain can get a certificate (#573)"
+              ;;
+          esac
+          kubectl -n kitchen-system delete pod/acme-probe \
+            pod/cm-acme-http-solver-probe svc/cm-acme-http-solver-probe httproute/cm-acme-http-solver-probe \
+            pod/cm-acme-http-solver-renewal svc/cm-acme-http-solver-renewal httproute/cm-acme-http-solver-renewal \
+            httproute/acme-probe-environment \
+            --ignore-not-found --wait=false || true
+          exit "${status}"
 
       - name: Verify the REST API is shut without a token
         run: |
