@@ -53,10 +53,22 @@ const checkout = "/checkout/:id"
 // shared Gateway. Its presence is the difference between "nothing was asked of
 // this environment" and "nothing can reach it".
 func onTheEdge() []runtime.Object {
-	return append(fixtures(), &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
+	return onTheEdgeServing()
+}
+
+// onTheEdgeServing is onTheEdge with the route carrying hostnames, which is a
+// separate fact from the route existing: the hostnames a route publishes are
+// what the follower's host table is built from (internal/flows/hosts.go), so
+// they are exactly the names whose requests are filed under this environment.
+func onTheEdgeServing(hostnames ...string) []runtime.Object {
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{
 		Name:      testEnvironment,
 		Namespace: controller.AppNamespace(feedProject),
-	}})
+	}}
+	for _, hostname := range hostnames {
+		route.Spec.Hostnames = append(route.Spec.Hostnames, gatewayv1.Hostname(hostname))
+	}
+	return append(fixtures(), route)
 }
 
 func TestRequestSummary(t *testing.T) {

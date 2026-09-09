@@ -774,6 +774,18 @@ about. `excluded` is whether these particular numbers left it out. A project
 that declared no HTTP health check has neither: `{"excluded": false}`, and
 there is nothing to exclude.
 
+Both halves of that are load-bearing, and the first is what keeps the sentence
+on the screen true. A request is filed under an environment by the hostnames
+its route publishes, so a name the route does not carry — a domain nobody has
+verified yet, or one attached to an environment of an `internal`-exposure
+project, which is never published at all — has no traffic here to leave out.
+Such a domain is not named and nothing is marked excluded for it: it would
+otherwise be a permanent sentence about traffic that cannot exist, on the
+screen of the person still waiting for the domain to come up. A wildcard
+hostname is left out for a different reason — the exclusion matches stored
+hostnames exactly, so it can never drop a row a wildcard published, and
+claiming otherwise would be worse than counting them.
+
 Three things this deliberately is not:
 
 - **It is not a list of paths that look like health checks.** An application is
@@ -802,8 +814,8 @@ to it. A domain joins the environment's route as soon as it is verified, and
 the platform starts *answering* on it only once the gateway has accepted that
 route — which, for a domain waiting on a certificate, can be a long while.
 Requests that arrive in between are addressed to the environment and answered
-by the platform's edge, which has no route for the name yet: a `404` from the
-proxy that the application never saw.
+by the platform's edge, which has no route for the name yet — whatever it
+answers with, the application never saw the request.
 
 That window is not quiet, either. Issuing the certificate is what sends traffic
 at the name: Let's Encrypt retries `/.well-known/acme-challenge/<token>` for as
@@ -812,9 +824,9 @@ application never served, a request count it never had, and errors belonging to
 the edge — on the screen of exactly the person trying to work out why the
 domain will not come up.
 
-So all four reads drop what arrived on a hostname attached to this environment
-whose [`RouteProgrammed`](domains.md) condition is not `True`, and every answer
-says which hostnames those were:
+So all four reads drop what arrived on a hostname that the environment's route
+carries and whose [`RouteProgrammed`](domains.md) condition is not `True`, and
+every answer says which hostnames those were:
 
 ```json
 {"pendingDomains": {"hostnames": ["app.example.com"], "excluded": true}}
@@ -824,6 +836,18 @@ says which hostnames those were:
 whether or not the read excluded them — they are what `?pending=` is about.
 `excluded` is whether these particular numbers left them out. An environment
 whose every hostname is being served has neither: `{"excluded": false}`.
+
+Both halves of that are load-bearing, and the first is what keeps the sentence
+on the screen true. A request is filed under an environment by the hostnames
+its route publishes, so a name the route does not carry — a domain nobody has
+verified yet, or one attached to an environment of an `internal`-exposure
+project, which is never published at all — has no traffic here to leave out.
+Such a domain is not named and nothing is marked excluded for it: it would
+otherwise be a permanent sentence about traffic that cannot exist, on the
+screen of the person still waiting for the domain to come up. A wildcard
+hostname is left out for a different reason — the exclusion matches stored
+hostnames exactly, so it can never drop a row a wildcard published, and
+claiming otherwise would be worse than counting them.
 
 Three things this deliberately is not:
 
