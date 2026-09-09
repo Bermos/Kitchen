@@ -536,7 +536,12 @@ var _ = Describe("Domain Controller", func() {
 			By("leaving a verified domain awaiting its certificate alone")
 			markVerified()
 			reconcileKitchen()
-			Expect(redirectHostnames()).NotTo(ContainElement(domainHostname),
+			// Stated as the whole list rather than as "the hostname is not on
+			// it": the shape this replaced carried no hostnames at all, and
+			// every absence assertion holds against an empty list. What has to
+			// be true is that the route is still scoped to the names an HTTPS
+			// listener answers for, and that this hostname is not yet one.
+			Expect(redirectHostnames()).To(Equal([]string{"*.apps.example.com"}),
 				"301ing the challenge path sends the ACME validator to an HTTPS address that "+
 					"only completing that challenge can create (#573)")
 
@@ -550,7 +555,7 @@ var _ = Describe("Domain Controller", func() {
 			By("dropping it again when the domain goes")
 			Expect(k8sClient.Delete(ctx, getDomain())).To(Succeed())
 			reconcileKitchen()
-			Expect(redirectHostnames()).NotTo(ContainElement(domainHostname))
+			Expect(redirectHostnames()).To(Equal([]string{"*.apps.example.com"}))
 			reconcileDomain()
 		})
 	})
