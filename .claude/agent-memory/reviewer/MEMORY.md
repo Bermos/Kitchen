@@ -43,6 +43,8 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-08: A "put the object back under the field manager that owned it" design was defeated by its own sanitiser: `replacementFor` set `ManagedFields = nil` before `createStashedStatefulSet` read them with `applyOwnerOf`, so the apply branch was dead and every replacement was a plain `Create` — after which the next Helm 4 `helm upgrade` fails with `Apply failed with N conflicts`. The only test was `applyOwnerOf` on a hand-built object, never on the value the caller passes. Ask: does the unit test feed the function the object the production caller feeds it, or one built to make it pass?
 
+- 2026-09-09: A fix's mechanism was disproved by the issue's own probe output: Gateway API weighs hostname precedence before path *across* routes, so cert-manager's exact-hostname solver route out-precedences a hostname-less catch-all redirect — and the report's 404 (not the 301 the same catch-all gave the base domain two lines earlier) proved the redirect was never in front of the stuck hostname. Ask: apply the PR's own precedence argument to the evidence in the issue — does the reported symptom still follow from the mechanism being fixed?
+
 ## Chain links that were missed
 
 - 2026-09-06: A route landed without its `docs/API.md` row; a field landed without `docs/CRDS.md`; a chart value landed without its README row. The tests cover policy, schema and the dashboard's policy copy; the docs rows and the screen are what they cannot.
@@ -73,6 +75,10 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-08: A claim about what Helm or server-side apply does is settleable in the sandbox rather than by argument: envtest + `AddUser(...).KubeConfig()` + the real helm binary + the production code path, with a plain-`Create` counterfactual that must fail. The counterfactual is the half that proves the mechanism is load-bearing. Ask: is there a run of this claim, and does the wrong version of the code fail that run?
 - 2026-09-08: Transient read failures (a claim List, a StorageClass Get, a stash write) were folded into the one phase that deliberately does *not* requeue because "nothing about it will change on its own", while the same failure one level up (the StatefulSet List) requeues as a fault. Ask: is every state in the no-retry bucket actually permanent, or is a one-off API error parked there until some unrelated watch fires?
 
+- 2026-09-09: A behaviour change reached docs/CRDS.md, docs/DEPLOYING.md and docs/api/<resource>.md while `charts/kitchen/README.md`'s TLS section kept the sentence the change falsified ("in acme mode port 80 serves nothing but a permanent redirect to HTTPS"). Ask: which prose states the *old* behaviour as a rule — the chart README and inline reconciler comments included?
+- 2026-09-09: A new kind step asserted a `.spec` field the envtest in the same PR already asserts, twelve minutes later on a cluster, while the job it was added to already runs probe pods with `-H 'Host: ...'` and the Cilium leg has an LB address (hack/install-cilium.sh's LB IPAM) — so the behavioural assertion (which Host gets a 301 and which does not) was available and was not taken. Ask: does the cluster case assert something the unit test cannot, or restate it?
+- 2026-09-09: The new kind step had executed zero times on the head under review — one matrix leg died on `go mod download` in the image build and skipped every later step, the other had not reached it. The 2026-09-08 lesson recurred within a day. Ask, every time: did this step *run* on this head?
+
 ## Decisions that should have been surfaced
 
 - 2026-09-07: A derived input (`store_volume_usage`) made a Critical rule answer "cannot be evaluated" *forever* on any installation that set `collector.metrics.kubelet.enabled: false` — plus a permanent `status.signals.unreadable` line, the same shape as the audit-table one. Ask: which supported chart value makes this new input dark, and does the body name that configuration rather than the abstraction?
@@ -97,6 +103,8 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-08: A PR argued against `status.components` because "a blocked resize there would make ComponentsHealthy false and requeue forever, a permanent red dot for a fact rather than a fault" — then wrote the same state as a `False` condition with an unclassified reason (so `conditionSeverityOf` defaults it to `severityError`) and put it in the reconciler's requeue predicate. Ask: does the condition the PR actually writes reproduce the cost the PR says it avoided by not writing a component row?
 - 2026-09-08: A monotonic "only ever grown" write with no upper bound and no route, command or screen that lowers it again: a mistyped `800Gi` raises the PVC request (which Kubernetes will not let you lower) and is recoverable only by `kubectl edit` on the singleton. Ask: for an irreversible write, what is the way back, and is it inside the product?
+
+- 2026-09-09: Scoping a catch-all route to `*.<baseDomain>` also silently drops the port-80 redirect for every name a supported chart value publishes outside the base domain (`api.route.host`, `auth.route.host`, `webhookReceiver.route.host`, `kitchen.registry.host`, `kitchen.api.externalURL`); nothing that worked breaks, because those names have no HTTPS listener either, but the body named only the one class it was thinking about. Ask: which *configured* hostnames fall outside a new scope, not just the ones the issue is about?
 
 ## Commit and title
 
