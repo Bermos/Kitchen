@@ -305,11 +305,19 @@ func fixtures() []runtime.Object {
 			Capabilities: []kitchenv1alpha1.Capability{kitchenv1alpha1.CapabilityImageStore},
 		},
 	}
+	// A custom domain that is up: verified, and routed on the listener its
+	// traffic uses. The condition is not decoration — an attached hostname the
+	// gateway has not accepted is one the platform's edge answers for, and the
+	// environment's request reads leave its traffic out (pendingdomains.go).
 	domain := &kitchenv1alpha1.Domain{
 		ObjectMeta: metav1.ObjectMeta{Name: "shop-com", Namespace: testNamespace},
 		Spec: kitchenv1alpha1.DomainSpec{
 			Hostname:       "shop.example.com",
 			EnvironmentRef: kitchenv1alpha1.LocalObjectReference{Name: testEnvironment},
+		},
+		Status: kitchenv1alpha1.DomainStatus{
+			Verified:   true,
+			Conditions: []metav1.Condition{routeProgrammed(metav1.ConditionTrue, "Accepted")},
 		},
 	}
 	claim := &kitchenv1alpha1.ResourceClaim{

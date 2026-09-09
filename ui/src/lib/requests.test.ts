@@ -13,6 +13,7 @@ import {
   formatSaturation,
   healthCheckNote,
   isHTTP2,
+  pendingDomainsNote,
   MAX_RAW_RETENTION_DAYS,
   rawRetentionDays,
   rawRetentionStart,
@@ -272,5 +273,27 @@ describe("healthCheckNote", () => {
   it("says nothing while a route is selected, which already says what the numbers are of", () => {
     expect(healthCheckNote({ route: "/api/health", excluded: true }, "/checkout/:id")).toBeNull();
     expect(healthCheckNote({ route: "/api/health", excluded: false }, "/api/health")).toBeNull();
+  });
+});
+
+describe("pendingDomainsNote", () => {
+  it("names the hostnames the numbers left out", () => {
+    expect(pendingDomainsNote({ hostnames: ["app.example.com"], excluded: true })).toEqual({
+      hostnames: ["app.example.com"],
+      excluded: true,
+    });
+  });
+
+  it("still names them once they are counted, because that is what is offered back", () => {
+    expect(pendingDomainsNote({ hostnames: ["app.example.com"], excluded: false })).toEqual({
+      hostnames: ["app.example.com"],
+      excluded: false,
+    });
+  });
+
+  it("says nothing where every hostname is being served", () => {
+    expect(pendingDomainsNote({ excluded: false })).toBeNull();
+    expect(pendingDomainsNote({ hostnames: [], excluded: false })).toBeNull();
+    expect(pendingDomainsNote(undefined)).toBeNull();
   });
 });

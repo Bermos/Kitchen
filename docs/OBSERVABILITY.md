@@ -674,6 +674,18 @@ a new header):
     has. It is a predicate on the read rather than a filter at ingest, so
     `?health=include` puts them back and a listing filtered to the health route
     still answers.
+  - **A hostname the platform is not publishing yet is not this environment's
+    traffic either**: a custom domain joins the environment's route when it is
+    verified and is answered on only once the gateway accepts that route, and
+    requests arriving in between are answered by the edge itself — which is
+    most of what an ACME HTTP-01 retry loop sends while the certificate is
+    outstanding. The same shape as the health checks: a predicate on the read
+    keyed on the Domain's `RouteProgrammed` condition — for the hostnames the
+    environment's route carries, since those are the only ones whose traffic
+    was ever filed under it — the hostnames named in every answer, and
+    `?pending=include` to put them back. Nothing stored says which side
+    answered a request, so the exclusion is by hostname and never by a
+    judgement about a row (#574).
   - **Request list** (`…/requests`, filterable by route/status class/method,
     SSE live tail exactly like logs): recent requests with time, method,
     path (raw), status, duration. A failing request expands to the

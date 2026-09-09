@@ -3303,6 +3303,7 @@ export interface RequestSummary {
   environment: string;
   edge: EdgeStatus;
   healthChecks: HealthChecks;
+  pendingDomains: PendingDomains;
 }
 
 /** One bucket of the request charts. Every bucket in the window is present,
@@ -3328,6 +3329,7 @@ export interface RequestSeries {
   environment: string;
   edge: EdgeStatus;
   healthChecks: HealthChecks;
+  pendingDomains: PendingDomains;
 }
 
 /** One row of the route table: a route template's share of the window. The
@@ -3382,6 +3384,11 @@ export interface RequestWindow {
    * a probe every thirty seconds is not traffic, and left in it makes a quiet
    * project look visited. `include` asks for the whole picture back. */
   health?: "include" | "exclude";
+  /** Whether traffic to hostnames attached to this environment that the
+   * platform is not routing yet counts. It does not by default: the edge
+   * answers those requests itself, so they are not what the application
+   * served. `include` asks for them back. */
+  pending?: "include" | "exclude";
 }
 
 /**
@@ -3393,6 +3400,23 @@ export interface RequestWindow {
  */
 export interface HealthChecks {
   route?: string;
+  excluded: boolean;
+}
+
+/**
+ * What an answer says about the hostnames it left out. `hostnames` are the
+ * custom domains attached to this environment that the platform is not routing
+ * yet — present whether or not this read excluded them, since they are what the
+ * screen offers to put back — and `excluded` is whether these numbers left them
+ * out.
+ *
+ * A request is attributed by the hostname it asked for, and a hostname joins an
+ * environment's route before the gateway is serving it. Traffic that arrives in
+ * between is answered by the platform's edge and never reaches the application,
+ * which is why it is not counted as the environment's.
+ */
+export interface PendingDomains {
+  hostnames?: string[];
   excluded: boolean;
 }
 
@@ -4919,6 +4943,7 @@ function requestParams(window: RequestWindow): URLSearchParams {
   if (window.until) params.set("until", window.until);
   if (window.route) params.set("route", window.route);
   if (window.health) params.set("health", window.health);
+  if (window.pending) params.set("pending", window.pending);
   return params;
 }
 
@@ -5391,6 +5416,7 @@ export const api = {
       environment: string;
       edge: EdgeStatus;
       healthChecks: HealthChecks;
+      pendingDomains: PendingDomains;
     }>("GET", `/environments/${name}/requests/routes?${params}`);
   },
   // The rows themselves, newest first. The body is an object rather than a
@@ -5403,6 +5429,7 @@ export const api = {
       environment: string;
       edge: EdgeStatus;
       healthChecks: HealthChecks;
+      pendingDomains: PendingDomains;
     }>("GET", `/environments/${name}/requests?${requestListParams(query)}`),
   // The same listing followed live, over the same loop the log tails use. The
   // server sends its page oldest first and then every request as it lands.

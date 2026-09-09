@@ -44,6 +44,12 @@ names it already terminates TLS for, because redirecting this one would send
 the ACME validator to an HTTPS address that only completing that challenge can
 create. Both conditions move when the certificate lands.
 
+`RouteProgrammed` is also read by the environment's request endpoints. Once the
+environment's route carries the hostname, anything short of `True` means the
+platform's edge is what answers on it, so the traffic that arrives meanwhile is
+not counted as what the environment served; see [what the internet asked of an
+environment](environments.md#a-hostname-the-platform-is-not-publishing-yet-is-not-this-environments-traffic).
+
 `DELETE /domains/{name}` answers `202`: the operator's finalizer still has
 the domain's certificate and secret to remove, and the Gateway drops the
 hostname as the reconcilers catch up. The DNS records in your zone are yours;

@@ -754,6 +754,7 @@ All four take the same scope:
 | `since` / `until` | RFC 3339 bounds on the window. An hour ending now by default |
 | `route` | One route template, spelled as the route table spells it — what clicking a row filters the rest by |
 | `health` | `exclude` (the default) or `include` — whether the platform's own health checks count as traffic |
+| `pending` | `exclude` (the default) or `include` — whether traffic to a hostname attached to this environment that the platform is not publishing yet counts |
 
 ### The platform's own health checks are not traffic
 
@@ -772,6 +773,18 @@ and is present whether or not the read excluded it — it is what `?health=` is
 about. `excluded` is whether these particular numbers left it out. A project
 that declared no HTTP health check has neither: `{"excluded": false}`, and
 there is nothing to exclude.
+
+Both halves of that are load-bearing, and the first is what keeps the sentence
+on the screen true. A request is filed under an environment by the hostnames
+its route publishes, so a name the route does not carry — a domain nobody has
+verified yet, or one attached to an environment of an `internal`-exposure
+project, which is never published at all — has no traffic here to leave out.
+Such a domain is not named and nothing is marked excluded for it: it would
+otherwise be a permanent sentence about traffic that cannot exist, on the
+screen of the person still waiting for the domain to come up. A wildcard
+hostname is left out for a different reason — the exclusion matches stored
+hostnames exactly, so it can never drop a row a wildcard published, and
+claiming otherwise would be worse than counting them.
 
 Three things this deliberately is not:
 
@@ -793,11 +806,78 @@ A worker's own health check (`spec.processes[].health`) never appears: nothing
 publishes a worker on the shared Gateway, so its probes are not request rows in
 the first place.
 
+### A hostname the platform is not publishing yet is not this environment's traffic
+
+A request is attributed by the hostname it asked for, and the hostnames an
+environment answers to are its generated one plus every custom domain attached
+to it. A domain joins the environment's route as soon as it is verified, and
+the platform starts *answering* on it only once the gateway has accepted that
+route — which, for a domain waiting on a certificate, can be a long while.
+Requests that arrive in between are addressed to the environment and answered
+by the platform's edge, which has no route for the name yet — whatever it
+answers with, the application never saw the request.
+
+That window is not quiet, either. Issuing the certificate is what sends traffic
+at the name: Let's Encrypt retries `/.well-known/acme-challenge/<token>` for as
+long as validation is outstanding, and left in the numbers that is a route the
+application never served, a request count it never had, and errors belonging to
+the edge — on the screen of exactly the person trying to work out why the
+domain will not come up.
+
+So all four reads drop what arrived on a hostname that the environment's route
+carries and whose [`RouteProgrammed`](domains.md) condition is not `True`, and
+every answer says which hostnames those were:
+
+```json
+{"pendingDomains": {"hostnames": ["app.example.com"], "excluded": true}}
+```
+
+`hostnames` are the names that are attached and not published, and are present
+whether or not the read excluded them — they are what `?pending=` is about.
+`excluded` is whether these particular numbers left them out. An environment
+whose every hostname is being served has neither: `{"excluded": false}`.
+
+Both halves of that are load-bearing, and the first is what keeps the sentence
+on the screen true. A request is filed under an environment by the hostnames
+its route publishes, so a name the route does not carry — a domain nobody has
+verified yet, or one attached to an environment of an `internal`-exposure
+project, which is never published at all — has no traffic here to leave out.
+Such a domain is not named and nothing is marked excluded for it: it would
+otherwise be a permanent sentence about traffic that cannot exist, on the
+screen of the person still waiting for the domain to come up. A wildcard
+hostname is left out for a different reason — the exclusion matches stored
+hostnames exactly, so it can never drop a row a wildcard published, and
+claiming otherwise would be worse than counting them.
+
+Three things this deliberately is not:
+
+- **It is not a judgement about a row.** Nothing stored says which side
+  answered a request: a row carries the host, the path, the status and the
+  latency, and no upstream, backend or response flag, so a `404` the edge
+  produced is indistinguishable from one the application served. What *is*
+  known is which hostnames the platform is routing, so the exclusion is by
+  hostname and never by guessing at a request.
+- **It is not a filter at ingest.** The rows are stored and stay readable:
+  `?pending=include` puts them back into every number here. That is deliberate
+  rather than tidy — while a domain is coming up, those requests are the
+  evidence that the world is reaching the platform for that name at all.
+- **It does not see backwards.** The hostnames are the ones the platform is not
+  publishing *now*, so a domain that came up inside the window leaves the
+  traffic it took before it did counted, and one that has only just gone
+  pending takes its earlier traffic out. The hostnames are named for that
+  reason: a number that silently dropped rows is a number nobody can reconcile.
+
+Unlike the health checks, a `?route=` filter does not cancel it. A route
+template is served on every hostname an environment answers to, so naming one
+says nothing about which name was asked, and the row for
+`/.well-known/acme-challenge/:token` is the one this exists for.
+
 `GET /environments/{name}/requests/summary` is the header:
 
 ```json
 {"environment": "shop-production", "edge": {"routed": true},
  "healthChecks": {"route": "/api/health", "excluded": true},
+ "pendingDomains": {"excluded": false},
  "since": "2026-08-16T09:00:00Z", "until": "2026-08-16T10:00:00Z", "rollup": "1m",
  "requests": 3600, "requestsPerSecond": 1, "errors": 36, "errorRate": 0.01,
  "p50Ms": 12, "p95Ms": 240, "p99Ms": 900}
@@ -891,6 +971,11 @@ paper over:
   feed's deploy entries by time instead.
 - **No query strings.** They are stripped before the row is written and never
   stored: privacy and path cardinality settled in one move.
+- **No upstream.** A row says what was asked for and what came back, never
+  which side answered it — so a `404` the edge produced for a hostname it has
+  no route for is indistinguishable from one the application served. Which
+  hostnames the platform is publishing is known, though, which is what
+  `pendingDomains` above is derived from.
 - **gRPC errors are not counted.** A failed gRPC call is an HTTP 200 with a
   `grpc-status` trailer the edge does not read, so `errors` and `errorRate` are
   transport-level for a gRPC service — a screen showing them for one has to say

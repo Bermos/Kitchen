@@ -26,6 +26,10 @@ const props = defineProps<{
    * decides for the whole panel, so the rows are the traffic the numbers above
    * them are of. */
   health?: "include" | "exclude";
+  /** Whether requests to a hostname this environment is not serving yet are in
+   * the listing, decided by the section for the same reason: the rows under a
+   * set of numbers are the traffic those numbers are of. */
+  pending?: "include" | "exclude";
 }>();
 
 const emit = defineEmits<{
@@ -62,6 +66,7 @@ function query(): RequestListQuery {
     until: props.until,
     route: props.route ?? undefined,
     health: props.health,
+    pending: props.pending,
     status: status.value || undefined,
     method: method.value || undefined,
     limit: limit.value,
@@ -132,6 +137,7 @@ watch(
     () => props.environment,
     () => props.route,
     () => props.health,
+    () => props.pending,
     () => props.since,
     () => props.until,
     status,
