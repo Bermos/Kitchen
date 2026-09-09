@@ -317,7 +317,19 @@ func main() {
 		})
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	// controller-runtime stopped enabling the client-side rate limiter by
+	// default in 0.21. `GetConfigOrDie` used to hand back a config bounded at
+	// 20 queries a second with a burst of 30, and now hands back one that is
+	// not bounded at all, leaving the API server's own priority and fairness
+	// queues to absorb whatever the operator asks of them. That is a change of
+	// behaviour for an installation that is already running, so the bound is
+	// restored here rather than dropped as a side effect of a dependency bump.
+	// Removing it is an operator's decision to take deliberately.
+	restConfig := ctrl.GetConfigOrDie()
+	restConfig.QPS = 20
+	restConfig.Burst = 30
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,

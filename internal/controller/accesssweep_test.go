@@ -28,6 +28,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/access"
@@ -57,6 +58,50 @@ const (
 )
 
 var accessNow = time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+
+// kitchenAPIVersion is what a managed-fields entry on one of Kitchen's own
+// objects names as the version the write was made against. It is not
+// decoration: the fake client validates every entry it is handed, exactly as
+// the API server does, and refuses one that leaves the version empty.
+var kitchenAPIVersion = kitchenv1alpha1.GroupVersion.String()
+
+// fieldsV1Type is the only encoding a managed-fields entry may declare; an
+// entry that leaves it out is refused along with one that names anything
+// else, whether or not it carries a field set of its own.
+const fieldsV1Type = "FieldsV1"
+
+// operatorFieldManager is the name a cluster records for the operator's own
+// writes: the API server takes it from the request's user agent, which is the
+// binary's name, and it is why `manager` is one of the managers the platform
+// recognises. The fake client has no user agent and attributes an unowned
+// write to nobody in particular, which would make the sweeper's own creations
+// look like somebody editing behind the platform's back.
+const operatorFieldManager = "manager"
+
+// asTheOperatorWrites makes the fake client attribute the sweeper's own writes
+// the way a real API server would. Without it the harness measures an artefact
+// of the fake client rather than the detection.
+func asTheOperatorWrites() interceptor.Funcs {
+	owner := client.FieldOwner(operatorFieldManager)
+	return interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object,
+			opts ...client.CreateOption) error {
+			return c.Create(ctx, obj, append(opts, owner)...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object,
+			opts ...client.UpdateOption) error {
+			return c.Update(ctx, obj, append(opts, owner)...)
+		},
+		SubResourceUpdate: func(ctx context.Context, c client.Client, name string,
+			obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			return c.SubResource(name).Update(ctx, obj, append(opts, owner)...)
+		},
+		SubResourcePatch: func(ctx context.Context, c client.Client, name string,
+			obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			return c.SubResource(name).Patch(ctx, obj, patch, append(opts, owner)...)
+		},
+	}
+}
 
 type stubAccountDirectory struct {
 	accounts []idp.Account
@@ -178,6 +223,14 @@ func newAccessFixtures(t *testing.T, extra ...client.Object) *accessFixtures {
 	}
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
+		// The whole of this sweep is a question about managed fields, and the
+		// fake client strips them from every read unless asked for them. A
+		// harness without this reads an object with no field managers on it
+		// at all, which is a sweep that can only ever find nothing.
+		WithReturnManagedFields().
+		// And with them returned, the harness's own writes have to be
+		// attributed the way a cluster would attribute them.
+		WithInterceptorFuncs(asTheOperatorWrites()).
 		WithObjects(objects...).
 		WithStatusSubresource(
 			&kitchenv1alpha1.Kitchen{}, &kitchenv1alpha1.AccessReview{},
@@ -375,8 +428,13 @@ func TestAForeignFieldManagerIsAFinding(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: accessProject, Namespace: PlatformNamespace,
 			ManagedFields: []metav1.ManagedFieldsEntry{
-				{Manager: "manager", Operation: metav1.ManagedFieldsOperationUpdate, Time: &written},
 				{
+					APIVersion: kitchenAPIVersion, FieldsType: fieldsV1Type,
+					Manager: operatorFieldManager, Operation: metav1.ManagedFieldsOperationUpdate,
+					Time: &written,
+				},
+				{
+					APIVersion: kitchenAPIVersion, FieldsType: fieldsV1Type,
 					Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate,
 					Time: &written,
 					FieldsV1: &metav1.FieldsV1{
@@ -409,6 +467,7 @@ func TestAStatusWriteIsNotAnOutOfBandWrite(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: accessProject, Namespace: PlatformNamespace,
 			ManagedFields: []metav1.ManagedFieldsEntry{{
+				APIVersion: kitchenAPIVersion, FieldsType: fieldsV1Type,
 				Manager: "some-other-controller", Operation: metav1.ManagedFieldsOperationUpdate,
 				Subresource: "status", Time: &written,
 			}},
@@ -427,6 +486,7 @@ func TestAnExpectedManagerIsNotAFinding(t *testing.T) {
 	written := metav1.NewTime(accessNow)
 	entry := func(manager string) metav1.ManagedFieldsEntry {
 		return metav1.ManagedFieldsEntry{
+			APIVersion: kitchenAPIVersion, FieldsType: fieldsV1Type,
 			Manager: manager, Operation: metav1.ManagedFieldsOperationApply, Time: &written,
 		}
 	}
@@ -457,6 +517,7 @@ func TestAWriterThatNamesItselfKitchenIsNotDetected(t *testing.T) {
 			Name: accessProject, Namespace: PlatformNamespace,
 			ManagedFields: []metav1.ManagedFieldsEntry{{
 				// `kubectl edit --field-manager=kitchen`.
+				APIVersion: kitchenAPIVersion, FieldsType: fieldsV1Type,
 				Manager: "kitchen", Operation: metav1.ManagedFieldsOperationUpdate, Time: &written,
 			}},
 		},
@@ -477,6 +538,7 @@ func TestASweepCountsAndPublishesAnOutOfBandWrite(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "shop-production", Namespace: PlatformNamespace,
 			ManagedFields: []metav1.ManagedFieldsEntry{{
+				APIVersion: kitchenAPIVersion, FieldsType: fieldsV1Type,
 				Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate, Time: &written,
 				FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:spec":{"f:requirements":{}}}`)},
 			}},
@@ -565,6 +627,7 @@ func TestDetectionOffLooksForNothing(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "blog", Namespace: PlatformNamespace,
 			ManagedFields: []metav1.ManagedFieldsEntry{{
+				APIVersion: kitchenAPIVersion, FieldsType: fieldsV1Type,
 				Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate, Time: &written,
 			}},
 		},

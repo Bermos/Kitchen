@@ -707,6 +707,12 @@ func (r *KitchenReconciler) createStashedStatefulSet(ctx context.Context, replac
 	if owner := applyOwnerOf(replacement); owner != "" {
 		applied := replacement.DeepCopy()
 		applied.ObjectMeta.ManagedFields = nil
+		// controller-runtime 0.23 deprecates the apply *patch* in favour of a
+		// client method that takes an apply configuration rather than an
+		// object. Moving to it changes what goes on the wire for a path whose
+		// whole point is which field manager owns which field, so it is left
+		// to a change that can be reasoned about on its own. See #583.
+		//nolint:staticcheck // the apply-configuration migration is its own change
 		if err := r.Patch(ctx, applied, client.Apply,
 			client.FieldOwner(owner), client.ForceOwnership); err != nil {
 			return fmt.Errorf("re-applying %s as %q: %w", replacement.Name, owner, err)

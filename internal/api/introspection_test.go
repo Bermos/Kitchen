@@ -59,9 +59,16 @@ func workloadFixtures() []runtime.Object {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testEnvironment,
 			Namespace: appNamespace,
-			ManagedFields: []metav1.ManagedFieldsEntry{
-				{Manager: "kitchen", Operation: metav1.ManagedFieldsOperationApply},
-			},
+			// The API version is not decoration. The fake client validates
+			// every managed-fields entry it is handed, exactly as the API
+			// server does, and refuses an entry that does not say which
+			// version of the object the write was made against.
+			ManagedFields: []metav1.ManagedFieldsEntry{{
+				APIVersion: appsv1.SchemeGroupVersion.String(),
+				FieldsType: "FieldsV1",
+				Manager:    "kitchen",
+				Operation:  metav1.ManagedFieldsOperationApply,
+			}},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: ptr.To(int32(2)),
