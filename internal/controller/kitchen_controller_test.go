@@ -140,6 +140,11 @@ var _ = Describe("Kitchen Controller", func() {
 			Expect(*filter.RequestRedirect.Scheme).To(Equal("https"))
 			Expect(*filter.RequestRedirect.StatusCode).To(Equal(301))
 
+			By("redirecting only the names an https listener answers for")
+			Expect(route.Spec.Hostnames).To(Equal([]gatewayv1.Hostname{"*.apps.example.com"}),
+				"an unscoped redirect answers for every hostname on port 80, including a custom "+
+					"domain whose ACME HTTP-01 challenge is what has to be answered there (#573)")
+
 			By("sending everything that actually serves to the https listener")
 			kitchen := &kitchenv1alpha1.Kitchen{}
 			Expect(k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())

@@ -372,10 +372,19 @@ var _ = Describe("Domain Controller", func() {
 		reconcileDomain()
 		Expect(condition(condRouteProgrammed).Reason).To(Equal("HostnamePending"))
 
-		By("waiting for the gateway once the hostname is on the route")
+		By("naming the certificate, not the gateway, while no listener can exist yet")
 		Expect(k8sClient.Get(ctx, routeKey, route)).To(Succeed())
 		route.Spec.Hostnames = append(route.Spec.Hostnames, domainHostname)
 		Expect(k8sClient.Update(ctx, route)).To(Succeed())
+		reconcileDomain()
+		pending := condition(condRouteProgrammed)
+		Expect(pending.Reason).To(Equal("AwaitingCertificate"),
+			"there is nothing to be accepted on until the certificate exists, and blaming the "+
+				"gateway controller for it reads as a deadlock (#573)")
+		Expect(pending.Message).To(ContainSubstring("port 80"))
+
+		By("waiting for the gateway once the listener can exist")
+		Expect(k8sClient.Create(ctx, issuedSecret())).To(Succeed())
 		reconcileDomain()
 		Expect(condition(condRouteProgrammed).Reason).To(Equal("AwaitingGatewayAcceptance"))
 
@@ -499,6 +508,54 @@ var _ = Describe("Domain Controller", func() {
 			reconcileKitchen()
 			Expect(listenerNamed(domainListenerName(domainName))).To(BeNil(),
 				"a deleting domain loses its listener before the finalizer removes the secret")
+			reconcileDomain()
+		})
+
+		// The deadlock #573 reported: the hostname's ACME HTTP-01 challenge
+		// arrives on port 80, and a redirect that answered for every name
+		// there sent the validator to an HTTPS address that cannot exist
+		// until that very challenge has completed.
+		It("keeps the port-80 redirect off a hostname it cannot yet serve over HTTPS", func() {
+			redirectHostnames := func() []string {
+				route := &gatewayv1.HTTPRoute{}
+				ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{
+					Name: httpsRedirectRouteName, Namespace: PlatformNamespace,
+				}, route)).To(Succeed())
+				hostnames := make([]string, 0, len(route.Spec.Hostnames))
+				for _, hostname := range route.Spec.Hostnames {
+					hostnames = append(hostnames, string(hostname))
+				}
+				return hostnames
+			}
+
+			By("redirecting only the platform's own generated names to begin with")
+			reconcileKitchen()
+			Expect(redirectHostnames()).To(Equal([]string{"*.apps.example.com"}),
+				"a redirect with no hostnames answers for every name that arrives on port 80")
+
+			By("leaving a verified domain awaiting its certificate alone")
+			markVerified()
+			reconcileKitchen()
+			// Stated as the whole list rather than as "the hostname is not on
+			// it": the shape this replaced carried no hostnames at all, and
+			// every absence assertion holds against an empty list. What has to
+			// be true is that the route is still scoped to the names an HTTPS
+			// listener answers for, and that this hostname is not yet one.
+			Expect(redirectHostnames()).To(Equal([]string{"*.apps.example.com"}),
+				"301ing the challenge path sends the ACME validator to an HTTPS address that "+
+					"only completing that challenge can create (#573)")
+
+			By("redirecting it once its certificate exists")
+			Expect(k8sClient.Create(ctx, issuedSecret())).To(Succeed())
+			reconcileKitchen()
+			Expect(redirectHostnames()).To(ConsistOf("*.apps.example.com", domainHostname))
+			Expect(redirectHostnames()).To(HaveLen(len(gatewayListeners())-1),
+				"the redirect covers exactly the names an HTTPS listener answers for")
+
+			By("dropping it again when the domain goes")
+			Expect(k8sClient.Delete(ctx, getDomain())).To(Succeed())
+			reconcileKitchen()
+			Expect(redirectHostnames()).To(Equal([]string{"*.apps.example.com"}))
 			reconcileDomain()
 		})
 	})

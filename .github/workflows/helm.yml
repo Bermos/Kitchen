@@ -1628,6 +1628,132 @@ jobs:
           kubectl get kitchen default \
             -o jsonpath='{.status.conditions[?(@.type=="CertificateReady")]}'
 
+      # The other half of edge TLS, and the one that used to deadlock (#573): a
+      # custom domain's certificate is issued over HTTP-01, the challenge for it
+      # arrives on port 80 for a hostname the platform has no HTTPS listener for
+      # yet, and a redirect that answered for every name arriving there sent the
+      # ACME validator to an HTTPS address only that challenge could create.
+      #
+      # This is asserted on a cluster rather than in a render because neither
+      # object is the chart's: the operator writes both, and it writes the
+      # redirect's hostnames out of the listeners it just gave the Gateway. No
+      # Domain is created — there is no zone here to verify one against, and one
+      # in acme mode would put a real order in front of Let's Encrypt for a name
+      # nobody in this job owns. What the redirect is scoped *to* is visible
+      # without one.
+      - name: Verify the port-80 redirect answers only for names HTTPS serves
+        run: |
+          set -euo pipefail
+          hostnames=""
+          for i in $(seq 60); do
+            hostnames=$(kubectl -n kitchen-system get httproute kitchen-https-redirect \
+              -o jsonpath='{.spec.hostnames[*]}' 2>/dev/null || true)
+            [ -n "${hostnames}" ] && break
+            [ "$i" = 60 ] && {
+              kubectl -n kitchen-system get httproute
+              kubectl -n kitchen-system logs -l control-plane=controller-manager --tail=100
+              echo "::error::the operator never published the port-80 redirect"
+              exit 1
+            }
+            sleep 5
+          done
+          echo "the redirect answers for: ${hostnames}"
+          [ "${hostnames}" = "*.apps.example.com" ] || {
+            echo "::error::the port-80 redirect answers for '${hostnames}';" \
+              "it may name only what an HTTPS listener serves, or it 301s a custom" \
+              "domain's ACME challenge into an address that challenge has to create (#573)"
+            exit 1
+          }
+          # And the listener it redirects away from stays catch-all. A hostname
+          # there would refuse cert-manager's solver route for any name outside
+          # the base domain outright, which is every custom domain there is.
+          http_hostname=$(kubectl -n kitchen-system get gateway kitchen \
+            -o jsonpath='{.spec.listeners[?(@.name=="http")].hostname}')
+          [ -z "${http_hostname}" ] || {
+            echo "::error::the port-80 listener names '${http_hostname}';" \
+              "a custom domain's HTTP-01 challenge route could not attach to it"
+            exit 1
+          }
+
+      # The read above is a proxy for the property that matters, and it is the
+      # same proxy the envtest already holds: it says what the operator wrote,
+      # not what an implementation does with it. A Cilium that merged a
+      # hostname-less route into every virtual host — or one that stopped
+      # honouring hostname precedence — would sail past it. On the leg that
+      # runs a Gateway controller and has an address to send a request to, ask
+      # Envoy instead.
+      - name: Probe the port-80 redirect through the Gateway
+        if: matrix.cni == 'cilium'
+        run: |
+          set -euo pipefail
+          # LB IPAM is installed with Cilium (hack/install-cilium.sh), so the
+          # shared Gateway is programmed and published an address; the HTTPS
+          # listener names a wildcard certificate that will never be issued
+          # here, which is the state a real installation is in on its first
+          # day and is not a reason for port 80 to stop working.
+          address=""
+          for i in $(seq 60); do
+            address=$(kubectl -n kitchen-system get gateway kitchen \
+              -o jsonpath='{.status.addresses[0].value}' 2>/dev/null || true)
+            [ -n "${address}" ] && break
+            [ "$i" = 60 ] && {
+              kubectl -n kitchen-system get gateway kitchen -o yaml
+              kubectl -n kitchen-system get svc -l io.cilium.gateway/owning-gateway=kitchen -o wide || true
+              echo "::error::the shared Gateway published no address, so port 80 could not be probed"
+              exit 1
+            }
+            sleep 5
+          done
+          echo "gateway address ${address}"
+
+          # Two requests to port 80, differing only in the Host header. The
+          # generated name is under the wildcard the platform holds a
+          # certificate for, so it belongs on HTTPS and is sent there. The
+          # other name is what every custom domain looks like from Envoy's
+          # side while its certificate is pending — nothing of the platform's
+          # may answer for it, because the ACME HTTP-01 challenge that issues
+          # that certificate is answered on this port for exactly that name
+          # and a 301 sends the validator to an address only the challenge can
+          # create (#573).
+          kubectl -n kitchen-system run redirect-probe \
+            --image="${PROBE_IMAGE}" --restart=Never --command -- sh -ec "
+              inside=\$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+                -H 'Host: probe.apps.example.com' \
+                'http://${address}/.well-known/acme-challenge/probe123')
+              echo \"inside: \${inside}\"
+              case \"\${inside}\" in
+                '301 https://probe.apps.example.com'*) ;;
+                *) echo 'a name the platform terminates TLS for was not redirected'; exit 1 ;;
+              esac
+
+              outside=\$(curl -s -o /dev/null -w '%{http_code}' \
+                -H 'Host: outside.example.net' \
+                'http://${address}/.well-known/acme-challenge/probe123')
+              echo \"outside: \${outside}\"
+              case \"\${outside}\" in
+                3??) echo 'a name with no https listener was redirected off port 80'; exit 1 ;;
+              esac
+              echo redirect-ok
+            "
+          phase=""
+          for _ in $(seq 60); do
+            phase=$(kubectl -n kitchen-system get pod redirect-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          probe_output=$(kubectl -n kitchen-system logs redirect-probe 2>&1 || true)
+          echo "probe phase=${phase} output=${probe_output}"
+          kubectl -n kitchen-system delete pod redirect-probe --wait=false
+          case "${probe_output}" in
+            *redirect-ok) ;;
+            *)
+              kubectl -n kitchen-system get gateway kitchen -o yaml
+              kubectl -n kitchen-system get httproute kitchen-https-redirect -o yaml || true
+              echo "::error::port 80 does not answer the way the redirect's scope says it should (#573)"
+              exit 1
+              ;;
+          esac
+
       - name: Verify the REST API is shut without a token
         run: |
           set -euo pipefail

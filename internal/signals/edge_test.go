@@ -401,19 +401,35 @@ func TestUnroutedHostsMatchesRoutesLoosely(t *testing.T) {
 	expectNone(t, evaluate(t, SignalUnroutedHosts, snapshot))
 }
 
-// The HTTPS redirect the Kitchen reconciler writes on port 80 names no
-// hostname of its own. Reading that as "every host is published" would silence
-// the rule on every acme installation.
-func TestUnroutedHostsStillFiresBesideAHostnamelessRoute(t *testing.T) {
+// The HTTPS redirect the Kitchen reconciler writes on port 80 serves none of
+// the names it carries — and since #573 it carries the wildcard over the whole
+// base domain, so that a custom domain still waiting for its certificate is
+// not 301ed away from the challenge that issues it. Reading that as "every
+// host is published" would silence this rule on every acme installation, for
+// exactly the hosts it is about: a generated URL whose environment is gone and
+// whose DNS record is not.
+func TestUnroutedHostsStillFiresBesideTheHTTPSRedirect(t *testing.T) {
 	snapshot := newSnapshot()
 	snapshot.Routes = []gatewayv1.HTTPRoute{{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "kitchen-https-redirect",
 			Namespace: controller.PlatformNamespace,
 		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"*.apps.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				Filters: []gatewayv1.HTTPRouteFilter{{
+					Type: gatewayv1.HTTPRouteFilterRequestRedirect,
+					RequestRedirect: &gatewayv1.HTTPRequestRedirectFilter{
+						Scheme:     ptr("https"),
+						StatusCode: ptr(301),
+					},
+				}},
+			}},
+		},
 	}}
 	snapshot.UnroutedHosts = []clickhouse.UnroutedHost{{
-		Host:      "old.example.com",
+		Host:      "old.apps.example.com",
 		Requests:  4000,
 		FirstSeen: testNow.Add(-50 * time.Minute),
 		LastSeen:  testNow.Add(-time.Minute),

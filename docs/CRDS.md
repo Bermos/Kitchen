@@ -2304,6 +2304,16 @@ What happens next follows the TLS mode in effect (`spec.tls`, or the platform's 
   custom domain's zone is by definition someone else's. Issuance therefore needs the
   hostname to already resolve to the platform. Once the certificate's secret exists,
   the shared Gateway gains an HTTPS listener for the hostname.
+
+  Until it does, **the platform publishes nothing on port 80 for that hostname**, and
+  that is deliberate. cert-manager answers the challenge there with a solver
+  `HTTPRoute` of its own, and the platform's HTTP→HTTPS redirect carries only the
+  names an HTTPS listener already answers for: `*.<baseDomain>`, plus each custom
+  domain whose certificate exists. A redirect covering every name that arrives on
+  port 80 answers the challenge with a `301` to an HTTPS address that only completing
+  that challenge can create, which is the deadlock #573 reported. While it lasts,
+  `RouteProgrammed` is `False` with reason `AwaitingCertificate` rather than blaming
+  the gateway controller for a listener that does not exist yet.
 - **cloudflared** — a custom hostname is a tunnel ingress rule in Cloudflare's control
   plane, which the token-managed tunnel gives the operator no way to write or read.
   `CertificateReady` is honestly `Unknown` and its message names the manual step.
