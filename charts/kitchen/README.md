@@ -109,12 +109,22 @@ every generated URL is a subdomain of the base domain, so the platform needs a
 wildcard certificate, and ACME issues wildcards over DNS-01 alone — no amount
 of inbound reachability makes HTTP-01 able to.
 
-In `acme` mode port 80 serves nothing but a permanent redirect to HTTPS: every
-route the platform creates names the Gateway's `https` listener explicitly, and
-the operator publishes a redirect route bound to `http`. In `none` and
-`cloudflared` mode there is no HTTPS listener — port 80 is where the platform
-answers, and no redirect is created. Routes pointed at a Gateway other than the
-shared one therefore need listeners named `http` and `https`.
+In `acme` mode port 80 serves nothing of the platform's but a permanent
+redirect to HTTPS: every route the platform creates names the Gateway's `https`
+listener explicitly, and the operator publishes a redirect route bound to
+`http`. That redirect carries **only the names the Gateway terminates TLS
+for** — `*.<baseDomain>`, and each custom domain whose certificate has been
+issued. A name with no HTTPS listener gets nothing on port 80 at all, which is
+deliberate: a custom domain's certificate is issued over an ACME HTTP-01
+challenge answered on port 80 for that exact hostname, and a `301` there would
+send the validator to an address only that challenge can create (#573). It
+also means a `host` set outside the base domain — `api.route.host`,
+`auth.route.host`, `webhookReceiver.route.host`, `registry.host`,
+`previewGate.host` — is unpublished on both ports, as it already was on 443.
+
+In `none` and `cloudflared` mode there is no HTTPS listener — port 80 is where
+the platform answers, and no redirect is created. Routes pointed at a Gateway
+other than the shared one therefore need listeners named `http` and `https`.
 
 ## Install
 

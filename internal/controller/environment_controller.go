@@ -1319,8 +1319,9 @@ func (r *EnvironmentReconciler) applyHTTPRoute(
 	gate *previewGateBackend,
 	idle *idleBackend,
 	// section is the Gateway listener to attach to. With edge TLS on, port 80
-	// carries only the redirect, so an application route that also bound there
-	// would serve the app over cleartext.
+	// carries the redirect for the names HTTPS already answers for and nothing
+	// else, so an application route that also bound there would serve the app
+	// over cleartext.
 	section *gatewayv1.SectionName,
 	// domains adds the environment's verified custom hostnames and the extra
 	// listeners they bind — each parentRef names its section explicitly, so
