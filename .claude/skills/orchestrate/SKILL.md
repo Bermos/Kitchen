@@ -167,7 +167,12 @@ not move it and do not cut anything. To cut:
    `action_required`; re-run each on the current head (`rerun_workflow_run`). A
    run created before the last `main` commit is stale: wait for release-please's
    re-push rather than re-running it.
-4. Merge squash with title `chore(release): kitchen X.Y.Z (#N)`. The publish
+4. Merge squash with title `chore(release): kitchen X.Y.Z (#N)`, **and read `#N`
+   off the open pull request rather than off the last release.** release-please
+   reuses the *branch* and opens a *new pull request* each cycle, so the number
+   moves every time; a merge call against the previous cycle's number is a no-op
+   that returns that pull request's old merge SHA and reads exactly like success.
+   Check the SHA you get back is new. The publish
    workflow builds both images and the chart, then flips the draft release live and
    creates the tag; confirm the release object has the chart attached before you
    call it done.
@@ -177,6 +182,36 @@ not move it and do not cut anything. To cut:
 Hold a release when its changelog claims something the tree does not yet do (a fix
 line whose e2e case is still red). Do not hold it for features that are merely in
 flight; they go in the next one.
+
+**A green Release run does not mean your commit is in the release.** On 9
+September release-please hit `unexpected token '(' at 42:22` parsing a squash
+body, discarded the whole commit, reported `commits: 0`, opened nothing, and
+exited 0. `#577`'s fix shipped in v0.40.2 with no line in the notes, and the
+failure was invisible from outside: the Commits workflow was green, because
+`hack/check-commit-message.sh` validates subjects and the fault was in the body.
+GitHub's generated squash body concatenates the branch's commits as
+`* <type>(<scope>): <subject>` bullets, which release-please parses as
+sub-commits, and **nested parentheses in the prose beneath one break the
+grammar** — prose quoting a Go or Gomega expression is exactly that shape. So:
+
+- **Write every squash body by hand** (`commit_message` on the merge call).
+  Never let GitHub generate it, and keep nested parens out of commit prose.
+- **After every merge to `main`, read the Release run's log** for
+  `could not be parsed` and `commits: 0` rather than trusting the tick. The
+  healthy shape is `Found release for path ., vX.Y.Z` then `Considering: N
+  commits` with `N` matching what landed.
+- A stale release pull request and a discarded commit look identical from
+  outside — both leave the old body sitting there. The log tells them apart.
+
+**Read a red check's log before calling it anything, including a flake.** The
+same day, five CI failures across four pull requests were one Go module mirror
+incident (`proxy.golang.org` and `sum.golang.org`, `stream error … INTERNAL_ERROR;
+received from peer`), every one of them dying in dependency download or tool
+install before a test body or a lint pass ran — including a `golangci-lint` job
+on `main` that examined no code at all. None was the branch's fault, and none
+needed the re-run budget: a push that supersedes the head starts a fresh run
+anyway, so prefer landing the next commit over spending a re-run on a tree that
+is about to be replaced.
 
 ## 6. Cadence and heartbeats
 
