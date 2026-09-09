@@ -967,6 +967,12 @@ func newHarness(t *testing.T, kitchen *kitchenv1alpha1.Kitchen, objs ...runtime.
 	objects := append([]runtime.Object{kitchen, head}, objs...)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithRuntimeObjects(objects...).
+		// Without this the fake client strips managedFields from every read,
+		// so a fixture that carries them hands the code under test an object
+		// with none and any assertion about them passes on an empty list.
+		// TestObjectsCarryTheMaterializedManifests asserts the manifest
+		// endpoint drops them, which is only a test while they arrive.
+		WithReturnManagedFields().
 		WithStatusSubresource(&kitchenv1alpha1.Build{}, &kitchenv1alpha1.Environment{},
 			&kitchenv1alpha1.Exception{}, &kitchenv1alpha1.AccessReview{},
 			// A claim carries one too, and deciding a binding request
