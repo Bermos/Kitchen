@@ -1,50 +1,46 @@
-# Orchestration checkpoint — 8 September 2026, 16:00 UTC
+# Orchestration plan — 9 September 2026
 
-Written by the orchestrator at the maintainer's "finish the ongoing issues,
-cut a release, then pause". Whoever resumes reads this first and deletes it
-once the state is back in the plan.
+Supersedes the 8 September checkpoint note, whose state is now folded in
+(v0.40.1 published; every issue that run dispatched is closed).
 
-## Landed
+Maintainer's ask: work #573 and #574, cut a release and wait for it, then a
+batch of quick bugfixes "like #377".
 
-- v0.40.0 (PR #544, auto-merge armed on the re-run checks of 0f8fd71 at 15:25 UTC; confirm `v0.40.0` is live with the chart asset before the next cut): #542 platform credential (the maintainer's), #552 grow
-  platform volumes (#533), and the fixes #546 (#532), #549 (#530), #539
-  (#529), #538 (#531), #563 (#562), #550 (restore after #545), #560, #561.
-- Every issue dispatched in this run is closed: #529, #530, #531, #532, #533,
-  #534, #556, #562.
+## Wave 1 — running
 
-## Open work
+| Issue | Branch / worktree | State |
+| --- | --- | --- |
+| #573 custom-domain HTTP-01 deadlock | `claude/domain-http01-route-573` / `../kitchen-wt-573` | implementer dispatched |
+| #574 gateway 404s attributed to the environment | `claude/gateway-404-attribution-574` / `../kitchen-wt-574` | implementer dispatched |
 
-- Nothing is in flight. All worktrees under the session scratchpad are
-  finished; `wt-498` still holds the #498 WIP at 4f96b3d (`make test` not run).
-- #489 tail (#498 resume → #499 → #496 → #497 → #501) waits on D13–D15.
-- Filed and open, small: #547 (the reading overlay on `/platform/signals`
-  and the environment conditions strip), #554 (a screen for
-  `status.systemLogs`), #564 (SIGPIPE under `pipefail` in the e2e binding
-  steps — `kubectl … | base64 -d`, awk `exit`).
-- Then #481, #445, #436's second half, #413, #518, #519, #377, #370.
+Neither may arm auto-merge: a release cut follows immediately and a feature
+landing mid-cut moves the release head.
 
-## Decisions open for the maintainer
+## Release
 
-- D13 (#499): the observed graph from Hubble flows rather than spans (recommended).
-- D14 (#497): ship `enforce` together with `observe`, off by default (recommended).
-- D15 (#496): reuse the existing preview gate for `auth: gate` (recommended).
+`v0.40.1` is live with its chart and is `main`'s tip (`5127a6e`); there are no
+commits after it. Open release PR **#570 (0.41.0) is stale** — release-please
+created it at 07:28 UTC, five minutes before the `v0.40.1` tag existed, so it
+computed its range from an older baseline and its changelog re-lists releases
+back to 0.38.0. It will be recomputed when wave 1 lands. **Verify the
+changelog against `git log v0.40.1..origin/main` before merging it**, per the
+skill's step 5.2 — do not merge #570 as it stands.
 
-## Decisions taken on the maintainer's behalf this run (all stated in PR bodies)
+## Wave 2 — mapping in flight
 
-- #530: TTLs and `logger.level: information` are fixed chart defaults; the
-  reclaim is a sweep on every reconcile, deletes the superseded tables with no
-  grace period, and runs only where the connection secret says
-  `systemLogsBounded`.
-- #532: option 2 (overlay from the loop's memory; the durable row is never
-  rewritten); title, detail, confidence, projects and correlates move,
-  severity/tier/scope/since/fingerprint/openedAt do not.
-- #533: the chart renders the claim template from the live StatefulSet via
-  `lookup`; growth is monotonic (largest requested size wins), capped at 8× per
-  step, confirmed by typing the claim name; `status.storage` rather than a
-  `status.components` row; after a resize `helm rollback`, client-side
-  `--dry-run` and GitOps syncs diverge until the values carry the size.
+`dependency-mapper` is sizing #377, #547, #554, #564, #370, #413, #518, #519,
+#481, #445. #377 is on the maintainer's "quick" list but the issue text itself
+says it touches the operator's whole surface; the mapper is asked to say so
+bluntly if it is not a quick bugfix.
 
-## Lessons written into the skill
+## Needs the maintainer's eye
 
-- A checkpoint commit is pushed only after `git diff --stat HEAD^ HEAD` names
-  the note and nothing else (#545 reverted 61 files; #550 restored them).
+- A **draft release object `v0.23.1`** has been sitting untagged since
+  3 September (`untagged-528ff84108d181afd78f`) — a publish that never
+  finished, from before the draft/finalize ordering was fixed. `v0.23.1` was
+  released properly later, so this is a stray object to delete by hand.
+
+## Decisions open
+
+- D13 (#499), D14 (#497), D15 (#496) — carried from 8 September, still open,
+  not blocking anything in this run.
