@@ -2330,16 +2330,15 @@ only ever include live, verified Domains.
 ## `ResourceClaim` (namespaced: kitchen-system)
 
 A project's request for something the platform provisions: a database from a
-`database`-capable Connection, a bucket from an `objectStore`-capable one, an
-OAuth client from the platform's own identity provider, or a persistent volume
-from the cluster's StorageClass. Generic on purpose — this is the plugin
-abstraction.
-OAuth client from the platform's own identity provider, or durable background
-work from a `backgroundJobs`-capable one. Generic on purpose — this is the
-plugin abstraction.
-`database`-capable Connection, an OAuth client from the platform's own
-identity provider, or the keys a worker connects to Inngest with from a
-`backgroundJobs`-capable one. Generic on purpose — this is the plugin abstraction.
+`database`-capable Connection, a bucket from an `objectStore`-capable one, a
+cache or a queue from a `cache`-capable one, the keys a worker connects to
+Inngest with from a `backgroundJobs`-capable one, an OAuth client from the
+platform's own identity provider, a persistent volume from the cluster's
+StorageClass, or an address for something another project offers. Generic on
+purpose — this is the plugin abstraction: `ClaimTypes` in
+`api/v1alpha1/resourceclaim_types.go` is the whole list, and each row says
+which capability a Connection needs to satisfy it, or that the platform
+satisfies it itself.
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -2675,9 +2674,9 @@ Two consequences worth knowing:
 
 ### `type: objectStore` — a bucket for what the application writes
 
-The third type: somewhere to put a file the application did not build into
-its image — user uploads, generated exports — instead of the container
-filesystem, which loses it on the next deploy. It provisions through an
+Somewhere to put a file the application did not build into its image — user
+uploads, generated exports — instead of the container filesystem, which loses
+it on the next deploy. It provisions through an
 `objectStore`-capable Connection (`s3`), and the binding is the six things an
 S3 client needs:
 
@@ -2751,10 +2750,13 @@ carry the compliance half of the contract:
   the resource, in its own vocabulary. Reported, not declared: it becomes
   `status.residency`, the placement of record.
 
-Neon, the provisioner that ships, declares `production` for both verbs: a
-claim's Neon project *is* the production database, and a copy-on-write branch
-is the parent's data under a preview's address — cheap to make does not make
-it not production-derived. A third-party provisioner that masks or
+Neon, one of the two provisioners that ship, declares `production` for both
+verbs: a claim's Neon project *is* the production database, and a
+copy-on-write branch is the parent's data under a preview's address — cheap to
+make does not make it not production-derived. CloudNativePG, the other,
+declares `production` for the instance and `synthetic` for a preview's,
+because a preview's database there inherits the parent's shape and none of its
+data. A third-party provisioner that masks or
 synthesizes on the way to a branch is exactly the point of the contract:
 implement the interface, declare `masked` or `synthetic` on the results, and
 nothing else in the platform needs to know it exists — the declaration flows
@@ -2772,10 +2774,9 @@ the bind record besides.
 
 ### `type: oidcClient` — single sign-on for the application
 
-The second type, and one the platform provisions itself, so there is no
-Connection: the provider is the identity provider the Kitchen object's
-`spec.auth` already names, and the operator registers clients there with the
-service credential it holds. `connectionRef` is therefore *refused* on this
+One the platform provisions itself, so there is no Connection: the provider is
+the identity provider the Kitchen object's `spec.auth` already names, and the
+operator registers clients there with the service credential it holds. `connectionRef` is therefore *refused* on this
 type at admission — the refusal names the type — and required on every type
 a Connection provisions.
 
@@ -2820,8 +2821,8 @@ not outlive the claim. See [AUTH.md](AUTH.md#app-auth-a-claim-for-single-sign-on
 
 ### `type: volume` — a disk for one process
 
-The third type, and the odd one: every other claim produces credentials, this
-one produces a mount. It is for the workload that must write to a filesystem
+The odd one: every other claim produces credentials, this one produces a
+mount. It is for the workload that must write to a filesystem
 — a legacy application, SQLite — and it takes no Connection either: the
 provider is the cluster's StorageClass, which is a prerequisite of every
 Kitchen cluster anyway.
@@ -2958,8 +2959,8 @@ PersistentVolume, and every byte on it, stays.
 
 ### `type: service` — an address for something another project offers
 
-The sixth type, and the one whose provider is neither a Connection nor the
-platform: it is **another Project**. Nothing is provisioned — the offering is
+The one whose provider is neither a Connection nor the platform: it is
+**another Project**. Nothing is provisioned — the offering is
 already running, under its own project's quota, release and access list — so
 what the reconciler does is resolve the offering, check the grant and write
 the address down.
