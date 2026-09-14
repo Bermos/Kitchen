@@ -445,6 +445,9 @@ var publishedShapes = map[string]struct {
 		projectSecret{}},
 	"secretList": {"A project's own secrets, by name. Values are never answered",
 		list[projectSecret]{}},
+	"personalKeyList": {"The calling account's own keys: name, prefix, when each was made, when " +
+		"it was last used and when it lapses. Values are never answered — a personal key exists " +
+		"in the one response that created it, which is the dashboard's", list[personalKey]{}},
 	"fileList": {"The configuration files a project places into its workloads: name, path, the " +
 		"workloads that read each and what the platform holds. A plain file carries its content; a " +
 		"secret one carries a digest and a size, and never the content",

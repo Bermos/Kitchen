@@ -16,6 +16,13 @@ import {
 } from "./keys.js";
 import { log } from "./log.js";
 import {
+	createPersonalKey,
+	deletePersonalKey,
+	listPersonalKeys,
+	NotAPersonError,
+	type PersonalKey,
+} from "./personalkeys.js";
+import {
 	createPlatformKey,
 	deletePlatformKey,
 	listPlatformKeys,
@@ -110,6 +117,9 @@ const routes: KitchenRoute[] = [
 	{ method: "GET", path: `${KITCHEN_API_PREFIX}/keys`, handle: getKeys },
 	{ method: "POST", path: `${KITCHEN_API_PREFIX}/keys`, handle: postKey },
 	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/keys`, handle: deleteKey },
+	{ method: "GET", path: `${KITCHEN_API_PREFIX}/personal-keys`, handle: getPersonalKeys },
+	{ method: "POST", path: `${KITCHEN_API_PREFIX}/personal-keys`, handle: postPersonalKey },
+	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/personal-keys`, handle: removePersonalKey },
 	{ method: "GET", path: `${KITCHEN_API_PREFIX}/platform-keys`, handle: getPlatformKeys },
 	{ method: "POST", path: `${KITCHEN_API_PREFIX}/platform-keys`, handle: postPlatformKey },
 	{ method: "DELETE", path: `${KITCHEN_API_PREFIX}/platform-keys`, handle: removePlatformKey },
@@ -330,6 +340,111 @@ async function deleteKey(auth: Auth, _config: Config, request: KitchenRequest): 
 		return { status: 404, body: { error: `${project} has no key called ${name}` } };
 	}
 	return { status: 200, body: removed };
+}
+
+/**
+ * Somebody's own keys: the list, the one they are given, and the one they take
+ * back (issue #593).
+ *
+ * All three address a key by the account that owns it and the name it was
+ * given — and the account is a *person's*, which is what makes these different
+ * from every other credential here: there is no account to create, because the
+ * account is the one somebody signs in to. src/personalkeys.ts has what that
+ * costs and what is done about it.
+ *
+ * The subject arrives from Kitchen, which authenticated the caller and is
+ * asking for a key for *them*: this prefix answers only to the operator's
+ * service credential, so a subject in a body here is the operator's word about
+ * who it just authenticated, not a caller's about themselves. What it may not
+ * be is a credential's account, and that is refused here as well as there —
+ * the rule that a credential cannot mint a copy of a person is worth enforcing
+ * at both ends of the call.
+ */
+async function getPersonalKeys(auth: Auth, config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const subject = (request.query.get("subject") ?? "").trim();
+	if (!subject) {
+		return { status: 400, body: { error: "subject is required" } };
+	}
+	return personal(async () => {
+		const keys = await listPersonalKeys(auth, config, subject);
+		return keys === null ? noSuchAccount(subject) : { status: 200, body: { keys } };
+	});
+}
+
+async function postPersonalKey(auth: Auth, config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const subject = text(request.body.subject);
+	const name = text(request.body.name);
+	if (!subject) {
+		return { status: 400, body: { error: "subject is required" } };
+	}
+	const refusal = badLabel("name", name);
+	if (refusal) {
+		return refusal;
+	}
+	// Every personal key expires, and the date is Kitchen's to choose: the
+	// ceiling is a platform rule, stated where the other credential ceilings
+	// are. A request without one is refused rather than given a default here,
+	// so that there is exactly one place a personal key's life is decided.
+	const expires = new Date(text(request.body.expires));
+	if (Number.isNaN(expires.getTime()) || expires.getTime() <= Date.now()) {
+		return {
+			status: 400,
+			body: { error: "expires must be a future timestamp: a personal key without an expiry is not issued" },
+		};
+	}
+
+	return personal(async () => {
+		try {
+			const issued = await createPersonalKey(auth, config, subject, name, expires);
+			return issued === null ? noSuchAccount(subject) : { status: 201, body: issued };
+		} catch (error) {
+			if (error instanceof KeyExistsError) {
+				return { status: 409, body: { error: error.message } };
+			}
+			throw error;
+		}
+	});
+}
+
+async function removePersonalKey(auth: Auth, config: Config, request: KitchenRequest): Promise<KitchenResponse> {
+	const subject = (request.query.get("subject") ?? "").trim();
+	const name = (request.query.get("name") ?? "").trim();
+	if (!subject) {
+		return { status: 400, body: { error: "subject is required" } };
+	}
+	const refusal = badLabel("name", name);
+	if (refusal) {
+		return refusal;
+	}
+
+	return personal(async () => {
+		const removed: PersonalKey | null = await deletePersonalKey(auth, config, subject, name);
+		if (!removed) {
+			return { status: 404, body: { error: `that account has no personal key called ${name}` } };
+		}
+		return { status: 200, body: removed };
+	});
+}
+
+/** The refusal an account nothing resolves gets, from all three routes. */
+function noSuchAccount(subject: string): KitchenResponse {
+	return { status: 404, body: { error: `no account with the subject ${subject}` } };
+}
+
+/**
+ * The one answer all three personal-key routes share: an account that is a
+ * credential's rather than a person's is a 400, because retrying cannot help
+ * and the caller has to be told which rule it met.
+ */
+async function personal(operation: () => Promise<KitchenResponse>): Promise<KitchenResponse> {
+	try {
+		return await operation();
+	} catch (error) {
+		if (error instanceof NotAPersonError) {
+			return { status: 400, body: { error: error.message } };
+		}
+		throw error;
+	}
 }
 
 /**

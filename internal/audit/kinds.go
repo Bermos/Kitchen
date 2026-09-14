@@ -183,6 +183,25 @@ const (
 	// so the two halves meet: the finding says what the numbers were, and
 	// this says who changed them to that.
 	KindSignalPolicy = "SignalPolicy"
+
+	// KindPersonalKey is a personal key issued or revoked (#593): the
+	// credential somebody signs their own automation with, which carries
+	// their own identity and every role they hold.
+	//
+	// Its own kind for KindPlatformCredential's reason, with more force
+	// rather than less. This is the credential that is a copy of a person, so
+	// "which of these exist, who issued each and when was it taken back" is
+	// the first question an auditor asks about non-human access that is
+	// indistinguishable from human access — and it has to be one query.
+	// Recorded as KindKitchen it would be true and unfindable.
+	//
+	// The record's name is the platform singleton's, as the other credential
+	// kinds' are, because that is the object the platform holds; who the key
+	// belongs to, what it is called and when it lapses are in the details. It is
+	// classified as an access write, like the other two credential kinds,
+	// so that one privileged view shows every way somebody came to hold
+	// something.
+	KindPersonalKey = "PersonalKey"
 )
 
 // The `change` key a record's details carry, which is what makes one kind of

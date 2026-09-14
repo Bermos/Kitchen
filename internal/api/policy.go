@@ -97,6 +97,27 @@ const (
 	// justification was that a project cannot be created without them, and a
 	// caller who may not create one has no use for them.
 	requirePerson
+	// requireInteractive admits a caller who *signed in*, and refuses every
+	// credential — including one that belongs to a person (#593).
+	//
+	// It is the one requirement that cannot be answered from who the caller
+	// is, because the whole difficulty is that a personal key's token is
+	// indistinguishable from its owner's: same subject, same address, same
+	// roles. What differs is how it was minted. The dashboard's token is
+	// issued to an OAuth client of the platform's and says so in `azp`; a
+	// token exchanged from a key at the issuer names no client at all
+	// (`PlatformClientIDs` in auth.go, docs/CLI.md). So "was a password typed
+	// for this" is answerable after all, and it is the question this kind
+	// asks.
+	//
+	// One route wants it: issuing a personal key. That is the credential that
+	// carries every role its holder has, and the rule the platform has always
+	// kept about credentials — a credential does not mint its own successors,
+	// which is `admin` being refused to a project key and `guardKeyIssuance`
+	// at the issuer — survives exactly as long as the chain has to start at
+	// somebody signing in. It costs the CLI nothing it had: a key it can hold
+	// could never have created one anyway.
+	requireInteractive
 	// requireOperator admits the platform's operators alone.
 	requireOperator
 	// requireProjectRole admits a caller holding at least requirement.Role on
@@ -175,6 +196,13 @@ func anyCaller() requirement {
 // completes the sentence "<doing> is not something a CI key may do".
 func anyPerson(doing string) requirement {
 	return requirement{Kind: requirePerson, Doing: doing}
+}
+
+// interactively is a route only somebody who signed in may call, however they
+// are granted. `doing` completes the sentence "<doing> needs a browser
+// sign-in".
+func interactively(doing string) requirement {
+	return requirement{Kind: requireInteractive, Doing: doing}
 }
 
 // operatorOnly is the platform's own surface. `doing` completes the sentence
@@ -693,6 +721,27 @@ func (s *Server) routes() []route {
 		// else, so it needs nothing but a valid token.
 		{"GET /api/v1/me", s.getMe, anyCaller()},
 
+		// Personal keys (#593): the credential somebody signs their own
+		// automation with. They are under `/me` because that is what they are
+		// about — a key here belongs to whoever is asking, there is no
+		// subject parameter, and no caller can see or touch anybody else's.
+		//
+		// Reading and revoking need nothing but a valid token, for the reason
+		// `/me` needs nothing: the answer is about the caller alone, and a
+		// credential that can revoke itself is a feature rather than a
+		// widening — it is the thing to do the moment one leaks.
+		//
+		// **Issuing needs a browser sign-in**, which is the one requirement
+		// on this table that is not about a role. A personal key carries
+		// every role its holder has, so a credential that could mint one
+		// would be a credential minting its own successors — the thing
+		// `POST /projects/{name}/keys` refuses an `admin` key to avoid, and
+		// the thing the issuer's own key endpoints are closed for. See
+		// requireInteractive.
+		{"GET /api/v1/me/keys", s.listPersonalKeys, anyCaller()},
+		{"POST /api/v1/me/keys", s.createPersonalKey, interactively("issuing a personal key")},
+		{"DELETE /api/v1/me/keys/{key}", s.deletePersonalKey, anyCaller()},
+
 		// Alerts: one open delivery per row, at the tier its reader reads it
 		// at, with what anybody has done about it.
 		//
@@ -1159,6 +1208,14 @@ func (s *Server) guard(requires requirement, handler http.HandlerFunc) http.Hand
 			if caller.isMachine() {
 				forbidden(w, fmt.Sprintf("%s is not something a credential may do: %s is %s",
 					requires.Doing, callerName(caller), callerCredentialKind(caller)))
+				return
+			}
+
+		case requireInteractive:
+			if caller.ClientID == "" {
+				forbidden(w, fmt.Sprintf("%s needs a browser sign-in: this token was exchanged from a "+
+					"credential, and a credential does not issue credentials. Sign in to the dashboard "+
+					"and do it there", requires.Doing))
 				return
 			}
 

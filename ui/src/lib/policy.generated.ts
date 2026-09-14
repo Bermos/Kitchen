@@ -175,6 +175,9 @@ export type Route =
   | "GET /api/v1/traces/{traceId}"
   | "GET /api/v1/status"
   | "GET /api/v1/me"
+  | "GET /api/v1/me/keys"
+  | "POST /api/v1/me/keys"
+  | "DELETE /api/v1/me/keys/{key}"
   | "GET /api/v1/alerts"
   | "POST /api/v1/alerts/ack"
   | "POST /api/v1/alerts/silence"
@@ -350,6 +353,9 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/traces/{traceId}": { kind: "visibleProjects" },
   "GET /api/v1/status": { kind: "roleShapedBody", doing: "reading the platform's status" },
   "GET /api/v1/me": { kind: "authenticated" },
+  "GET /api/v1/me/keys": { kind: "authenticated" },
+  "POST /api/v1/me/keys": { kind: "interactive", doing: "issuing a personal key" },
+  "DELETE /api/v1/me/keys/{key}": { kind: "authenticated" },
   "GET /api/v1/alerts": { kind: "visibleProjects" },
   "POST /api/v1/alerts/ack": { kind: "visibleProjects" },
   "POST /api/v1/alerts/silence": { kind: "visibleProjects" },

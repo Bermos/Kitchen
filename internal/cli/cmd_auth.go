@@ -49,10 +49,19 @@ import (
 // fixed port that may be in use. Both are decisions for auth/ rather than
 // things the CLI can assume; see docs/CLI.md, "Signing in".
 //
-// What that leaves is deliberate rather than a compromise: a key is a machine
-// account with a grant on exactly one project, which is the narrowest
-// credential the platform can issue — and a CLI is exactly where a too-broad
-// token would end up on a laptop.
+// What that leaves was, until #593, deliberate rather than a compromise: a key
+// is a machine account with a grant on exactly one project, which is the
+// narrowest credential the platform can issue — and a CLI is exactly where a
+// too-broad token would end up on a laptop.
+//
+// **A personal key is now the other answer, and it is the broad one on
+// purpose.** It carries every role its holder has, because the automation
+// people actually want is "do what I would do", and the alternative they had
+// was copying the dashboard's access token out of the browser — the same
+// access, unnamed, unlisted and unrevocable. This command stores one exactly
+// as it stores the other two: it is an API key, exchanged at the issuer for a
+// token, and nothing here has to know which kind it is. What the CLI cannot do
+// is *issue* one — see cmd_keys.go.
 
 func newLoginCommand(r *Runtime) *cobra.Command {
 	var (
@@ -70,14 +79,17 @@ Store an API key for an installation and check that it works.
 The key is exchanged at the platform's identity provider for a short-lived
 token, which is what the API sees; the key itself never reaches the operator.
 
-There are two kinds, and which one to use is decided by what the credential is
-for. A project API key — a project's People tab, or POST /projects/{name}/keys
+There are three kinds, and which one to use is decided by what the credential
+is for. A project API key — a project's People tab, or POST /projects/{name}/keys
 — holds a role on that one project, so it can deploy the project it was made
 for and nothing else. A platform credential — Platform → Credentials, or
 POST /platform/credentials — holds scopes on the platform itself, which is what
 runs "kitchen retention", "kitchen backup", "kitchen access" and
 "kitchen audit-pack". It holds no project role and no operator role, it is
-narrowed to the operations it was issued with, and it expires.
+narrowed to the operations it was issued with, and it expires. A personal key —
+Account → Personal keys — is you: every project role you hold and the operator
+role if you have one, which is what a script that does what you would do needs.
+It expires too, and "kitchen keys" lists and revokes the ones you hold.
 
 "kitchen whoami" says which one is stored and what it holds.
 
