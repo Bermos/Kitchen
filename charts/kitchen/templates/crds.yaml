@@ -11524,6 +11524,87 @@ spec:
                   - type
                   type: object
                 type: array
+              declaredProcesses:
+                description: |-
+                  DeclaredProcesses are the workloads the repository declares, as the
+                  last production build to read a kitchen.json saw them (#593).
+
+                  It exists because `spec.processes` stopped being the whole answer the
+                  moment a repository could declare its own. The file's list *replaces*
+                  the project's for everything a Release does with it — the build builds
+                  those workloads, the environment materializes them, the processes
+                  endpoint reports them running — and none of that was written anywhere
+                  the platform could check a claim against. So a repository could
+                  declare a worker, deploy it, watch it serve, and be told by
+                  `POST /claims` that the project has no such process: four answers from
+                  one API, only one of which was reading this list.
+
+                  It is a *record of a declaration*, not a second place to write one.
+                  Nothing edits it and no route accepts it: the file is the authority,
+                  this is what the platform last read out of it, and
+                  [Project.ProcessNames] is where the two lists become one question.
+                  It is cleared when a build reads a file that declares none, because
+                  the workloads are then the project's own again.
+                properties:
+                  build:
+                    description: Build is the Build that read the file, and Commit
+                      the commit it read.
+                    type: string
+                  commit:
+                    type: string
+                  path:
+                    description: |-
+                      Path is where in the repository the file was found, as the build
+                      recorded it — `kitchen.json`, or whatever the build root made of it.
+                    type: string
+                  processes:
+                    description: |-
+                      Processes is the list the file declared, as a name and a shape each.
+
+                      **Not the workloads themselves.** A `ProcessSpec` is the whole of what
+                      a workload is — its build, its command, its posture, its init steps —
+                      and a second copy of that schema on this status cost 64KB of generated
+                      CRD, which put the chart's Helm release over the 1MiB a release Secret
+                      may hold: `helm install` failed outright, on a schema nothing would
+                      have read. What this list is *for* is answering "is `bridge` one of
+                      this project's workloads, and is it the kind of thing that can be
+                      addressed" — a claim's process, an offering's, a file's readers — and
+                      a name and a type answer all three.
+
+                      The workload itself stays where it was already written and already
+                      costs nothing new: on the Build that read the file, and on the Release
+                      that froze it.
+                    items:
+                      description: |-
+                        DeclaredProcess is one workload a repository declares, reduced to what
+                        anything outside the build has to decide from: what it is called, and
+                        whether it is the kind of workload that can be addressed.
+                      properties:
+                        name:
+                          description: |-
+                            Name is what the workload is called — the name a claim, an offering or
+                            a configuration file refers to it by.
+                          type: string
+                        type:
+                          description: |-
+                            Type is its shape: worker, service, cron or task. It is here because
+                            one question about a declared workload is not answerable from the name
+                            — whether anything may *address* it, which is what an offering is
+                            refused for.
+                          enum:
+                          - worker
+                          - cron
+                          - service
+                          - task
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                type: object
               imagePoll:
                 description: |-
                   ImagePoll is what the digest poll last did for this project (#308):

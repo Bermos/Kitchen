@@ -187,6 +187,8 @@ func (c *Client) callDirectory(
 		return nil, errDirectoryNotFound
 	case res.StatusCode == http.StatusConflict:
 		return nil, fmt.Errorf("%w: %s", errDirectoryConflict, summarize(answer))
+	case res.StatusCode == http.StatusBadRequest:
+		return nil, fmt.Errorf("%w: %s", errDirectoryRefused, summarize(answer))
 	case res.StatusCode < 200 || res.StatusCode > 299:
 		return nil, fmt.Errorf("%s: %s: %s", what, res.Status, summarize(answer))
 	}
@@ -201,3 +203,14 @@ var errDirectoryNotFound = errors.New("404")
 // errDirectoryConflict is the unwrapped 409: the name a write asked for is
 // taken.
 var errDirectoryConflict = errors.New("409")
+
+// errDirectoryRefused is the unwrapped 400: the issuer would not do what was
+// asked, and its own sentence says why.
+//
+// It is a sentinel for the same reason the other two are — a caller can act on
+// it — but it is the one that needs saying out loud: everything this package
+// sends is built here, so a 400 is *usually* this package's own bug and a
+// fault report is the right answer. The exception is a request carrying
+// something a caller chose, where the refusal is the answer to their question
+// rather than a fault. Each caller decides which of the two it has.
+var errDirectoryRefused = errors.New("400")

@@ -16,7 +16,7 @@
  * 403 is built from, so a disabled button and the refusal behind it say the
  * same thing.
  *
- * **`may` answers admission, not completeness.** Two of the six requirement
+ * **`may` answers admission, not completeness.** Two of the seven requirement
  * kinds admit any valid token and narrow what comes back — the cross-project
  * reads to the caller's own projects, and `GET /status` to the caller's
  * platform role. There is nothing to hide for those, and no button to disable;
@@ -116,6 +116,14 @@ export function may(route: Route, caller: Caller = {}): boolean {
       // no dashboard session it could be holding. So there is nothing here to
       // hide from anybody the dashboard can be rendering for, and answering
       // anything but true would hide a control from every person instead.
+      return true;
+    case "interactive":
+      // The same reasoning one step further. What this refuses is a token
+      // that was exchanged from a credential, and the dashboard's token never
+      // is: it is issued to the dashboard's own OAuth client, which is the
+      // very thing the requirement admits. Anybody this code is rendering for
+      // has signed in, so hiding the control would hide it from the only
+      // people who may use it.
       return true;
     case "operator":
       return platformAtLeast(caller.platform, "operator");

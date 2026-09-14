@@ -419,6 +419,62 @@ is what `GET /builds/{name}`'s `config.declares` reports, and it is what the
 dashboard says above the form: *the repository has taken this over*. Change the
 file instead.
 
+**What the file declared is answered on the project, as
+`declaredProcesses`** — and until
+[#593](https://github.com/Bermos/Kitchen/issues/593) it was not, which made the
+sentence above half true in the way that costs the most. The list really did
+replace the project's everywhere a Release was made from it: the build built
+those workloads, the environment materialized them, and this endpoint reported
+them running. But it was written only onto the *Build*, so
+`GET /projects/{name}` listed nothing and `POST /claims` — which checks that a
+volume names one of the project's processes — refused a claim for a workload
+that was visibly serving traffic. Four answers from one API, one of them
+reading a different list.
+
+So the project now records what the last succeeded production build read out of
+the file:
+
+```json
+{"name": "services", "processes": [],
+ "declaredProcesses": {
+   "build": "services-4f2c9ab", "commit": "4f2c9ab", "path": "kitchen.json",
+   "processes": [{"name": "bridge", "type": "service"}]}}
+```
+
+It is a second field rather than more rows in `processes`, because only one of
+the two is editable here: `processes` is the project's own list, which `PATCH
+/projects/{name}` replaces, and this is somebody's committed file, which a
+write would not change and the next build would put back. Folding them together
+would have the workloads editor read a file's workloads and send them back as
+the project's, which is how a declaration leaves a repository by accident.
+
+**A name and a shape, not a workload.** What a declared workload *is* — its
+build, its command, its posture, its init steps — is answered where it was
+already written: on the build that read the file, and on
+`GET /environments/{name}/processes` for the one that is running. This carries
+the two things neither of those can be asked for cheaply: which workloads
+exist, and whether each is the kind of thing anything can address. The
+reduction is not tidiness — a second copy of the whole workload schema on the
+Project's status generated 64KB of CRD, which put the chart's Helm release over
+the 1MiB a release Secret may hold, and `helm install` failed outright.
+
+Three things follow, and they are the point of recording it:
+
+- **A claim may name a workload the repository declares.** `volume.process` and
+  a service claim's name are checked against what the *next deploy would
+  run* — the file's list where there is one, the project's own otherwise — in
+  the API and in the reconciler alike.
+- **A refusal says which file the list came from**, and at which commit. The
+  old one named a process that was running, so the natural reading was "I have
+  misspelled it" rather than "this is a different list", and the remedy for the
+  two could not be further apart.
+- **A preview's file declares nothing.** Only a *succeeded* build that is not a
+  preview's may say what the repository declares: the author of a pull
+  request's `kitchen.json` need not be anybody with access to the project, and
+  a list read from one would let a fork declare a workload and claim a volume
+  for it. A file that stops declaring workloads clears the record, and the
+  project's own list is the whole answer again.
+
 **The list reads back the way it is written**, which is what lets a client edit
 one workload without losing the others. Two fields carry that on their own:
 

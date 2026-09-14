@@ -69,6 +69,16 @@ type stubDirectory struct {
 	platformKeysErr   error
 	platformCreateErr error
 	platformDeleteErr error
+
+	// The personal-key half, which personalkeys_test.go drives (#593). It is
+	// keyed by subject rather than by project or held flat, because a
+	// personal key belongs to an account the platform did not create — and
+	// one account holds several.
+	personalKeys      map[string][]idp.PersonalKey
+	personalDeleted   []string
+	personalKeysErr   error
+	personalCreateErr error
+	personalDeleteErr error
 }
 
 func (d *stubDirectory) AccountByEmail(_ context.Context, email string) (*idp.Account, error) {

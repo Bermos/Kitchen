@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
 	"github.com/Bermos/Kitchen/internal/provider/contract"
@@ -114,6 +115,104 @@ func TestTheShapeOfAVolumeRequestIsRefusedHere(t *testing.T) {
 				t.Fatalf("the refusal does not say %q: %q", testCase.says, got)
 			}
 		})
+	}
+}
+
+// #593: a volume for a workload the repository declares.
+//
+// The project's own `spec.processes` is empty and always was — the workload
+// lives in kitchen.json, which is what the build read, built and deployed.
+// Until the project recorded what that file declares, this request was
+// refused as naming a process the project did not have, while
+// GET /environments/{name}/processes reported the same workload healthy.
+func TestAVolumeMayNameAWorkloadTheRepositoryDeclares(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	project := &kitchenv1alpha1.Project{}
+	key := types.NamespacedName{Namespace: testNamespace, Name: "shop"}
+	if err := h.server.Client.Get(t.Context(), key, project); err != nil {
+		t.Fatal(err)
+	}
+	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
+		Build:  testBuild,
+		Commit: testCommit,
+		Path:   kitchenv1alpha1.RepoConfigFileName,
+		Processes: []kitchenv1alpha1.DeclaredProcess{
+			{Name: "bridge", Type: kitchenv1alpha1.ProcessService},
+		},
+	}
+	// Written through the object rather than the status subresource: the
+	// harness's fake client only splits the two for the kinds that need it.
+	if err := h.server.Client.Update(t.Context(), project); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "bridge-data", "project": "shop", "type": "volume",
+			"volume": {"process": "bridge", "size": "2Gi", "mountPath": "/data"}}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if created := decode[claimView](t, recorder); created.Volume == nil || created.Volume.Process != "bridge" {
+		t.Errorf("the claim does not mount the declared workload: %+v", created.Volume)
+	}
+
+	// And a name neither list has is still refused — with a refusal that says
+	// which file the list came from, because "bridge is running and you say
+	// it is not a process" reads as a typo until something names the file.
+	recorder = h.do(t, http.MethodPost, "/api/v1/claims",
+		`{"name": "ghost-data", "project": "shop", "type": "volume",
+			"volume": {"process": "ghost", "size": "1Gi", "mountPath": "/data"}}`)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	refusal := errorOf(t, recorder.Body.String())
+	for _, want := range []string{"bridge", kitchenv1alpha1.RepoConfigFileName, testCommit} {
+		if !strings.Contains(refusal, want) {
+			t.Errorf("the refusal does not say %q: %s", want, refusal)
+		}
+	}
+}
+
+// The project payload answers what the repository declares, so the four
+// answers #593 lists agree: the build read the workloads, the environment
+// runs them, and GET /projects/{name} now says they exist.
+func TestAProjectReportsWhatItsRepositoryDeclares(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	project := &kitchenv1alpha1.Project{}
+	key := types.NamespacedName{Namespace: testNamespace, Name: "shop"}
+	if err := h.server.Client.Get(t.Context(), key, project); err != nil {
+		t.Fatal(err)
+	}
+	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
+		Build:     testBuild,
+		Commit:    testCommit,
+		Path:      kitchenv1alpha1.RepoConfigFileName,
+		Processes: []kitchenv1alpha1.DeclaredProcess{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
+	}
+	// Written through the object rather than the status subresource: the
+	// harness's fake client only splits the two for the kinds that need it.
+	if err := h.server.Client.Update(t.Context(), project); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := h.do(t, http.MethodGet, "/api/v1/projects/shop", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	view := decode[projectView](t, recorder)
+	if view.DeclaredProcesses == nil {
+		t.Fatal("the project does not report what its repository declares")
+	}
+	if view.DeclaredProcesses.Commit != testCommit || view.DeclaredProcesses.Build != testBuild {
+		t.Errorf("the declaration does not say where it came from: %+v", view.DeclaredProcesses)
+	}
+	if len(view.DeclaredProcesses.Processes) != 1 || view.DeclaredProcesses.Processes[0].Name != "bridge" {
+		t.Errorf("the declared workloads are missing: %+v", view.DeclaredProcesses.Processes)
+	}
+	if len(view.Processes) != 0 {
+		t.Errorf("the project's own list is still its own: %+v", view.Processes)
 	}
 }
 

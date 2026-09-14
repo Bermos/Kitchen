@@ -169,11 +169,16 @@ func writeKinds(buf *bytes.Buffer) error {
  *   account holds every role it needs, and what this refuses is widening
  *   them. Nothing the dashboard renders can be reached by a machine account,
  *   which cannot sign in, so `+"`may`"+` answers true for it.
- * - %[4]q — the platform's operators alone.
- * - %[5]q — at least `+"`role`"+` on the project the request is about.
- * - %[6]q — any valid token, and the answer is narrowed to the caller's own
+ * - %[4]q — a caller who signed in, which refuses every credential including
+ *   a personal key. Not a role either: what it asks is whether a password was
+ *   typed for this token, which is how a credential is kept from minting its
+ *   own successor. The dashboard's own token always qualifies, so `+"`may`"+`
+ *   answers true for it.
+ * - %[5]q — the platform's operators alone.
+ * - %[6]q — at least `+"`role`"+` on the project the request is about.
+ * - %[7]q — any valid token, and the answer is narrowed to the caller's own
  *   projects. Admission is never the question here; completeness is.
- * - %[7]q — any valid token, and the *body* varies by the caller's platform
+ * - %[8]q — any valid token, and the *body* varies by the caller's platform
  *   role. Which parts are missing is the handler's own business and is not
  *   something this table can say.
  */
@@ -183,7 +188,7 @@ export type RequirementKind = (typeof REQUIREMENT_KINDS)[number];
 /** One row's answer to "who may call this". */
 export interface Requirement {
   kind: RequirementKind;
-  /** The project role wanted, set only for %[5]q. */
+  /** The project role wanted, set only for %[6]q. */
   role?: ProjectRole;
   /**
    * The operation in the words a refusal uses — "redeploying", "changing the
@@ -204,7 +209,7 @@ export interface Requirement {
   scope?: PlatformScope;
 }
 
-`, kinds, api.PolicyAuthenticated, api.PolicyPerson, api.PolicyOperator,
+`, kinds, api.PolicyAuthenticated, api.PolicyPerson, api.PolicyInteractive, api.PolicyOperator,
 		api.PolicyProjectRole, api.PolicyVisibleProjects, api.PolicyRoleShapedBody)
 	return nil
 }
@@ -216,6 +221,7 @@ func everyKind() []string {
 	return []string{
 		api.PolicyAuthenticated,
 		api.PolicyPerson,
+		api.PolicyInteractive,
 		api.PolicyOperator,
 		api.PolicyProjectRole,
 		api.PolicyVisibleProjects,

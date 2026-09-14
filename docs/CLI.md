@@ -171,7 +171,28 @@ The key never reaches the operator: it is exchanged at the issuer, and only the
 JWT travels to the API. So a leaked key is revoked in one place — delete it at
 the issuer, and the operator has nothing to invalidate.
 
-What a key may do is a project role on a machine account, which is the
+**There are three kinds of key, and they differ in whose access they carry.** A
+*project key* is a machine account with a role on one project. A *platform
+credential* ([below](#the-platform-commands-need-a-platform-credential)) holds
+scopes on the platform and no role. A **personal key** — Account → Personal
+keys in the dashboard, or `POST /me/keys` — is *you*: every project role you
+hold and the operator role if you wear one, which is what a script that does
+what you would do needs. All three are stored the same way and exchanged at the
+same endpoint; `kitchen whoami` says which one is in hand and what it holds.
+
+```sh
+kitchen keys list            # the personal keys this account holds
+kitchen keys revoke laptop   # a key may revoke itself
+```
+
+There is no `kitchen keys create`, and that is the rule rather than a gap:
+issuing a personal key needs a token issued to the dashboard's own OAuth
+client, so that no credential can mint its own successor — and a credential is
+exactly what this CLI holds. Make one in a browser, paste it in here, and
+everything else works as it always did. A personal key expires within ninety
+days; `kitchen keys list` says when.
+
+What a *project* key may do is a project role on a machine account, which is the
 narrowest credential the platform can issue: a key made for `shop` can deploy
 `shop`, cannot see that any other project exists, and cannot create one —
 `kitchen projects create` is refused for a key, because a project's creator
@@ -217,9 +238,17 @@ decisions for `auth/` rather than things the CLI can assume:
   both sides, because a token naming a client the API does not know as the
   platform's is refused (AUTH.md, "The operator API").
 
-So a key is the whole of it, and that is a smaller credential than a person's
-token would be. If the issuer grows a device endpoint, `kitchen login` gains a
-browser flow and the key path stays for CI.
+So a key is the whole of it. If the issuer grows a device endpoint,
+`kitchen login` gains a browser flow and the key path stays for CI.
+
+**A personal key is the nearest thing to a browser sign-in, and it is
+deliberately not one.** It carries what a person's token carries, so it closes
+the gap the paragraph above leaves — automating something only an admin may do
+no longer means copying the dashboard's access token out of the browser, which
+is what people did. What it does not do is remove the browser: issuing one
+needs a signed-in session, once, which is the same
+[cluster-bootstrap-shaped exception](../CLAUDE.md) the platform credential
+already lives in. See [AUTH.md, "Personal keys"](AUTH.md#personal-keys).
 
 **A second credential does not change that answer, and it is worth saying
 why.** A platform credential ([below](#the-platform-commands-need-a-platform-credential))
@@ -401,6 +430,7 @@ give.
 | `kitchen login` | Store a credential for an installation and check it works | `GET /config.json`, the issuer's `/token`, `GET /me` |
 | `kitchen logout` | Forget a stored credential. Does not revoke it | — |
 | `kitchen whoami` | Who the credential is, which kind it is, its platform role and — for a platform credential — the scopes it holds | `GET /me` |
+| `kitchen keys list/revoke` | The personal keys this account holds, and taking one back. Issuing one is the dashboard's: a credential may not issue a credential | `GET /me/keys`, `DELETE /me/keys/{key}` |
 | `kitchen link` | Associate this directory with a project | `GET /projects`, `GET /projects/{name}` |
 | `kitchen projects create` | Create a project from this repository, checking its layout first | `GET /connections`, `POST /connections/{name}/detect`, `POST /projects` |
 | `kitchen status` | The project: environments, phases, URLs, recent builds | three reads, joined |

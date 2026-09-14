@@ -1,0 +1,276 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package api
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Bermos/Kitchen/internal/idp"
+)
+
+// Personal keys (#593): the credential somebody signs their own automation
+// with, and the four things that bound it.
+
+const personalKeysPath = "/api/v1/me/keys"
+
+// The personal-key half of the stub directory: one flat list per subject,
+// because a personal key belongs to an account the platform did not create.
+func (d *stubDirectory) PersonalKeys(_ context.Context, subject string) ([]idp.PersonalKey, error) {
+	if d.personalKeysErr != nil {
+		return nil, d.personalKeysErr
+	}
+	return append([]idp.PersonalKey(nil), d.personalKeys[subject]...), nil
+}
+
+func (d *stubDirectory) CreatePersonalKey(
+	_ context.Context,
+	subject, name string,
+	expires time.Time,
+) (*idp.IssuedPersonalKey, error) {
+	if d.personalCreateErr != nil {
+		return nil, d.personalCreateErr
+	}
+	for _, existing := range d.personalKeys[subject] {
+		if existing.Name == name {
+			return nil, idp.ErrKeyExists
+		}
+	}
+	key := idp.PersonalKey{
+		Name:    name,
+		Subject: subject,
+		Email:   testCaller,
+		Prefix:  "abc123",
+		Created: time.Unix(1, 0).UTC(),
+		Expires: expires.UTC(),
+	}
+	if d.personalKeys == nil {
+		d.personalKeys = map[string][]idp.PersonalKey{}
+	}
+	d.personalKeys[subject] = append(d.personalKeys[subject], key)
+	return &idp.IssuedPersonalKey{PersonalKey: key, Secret: "the-personal-key-value"}, nil
+}
+
+func (d *stubDirectory) DeletePersonalKey(_ context.Context, subject, name string) (*idp.PersonalKey, error) {
+	if d.personalDeleteErr != nil {
+		return nil, d.personalDeleteErr
+	}
+	for i, existing := range d.personalKeys[subject] {
+		if existing.Name == name {
+			d.personalKeys[subject] = append(d.personalKeys[subject][:i], d.personalKeys[subject][i+1:]...)
+			d.personalDeleted = append(d.personalDeleted, name)
+			return &existing, nil
+		}
+	}
+	return nil, idp.ErrKeyNotFound
+}
+
+// issueKey is a call carrying the token the dashboard holds: one issued to the
+// platform's own OAuth client, which is what "somebody signed in" means here
+// and the only thing `POST /me/keys` admits.
+func (h *harness) issueKey(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return h.do(t, http.MethodPost, personalKeysPath, body, h.issuer.tokenFromClient(t, testDashboardClient))
+}
+
+// The whole of what the feature is for: somebody signs in, asks for a
+// credential, and gets one they can paste into a script — carrying their own
+// identity, with a name, an expiry and a way to take it back.
+func TestSigningInIsWhatIssuesAPersonalKey(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	directory := h.withDirectory()
+
+	recorder := h.issueKey(t, `{"name": "laptop"}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	issued := decode[issuedPersonalKeyView](t, recorder)
+	if issued.Key == "" {
+		t.Fatal("the one response that carries a credential carried none")
+	}
+	if issued.Name != "laptop" || issued.Prefix == "" {
+		t.Errorf("the answer does not describe the key: %+v", issued)
+	}
+	if issued.Expires.IsZero() || issued.Expires.Before(time.Now()) {
+		t.Errorf("every personal key expires, and this one does not: %+v", issued.Expires)
+	}
+
+	// It belongs to the caller's own account, which is the point: the token it
+	// is exchanged for carries this subject, and every role they hold is
+	// resolved from it.
+	stored := directory.personalKeys[testSubject]
+	if len(stored) != 1 || stored[0].Subject != testSubject {
+		t.Fatalf("the key was not issued for the caller: %+v", stored)
+	}
+
+	// And no read gives it back.
+	listed := h.do(t, http.MethodGet, personalKeysPath, "")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", listed.Code, listed.Body.String())
+	}
+	if strings.Contains(listed.Body.String(), issued.Key) {
+		t.Error("the value exists in the creation response and nowhere else")
+	}
+	keys := decode[listBody[personalKeyView]](t, listed).Items
+	if len(keys) != 1 || keys[0].Name != "laptop" {
+		t.Fatalf("the key is not in its owner's list: %+v", keys)
+	}
+}
+
+// The rule the platform has always kept about credentials, kept: a credential
+// does not mint its own successors. A personal key carries every role its
+// holder has, so the chain has to start at somebody signing in — and a token
+// exchanged from a key names no OAuth client, which is how that is told.
+func TestNoCredentialCanIssueAPersonalKey(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.withDirectory()
+
+	// The default token the harness sends is the CI path: minted straight
+	// from a session at the issuer, naming no client. That is what a project
+	// key, a platform credential and a personal key are all exchanged for.
+	recorder := h.do(t, http.MethodPost, personalKeysPath, `{"name": "successor"}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if got := errorOf(t, recorder.Body.String()); !strings.Contains(got, "browser sign-in") {
+		t.Errorf("the refusal does not say what is missing: %q", got)
+	}
+
+	// Reading and revoking are not a widening, so they are not refused: a
+	// credential that can revoke a key the moment it leaks should be able to.
+	if listed := h.do(t, http.MethodGet, personalKeysPath, ""); listed.Code != http.StatusOK {
+		t.Fatalf("listing one's own keys wants a token and nothing else, got %d", listed.Code)
+	}
+}
+
+// It expires, and how long for is bounded rather than the caller's to choose
+// freely: a personal key carries every role its holder has.
+func TestAPersonalKeysLifeIsBounded(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	directory := h.withDirectory()
+
+	recorder := h.issueKey(t, `{"name": "nightly", "expiresInDays": 7}`)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	issued := decode[issuedPersonalKeyView](t, recorder)
+	if days := time.Until(issued.Expires).Hours() / 24; days < 6.5 || days > 7.5 {
+		t.Errorf("the key does not last the seven days it asked for: %v", issued.Expires)
+	}
+
+	// The default is the platform credential's thirty days.
+	def := h.issueKey(t, `{"name": "laptop"}`)
+	if def.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", def.Code, def.Body.String())
+	}
+	if days := time.Until(decode[issuedPersonalKeyView](t, def).Expires).Hours() / 24; days < 29 || days > 31 {
+		t.Errorf("a key that named no life should last %d days, got %v", defaultPersonalKeyDays, days)
+	}
+
+	// And the ceiling is refused rather than quietly clamped: a caller that
+	// asked for a year and was given ninety days would find out when the
+	// pipeline broke.
+	refused := h.issueKey(t, `{"name": "forever", "expiresInDays": 365}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", refused.Code, refused.Body.String())
+	}
+	if got := errorOf(t, refused.Body.String()); !strings.Contains(got, "at most 90") {
+		t.Errorf("the refusal does not name the ceiling: %q", got)
+	}
+	if len(directory.personalKeys[testSubject]) != 2 {
+		t.Errorf("a refused request issued something: %+v", directory.personalKeys[testSubject])
+	}
+}
+
+// One name is one key, so revoking one is unambiguous — and revoking it is a
+// name and one call.
+func TestAPersonalKeyIsNamedOnceAndRevokedByName(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	directory := h.withDirectory()
+
+	if r := h.issueKey(t, `{"name": "laptop"}`); r.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", r.Code, r.Body.String())
+	}
+	again := h.issueKey(t, `{"name": "laptop"}`)
+	if again.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", again.Code, again.Body.String())
+	}
+
+	revoked := h.do(t, http.MethodDelete, personalKeysPath+"/laptop", "")
+	if revoked.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", revoked.Code, revoked.Body.String())
+	}
+	if len(directory.personalKeys[testSubject]) != 0 {
+		t.Errorf("the key is still at the issuer: %+v", directory.personalKeys[testSubject])
+	}
+	if missing := h.do(t, http.MethodDelete, personalKeysPath+"/laptop", ""); missing.Code != http.StatusNotFound {
+		t.Errorf("revoking a key that is not there should be a not-found, got %d", missing.Code)
+	}
+
+	// A name that could not be a key's is refused before anything is asked of
+	// the issuer, because the name is a path segment and the key's address.
+	bad := h.issueKey(t, `{"name": "My Laptop"}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", bad.Code, bad.Body.String())
+	}
+}
+
+// A caller that is not a person holds no personal keys, and is told so as an
+// empty list rather than as a fault: `kitchen keys list` on a CI key should
+// answer the question it was asked.
+func TestACredentialHoldsNoPersonalKeys(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	directory := h.withDirectory()
+	directory.personalKeysErr = idp.ErrNotAPerson
+
+	recorder := h.do(t, http.MethodGet, personalKeysPath, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if keys := decode[listBody[personalKeyView]](t, recorder).Items; len(keys) != 0 {
+		t.Errorf("a credential was answered with keys: %+v", keys)
+	}
+}
+
+// A lapsed key is reported as lapsed rather than left for the reader to work
+// out from two dates. The issuer deletes the row when it is next presented, so
+// this is the window in between.
+func TestALapsedPersonalKeyReadsAsLapsed(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	directory := h.withDirectory()
+	directory.personalKeys = map[string][]idp.PersonalKey{testSubject: {{
+		Name:    "old",
+		Subject: testSubject,
+		Email:   testCaller,
+		Prefix:  "abc123",
+		Created: time.Now().Add(-200 * 24 * time.Hour),
+		Expires: time.Now().Add(-24 * time.Hour),
+	}}}
+
+	recorder := h.do(t, http.MethodGet, personalKeysPath, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	keys := decode[listBody[personalKeyView]](t, recorder).Items
+	if len(keys) != 1 || !keys[0].Expired {
+		t.Fatalf("a lapsed key does not read as lapsed: %+v", keys)
+	}
+}

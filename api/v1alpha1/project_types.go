@@ -890,6 +890,28 @@ type ProjectStatus struct {
 	// +optional
 	ImagePoll *ImagePollStatus `json:"imagePoll,omitempty"`
 
+	// DeclaredProcesses are the workloads the repository declares, as the
+	// last production build to read a kitchen.json saw them (#593).
+	//
+	// It exists because `spec.processes` stopped being the whole answer the
+	// moment a repository could declare its own. The file's list *replaces*
+	// the project's for everything a Release does with it — the build builds
+	// those workloads, the environment materializes them, the processes
+	// endpoint reports them running — and none of that was written anywhere
+	// the platform could check a claim against. So a repository could
+	// declare a worker, deploy it, watch it serve, and be told by
+	// `POST /claims` that the project has no such process: four answers from
+	// one API, only one of which was reading this list.
+	//
+	// It is a *record of a declaration*, not a second place to write one.
+	// Nothing edits it and no route accepts it: the file is the authority,
+	// this is what the platform last read out of it, and
+	// [Project.ProcessNames] is where the two lists become one question.
+	// It is cleared when a build reads a file that declares none, because
+	// the workloads are then the project's own again.
+	// +optional
+	DeclaredProcesses *DeclaredProcesses `json:"declaredProcesses,omitempty"`
+
 	// Previews is what the preview ceiling (#294) is doing to this project:
 	// how many previews are live, what the ceiling in force is, and which
 	// pull requests were refused one while the project sat at it.
@@ -899,6 +921,64 @@ type ProjectStatus struct {
 	// to ask "why has this request no preview" cannot see.
 	// +optional
 	Previews *PreviewCapacityStatus `json:"previews,omitempty"`
+}
+
+// DeclaredProcesses is a repository's own workload list, as one build read
+// it: what the file declared, and which build and commit it was read from.
+//
+// The provenance travels with the list because the list is somebody else's
+// statement. "This project has a process called bridge" is only actionable
+// beside "declared in kitchen.json at 4f2c9ab, read by build shop-4f2c9ab" —
+// which is what a refusal, a screen and a person reading `kubectl get project
+// -o yaml` each need to tell a workload that is declared from one that was
+// declared and has since been taken out of the file.
+type DeclaredProcesses struct {
+	// Build is the Build that read the file, and Commit the commit it read.
+	// +optional
+	Build string `json:"build,omitempty"`
+	// +optional
+	Commit string `json:"commit,omitempty"`
+
+	// Path is where in the repository the file was found, as the build
+	// recorded it — `kitchen.json`, or whatever the build root made of it.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Processes is the list the file declared, as a name and a shape each.
+	//
+	// **Not the workloads themselves.** A `ProcessSpec` is the whole of what
+	// a workload is — its build, its command, its posture, its init steps —
+	// and a second copy of that schema on this status cost 64KB of generated
+	// CRD, which put the chart's Helm release over the 1MiB a release Secret
+	// may hold: `helm install` failed outright, on a schema nothing would
+	// have read. What this list is *for* is answering "is `bridge` one of
+	// this project's workloads, and is it the kind of thing that can be
+	// addressed" — a claim's process, an offering's, a file's readers — and
+	// a name and a type answer all three.
+	//
+	// The workload itself stays where it was already written and already
+	// costs nothing new: on the Build that read the file, and on the Release
+	// that froze it.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Processes []DeclaredProcess `json:"processes,omitempty"`
+}
+
+// DeclaredProcess is one workload a repository declares, reduced to what
+// anything outside the build has to decide from: what it is called, and
+// whether it is the kind of workload that can be addressed.
+type DeclaredProcess struct {
+	// Name is what the workload is called — the name a claim, an offering or
+	// a configuration file refers to it by.
+	Name string `json:"name"`
+
+	// Type is its shape: worker, service, cron or task. It is here because
+	// one question about a declared workload is not answerable from the name
+	// — whether anything may *address* it, which is what an offering is
+	// refused for.
+	// +optional
+	Type ProcessType `json:"type,omitempty"`
 }
 
 // PreviewCapacityStatus is the project's preview ceiling as the platform last

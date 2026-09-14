@@ -62,6 +62,25 @@ type account struct {
 	Projects []string `json:"projects,omitempty"`
 }
 
+// personalKey is one of the caller's own keys (#593): what it is called, when
+// it was made, when it was last used and when it stops working. Never a value
+// — the key exists in the one response that created it, which this CLI cannot
+// make (see cmd_keys.go).
+type personalKey struct {
+	Name   string `json:"name"`
+	Prefix string `json:"prefix,omitempty"`
+	// Created and Expires are the two ends of its life, and Expired the
+	// platform's own answer about which side of the second we are on: a list
+	// that made every reader compare a date against today would be answering
+	// a different question from the one being asked.
+	Created time.Time `json:"created"`
+	Expires time.Time `json:"expires"`
+	Expired bool      `json:"expired,omitempty"`
+	// LastUsed is when it was last exchanged for a token, absent for a key
+	// nothing has used — a different answer from a date long ago.
+	LastUsed *time.Time `json:"lastUsed,omitempty"`
+}
+
 // condition is one of the platform's conditions, in Kubernetes' own shape
 // plus the severity the API attaches to it.
 type condition struct {
@@ -1460,6 +1479,23 @@ func decodeJSON(payload []byte, into any) error {
 func (c *client) me(ctx context.Context) (*account, error) {
 	answer := &account{}
 	return answer, c.do(ctx, "reading who you are", http.MethodGet, "/me", nil, nil, answer)
+}
+
+// personalKeys lists the calling account's own keys (#593). There is no read
+// that answers a value, here or anywhere else on this API — and no write:
+// issuing one needs a browser sign-in, which is a token this CLI cannot hold
+// (cmd_keys.go says why that is the rule rather than a gap).
+func (c *client) personalKeys(ctx context.Context) ([]personalKey, error) {
+	answer := &list[personalKey]{}
+	err := c.do(ctx, "listing your personal keys", http.MethodGet, "/me/keys", nil, nil, answer)
+	return answer.Items, err
+}
+
+// revokePersonalKey takes one back. A key may revoke itself, which is what
+// should happen the moment one leaks.
+func (c *client) revokePersonalKey(ctx context.Context, name string) error {
+	return c.do(ctx, "revoking the personal key "+name, http.MethodDelete,
+		"/me/keys/"+url.PathEscape(name), nil, nil, nil)
 }
 
 func (c *client) projects(ctx context.Context) ([]project, error) {

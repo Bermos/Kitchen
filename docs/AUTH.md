@@ -790,6 +790,83 @@ See [docs/api/platform.md](api/platform.md) for the routes and
 [docs/CLI.md](CLI.md#the-platform-commands-need-a-platform-credential) for what
 the CLI does with one.
 
+### Personal keys
+
+A machine account is a member of one project. A platform credential holds
+scopes and no role. A **personal key** is the third thing, and it is the one
+that is not narrower than the person holding it: it belongs to the account
+somebody signs in with, so the token it is exchanged for carries *their*
+subject, and every grant they hold is resolved from it exactly as when they
+signed in ([#593](https://github.com/Bermos/Kitchen/issues/593)).
+
+| | A project's CI key | A platform credential | A personal key |
+|---|---|---|---|
+| Account | one created for it | one created for it | **the person's own** |
+| Account's address | `<project>.<key>@machines.kitchen.local` | `<name>@platform.kitchen.local` | their own address |
+| What it holds | a project **role** | platform **scopes** | **everything its owner holds** |
+| Issued by | `POST /projects/{name}/keys` | `POST /platform/credentials` | `POST /me/keys` |
+| Who may issue one | the project's `admin` | an `operator` | **only a signed-in browser** |
+| Expires | no | yes | yes |
+| Reaches at the issuer | `GET /token`, `/get-session` | the same | the same |
+
+**Why the platform issues one at all**, having spent two features refusing to.
+Everything said elsewhere in this document about a credential that copies a
+person is true: it carries every role, it is indistinguishable from its owner
+downstream, and nothing about it can be narrowed. What was wrong was not the
+judgement but the conclusion, and what showed it was what people did instead.
+The first rollout of a service that needs a volume cannot be finished by any
+credential the platform would issue — `POST /claims` is a developer's, the
+workload list behind it was an `admin`'s, and `admin` is refused to a key on
+purpose — so somebody opened the browser's developer tools and copied the
+dashboard's access token into a script. That is the same access with no name on
+it, in no list, expiring when the token does and revocable by nothing.
+**Refusing to issue the credential did not stop it existing; it stopped the
+platform knowing about it.**
+
+Four things bound it, and each is enforced rather than advised:
+
+- **Only a browser sign-in issues one.** `POST /me/keys` is the one route whose
+  requirement is not about a role: it admits a token issued to one of the
+  platform's own OAuth clients (`azp`), and every credential — a CI key, a
+  platform credential, a personal key — is exchanged at `GET /token` for a
+  token that names no client at all. So the rule this whole document keeps,
+  that **no credential mints its own successor**, survives intact: the chain
+  starts at somebody typing a password. It costs the CLI nothing, because a
+  credential the CLI can hold could never have been allowed to issue one.
+- **It expires.** Thirty days by default, ninety at the most — the platform
+  credential's bounds, deliberately not looser for a credential that carries
+  more. The expiry is on the key at the *issuer*, where the api-key plugin
+  refuses a lapsed key on presentation and deletes the row, so a forgotten one
+  stops working with nothing having had to run.
+- **It is visible and revocable.** Listed by name, prefix, creation, last use
+  and expiry at `GET /me/keys`; revoked by name; and a key may revoke itself,
+  which is what should happen the moment one leaks. Both ends of its life are
+  audit records of kind `PersonalKey`, classified as access writes beside the
+  platform credentials — the issuance record is the one place the log can tie
+  a credential to the person it is a copy of, because everything after it is
+  indistinguishable from them. Visible to its *owner* and to the log, that is:
+  it is not a grant, so it has no row in the identity survey — see [Open
+  items](#open-items).
+- **It is never read back.** The value is in the creation response and nowhere
+  else, like every other credential this platform issues.
+
+**There is deliberately no role knob.** A personal key that could be narrowed
+would be a second, weaker way of writing grants the platform already has,
+resolved in a second place — and the honest version of "a credential that may
+do less" is a project key or a platform credential, both of which exist and
+are narrower than this by construction.
+
+**What it does not change.** Nothing at the identity provider is widened: a
+personal key reaches `GET /token` and `/get-session` and nothing else, exactly
+as the other two do, and the plugin's own key endpoints stay closed to
+everybody but the operator's service credential. And the accounts a personal
+key may be issued for are people's: `auth/src/personalkeys.ts` refuses a
+machine account's or a platform credential's, which is the issuer's half of the
+same rule the route's requirement enforces.
+
+See [docs/api/accounts.md](api/accounts.md#personal-keys) for the routes and
+[docs/CLI.md](CLI.md#signing-in) for what the CLI does with one.
+
 ### Preview admission
 
 A protected preview admits anyone holding any role on that project, `viewer`
@@ -1406,6 +1483,16 @@ Until one of the two is decided, the key path is the whole of it. See
 - **Browser sign-in for the CLI**: a device authorization grant in the OAuth
   provider, or a seeded loopback client. Neither exists yet; the section above
   says what each would take.
+- **Personal keys are not in the identity survey.** A platform credential is a
+  grant on the singleton, so it appears in `GET /access/identities` and in a
+  recertification cycle with its own row. A personal key is not a grant at all
+  — it is a second way to present an identity somebody already has — so a
+  reviewer sees the person and not how many keys are outstanding for them.
+  That is honest about the model and thin as evidence: "who holds a long-lived
+  credential for this platform" is answerable from the audit log's
+  `PersonalKey` records and from nowhere else. Surfacing a count beside each
+  person on the survey would take one read per subject at the issuer, or a
+  listing endpoint the `/kitchen` prefix does not have yet.
 - **A mail transport, or a decision not to have one**: password reset, address
   changes, invitations and operator-created accounts all wait on it, and every
   one of them is a hole a person falls into rather than a feature nobody asked

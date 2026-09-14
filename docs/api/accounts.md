@@ -60,3 +60,102 @@ It is the role itself rather than a set of capability booleans (`canDeploy`,
 derived from the same table it is enforced from — a second vocabulary would be
 a second opinion, and the two would drift. An operator reads `admin` on every
 project, including ones they are not listed on.
+
+## Personal keys
+
+`GET /me/keys`, `POST /me/keys`, `DELETE /me/keys/{key}` — the credentials this
+account signs its own automation with
+([#593](https://github.com/Bermos/Kitchen/issues/593)).
+
+A personal key is the caller: the token it is exchanged for carries their
+subject, so every project role they hold and the operator role if they wear one
+are resolved from it exactly as when they sign in. It is what "write a script
+that does what I would do" needs, and it is the credential this platform spent
+two features refusing to issue — [AUTH.md, "Personal
+keys"](../AUTH.md#personal-keys) has why that changed and what bounds it.
+
+There is no `subject` parameter on any of the three, and there is not going to
+be one: these routes are about the caller and nobody else, which is what lets
+them ask for nothing but a valid token. Reading who else holds what is
+[the access survey's](access.md) question, and it answers it without ever
+naming a key.
+
+### Issuing one needs a browser sign-in
+
+```sh
+curl -sS -X POST -H "authorization: Bearer $TOKEN" -d '{
+  "name": "laptop", "expiresInDays": 30
+}' https://kitchen.apps.example.com/api/v1/me/keys
+```
+
+```json
+{"name": "laptop", "prefix": "7f21ac", "created": "2026-09-14T09:12:04Z",
+ "expires": "2026-10-14T09:12:04Z", "key": "7f21ac…"}
+```
+
+`key` is in this response and in no other. It is stored hashed, so nothing can
+read it back — not the dashboard, not this API, not an operator. A lost key is
+revoked and reissued.
+
+`name` is lowercase letters, digits and dashes, at most 32 characters: it is
+how the key is addressed and revoked, so name it after what will hold it.
+One name is one key per account; a repeat is `409`. `expiresInDays` defaults to
+30 and anything over 90 is refused rather than clamped — a caller who asked for
+a year and was quietly given ninety days would find out when the pipeline
+broke.
+
+**`403` unless the token was issued to one of the platform's own OAuth
+clients**, which is to say unless somebody signed in for it:
+
+```json
+{"error": "issuing a personal key needs a browser sign-in: this token was exchanged from a credential, and a credential does not issue credentials. Sign in to the dashboard and do it there"}
+```
+
+That is the whole of how the platform's "no credential mints its own
+successor" rule survives a credential that carries every role its holder has.
+A CI key, a platform credential and a personal key are all exchanged at the
+issuer for a token that names no client, so none of them can ask. The dashboard
+is where one is made — Account → Personal keys.
+
+### Reading and revoking
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  https://kitchen.apps.example.com/api/v1/me/keys
+```
+
+```json
+{"items": [
+  {"name": "laptop", "prefix": "7f21ac", "created": "2026-09-14T09:12:04Z",
+   "expires": "2026-10-14T09:12:04Z", "lastUsed": "2026-09-20T06:00:11Z"},
+  {"name": "nightly", "prefix": "0ab41d", "created": "2026-06-02T11:40:00Z",
+   "expires": "2026-09-01T11:40:00Z", "expired": true}
+]}
+```
+
+`lastUsed` is absent for a key nothing has used yet, which is a different
+statement from "used at the zero time" and is what answers "is this still the
+credential my pipeline is holding". `expired` is answered rather than left to
+be worked out from two dates: the issuer refuses a lapsed key on presentation
+and deletes the row then, so this is the window in between.
+
+`DELETE /me/keys/{key}` answers `204`. It stops working immediately and
+everywhere — the key is verified at the identity provider, so there is nothing
+cached for it to keep working against — while a token somebody already
+exchanged it for lives out its few minutes, which is the bargain every
+credential on this platform makes. **A key may revoke itself**, and should, if
+the one in hand is the one that leaked.
+
+Both reads and the revoke ask for nothing but a valid token. Revoking is not a
+widening, and a credential that can take a key back the moment it leaks should
+be able to. A caller that is not a person — a CI key, a platform credential —
+holds no personal keys and is answered with an empty list rather than a
+refusal.
+
+### The CLI
+
+`kitchen keys list` and `kitchen keys revoke NAME` are these two, and there is
+no `kitchen keys create`: the CLI holds a key, and a key may not issue one. A
+personal key is stored like any other credential — `kitchen login
+--api-key-stdin` — and from then on the CLI is that person rather than one
+project's machine account. See [CLI.md](../CLI.md#signing-in).

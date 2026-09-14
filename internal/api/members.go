@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -169,6 +170,14 @@ type accountDirectory interface {
 	PlatformKeys(ctx context.Context) ([]idp.PlatformKey, error)
 	CreatePlatformKey(ctx context.Context, name string) (*idp.IssuedPlatformKey, error)
 	DeletePlatformKey(ctx context.Context, name string) (*idp.PlatformKey, error)
+	// Somebody's own keys (#593). The same three operations again, and on
+	// this interface for the same reason: one connection to one issuer. What
+	// is different is the account they are about — a person's, which the
+	// platform did not create and does not own, so every one of them takes
+	// the subject rather than a name the platform chose.
+	PersonalKeys(ctx context.Context, subject string) ([]idp.PersonalKey, error)
+	CreatePersonalKey(ctx context.Context, subject, name string, expires time.Time) (*idp.IssuedPersonalKey, error)
+	DeletePersonalKey(ctx context.Context, subject, name string) (*idp.PersonalKey, error)
 }
 
 // errNoAccountDirectory is what a resolution answers on an installation whose

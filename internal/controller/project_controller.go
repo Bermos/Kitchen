@@ -44,6 +44,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/gitprovider"
 	"github.com/Bermos/Kitchen/internal/platformhost"
+	"github.com/Bermos/Kitchen/internal/repoconfig"
 )
 
 const (
@@ -607,7 +608,7 @@ func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitch
 	if err := r.List(ctx, builds, client.InNamespace(project.Namespace)); err != nil {
 		return
 	}
-	var latest *kitchenv1alpha1.Build
+	var latest, declaring *kitchenv1alpha1.Build
 	for i := range builds.Items {
 		b := &builds.Items[i]
 		if b.Spec.ProjectRef.Name != project.Name {
@@ -616,12 +617,89 @@ func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitch
 		if latest == nil || b.CreationTimestamp.After(latest.CreationTimestamp.Time) {
 			latest = b
 		}
+		if maySayWhatIsDeclared(b) && (declaring == nil || b.CreationTimestamp.After(declaring.CreationTimestamp.Time)) {
+			declaring = b
+		}
 	}
+	r.updateDeclaredProcesses(project, declaring)
 	if latest == nil {
 		project.Status.LatestBuildRef = nil
 		return
 	}
 	project.Status.LatestBuildRef = &kitchenv1alpha1.LocalObjectReference{Name: latest.Name}
+}
+
+// maySayWhatIsDeclared reports whether a Build is one the project's workload
+// list may be read from (#593).
+//
+// Two conditions, and both are about trusting the file. It has to have
+// **succeeded**: a build that failed may have failed *on* the declaration, and
+// a claim validated against a workload list nothing could build would be
+// validated against a wish. And it must not be a **preview's**: the author of
+// a pull request's kitchen.json need not be anybody with access to the project
+// (the reasoning `repoconfig.Runtime` records for `runtime.security`), so a
+// list read from one would let a fork declare a workload and then claim a
+// volume for it.
+//
+// A build that carries no `status.config` still qualifies, and that is the
+// difference between "the repository declares no workloads" and "nothing has
+// looked": a commit that deleted kitchen.json is a build saying the list is
+// empty, and it has to be able to say so.
+func maySayWhatIsDeclared(build *kitchenv1alpha1.Build) bool {
+	return build.Status.Phase == kitchenv1alpha1.BuildSucceeded && build.PullRequestNumber() == nil
+}
+
+// updateDeclaredProcesses records what the repository declares, from the last
+// build entitled to say so.
+//
+// Two absences, and they are deliberately different. A qualifying build that
+// declares **nothing** clears the record: the file stopped naming workloads,
+// `spec.processes` is the whole answer again, and keeping a list nobody
+// declares any more would let a claim be written for a workload no deploy
+// would materialize — #593 with the two lists the other way round. **No
+// qualifying build at all** leaves the record alone, because that is not a
+// statement about the repository: a project whose builds the retention sweep
+// has collected still runs the workloads its last release declared, and
+// clearing on a pruned build would make a volume claim start being refused for
+// a workload that has been serving for months.
+func (r *ProjectReconciler) updateDeclaredProcesses(
+	project *kitchenv1alpha1.Project,
+	build *kitchenv1alpha1.Build,
+) {
+	if build == nil {
+		return
+	}
+	// The file's list, through the one implementation of what the file's
+	// `processes` means. Passing no base is what makes it answer "what did
+	// the *file* declare" rather than "what would this build run", and the
+	// posture is passed because that call takes it — nothing of it survives
+	// into what is recorded here.
+	declared := repoconfig.Processes(nil, project.Spec.Runtime.Security, build.Status.Config)
+	if len(declared) == 0 {
+		project.Status.DeclaredProcesses = nil
+		return
+	}
+	// Reduced to a name and a shape. The workload itself is on the Build
+	// that read it and on the Release that froze it; a second copy of the
+	// whole ProcessSpec schema here cost more CRD than the chart's Helm
+	// release may hold — see DeclaredProcess.
+	processes := make([]kitchenv1alpha1.DeclaredProcess, 0, len(declared))
+	for _, process := range declared {
+		processes = append(processes, kitchenv1alpha1.DeclaredProcess{
+			Name: process.Name,
+			Type: process.Type,
+		})
+	}
+	var path string
+	if build.Status.Config != nil {
+		path = build.Status.Config.Path
+	}
+	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
+		Build:     build.Name,
+		Commit:    build.Spec.Git.SHA,
+		Path:      path,
+		Processes: processes,
+	}
 }
 
 // apiExternalURL returns the operator API's public base URL. Its scheme

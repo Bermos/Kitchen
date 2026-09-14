@@ -91,8 +91,12 @@ func (serviceClaimShaper) config(
 		return nil, false
 	}
 	// The name of the claim is the name of the variable, so it collides with
-	// a workload of this project's own — see the file comment.
-	if names := project.ProcessNames(); slices.Contains(names, body.Name) {
+	// a workload of this project's own — see the file comment. Every workload
+	// either list names counts, the repository's declarations included: a
+	// collision is a refusal, so the cautious list is the right one, and a
+	// name that collides with a workload only the file declares is one that
+	// collides the moment that file is deployed.
+	if names := project.AllProcessNames(); slices.Contains(names, body.Name) {
 		badRequest(w, "claim %q would collide with project %s's own %s workload: a binding reaches the "+
 			"application as %s, which is the same variable that workload's address arrives in. Name the "+
 			"binding something else", body.Name, project.Name, body.Name,

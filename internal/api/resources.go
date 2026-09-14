@@ -1417,7 +1417,10 @@ func (s *Server) applyProjectDeclarations(
 		project.Spec.Processes = processes
 	}
 	if body.Files != nil {
-		files, err := filesFromRequest(*body.Files, project.Spec.Files, project.Spec.Processes)
+		// Against every workload either list names, not only the project's
+		// own: a file placed into a workload the repository declares is a
+		// file placed into a workload that runs. See Project.AllProcesses.
+		files, err := filesFromRequest(*body.Files, project.Spec.Files, project.AllProcesses())
 		if err != nil {
 			badRequest(w, "%s", err.Error())
 			return false
@@ -1425,7 +1428,7 @@ func (s *Server) applyProjectDeclarations(
 		project.Spec.Files = files
 	}
 	if body.Offers != nil {
-		offers, err := offeringsFromRequest(*body.Offers, project.Spec.Processes)
+		offers, err := offeringsFromRequest(*body.Offers, project.AllProcesses())
 		if err != nil {
 			badRequest(w, "%s", err.Error())
 			return false
@@ -1435,7 +1438,7 @@ func (s *Server) applyProjectDeclarations(
 	// Refused here so the sentence names the file, rather than arriving later
 	// as an environment that will not deploy.
 	if err := appconfig.ValidateSeededFiles(
-		project.Spec.Runtime.Init, project.Spec.Processes, project.Spec.Files); err != nil {
+		project.Spec.Runtime.Init, project.AllProcesses(), project.Spec.Files); err != nil {
 		badRequest(w, "%s", err.Error())
 		return false
 	}
