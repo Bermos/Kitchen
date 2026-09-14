@@ -83,11 +83,12 @@ func (d *stubDirectory) DeletePersonalKey(_ context.Context, subject, name strin
 	return nil, idp.ErrKeyNotFound
 }
 
-// signedIn is a call carrying the token the dashboard holds: one issued to the
-// platform's own OAuth client, which is what "somebody signed in" means here.
-func (h *harness) signedIn(t *testing.T, method, path, body string) *httptest.ResponseRecorder {
+// issueKey is a call carrying the token the dashboard holds: one issued to the
+// platform's own OAuth client, which is what "somebody signed in" means here
+// and the only thing `POST /me/keys` admits.
+func (h *harness) issueKey(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	return h.do(t, method, path, body, h.issuer.tokenFromClient(t, testDashboardClient))
+	return h.do(t, http.MethodPost, personalKeysPath, body, h.issuer.tokenFromClient(t, testDashboardClient))
 }
 
 // The whole of what the feature is for: somebody signs in, asks for a
@@ -97,7 +98,7 @@ func TestSigningInIsWhatIssuesAPersonalKey(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 	directory := h.withDirectory()
 
-	recorder := h.signedIn(t, http.MethodPost, personalKeysPath, `{"name": "laptop"}`)
+	recorder := h.issueKey(t, `{"name": "laptop"}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -166,7 +167,7 @@ func TestAPersonalKeysLifeIsBounded(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 	directory := h.withDirectory()
 
-	recorder := h.signedIn(t, http.MethodPost, personalKeysPath, `{"name": "nightly", "expiresInDays": 7}`)
+	recorder := h.issueKey(t, `{"name": "nightly", "expiresInDays": 7}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -176,7 +177,7 @@ func TestAPersonalKeysLifeIsBounded(t *testing.T) {
 	}
 
 	// The default is the platform credential's thirty days.
-	def := h.signedIn(t, http.MethodPost, personalKeysPath, `{"name": "laptop"}`)
+	def := h.issueKey(t, `{"name": "laptop"}`)
 	if def.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", def.Code, def.Body.String())
 	}
@@ -187,7 +188,7 @@ func TestAPersonalKeysLifeIsBounded(t *testing.T) {
 	// And the ceiling is refused rather than quietly clamped: a caller that
 	// asked for a year and was given ninety days would find out when the
 	// pipeline broke.
-	refused := h.signedIn(t, http.MethodPost, personalKeysPath, `{"name": "forever", "expiresInDays": 365}`)
+	refused := h.issueKey(t, `{"name": "forever", "expiresInDays": 365}`)
 	if refused.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d: %s", refused.Code, refused.Body.String())
 	}
@@ -205,10 +206,10 @@ func TestAPersonalKeyIsNamedOnceAndRevokedByName(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 	directory := h.withDirectory()
 
-	if r := h.signedIn(t, http.MethodPost, personalKeysPath, `{"name": "laptop"}`); r.Code != http.StatusCreated {
+	if r := h.issueKey(t, `{"name": "laptop"}`); r.Code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %s", r.Code, r.Body.String())
 	}
-	again := h.signedIn(t, http.MethodPost, personalKeysPath, `{"name": "laptop"}`)
+	again := h.issueKey(t, `{"name": "laptop"}`)
 	if again.Code != http.StatusConflict {
 		t.Fatalf("want 409, got %d: %s", again.Code, again.Body.String())
 	}
@@ -226,7 +227,7 @@ func TestAPersonalKeyIsNamedOnceAndRevokedByName(t *testing.T) {
 
 	// A name that could not be a key's is refused before anything is asked of
 	// the issuer, because the name is a path segment and the key's address.
-	bad := h.signedIn(t, http.MethodPost, personalKeysPath, `{"name": "My Laptop"}`)
+	bad := h.issueKey(t, `{"name": "My Laptop"}`)
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d: %s", bad.Code, bad.Body.String())
 	}
