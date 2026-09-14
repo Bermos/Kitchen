@@ -254,6 +254,25 @@ type projectView struct {
 	// list, on GET /environments/{name}/processes, and the two differ for as
 	// long as it takes something to build.
 	Processes []processView `json:"processes,omitempty"`
+	// DeclaredProcesses is the workload list the *repository* declares, when
+	// it declares one (#593): what the last production build read out of
+	// kitchen.json, and which build and commit it read it from.
+	//
+	// It is a second field rather than more rows in `processes` because the
+	// two are written in different places and only one of them is editable
+	// here. `processes` is the project's own list, which PATCH
+	// /projects/{name} replaces; this is somebody's committed file, which a
+	// write here would not change and the next build would put back. Folding
+	// them together would have the workloads editor read a file's workloads
+	// and send them back as the project's — which is how a declaration moves
+	// out of the repository by accident.
+	//
+	// A project with one runs *this* list: the file replaces the project's
+	// rather than adding to it. That is what makes it worth answering —
+	// until #593 the only place it appeared was on the Build that read it,
+	// so a claim naming a workload the platform was visibly running was
+	// refused as naming a workload the project did not have.
+	DeclaredProcesses *declaredProcessesView `json:"declaredProcesses,omitempty"`
 	// Files are the configuration files this project places into its
 	// workloads (#311). A plain file carries its content; a secret one
 	// carries a digest of what the platform holds and never the content —
@@ -372,6 +391,7 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole, l
 		view.Processes = append(view.Processes,
 			newProcessView(process, nil, "", project.Spec.Runtime.Security))
 	}
+	view.DeclaredProcesses = newDeclaredProcessesView(project)
 	// Without what the platform holds, so a secret file reads as declared
 	// and its digest is filled in by the routes that answer one project —
 	// see withFileContent.
@@ -381,6 +401,49 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole, l
 	view.Criticality = string(project.Spec.Criticality)
 	view.RTO = string(project.Spec.RTO)
 	view.RPO = string(project.Spec.RPO)
+	return view
+}
+
+// declaredProcessesView is what a repository declares about its own
+// workloads, as the platform last read it: the list, and the build and commit
+// it came from.
+//
+// The provenance is not decoration. "This project has a process called bridge"
+// is only actionable beside "declared in kitchen.json at 4f2c9ab" — it is what
+// tells a workload that is declared now from one somebody has since taken out
+// of the file, and it is the sentence a screen needs in order to say why a
+// workload is here but not editable.
+type declaredProcessesView struct {
+	// Build is the build that read the file, Commit the commit it read, and
+	// Path where in the repository it was found.
+	Build  string `json:"build,omitempty"`
+	Commit string `json:"commit,omitempty"`
+	Path   string `json:"path,omitempty"`
+	// Processes is the list itself, in the same shape the project's own
+	// workloads are answered in.
+	Processes []processView `json:"processes"`
+}
+
+// newDeclaredProcessesView answers what the repository declares, and nil for
+// a project whose workloads are all its own.
+func newDeclaredProcessesView(project *kitchenv1alpha1.Project) *declaredProcessesView {
+	declared := project.Status.DeclaredProcesses
+	if declared == nil || len(declared.Processes) == 0 {
+		return nil
+	}
+	view := &declaredProcessesView{
+		Build:     declared.Build,
+		Commit:    declared.Commit,
+		Path:      declared.Path,
+		Processes: make([]processView, 0, len(declared.Processes)),
+	}
+	for _, process := range declared.Processes {
+		// The project's own posture is the unit half here for the same
+		// reason it is for the project's own list: this is what the platform
+		// would run *now*, so the ceiling is today's.
+		view.Processes = append(view.Processes,
+			newProcessView(process, nil, "", project.Spec.Runtime.Security))
+	}
 	return view
 }
 

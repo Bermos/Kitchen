@@ -17,8 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
 
@@ -130,5 +133,65 @@ func TestWhatEachWorkloadShapeIs(t *testing.T) {
 		if process.RunsOnce() != tc.oncePer {
 			t.Errorf("%s runs once = %v, want %v", tc.processType, process.RunsOnce(), tc.oncePer)
 		}
+	}
+}
+
+// #593: a workload declared in the repository's kitchen.json is one of the
+// project's processes, because it is one of the workloads a deploy runs. The
+// file replaces the project's own list rather than adding to it, so a
+// workload only the project names is not one — it is not what would run.
+func TestTheProcessListIsWhatTheNextDeployWouldRun(t *testing.T) {
+	project := &Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "services"},
+		Spec:       ProjectSpec{Processes: []ProcessSpec{{Name: "worker", Type: ProcessWorker}}},
+	}
+
+	if names := project.ProcessNames(); !slices.Equal(names, []string{WebProcessName, "worker"}) {
+		t.Fatalf("a project with no declaration answers its own list: %v", names)
+	}
+
+	project.Status.DeclaredProcesses = &DeclaredProcesses{
+		Build:     "services-4f2c9ab",
+		Commit:    "4f2c9ab",
+		Path:      RepoConfigFileName,
+		Processes: []ProcessSpec{{Name: "bridge", Type: ProcessService, Port: 8080}},
+	}
+
+	if names := project.ProcessNames(); !slices.Equal(names, []string{WebProcessName, "bridge"}) {
+		t.Errorf("the repository's declaration is what a deploy runs, got %v", names)
+	}
+	if names := project.AllProcessNames(); !slices.Equal(names, []string{WebProcessName, "worker", "bridge"}) {
+		t.Errorf("a collision is checked against both lists, got %v", names)
+	}
+	if processes := project.EffectiveProcesses(); len(processes) != 1 || processes[0].Name != "bridge" {
+		t.Errorf("the effective list is the file's: %+v", processes)
+	}
+
+	// The sentence a refusal is made of says where the list came from, so
+	// that a name it does not contain reads as a different list rather than
+	// as a typo.
+	sentence := project.ProcessNamesSentence()
+	for _, want := range []string{"bridge", RepoConfigFileName, "4f2c9ab"} {
+		if !strings.Contains(sentence, want) {
+			t.Errorf("the refusal does not say %q: %s", want, sentence)
+		}
+	}
+}
+
+// A declaration merges over the project's own entry of the same name rather
+// than doubling it: one workload, one row.
+func TestADeclarationReplacesTheProjectsOwnEntryOfTheSameName(t *testing.T) {
+	project := &Project{
+		Spec: ProjectSpec{Processes: []ProcessSpec{{Name: "bridge", Type: ProcessWorker}}},
+		Status: ProjectStatus{DeclaredProcesses: &DeclaredProcesses{
+			Processes: []ProcessSpec{{Name: "bridge", Type: ProcessService, Port: 9000}},
+		}},
+	}
+	all := project.AllProcesses()
+	if len(all) != 1 || all[0].Type != ProcessService {
+		t.Fatalf("the declaration is what the workload is, got %+v", all)
+	}
+	if names := project.AllProcessNames(); !slices.Equal(names, []string{WebProcessName, "bridge"}) {
+		t.Errorf("one workload is one name, got %v", names)
 	}
 }

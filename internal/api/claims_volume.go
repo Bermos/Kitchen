@@ -118,10 +118,10 @@ func (volumeClaimShaper) config(
 		badRequest(w, "%s", err.Error())
 		return nil, false
 	}
-	if names := project.ProcessNames(); !slices.Contains(names, cfg.Process) {
+	if !slices.Contains(project.ProcessNames(), cfg.Process) {
 		badRequest(w, "volume.process %q is not one of project %s's processes: a volume claim names the one "+
 			"process that mounts it, and this project's are %s", cfg.Process, project.Name,
-			strings.Join(names, ", "))
+			project.ProcessNamesSentence())
 		return nil, false
 	}
 	if req.Bound() {

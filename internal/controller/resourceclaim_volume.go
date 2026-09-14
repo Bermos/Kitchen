@@ -282,12 +282,11 @@ func volumeRequirementsOf(cfg kitchenv1alpha1.VolumeConfig) volume.Requirements 
 // process is implicit — it is spec.runtime, not a member of spec.processes
 // — and is named by the one name a process cannot take.
 func volumeProcessOf(project *kitchenv1alpha1.Project, name string) error {
-	names := project.ProcessNames()
-	if slices.Contains(names, name) {
+	if slices.Contains(project.ProcessNames(), name) {
 		return nil
 	}
 	return fmt.Errorf("process %q is not one of project %s's: a volume claim names the one process that mounts "+
-		"it, and this project's processes are %s", name, project.Name, strings.Join(names, ", "))
+		"it, and this project's processes are %s", name, project.Name, project.ProcessNamesSentence())
 }
 
 // storageClassRefusal is a StorageClass the cluster cannot supply — one the
