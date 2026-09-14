@@ -16,7 +16,11 @@ limitations under the License.
 
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"slices"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // AccessRole is the role a grant names on a Project. The three are ordered —
 // admin contains developer contains viewer — but the ordering lives in
@@ -225,4 +229,120 @@ type AccessSpec struct {
 	// +listType=map
 	// +listMapKey=subject
 	Credentials []PlatformCredential `json:"credentials,omitempty"`
+
+	// PersonalKeys are the personal keys this installation has issued, and
+	// what each one may do for the person it belongs to.
+	//
+	// It is `atomic` rather than a map because a map key has to be one field
+	// and a personal key is named by two — whose it is, and what they called
+	// it — and because the one route that writes the list writes all of it.
+	// +optional
+	// +listType=atomic
+	PersonalKeys []PersonalKeyGrant `json:"personalKeys,omitempty"`
+}
+
+// Personal keys, and where what one may do is written down (#595).
+//
+// A personal key is a copy of a person: the token it is exchanged for carries
+// their `sub`, so every grant they hold resolves from it. PersonalKeyGrant
+// below is where that is *bounded*. An entry says which projects the key may
+// touch and at most what role it holds inside them, and internal/access takes
+// the lesser of that and what its owner actually holds — so a key can be
+// narrower than the person and can never be wider, however the entry is
+// written and whoever wrote it.
+//
+// Four things follow from the grant living here rather than at the identity
+// provider, and all four are the reason it does:
+//
+//   - **Every personal key has an entry, or it holds nothing.** A key whose
+//     entry is gone is not a key that fell back to being its owner; it is a
+//     credential the platform no longer recognises, and it is refused. That is
+//     what makes deleting an entry a revocation rather than a promotion.
+//   - **It is visible where every other grant is.** `kubectl get kitchen -o
+//     yaml` shows it, the access survey rows it beside the person it copies,
+//     and a recertification cycle reviews it.
+//   - **The narrowing is Kitchen's state, not the issuer's.** The issuer knows
+//     which key was presented and nothing else — the same division that keeps
+//     a CI key's role on the Project and a platform credential's scopes on
+//     this singleton.
+//   - **It expires with the key.** The date here is the one the key was issued
+//     with; the issuer refuses a lapsed key outright, and this is applied
+//     again where a scope is read, so a key outlives neither.
+//
+// The doc comments below are deliberately short. They are what
+// `kubectl explain` prints and what the generated CRD carries into the chart,
+// and the chart's CRDs are within a few kilobytes of the 1MiB a Helm release
+// Secret may hold — so the reasoning lives here, where it is read by whoever
+// changes the type, and the schema carries what somebody needs at a terminal.
+
+// PersonalKeyGrant is what one personal key may do: the platform's half of a
+// credential whose other half is an API key at the identity provider.
+type PersonalKeyGrant struct {
+	// AccessSubject is the owner's account: the person this key is a copy of.
+	AccessSubject `json:",inline"`
+
+	// Key is what the key is called at the identity provider, which a token
+	// minted from it names in its `kitchen_key` claim. One name is one key
+	// per account.
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
+
+	// Unrestricted says this key is its owner, entire: every project role they
+	// hold, and the operator role if they wear one. It is a field rather than
+	// the absence of a narrowing so that a truncated entry cannot widen the
+	// credential it was meant to bound.
+	// +optional
+	Unrestricted bool `json:"unrestricted,omitempty"`
+
+	// Projects are the projects this key may act on. An empty list is every
+	// project its owner can reach, which the role below still caps.
+	// +optional
+	// +listType=set
+	Projects []string `json:"projects,omitempty"`
+
+	// Role is the most this key may hold on the projects above, whatever its
+	// owner holds there. Empty on a narrowed key reads as viewer.
+	// +optional
+	Role AccessRole `json:"role,omitempty"`
+
+	// Scopes are the platform operations this key may perform beside its
+	// project role, honoured only while its owner is an operator.
+	// +optional
+	// +listType=set
+	Scopes []PlatformScope `json:"scopes,omitempty"`
+
+	// Expires is when this key stops being honoured: the date it was issued
+	// with, which the identity provider enforces on presentation.
+	Expires metav1.Time `json:"expires"`
+
+	// IssuedAt is when the key was created, for the survey and the screens.
+	// +optional
+	IssuedAt metav1.Time `json:"issuedAt,omitempty"`
+}
+
+// Narrowed reports whether this grant bounds its key at all. An unrestricted
+// key is its owner; a narrowed one is the lesser of its owner and this entry.
+func (g PersonalKeyGrant) Narrowed() bool { return !g.Unrestricted }
+
+// Ceiling is the most a narrowed key may hold on a project it may reach: what
+// the entry says, and `viewer` for an entry that says nothing.
+//
+// The default is the floor of the vocabulary rather than the middle of it
+// because this is read for a credential somebody issued and may not have
+// thought about: the role that reads and changes nothing is the one to give
+// an entry that forgot to say.
+func (g PersonalKeyGrant) Ceiling() AccessRole {
+	if g.Role == "" {
+		return AccessRoleViewer
+	}
+	return g.Role
+}
+
+// Reaches reports whether this key may act on the named project at all. An
+// empty list is every project its owner can reach — see Projects.
+func (g PersonalKeyGrant) Reaches(project string) bool {
+	if len(g.Projects) == 0 {
+		return true
+	}
+	return slices.Contains(g.Projects, project)
 }

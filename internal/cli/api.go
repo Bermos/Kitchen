@@ -60,6 +60,25 @@ type account struct {
 	Kind     string   `json:"kind,omitempty"`
 	Scopes   []string `json:"scopes,omitempty"`
 	Projects []string `json:"projects,omitempty"`
+	// Key is the personal key this credential is, when it is one (#595):
+	// what it is called and what it was narrowed to. Absent for somebody
+	// signed in and for every other kind of credential — and the answer to
+	// "why can this token not do what I can", which nothing else on this
+	// payload can give, because the token says it is the person.
+	Key *accountKey `json:"key,omitempty"`
+}
+
+// accountKey is the personal key a credential is, as `/me` describes it.
+type accountKey struct {
+	Name string `json:"name"`
+	// Unrestricted is a key that is its owner entire; Unknown is one the
+	// platform has no record of, which holds nothing at all.
+	Unrestricted bool `json:"unrestricted,omitempty"`
+	Unknown      bool `json:"unknown,omitempty"`
+	// Projects and Role are the narrowing: where this key may act, and the
+	// most it may hold there.
+	Projects []string `json:"projects,omitempty"`
+	Role     string   `json:"role,omitempty"`
 }
 
 // personalKey is one of the caller's own keys (#593): what it is called, when
@@ -69,6 +88,11 @@ type account struct {
 type personalKey struct {
 	Name   string `json:"name"`
 	Prefix string `json:"prefix,omitempty"`
+	// Scope is what this key may do, absent for one that is its owner
+	// entire; Unknown is a key the platform has no grant for, which
+	// authenticates and can do nothing.
+	Scope   *personalKeyScope `json:"scope,omitempty"`
+	Unknown bool              `json:"unknown,omitempty"`
 	// Created and Expires are the two ends of its life, and Expired the
 	// platform's own answer about which side of the second we are on: a list
 	// that made every reader compare a date against today would be answering
@@ -79,6 +103,14 @@ type personalKey struct {
 	// LastUsed is when it was last exchanged for a token, absent for a key
 	// nothing has used — a different answer from a date long ago.
 	LastUsed *time.Time `json:"lastUsed,omitempty"`
+}
+
+// personalKeyScope is a narrowed key's reach: the projects it may act on, the
+// most it may hold there, and any platform operations it was widened to.
+type personalKeyScope struct {
+	Projects []string `json:"projects,omitempty"`
+	Role     string   `json:"role"`
+	Scopes   []string `json:"scopes,omitempty"`
 }
 
 // condition is one of the platform's conditions, in Kubernetes' own shape

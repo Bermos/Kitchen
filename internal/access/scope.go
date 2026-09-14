@@ -219,6 +219,63 @@ func ScopesFor(caller Caller, kitchen *kitchenv1alpha1.Kitchen, now time.Time) G
 	if !unnarrowed && len(projects) > 0 {
 		grant.projects = projects
 	}
+	return personalKeyScopes(caller, kitchen, now, grant)
+}
+
+// personalKeyScopes adds what a *personal key* was issued with (#595), and is
+// the one place a scope reaches the platform through somebody's own account
+// rather than through a credential the platform created for it.
+//
+// Two bounds, and both are here rather than at issuance alone, because an
+// entry outlives the moment somebody wrote it:
+//
+//   - **Only while the owner is an operator.** Scopes are what an operator
+//     hands to a machine; a key that kept them after its owner stopped being
+//     one would be a credential outliving the authority that issued it. The
+//     question is asked of the *account* — `platformRoleOf` — because the
+//     credential itself deliberately wears no hat.
+//   - **Only while the key is honoured.** An expired entry contributes
+//     nothing, exactly as a platform credential's does.
+//
+// A narrowed key's project allowlist narrows its scoped project-shaped routes
+// too, which is the same rule a platform credential's allowlist follows and
+// the reason both end up in one Grant.
+func personalKeyScopes(
+	caller Caller,
+	kitchen *kitchenv1alpha1.Kitchen,
+	now time.Time,
+	grant Grant,
+) Grant {
+	key, ok := personalKeyOf(caller, kitchen)
+	if !ok || len(key.Scopes) == 0 {
+		return grant
+	}
+	if !key.Expires.IsZero() && !now.Before(key.Expires.Time) {
+		return grant
+	}
+	if !platformRoleOf(caller, kitchen).AtLeast(PlatformOperator) {
+		return grant
+	}
+	if grant.scopes == nil {
+		grant.scopes = map[Scope]struct{}{}
+	}
+	for _, scope := range key.Scopes {
+		if parsed, ok := ParseScope(string(scope)); ok {
+			grant.scopes[parsed] = struct{}{}
+		}
+	}
+	// An unrestricted key names no projects and narrows nothing; a narrowed
+	// one carries its own allowlist into the scoped routes that are about a
+	// project. An allowlist already narrowed by a credential entry is left
+	// alone rather than widened — the two cannot both be about this caller in
+	// any installation the API wrote.
+	if key.Narrowed() && len(key.Projects) > 0 && grant.projects == nil {
+		projects := map[string]struct{}{}
+		for _, project := range key.Projects {
+			projects[project] = struct{}{}
+		}
+		grant.projects = projects
+	}
 	return grant
 }
 

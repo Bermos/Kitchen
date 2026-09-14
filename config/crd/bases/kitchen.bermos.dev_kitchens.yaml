@@ -252,6 +252,111 @@ spec:
                     x-kubernetes-list-map-keys:
                     - subject
                     x-kubernetes-list-type: map
+                  personalKeys:
+                    description: |-
+                      PersonalKeys are the personal keys this installation has issued, and
+                      what each one may do for the person it belongs to.
+
+                      It is `atomic` rather than a map because a map key has to be one field
+                      and a personal key is named by two — whose it is, and what they called
+                      it — and because the one route that writes the list writes all of it.
+                    items:
+                      description: |-
+                        PersonalKeyGrant is what one personal key may do: the platform's half of a
+                        credential whose other half is an API key at the identity provider.
+                      properties:
+                        email:
+                          description: |-
+                            Email is informational: it is what makes a list of opaque subjects
+                            readable in `kubectl get -o yaml` and in a git diff. Nothing resolves
+                            against it — an entry that means to name an address puts the address in
+                            Subject, and accepts the verified-email condition that comes with it.
+                          type: string
+                        expires:
+                          description: |-
+                            Expires is when this key stops being honoured: the date it was issued
+                            with, which the identity provider enforces on presentation.
+                          format: date-time
+                          type: string
+                        issuedAt:
+                          description: IssuedAt is when the key was created, for the
+                            survey and the screens.
+                          format: date-time
+                          type: string
+                        key:
+                          description: |-
+                            Key is what the key is called at the identity provider, which a token
+                            minted from it names in its `kitchen_key` claim. One name is one key
+                            per account.
+                          minLength: 1
+                          type: string
+                        projects:
+                          description: |-
+                            Projects are the projects this key may act on. An empty list is every
+                            project its owner can reach, which the role below still caps.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        role:
+                          description: |-
+                            Role is the most this key may hold on the projects above, whatever its
+                            owner holds there. Empty on a narrowed key reads as viewer.
+                          enum:
+                          - admin
+                          - developer
+                          - viewer
+                          type: string
+                        scopes:
+                          description: |-
+                            Scopes are the platform operations this key may perform beside its
+                            project role, honoured only while its owner is an operator.
+                          items:
+                            description: |-
+                              PlatformScope is one class of operation a platform credential may perform.
+
+                              It is a scope rather than a fourth platform role, and that is the whole
+                              design. The platform has two roles and a project has three; "may read the
+                              retention policy" is not a hat anybody wears, it is one operation a
+                              scheduled job needs. A role to hold it would be a fourth role in a model
+                              that has three, which is the same objection internal/api/policy.go already
+                              records against inventing a reviewer role to hold an access recertification.
+
+                              What a scope may reach is decided by internal/api/policy.go and by nothing
+                              here: a route names the scope that satisfies it, and a route that names none
+                              is the operator's alone however this list grows. So the set below is small
+                              on purpose, and stays small — each value is an argument about what a
+                              credential pasted into a scheduled job or an agent is allowed to become.
+                            enum:
+                            - platform.read
+                            - compliance.read
+                            - backup.run
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        subject:
+                          description: |-
+                            Subject is the issuer's `sub` for the account, or an email address. A
+                            value containing `@` is treated as an address and resolves against the
+                            token's `email` claim only when `email_verified` is true, because an
+                            unverified-email grant is a grant to whoever can claim that address at
+                            the identity provider.
+                          minLength: 1
+                          type: string
+                        unrestricted:
+                          description: |-
+                            Unrestricted says this key is its owner, entire: every project role they
+                            hold, and the operator role if they wear one. It is a field rather than
+                            the absence of a narrowing so that a truncated entry cannot widen the
+                            credential it was meant to bound.
+                          type: boolean
+                      required:
+                      - expires
+                      - key
+                      - subject
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
                 type: object
               api:
                 description: APISpec configures how the operator's API is exposed.

@@ -175,22 +175,34 @@ the issuer, and the operator has nothing to invalidate.
 *project key* is a machine account with a role on one project. A *platform
 credential* ([below](#the-platform-commands-need-a-platform-credential)) holds
 scopes on the platform and no role. A **personal key** — Account → Personal
-keys in the dashboard, or `POST /me/keys` — is *you*: every project role you
-hold and the operator role if you wear one, which is what a script that does
-what you would do needs. All three are stored the same way and exchanged at the
+keys in the dashboard, or `POST /me/keys` — is *you*, or a slice of you: either
+every project role you hold and the operator role if you wear one, or a key
+issued for named projects at most a named role inside them. All three are stored the same way and exchanged at the
 same endpoint; `kitchen whoami` says which one is in hand and what it holds.
 
 ```sh
-kitchen keys list            # the personal keys this account holds
+kitchen keys list            # the personal keys this account holds, and what each may do
 kitchen keys revoke laptop   # a key may revoke itself
+kitchen whoami               # which key is in hand, and what it was narrowed to
 ```
+
+The listing's `MAY` column is each key's reach — `everything you can`, or
+`developer on shop` — and `nothing — unrecognised` for a key this platform has
+no record of, which authenticates and can do nothing. That last one is the
+answer somebody is looking for when a pipeline starts failing against a token
+the platform agrees belongs to an admin.
 
 There is no `kitchen keys create`, and that is the rule rather than a gap:
 issuing a personal key needs a token issued to the dashboard's own OAuth
 client, so that no credential can mint its own successor — and a credential is
-exactly what this CLI holds. Make one in a browser, paste it in here, and
-everything else works as it always did. A personal key expires within ninety
-days; `kitchen keys list` says when.
+exactly what this CLI holds. Make one in a browser, choosing the projects and
+the role it gets, paste it in here, and everything else works as it always did.
+A personal key expires within ninety days; `kitchen keys list` says when.
+
+A narrowed key is refused two things whoever holds it: `kitchen projects
+create`, because a project's creator becomes its admin, and anything needing
+the operator role, which a narrowed key never carries. Both refusals name the
+key and what it reaches.
 
 What a *project* key may do is a project role on a machine account, which is the
 narrowest credential the platform can issue: a key made for `shop` can deploy

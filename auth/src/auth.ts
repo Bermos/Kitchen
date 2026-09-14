@@ -10,6 +10,7 @@ import type { Pool } from "pg";
 import { allowedOrigins, platformClients, platformResources, type Config } from "./config.js";
 import { isServiceAccount } from "./identity.js";
 import { guardKeyIssuance, guardKeySession } from "./keyscope.js";
+import { PERSONAL_KEY_CLAIM, personalKeyOfSession } from "./personalkeys.js";
 import { log } from "./log.js";
 
 export const LOGIN_PATH = "/login";
@@ -120,14 +121,35 @@ function guards(config: Config): BetterAuthOptions["hooks"] {
 }
 
 /**
+ * Where the instance these options belong to is put once it exists.
+ *
+ * One thing the configuration does needs to read the database through the
+ * instance's own adapter — `definePayload` below, which has to know whether a
+ * session was minted from a personal key — and the instance cannot exist until
+ * the options do. So the options close over a box, `createAuth` puts the
+ * instance in it, and nothing else may.
+ *
+ * An empty box is a **failure**, not a quiet default: a token minted without
+ * the claim that says which key it came from is a token Kitchen would read as
+ * an unnarrowed person, which is the one mistake this whole feature must not
+ * make. `definePayload` throws rather than mint one — see there.
+ */
+interface AuthBox {
+	auth?: Auth;
+}
+
+/**
  * The better-auth configuration, kept separate from the instance because the
  * migration runner needs the same options object.
  *
  * The service is mounted at the root (`basePath: "/"`) so that the discovery
  * document lands on `<issuer>/.well-known/openid-configuration`, where every
  * OIDC client looks for it.
+ *
+ * `box` is how the one piece of configuration that needs the instance gets at
+ * it. The migration runner passes none, because migrations mint no tokens.
  */
-export function authOptions(config: Config, database: Pool): BetterAuthOptions {
+export function authOptions(config: Config, database: Pool, box: AuthBox = {}): BetterAuthOptions {
 	const rpID = new URL(config.baseURL).hostname;
 
 	return {
@@ -184,7 +206,41 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 		plugins: [
 			// Signs ID tokens and serves the JWKS the operator API validates
 			// bearer tokens against. The OAuth provider builds on it.
-			jwt(),
+			jwt({
+				jwt: {
+					// The payload is the account's own row, exactly as it was
+					// before this function existed — the plugin's default is
+					// `session.user`, and the operator API reads `email` and
+					// `name` off it — plus one claim when the token was minted
+					// from a personal key: which key (#595).
+					//
+					// That claim is what makes a personal key narrowable at
+					// all. Kitchen resolves what a key may do from its own
+					// state, like every other grant; the one part of the
+					// question only the issuer can answer is *which*
+					// credential is asking, because a personal key's token is
+					// otherwise indistinguishable from its owner's browser
+					// token. src/personalkeys.ts says how the two are told
+					// apart, and why no other kind of key answers.
+					definePayload: async (session) => {
+						if (!box.auth) {
+							// Nothing but the migration runner builds options
+							// without an instance, and the migration runner
+							// mints no tokens. Reaching this means something
+							// new did, and the safe answer is no token: one
+							// without the claim below reads as an unnarrowed
+							// person, which would hand every personal key its
+							// owner's whole access.
+							throw new Error(
+								"cannot mint a token: these options were built without an instance, so the " +
+									"personal-key claim cannot be resolved",
+							);
+						}
+						const key = await personalKeyOfSession(box.auth, config, session);
+						return key ? { ...session.user, [PERSONAL_KEY_CLAIM]: key } : { ...session.user };
+					},
+				},
+			}),
 			oauthProvider({
 				loginPage: LOGIN_PATH,
 				consentPage: CONSENT_PATH,
@@ -351,5 +407,7 @@ export function authOptions(config: Config, database: Pool): BetterAuthOptions {
 export type Auth = ReturnType<typeof betterAuth>;
 
 export function createAuth(config: Config, database: Pool): Auth {
-	return betterAuth(authOptions(config, database));
+	const box: AuthBox = {};
+	box.auth = betterAuth(authOptions(config, database, box));
+	return box.auth;
 }

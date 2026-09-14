@@ -52,15 +52,18 @@ func newKeysCommand(r *Runtime) *cobra.Command {
 		Long: strings.TrimSpace(`
 Your own keys: the credentials you sign your own automation with.
 
-A personal key carries your identity — every project role you hold, and the
-operator role if you have it — so it does what you would do. It expires, it is
-listed here by name, and revoking one is one command.
+A key can be the whole of what you can do, or a slice of it: issued for named
+projects, at most a named role inside them. "MAY" says which, for each key you
+hold. A narrowed key never carries the operator role and cannot create a
+project — the two things that would widen it past what it was issued for.
 
-Issuing one is the dashboard's: Account -> Personal keys. It needs a browser
-sign-in, because a credential that could issue a personal key would be issuing
-a copy of you, and the credential this CLI holds is a credential. Once you have
-one, "kitchen login --api-key-stdin" stores it and everything else works as it
-always did.
+Every key expires, is listed here by name, and is revoked with one command.
+
+Issuing one is the dashboard's: Account -> Personal keys, where the projects
+and the role are chosen. It needs a browser sign-in, because a credential that
+could issue a personal key would be issuing a copy of you, and the credential
+this CLI holds is a credential. Once you have one, "kitchen login
+--api-key-stdin" stores it and everything else works as it always did.
 
 "kitchen whoami" says what the stored credential is and what it holds.`),
 	}
@@ -184,11 +187,31 @@ func renderPersonalKeys(s tui.Styles, keys []personalKey) string {
 		rows = append(rows, []string{
 			key.Name,
 			s.Subtle.Render(key.Prefix + "…"),
+			reach(key),
 			lastUsed(key),
 			expiry(key),
 		})
 	}
-	return s.Table([]string{"NAME", "KEY", "LAST USED", "EXPIRES"}, rows)
+	return s.Table([]string{"NAME", "KEY", "MAY", "LAST USED", "EXPIRES"}, rows)
+}
+
+// reach is how much of its owner a key carries: everything, a role on named
+// projects, or — for one the platform has no grant for — nothing at all.
+//
+// The last is a column entry rather than a footnote because it is the state
+// somebody is looking for when they run this: a key revoked at one end and not
+// the other authenticates and does nothing.
+func reach(key personalKey) string {
+	switch {
+	case key.Unknown:
+		return "nothing — unrecognised"
+	case key.Scope == nil:
+		return "everything you can"
+	case len(key.Scope.Projects) == 0:
+		return key.Scope.Role + " on your projects"
+	default:
+		return key.Scope.Role + " on " + strings.Join(key.Scope.Projects, ", ")
+	}
 }
 
 // lastUsed is when a key was last exchanged for a token, in words — and

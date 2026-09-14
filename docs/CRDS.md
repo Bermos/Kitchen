@@ -91,6 +91,16 @@ spec:
         scopes: [platform.read]         # platform.read | compliance.read | backup.run
         expires: 2026-10-07T09:14:00Z   # required; a lapsed entry grants nothing, and is swept
         projects: [shop]                # optional: narrows the scoped routes about one project
+    personalKeys:                       # what each personal key may do, for the person it copies
+      - subject: user_01H8X…            # the *owner's* account — a person, not one created for it
+        email: anna@example.com
+        key: ci-shop                    # its name at the issuer, which its token names
+        role: developer                 # the ceiling: the lesser of this and what the owner holds
+        projects: [shop]                # empty is every project the owner can reach
+        expires: 2026-10-14T09:12:04Z   # the key's own expiry, enforced at the issuer
+      - subject: user_01H8X…
+        key: laptop
+        unrestricted: true              # this key is its owner, entire — hat and all
   builds:
     defaultStrategy: auto               # dockerfile | buildpacks | auto (what a project on "auto" takes)
     concurrency: 2                      # builds running at once; read with resources below — the two

@@ -2175,10 +2175,36 @@ export interface PersonalKey {
   prefix?: string;
   created: string;
   expires: string;
+  /**
+   * What this key may do (#595): the projects it reaches and the most it
+   * holds inside them. Absent means the key is its owner, entire.
+   */
+  scope?: PersonalKeyScope;
+  /**
+   * A key the identity provider still has and the platform has no grant for.
+   * It authenticates and can do nothing — the one state on this payload worth
+   * acting on, which is why it is answered rather than left to read as
+   * unscoped.
+   */
+  unknown?: boolean;
   /** Whether it has already lapsed. Answered rather than left to be worked
    * out from two dates, so a list can show a dead key as dead. */
   expired?: boolean;
   lastUsed?: string;
+}
+
+/** A narrowed key's reach: where it may act, and the most it may hold there. */
+export interface PersonalKeyScope {
+  /** Empty is every project its owner can reach. */
+  projects?: string[];
+  /**
+   * The ceiling, not a grant: what the key holds on a project is the lesser
+   * of this and what its owner holds there.
+   */
+  role: string;
+  /** Platform operations it was widened to, honoured while its owner is an
+   * operator. */
+  scopes?: string[];
 }
 
 /** A personal key with its value, which this response carries and no other. */
@@ -2196,6 +2222,18 @@ export interface IssuedPersonalKey extends PersonalKey {
 export interface NewPersonalKey {
   name: string;
   expiresInDays?: number;
+  /**
+   * Naming a role is what makes a key fine-grained: the most it may hold on
+   * the projects it reaches. Leaving it out asks for a key that is its owner,
+   * entire — and naming projects without it is refused, because a request
+   * that meant to narrow and did not say how should not be granted
+   * everything.
+   */
+  role?: string;
+  /** The allowlist. Empty, with a role, is every project its owner can reach. */
+  projects?: string[];
+  /** Platform operations to widen it to. Only an operator may ask for any. */
+  scopes?: string[];
 }
 
 /**

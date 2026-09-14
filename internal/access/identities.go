@@ -155,6 +155,43 @@ func credentialRole(credential kitchenv1alpha1.PlatformCredential, at time.Time)
 	return held
 }
 
+// personalKeyGrantName is the place column for a personal key's survey row:
+// the key, named as its owner named it, so that two keys of one person are two
+// rows rather than one ambiguous one.
+func personalKeyGrantName(key kitchenv1alpha1.PersonalKeyGrant) string {
+	return "key " + key.Key
+}
+
+// personalKeyRole is how much of its owner a key carries, in the column a
+// person's row carries a role in.
+//
+// A lapsed key says so here rather than through a flag, for credentialRole's
+// reason: the survey's flags are all statements about whether anybody is
+// behind a grant, and a key that has run out is a live entry that currently
+// grants nothing.
+func personalKeyRole(key kitchenv1alpha1.PersonalKeyGrant, at time.Time) string {
+	held := "everything its owner holds"
+	if key.Narrowed() {
+		held = string(key.Ceiling())
+		if len(key.Projects) > 0 {
+			held += " on " + strings.Join(key.Projects, ", ")
+		} else {
+			held += " on every project"
+		}
+		if len(key.Scopes) > 0 {
+			scopes := make([]string, 0, len(key.Scopes))
+			for _, scope := range key.Scopes {
+				scopes = append(scopes, string(scope))
+			}
+			held += ", " + strings.Join(scopes, " ")
+		}
+	}
+	if key.Expires.IsZero() || !at.Before(key.Expires.Time) {
+		return held + " (expired)"
+	}
+	return held
+}
+
 // Survey materializes who holds what.
 //
 // The one judgement in it is the definition of an orphan, and it is the
@@ -212,6 +249,19 @@ func Survey(in SurveyInput) IdentitySurvey {
 		// a reviewer with nothing in the column they decide from.
 		for _, credential := range in.Kitchen.Spec.Access.Credentials {
 			add(credential.Subject, credential.Email, PlatformGrant, credentialRole(credential, in.At))
+		}
+		// And the personal keys (#595), which are the third kind of non-human
+		// access and the one a survey most needs to show: a personal key is
+		// indistinguishable from the person it copies at every later moment,
+		// so a review that showed only the person would be reviewing one of
+		// the two credentials that can act as them.
+		//
+		// A key's row is about the *key* rather than about its owner — the
+		// grant column names it, and the role column says how much of its
+		// owner it carries — so a reviewer reading a person's rows sees what
+		// they hold and, beside it, what is holding a copy of them.
+		for _, key := range in.Kitchen.Spec.Access.PersonalKeys {
+			add(key.Subject, key.Email, personalKeyGrantName(key), personalKeyRole(key, in.At))
 		}
 	}
 	for i := range in.Projects {

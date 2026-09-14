@@ -69,6 +69,19 @@ type Caller struct {
 	// them type that address.
 	Email         string
 	EmailVerified bool
+
+	// PersonalKey is the name of the personal key this token was minted from,
+	// from the issuer's `kitchen_key` claim (#595). It is empty for somebody
+	// signed in, for a project's CI key and for a platform credential — a
+	// personal key is the one credential whose token is otherwise
+	// indistinguishable from its owner's, which is exactly why the issuer
+	// names it and why nothing else needs naming.
+	//
+	// It is not an identity and it grants nothing. Every role still resolves
+	// from Subject; this says which *credential* is asking, so that what it
+	// may do can be the lesser of the person and the key — see
+	// personalkey.go.
+	PersonalKey string
 }
 
 // emailMarker is what tells an email subject from a `sub`. A `sub` is opaque
@@ -116,6 +129,24 @@ func SubjectMatches(subject string, caller Caller) bool {
 // worst it does is refuse a platform operation to somebody who is entitled to
 // it, where the alternative would hand the platform to whoever asked first.
 func PlatformRoleFor(caller Caller, kitchen *kitchenv1alpha1.Kitchen) PlatformRole {
+	// A narrowed personal key wears no hat, however its owner is listed: the
+	// operator role is everything everywhere, so a credential carrying it is
+	// not narrower than the person in any sense worth the word. An
+	// unrestricted key is its owner and resolves below like anybody else.
+	if !wearsTheHat(caller, kitchen) {
+		return PlatformMember
+	}
+	return platformRoleOf(caller, kitchen)
+}
+
+// platformRoleOf is the hat the *account* wears, with no regard to which
+// credential is presenting it.
+//
+// It is what PlatformRoleFor answers for a person and for an unrestricted key,
+// and it is read directly in one other place: a narrowed key's platform scopes
+// are honoured only while its owner is an operator (scope.go), which is a
+// question about the account rather than about the credential.
+func platformRoleOf(caller Caller, kitchen *kitchenv1alpha1.Kitchen) PlatformRole {
 	if kitchen == nil {
 		return PlatformMember
 	}
@@ -141,20 +172,39 @@ func PlatformRoleFor(caller Caller, kitchen *kitchenv1alpha1.Kitchen) PlatformRo
 // down, and reading the pair as the lower of the two would quietly withdraw a
 // role somebody granted on purpose.
 func ProjectRoleFor(caller Caller, kitchen *kitchenv1alpha1.Kitchen, project *kitchenv1alpha1.Project) ProjectRole {
-	if PlatformRoleFor(caller, kitchen).AtLeast(PlatformOperator) {
-		return ProjectAdmin
+	name := ""
+	if project != nil {
+		name = project.Name
 	}
-	if project == nil {
+	// What the *credential* may carry of what the account holds (#595). It is
+	// admin — no cap at all — for everybody who is not holding a narrowed
+	// personal key, which is every caller this platform had before personal
+	// keys existed.
+	ceiling := keyCeiling(caller, kitchen, name)
+	if ceiling == ProjectRoleNone {
 		return ProjectRoleNone
 	}
+
 	held := ProjectRoleNone
-	for _, grant := range project.Spec.Access {
-		if !SubjectMatches(grant.Subject, caller) {
-			continue
+	switch {
+	case platformRoleOf(caller, kitchen).AtLeast(PlatformOperator):
+		held = ProjectAdmin
+	case project == nil:
+		return ProjectRoleNone
+	default:
+		for _, grant := range project.Spec.Access {
+			if !SubjectMatches(grant.Subject, caller) {
+				continue
+			}
+			if role, ok := ParseProjectRole(string(grant.Role)); ok && role > held {
+				held = role
+			}
 		}
-		if role, ok := ParseProjectRole(string(grant.Role)); ok && role > held {
-			held = role
-		}
+	}
+	// The lesser of the two, always. A key can be narrower than the person it
+	// belongs to and can never be wider, whatever its entry says.
+	if ceiling < held {
+		return ceiling
 	}
 	return held
 }

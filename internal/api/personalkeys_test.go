@@ -24,13 +24,28 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
+
+	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/idp"
 )
 
 // Personal keys (#593): the credential somebody signs their own automation
 // with, and the four things that bound it.
 
-const personalKeysPath = "/api/v1/me/keys"
+const (
+	personalKeysPath = "/api/v1/me/keys"
+	// feedProjectPath is the fixtures' project, which the scoped keys below
+	// are issued for.
+	feedProjectPath = "/api/v1/projects/" + feedProject
+	// developerRole is the ceiling most of these keys are issued with: the
+	// day job, which is what somebody automating their own work wants.
+	developerRole = "developer"
+	// scopedToFeed is the request body most of these cases issue: a key for
+	// the fixtures' project, at the day job's role.
+	scopedToFeed = `{"name": "ci-shop", "role": "developer", "projects": ["shop"]}`
+)
 
 // The personal-key half of the stub directory: one flat list per subject,
 // because a personal key belongs to an account the platform did not create.
@@ -247,6 +262,225 @@ func TestACredentialHoldsNoPersonalKeys(t *testing.T) {
 	}
 	if keys := decode[listBody[personalKeyView]](t, recorder).Items; len(keys) != 0 {
 		t.Errorf("a credential was answered with keys: %+v", keys)
+	}
+}
+
+// Fine-grained keys (#595): a key scoped to named projects, at most a named
+// role inside them.
+
+// asKey is a call carrying a token minted from one of the caller's personal
+// keys — the credential, rather than the person at a browser.
+func (h *harness) asKey(t *testing.T, key, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return h.do(t, method, path, body, h.issuer.tokenFromKey(t, key))
+}
+
+// The whole of the feature: somebody who administers two projects issues a key
+// that may deploy one of them, and the platform holds it to that.
+func TestAFineGrainedKeyIsScopedToItsProjectsAndRole(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.withDirectory()
+	h.grant(t, feedProject, kitchenv1alpha1.AccessRoleAdmin)
+
+	issued := h.issueKey(t, scopedToFeed)
+	if issued.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", issued.Code, issued.Body.String())
+	}
+	view := decode[issuedPersonalKeyView](t, issued)
+	if view.Scope == nil || view.Scope.Role != developerRole {
+		t.Fatalf("the answer does not say what the key may do: %+v", view.Scope)
+	}
+	if len(view.Scope.Projects) != 1 || view.Scope.Projects[0] != feedProject {
+		t.Errorf("the answer does not say which projects: %+v", view.Scope.Projects)
+	}
+
+	// Through the key: it may read the project it names…
+	if got := h.asKey(t, "ci-shop", http.MethodGet, feedProjectPath, ""); got.Code != http.StatusOK {
+		t.Fatalf("the key cannot read the project it was issued for: %d %s", got.Code, got.Body.String())
+	}
+	// …and may not do what only an admin may, however much its owner may.
+	refused := h.asKey(t, "ci-shop", http.MethodPatch, feedProjectPath, `{"replicas": 3}`)
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", refused.Code, refused.Body.String())
+	}
+	if got := errorOf(t, refused.Body.String()); !strings.Contains(got, developerRole) {
+		t.Errorf("the refusal does not name the role the key holds: %q", got)
+	}
+
+	// A project the key does not name is a project it cannot see at all,
+	// which is the answer every caller who holds no role on one gets.
+	if got := h.asKey(t, "ci-shop", http.MethodGet, "/api/v1/projects/blog", ""); got.Code != http.StatusNotFound {
+		t.Errorf("a key reached a project it was not issued for: %d", got.Code)
+	}
+
+	// And the person is untouched: signed in, they are still an admin.
+	if got := h.do(t, http.MethodPatch, feedProjectPath, `{"replicas": 3}`); got.Code != http.StatusOK {
+		t.Fatalf("narrowing a key narrowed the person: %d %s", got.Code, got.Body.String())
+	}
+}
+
+// A key cannot be issued above what its owner holds. Refused at the door
+// rather than clamped at resolution: a key issued as admin that silently
+// resolves to developer is a key whose first failure is somebody else's
+// outage.
+func TestAKeyCannotBeIssuedAboveWhatItsOwnerHolds(t *testing.T) {
+	// A member rather than an operator: an operator holds admin on every
+	// project, so there is nothing for a ceiling to be above.
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+	h.withDirectory()
+
+	refused := h.issueKey(t, `{"name": "too-much", "role": "admin", "projects": ["shop"]}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", refused.Code, refused.Body.String())
+	}
+	if got := errorOf(t, refused.Body.String()); !strings.Contains(got, "you hold developer on shop") {
+		t.Errorf("the refusal does not say what the caller holds: %q", got)
+	}
+
+	// And a project the caller cannot see is answered as one that is not
+	// there, exactly as every other unreadable project is.
+	missing := h.issueKey(t, `{"name": "elsewhere", "role": "viewer", "projects": ["blog"]}`)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", missing.Code, missing.Body.String())
+	}
+}
+
+// Naming projects or scopes without a role is a request that meant to narrow
+// and did not say how. It is refused rather than granted everything.
+func TestNarrowingWithoutARoleIsRefused(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.withDirectory()
+	h.grant(t, feedProject, kitchenv1alpha1.AccessRoleAdmin)
+
+	refused := h.issueKey(t, `{"name": "half-said", "projects": ["shop"]}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", refused.Code, refused.Body.String())
+	}
+	if got := errorOf(t, refused.Body.String()); !strings.Contains(got, "role is required") {
+		t.Errorf("the refusal does not name what is missing: %q", got)
+	}
+}
+
+// Platform scopes on a key are an operator's to hand out: a key cannot carry
+// what its owner could not.
+func TestOnlyAnOperatorMayPutScopesOnAKey(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleAdmin)
+	h.withDirectory()
+
+	refused := h.issueKey(t, `{"name": "backups", "role": "viewer", "scopes": ["backup.run"]}`)
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", refused.Code, refused.Body.String())
+	}
+	if got := errorOf(t, refused.Body.String()); !strings.Contains(got, "operator role") {
+		t.Errorf("the refusal does not say what is needed: %q", got)
+	}
+}
+
+// A narrowed key may not create a project: its creator becomes the new
+// project's admin, which is the one act that would widen a credential issued
+// to reach two projects.
+func TestANarrowedKeyMayNotCreateAProject(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.withDirectory()
+	h.grant(t, feedProject, kitchenv1alpha1.AccessRoleAdmin)
+
+	if issued := h.issueKey(t, scopedToFeed); issued.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", issued.Code, issued.Body.String())
+	}
+
+	refused := h.asKey(t, "ci-shop", http.MethodPost, "/api/v1/projects",
+		`{"name": "new", "repo": "acme/new", "connection": "gh", "registry": "`+testRegistry+`"}`)
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", refused.Code, refused.Body.String())
+	}
+	if got := errorOf(t, refused.Body.String()); !strings.Contains(got, "narrowed personal key") {
+		t.Errorf("the refusal does not say why: %q", got)
+	}
+
+	// An unrestricted key is its owner, so it may.
+	if issued := h.issueKey(t, `{"name": "laptop"}`); issued.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", issued.Code, issued.Body.String())
+	}
+	allowed := h.asKey(t, "laptop", http.MethodPost, "/api/v1/projects",
+		`{"name": "new", "repo": "acme/new", "connection": "gh", "registry": "`+testRegistry+`"}`)
+	if allowed.Code == http.StatusForbidden {
+		t.Errorf("an unrestricted key was refused what its owner may do: %s", allowed.Body.String())
+	}
+}
+
+// A key the platform has no grant for holds nothing — and is told so, rather
+// than being told it has no role on a project it administers.
+func TestAKeyThePlatformDoesNotRecogniseIsToldSo(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.withDirectory()
+	h.grant(t, feedProject, kitchenv1alpha1.AccessRoleAdmin)
+
+	refused := h.asKey(t, "revoked", http.MethodGet, feedProjectPath, "")
+	if refused.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", refused.Code, refused.Body.String())
+	}
+	if got := errorOf(t, refused.Body.String()); !strings.Contains(got, "not one this platform recognises") {
+		t.Errorf("the refusal does not say what is wrong: %q", got)
+	}
+
+	// And `/me` says the same thing, which is where `kitchen whoami` reads it.
+	me := decode[meView](t, h.asKey(t, "revoked", http.MethodGet, "/api/v1/me", ""))
+	if me.Key == nil || !me.Key.Unknown {
+		t.Errorf("/me does not report the key as unrecognised: %+v", me.Key)
+	}
+}
+
+// Revoking takes both halves: the credential at the issuer and what the
+// platform allowed it to do.
+func TestRevokingAKeyTakesItsGrantWithIt(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.withDirectory()
+	h.grant(t, feedProject, kitchenv1alpha1.AccessRoleAdmin)
+
+	if issued := h.issueKey(t, scopedToFeed); issued.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", issued.Code, issued.Body.String())
+	}
+	if revoked := h.do(t, http.MethodDelete, personalKeysPath+"/ci-shop", ""); revoked.Code != http.StatusNoContent {
+		t.Fatalf("want 204, got %d: %s", revoked.Code, revoked.Body.String())
+	}
+
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := h.server.Client.Get(t.Context(), types.NamespacedName{Name: controller.KitchenSingletonName}, kitchen); err != nil {
+		t.Fatal(err)
+	}
+	if len(kitchen.Spec.Access.PersonalKeys) != 0 {
+		t.Errorf("the grant outlived the key: %+v", kitchen.Spec.Access.PersonalKeys)
+	}
+
+	// A token minted before the revocation holds nothing now.
+	if got := h.asKey(t, "ci-shop", http.MethodGet, feedProjectPath, ""); got.Code != http.StatusForbidden {
+		t.Errorf("a revoked key still reaches the platform: %d", got.Code)
+	}
+}
+
+// `/me` describes the credential in hand, which is what `kitchen whoami`
+// prints — and the question "why can this token not do what I can" has no
+// other answer.
+func TestMeDescribesTheKeyInHand(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	h.withDirectory()
+	h.grant(t, feedProject, kitchenv1alpha1.AccessRoleAdmin)
+
+	if issued := h.issueKey(t, scopedToFeed); issued.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", issued.Code, issued.Body.String())
+	}
+
+	me := decode[meView](t, h.asKey(t, "ci-shop", http.MethodGet, "/api/v1/me", ""))
+	if me.Key == nil || me.Key.Name != "ci-shop" || me.Key.Role != developerRole {
+		t.Fatalf("/me does not describe the key: %+v", me.Key)
+	}
+	if len(me.Key.Projects) != 1 || me.Key.Projects[0] != feedProject {
+		t.Errorf("/me does not say which projects: %+v", me.Key)
+	}
+
+	// Signed in, the same account is holding no key at all.
+	if signedIn := decode[meView](t, h.do(t, http.MethodGet, "/api/v1/me", "")); signedIn.Key != nil {
+		t.Errorf("a browser session reports a key: %+v", signedIn.Key)
 	}
 }
 
