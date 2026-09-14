@@ -1217,6 +1217,16 @@ build and promote and nothing else — is
 [deliberately open](../AUTH.md#machine-accounts) and would arrive as another value
 here.
 
+**What that refusal is not**, and it was read as this for as long as it was the
+only answer: it is not a rule that nothing may automate an admin's work. A
+project key cannot hold `admin` because it lives in a build pipeline several
+people can edit, and because it would then be able to issue more of itself.
+Somebody who *is* an admin automating their own work is a different question,
+and it has its own credential — a [personal key](accounts.md#personal-keys),
+issued from a browser sign-in, carrying every role its holder has and expiring
+within ninety days. The rule survives intact: a personal key cannot issue
+another personal key either, because no credential can.
+
 That reasoning has one other consequence, and it is why `POST /projects`
 refuses a key: **a machine account may not create a project.** Refusing to
 issue an `admin` key means nothing if a key can create a project it is already

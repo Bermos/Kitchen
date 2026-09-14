@@ -374,7 +374,7 @@ block:
 
 | Field | Default | What it does |
 |---|---|---|
-| `volume.process` | required | The one process that mounts it: `web` for the web process, or the name of one of the project's processes. A claim naming none, or a process the project does not have, is refused here with the list |
+| `volume.process` | required | The one process that mounts it: `web` for the web process, or the name of one of the project's processes. A claim naming none, or a process the project does not have, is refused here with the list — and the list is *what the next deploy would run*, so a workload the repository's `kitchen.json` declares counts ([#593](https://github.com/Bermos/Kitchen/issues/593)) |
 | `volume.source` | `provision` | Where the volume comes from: `provision` cuts a new one, `bind` mounts one that already exists. It is declared rather than inferred from which fields are set, and each source is refused the other's fields |
 | `volume.size` | required on `provision` | A Kubernetes quantity — `"10Gi"`. Set when the volume is created; it is not shrunk. **Refused on `bind`** |
 | `volume.mountPath` | required | The absolute path inside that process's container the volume appears at |
@@ -389,6 +389,17 @@ assumes: a class whose provisioner is a shared filesystem driver
 `ReadWriteOnce`. An operator overrides either answer by annotating the class
 `kitchen.bermos.dev/read-write-many: "true"` or `"false"` — the way to declare
 a block driver that serves NFS-backed volumes from one of its classes.
+
+**A workload the repository declares is one of the project's processes.** The
+list this is checked against is `spec.processes` *or* what the last succeeded
+production build read out of `kitchen.json`, whichever the next deploy would
+run — the file replaces the project's list rather than adding to it, which is
+[what a build does with it](processes.md#a-project-with-no-repository-declares-all-of-this-here).
+Before #593 only the project's own list was consulted, so a repository could
+declare a worker, deploy it, watch it serve and be refused a volume for it as
+naming a process the project did not have. The refusal now names the file and
+the commit the list came from, because the old one named a process that was
+visibly running and read as a typo.
 
 **Which process, and why only one.** Every pod an environment runs carries the
 environment label — the web process, its workers, its scheduled runs — and

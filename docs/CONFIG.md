@@ -459,6 +459,15 @@ into it. A workload is defined by the code it runs, so one the commit no longer
 names is one whose command may no longer be in the image; merging would keep it
 running until somebody noticed.
 
+What that list is, the platform records on the project as `declaredProcesses`
+once a production build has read it — so everything that asks "does this
+project have a workload called `bridge`" gets the same answer, the claim route
+included ([#593](https://github.com/Bermos/Kitchen/issues/593)). Before that it
+was written only onto the Build, and a volume for a workload declared here was
+refused as naming a process the project did not have while the workload was
+visibly serving traffic. A preview's file declares nothing: the author of a
+pull request's `kitchen.json` need not be anybody with access to the project.
+
 There is no per-workload idling setting here, and that is deliberate: scale to
 zero is the project's policy because only the web process is idled — see
 [the Project's `scaleToZero`](CRDS.md) for why, and what to do when one

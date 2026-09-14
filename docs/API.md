@@ -93,10 +93,30 @@ the project it was made for. See [Keys for CI](api/projects.md#keys-for-ci)
 for issuing one, and [AUTH.md](AUTH.md#machine-accounts) for why it is built
 this way.
 
-**Revocation is at the issuer.** Deleting a key stops it working immediately,
-and the operator has nothing to invalidate because it never held anything;
-`DELETE /projects/{name}/keys/{key}` deletes it there and takes the grant off
-the project in the same request.
+**A person's own automation, with a personal key.** A project key is a member
+of one project, which is the right credential for a pipeline and the wrong one
+for "run the thing I would have run". A **personal key** is the other answer:
+it belongs to the account somebody signs in with, so the token it is exchanged
+for carries their subject and every role they hold — `admin` on the projects
+they administer, the operator hat if they wear one. It is exchanged exactly as
+a project key is, at the same endpoint, and nothing downstream can tell the two
+apart.
+
+It is a copy of a person's access, said plainly, and it exists because the
+thing it replaces is worse: without one, the way to script something only an
+admin may do was to copy the dashboard's access token out of the browser — the
+same access, with no name, in no list, and revocable by nothing. Four things
+bound it, and [accounts.md](api/accounts.md#personal-keys) has them: only a
+browser sign-in may issue one (so no credential mints its own successor), it
+expires within ninety days, it is listed and revocable by name, and both ends
+of its life are in the audit log.
+
+**Revocation is at the issuer**, for all three kinds. Deleting a key stops it
+working immediately, and the operator has nothing to invalidate because it
+never held anything; `DELETE /projects/{name}/keys/{key}` deletes it there and
+takes the grant off the project in the same request, and `DELETE
+/me/keys/{key}` does the same for a personal key — which a key may do to
+itself, and should, the moment one leaks.
 
 ## Authorization
 
@@ -126,13 +146,14 @@ The `Requires` column on every endpoint below says which of the two it wants.
 An unqualified `viewer`, `developer` or `admin` is a **project** role, on the
 project the request is about — the path's for `/projects/{name}/…`, and
 otherwise the object's own (`spec.projectRef` on a build, a release, an
-environment or a claim; the environment's project for a domain). Four values
+environment or a claim; the environment's project for a domain). Five values
 are not roles:
 
 | Value | Means |
 |---|---|
 | `any account` | a valid token, and nothing more |
 | `any person` | a valid token that is not a CI key's. Not a role — a machine account already holds the role it needs; what this refuses is *widening* it. Three routes, and they are the create-a-project form: `POST /projects`, and the two fields it is filled in from (`GET /connections/{name}/repositories`, `POST /connections/{name}/detect`), which answer from the platform's own git credential |
+| `any signed-in person` | a valid token that was *issued to one of the platform's own OAuth clients* — which is to say, one somebody signed in for. It refuses every credential, a personal key included, because a personal key's token is otherwise indistinguishable from its owner's: same subject, same address, same roles, and only the absence of an `azp` claim to tell them apart. One route: `POST /me/keys`, where what it keeps is that no credential mints its own successor |
 | `any account — filtered` | a valid token; the answer is narrowed to the projects the caller can see |
 | `any account — body varies` | a valid token; the shape of the body depends on the caller's platform role, and any list inside it is narrowed to the projects they can see. Two routes: `GET /status` and `GET /connections` |
 | `operator or <scope>` | the operator role, **or** a platform credential holding that scope. A route that names no scope is the operator's and cannot be reached by any credential, which is why almost every operator row here says only `operator` |
@@ -321,6 +342,9 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` | any account — filtered |
 | GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall | any account — filtered |
 | GET | `/me` | Who the caller is: subject, address, name and platform role | any account |
+| GET | `/me/keys` | The caller's own personal keys: name, prefix, when each was made, last used and when it lapses. Never a value | any account |
+| POST | `/me/keys` | Issue one. The key is in this response and in no other. It carries every role the caller holds, which is why only a browser sign-in may ask | any signed-in person |
+| DELETE | `/me/keys/{key}` | Revoke one of the caller's own keys. `204`. A key may revoke itself | any account |
 | GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components | any account — body varies |
 | GET | `/alerts` | Every open delivery this caller may read, at the tier they read it at, with what is mitigating it. `?project=` narrows | any account — filtered |
 | POST | `/alerts/ack` | Record that somebody has seen a condition, which is what stops the escalation clock | member of the delivery's project for the `developer` row, `operator` for the operator's, enforced by the handler |
@@ -431,7 +455,7 @@ to the same 2000-line document, so two unrelated features could not be
 written at the same time without colliding. One file per resource makes two
 such changes two changes to two different files.
 
-- [Accounts](api/accounts.md) — who the caller is, and what they may do
+- [Accounts](api/accounts.md) — who the caller is, what they may do, and the personal keys they sign their own automation with
 - [Access and recertification](api/access.md) — who holds what, the cycles that review it, and the writes the platform did not make
 - [Projects](api/projects.md) — settings, environment variables, membership, CI keys, and deletion
 - [A project's own secrets](api/secrets.md) — the credentials Kitchen did not mint, written once and never read back
