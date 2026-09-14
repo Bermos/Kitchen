@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.0](https://github.com/Bermos/Kitchen/compare/v0.40.5...v0.41.0) (2026-09-14)
+
+
+### Features
+
+* read a claim's process list from the repository, and issue personal keys ([#594](https://github.com/Bermos/Kitchen/issues/594)) ([3207994](https://github.com/Bermos/Kitchen/commit/3207994d179ee2bbdf944721df6cc21a5559d5aa))
+
 ## [0.40.5](https://github.com/Bermos/Kitchen/compare/v0.40.4...v0.40.5) (2026-09-09)
 
 
