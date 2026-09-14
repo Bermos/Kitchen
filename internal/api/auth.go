@@ -68,6 +68,23 @@ type Caller struct {
 	// otherwise one of PlatformClientIDs — a token naming any other client
 	// never reaches a handler.
 	ClientID string
+	// PersonalKey is the name of the personal key this token was minted from,
+	// from the issuer's `kitchen_key` claim (#595), and empty for every other
+	// caller — somebody signed in, a project's CI key, a platform credential.
+	//
+	// It is the one claim on this token that changes what the caller may do,
+	// and it can only ever *narrow* it: internal/access takes the lesser of
+	// what the person holds and what the key was issued with. A personal key's
+	// token is otherwise indistinguishable from its owner's — same subject,
+	// same address, same roles — so without this there is nothing for a
+	// narrowing to attach to.
+	//
+	// It is also, incidentally, the only thing that tells the API that a
+	// caller is holding a credential rather than sitting in front of a
+	// browser, which is what `requirePerson` reads to refuse a narrowed key
+	// the one act that would widen it.
+	PersonalKey string
+
 	// Scopes the token was granted. Kitchen does not authorize on them and
 	// is not going to: the token says who the caller is, and Kitchen decides
 	// what they may do from the access recorded on its own objects
@@ -90,7 +107,12 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 // access is this caller as the package that decides what they may do sees
 // them: the three claims a membership entry can name, and nothing else.
 func (c Caller) access() access.Caller {
-	return access.Caller{Subject: c.Subject, Email: c.Email, EmailVerified: c.EmailVerified}
+	return access.Caller{
+		Subject:       c.Subject,
+		Email:         c.Email,
+		EmailVerified: c.EmailVerified,
+		PersonalKey:   c.PersonalKey,
+	}
 }
 
 // isMachine reports whether this token was exchanged from a credential — a
@@ -189,6 +211,30 @@ type meView struct {
 	// Projects is the allowlist a scoped, project-shaped route is narrowed to,
 	// absent when the caller's grant narrows nothing.
 	Projects []string `json:"projects,omitempty"`
+
+	// Key is the personal key this caller is holding, when they are holding
+	// one (#595): its name, and what it was narrowed to. Absent for somebody
+	// signed in and for every other kind of credential.
+	//
+	// It is the answer to "why can this token not do what I can", which is
+	// otherwise unanswerable from the outside: the token says it is Anna, and
+	// Anna is an admin, and the platform keeps saying no. `kitchen whoami`
+	// prints it for exactly that reason.
+	Key *callerKeyView `json:"key,omitempty"`
+}
+
+// callerKeyView is the credential a caller is holding, described to them.
+type callerKeyView struct {
+	Name string `json:"name"`
+	// Unrestricted is a key that is its owner, entire; Unknown is one the
+	// platform has no grant for, which holds nothing at all and is the one
+	// state worth acting on.
+	Unrestricted bool `json:"unrestricted,omitempty"`
+	Unknown      bool `json:"unknown,omitempty"`
+	// Projects and Role are the narrowing: which projects this key reaches,
+	// and the most it may hold inside them.
+	Projects []string `json:"projects,omitempty"`
+	Role     string   `json:"role,omitempty"`
 }
 
 func (s *Server) getMe(w http.ResponseWriter, req *http.Request) {
@@ -201,12 +247,39 @@ func (s *Server) getMe(w http.ResponseWriter, req *http.Request) {
 		PlatformRole: platformRoleFrom(ctx).String(),
 		Kind:         callerKind(caller),
 	}
-	grant := access.ScopesFor(caller.access(), kitchenFrom(ctx), s.now())
+	kitchen := kitchenFrom(ctx)
+	grant := access.ScopesFor(caller.access(), kitchen, s.now())
 	for _, scope := range grant.Held() {
 		view.Scopes = append(view.Scopes, scope.String())
 	}
 	view.Projects = grant.Projects()
+	view.Key = callerKeyOf(caller, kitchen)
 	writeJSON(w, http.StatusOK, view)
+}
+
+// callerKeyOf describes the personal key a caller is holding, and nil for a
+// caller holding none.
+//
+// A key the platform has no grant for is reported as unknown rather than
+// omitted: it is the one state that needs acting on, and a `/me` that answered
+// nothing for it would leave "my pipeline stopped working and the platform
+// says I am an admin" with nowhere to look.
+func callerKeyOf(caller Caller, kitchen *kitchenv1alpha1.Kitchen) *callerKeyView {
+	if caller.PersonalKey == "" {
+		return nil
+	}
+	view := &callerKeyView{Name: caller.PersonalKey}
+	grant := access.PersonalKeyGrantFor(caller.access(), kitchen)
+	switch {
+	case grant == nil:
+		view.Unknown = true
+	case grant.Unrestricted:
+		view.Unrestricted = true
+	default:
+		view.Projects = grant.Projects
+		view.Role = string(grant.Ceiling())
+	}
+	return view
 }
 
 // The three kinds of caller, as `/me` reports them.
@@ -387,6 +460,9 @@ type tokenClaims struct {
 	Name          string          `json:"name"`
 	ClientID      string          `json:"azp"`
 	Scope         string          `json:"scope"`
+	// PersonalKey is `kitchen_key`, which the platform's own issuer puts on a
+	// token minted from a personal key and on nothing else.
+	PersonalKey string `json:"kitchen_key"`
 }
 
 // authenticate validates the request's bearer token and returns who it belongs
@@ -447,6 +523,7 @@ func (a *authenticator) authenticate(ctx context.Context, req *http.Request, cfg
 		EmailVerified: access.VerifiedClaim(claims.EmailVerified),
 		Name:          claims.Name,
 		ClientID:      claims.ClientID,
+		PersonalKey:   strings.TrimSpace(claims.PersonalKey),
 		Scopes:        strings.Fields(claims.Scope),
 	}, nil
 }

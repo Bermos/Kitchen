@@ -80,18 +80,72 @@ them ask for nothing but a valid token. Reading who else holds what is
 [the access survey's](access.md) question, and it answers it without ever
 naming a key.
 
+### What a key may do: all of you, or a slice
+
+A key is **unrestricted** — the whole of what its owner can do — or
+**fine-grained**: issued for named projects, at most a named role inside them
+([#595](https://github.com/Bermos/Kitchen/issues/595)). Naming a `role` is what
+narrows it.
+
+| Request | The key holds |
+|---|---|
+| `{"name": "laptop"}` | everything its owner holds, including the operator role if they wear one |
+| `{"name": "ci", "role": "developer"}` | developer, capped, on every project its owner can reach — and no operator role |
+| `{"name": "ci-shop", "role": "developer", "projects": ["shop"]}` | developer on `shop`, nothing anywhere else |
+| `{"name": "backups", "role": "viewer", "projects": ["shop"], "scopes": ["backup.run"]}` | the above, plus one platform operation. Operators only |
+
+**The role is a ceiling, not a grant.** What a key holds on a project is the
+lesser of its role and what its owner holds there, resolved on every request —
+so a key cannot be widened by editing its entry, by the owner being promoted
+later, or by anything else. It can only ever be narrower than the person.
+
+**It is a role rather than a grid of permissions**, and that is Kitchen's model
+rather than a simplification of GitHub's. A role is what this API enforces, and
+what a client may offer is derived from the same table it is enforced from; a
+key that could be given "may deploy but not read logs" would be a second
+vocabulary for saying what a developer is, and the two would drift the first
+time a route was added.
+
+Two things a narrowed key never gets, whoever issues it:
+
+- **the operator role**, because it is everything everywhere and a credential
+  carrying it is not narrower than its owner in any sense worth the word;
+- **`POST /projects`**, because a project's creator becomes its admin — which
+  is the one act that would hand a key something it was not issued for. The
+  refusal names the key and what it reaches.
+
+A **platform scope** on a key is an operator's to hand out and is refused to
+anybody else — and it is honoured only while its owner is still an operator, so
+a credential cannot outlive the authority that issued it.
+
+**A key issued by 0.41.0 must be reissued.** That release wrote the credential
+at the identity provider and nothing on the platform, because there was nothing
+to narrow; a key now holds what its entry on the singleton says, and a key with
+no entry holds nothing at all — which is what makes deleting an entry a
+revocation rather than a promotion. Such a key reports `"unknown": true` and is
+refused in those words. `kitchen keys list` shows them; revoke and issue again.
+
 ### Issuing one needs a browser sign-in
 
 ```sh
 curl -sS -X POST -H "authorization: Bearer $TOKEN" -d '{
-  "name": "laptop", "expiresInDays": 30
+  "name": "ci-shop", "role": "developer", "projects": ["shop"], "expiresInDays": 30
 }' https://kitchen.apps.example.com/api/v1/me/keys
 ```
 
 ```json
-{"name": "laptop", "prefix": "7f21ac", "created": "2026-09-14T09:12:04Z",
- "expires": "2026-10-14T09:12:04Z", "key": "7f21ac…"}
+{"name": "ci-shop", "prefix": "7f21ac", "created": "2026-09-14T09:12:04Z",
+ "expires": "2026-10-14T09:12:04Z",
+ "scope": {"projects": ["shop"], "role": "developer"},
+ "key": "7f21ac…"}
 ```
+
+A `role` above what you hold on a named project is refused rather than clamped:
+a key issued as `admin` that silently resolves to `developer` is a key whose
+first failure is somebody else's outage. A project you cannot see is answered
+as one that is not there, like every other unreadable project. And naming
+projects without a role is refused too — a request that meant to narrow and did
+not say how should not be granted everything.
 
 `key` is in this response and in no other. It is stored hashed, so nothing can
 read it back — not the dashboard, not this API, not an operator. A lost key is
@@ -139,6 +193,28 @@ credential my pipeline is holding". `expired` is answered rather than left to
 be worked out from two dates: the issuer refuses a lapsed key on presentation
 and deletes the row then, so this is the window in between.
 
+`scope` is what a narrowed key may do, and its absence means the key is its
+owner entire. A key carrying `"unknown": true` is one the identity provider
+still has and **this platform has no record of** — revoked here and not there,
+or its entry removed — and it holds nothing at all. It is answered rather than
+shown as unscoped, because a list that read the most alarming state as the most
+permissive one would be a list nobody could act on.
+
+`GET /me` answers the same thing about the credential in hand, under `key`,
+which is where `kitchen whoami` reads it:
+
+```json
+{"subject": "user_01H8X…", "email": "anna@example.com", "platformRole": "member",
+ "kind": "person", "key": {"name": "ci-shop", "role": "developer", "projects": ["shop"]}}
+```
+
+That line is the answer to "why can this token not do what I can", and nothing
+else on the payload can give it: the token says it is Anna, and Anna is an
+admin. A key the platform does not recognise reads `"unknown": true` there too,
+and every route refuses it in those words rather than as "you have no role" —
+which would be true of a credential belonging to somebody who administers the
+project, and would send them to ask for access they already have.
+
 `DELETE /me/keys/{key}` answers `204`. It stops working immediately and
 everywhere — the key is verified at the identity provider, so there is nothing
 cached for it to keep working against — while a token somebody already
@@ -155,7 +231,9 @@ refusal.
 ### The CLI
 
 `kitchen keys list` and `kitchen keys revoke NAME` are these two, and there is
-no `kitchen keys create`: the CLI holds a key, and a key may not issue one. A
-personal key is stored like any other credential — `kitchen login
---api-key-stdin` — and from then on the CLI is that person rather than one
-project's machine account. See [CLI.md](../CLI.md#signing-in).
+no `kitchen keys create`: the CLI holds a key, and a key may not issue one. The
+listing's `MAY` column is each key's reach, and `kitchen whoami` says which key
+is in hand and what it was narrowed to. A personal key is stored like any other
+credential — `kitchen login --api-key-stdin` — and from then on the CLI is that
+person, or the slice of them the key was issued for. See
+[CLI.md](../CLI.md#signing-in).

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 
-import type { IssuedPersonalKey, PersonalKey } from "../src/personalkeys.js";
+import {
+	PERSONAL_KEY_CLAIM,
+	type IssuedPersonalKey,
+	type PersonalKey,
+} from "../src/personalkeys.js";
 import type { IssuedPlatformKey } from "../src/platformkeys.js";
 import { startHarness, type Harness } from "./support.js";
 
@@ -24,6 +28,13 @@ describe("personal keys", () => {
 
 	/** A month out, which is what Kitchen asks for when nobody says. */
 	const soon = () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+	/** The claims of a minted token, which is where the key names itself. */
+	const claimsOf = ({ token }: { token: string }): Record<string, unknown> =>
+		JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<
+			string,
+			unknown
+		>;
 
 	const asOperator = (path: string, init: RequestInit = {}) =>
 		kitchen.internal(path, { ...init, headers: { ...init.headers, "x-api-key": kitchen.serviceKey } });
@@ -100,6 +111,60 @@ describe("personal keys", () => {
 			false,
 			"the value exists in the creation response and nowhere else",
 		);
+	});
+
+	it("names itself in the token, which is what makes it narrowable", async () => {
+		// The claim Kitchen reads to know *which* credential is asking (#595).
+		// Without it a personal key's token is indistinguishable from its
+		// owner's browser token, and "this key may deploy shop and nothing
+		// else" has nothing to hang on.
+		const issued = await issue("ci-shop");
+
+		const response = await kitchen.fetch("/token", { headers: { "x-api-key": issued.key } });
+		assert.equal(response.status, 200, await response.clone().text());
+		const claims = claimsOf((await response.json()) as { token: string });
+		assert.equal(claims[PERSONAL_KEY_CLAIM], "ci-shop");
+		assert.equal(claims.sub, anna, "and it is still the person's own subject");
+	});
+
+	it("puts no such claim on a browser's token, or on any other kind of key", async () => {
+		// A browser session's id is a session row's, not an apikey row's, so
+		// the lookup that resolves the claim finds nothing — which is how
+		// Kitchen tells a credential from somebody signed in.
+		const session = await kitchen.fetch("/sign-in/email", {
+			method: "POST",
+			headers: { "content-type": "application/json", origin: kitchen.url },
+			body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+		});
+		assert.equal(session.status, 200, await session.clone().text());
+		const cookie = session.headers
+			.getSetCookie()
+			.map((value) => value.split(";", 1)[0])
+			.join("; ");
+
+		const browser = await kitchen.fetch("/token", { headers: { cookie } });
+		assert.equal(browser.status, 200, await browser.clone().text());
+		assert.equal(
+			PERSONAL_KEY_CLAIM in claimsOf((await browser.json()) as { token: string }),
+			false,
+			"a browser holds no key, so its token names none",
+		);
+
+		// Nor does a platform credential's: its account was created for it, so
+		// what it may do is settled by the account rather than by the key.
+		const credential = await asOperator("/kitchen/platform-keys", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ name: "agent" }),
+		});
+		assert.equal(credential.status, 201, await credential.clone().text());
+		const agent = (await credential.json()) as IssuedPlatformKey;
+
+		const machine = await kitchen.fetch("/token", { headers: { "x-api-key": agent.key } });
+		assert.equal(machine.status, 200, await machine.clone().text());
+		assert.equal(PERSONAL_KEY_CLAIM in claimsOf((await machine.json()) as { token: string }), false);
+
+		await asOperator("/kitchen/platform-keys?name=agent", { method: "DELETE" });
 	});
 
 	it("is exchanged for a token that is the person's, not a machine's", async () => {

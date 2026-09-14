@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -24,9 +25,11 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/access"
 	"github.com/Bermos/Kitchen/internal/audit"
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/idp"
@@ -125,6 +128,36 @@ type personalKeyView struct {
 	// zero time", and the one that answers "is this still the credential my
 	// pipeline is holding".
 	LastUsed *time.Time `json:"lastUsed,omitempty"`
+
+	// Scope is what this key may do (#595): which projects it reaches, at
+	// most what role inside them, and which platform operations it was
+	// widened to. Absent means the key is its owner, entire.
+	//
+	// It is answered for a key the platform has a grant for, and the absence
+	// of one is reported by Unknown rather than read as "unrestricted": a key
+	// the platform does not recognise holds nothing, and a list that showed it
+	// as unscoped would show the most alarming state as the most permissive
+	// one.
+	Scope *personalKeyScopeView `json:"scope,omitempty"`
+	// Unknown is a key the identity provider still has and the platform has no
+	// grant for. It authenticates and can do nothing; revoking it is the
+	// answer.
+	Unknown bool `json:"unknown,omitempty"`
+}
+
+// personalKeyScopeView is a narrowed key's reach, in the words the request
+// that issued it used.
+type personalKeyScopeView struct {
+	// Projects is the allowlist, empty for a key that may reach every project
+	// its owner can.
+	Projects []string `json:"projects,omitempty"`
+	// Role is the most this key holds inside them — the ceiling, not a grant:
+	// what it actually holds on a project is the lesser of this and what its
+	// owner holds there.
+	Role string `json:"role"`
+	// Scopes are the platform operations it was widened to, honoured while
+	// its owner is an operator.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // issuedPersonalKeyView is the one response here that carries a credential:
@@ -143,10 +176,38 @@ type createPersonalKeyRequest struct {
 	// rather than quietly clamped, because a caller that asked for a year and
 	// was given ninety days would find out when the pipeline broke.
 	ExpiresInDays int `json:"expiresInDays,omitempty"`
+
+	// Role is what makes a key *fine-grained* (#595): the most it may hold on
+	// the projects it reaches. Naming one is what narrows the key; leaving it
+	// out asks for a key that is its owner, entire.
+	//
+	// It is a role rather than a grid of permissions because a role is what
+	// this API enforces. A key that could be given "may deploy but not read
+	// logs" would be a second vocabulary for saying what a developer is, and
+	// the two would drift the first time a route was added — the same
+	// argument that keeps `GET /projects` answering a role rather than a set
+	// of capability booleans.
+	Role string `json:"role,omitempty"`
+
+	// Projects is the allowlist. Empty, with a role named, is every project
+	// its owner can reach — which is still narrower than its owner, because
+	// the role caps it and because a narrowed key never wears the operator
+	// hat.
+	Projects []string `json:"projects,omitempty"`
+
+	// Scopes are platform operations to widen the key to, from the same
+	// vocabulary a platform credential holds. Only an operator may ask for
+	// any: a scope this platform grants is an operator's to hand out, and a
+	// key cannot carry what its owner could not.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
-func newPersonalKeyView(key idp.PersonalKey, now time.Time) personalKeyView {
-	return personalKeyView{
+func newPersonalKeyView(
+	key idp.PersonalKey,
+	grant *kitchenv1alpha1.PersonalKeyGrant,
+	now time.Time,
+) personalKeyView {
+	view := personalKeyView{
 		Name:     key.Name,
 		Prefix:   key.Prefix,
 		Created:  key.Created,
@@ -154,18 +215,71 @@ func newPersonalKeyView(key idp.PersonalKey, now time.Time) personalKeyView {
 		Expired:  key.Expired(now),
 		LastUsed: key.LastUsed,
 	}
+	switch {
+	case grant == nil:
+		view.Unknown = true
+	case grant.Narrowed():
+		view.Scope = &personalKeyScopeView{
+			Projects: grant.Projects,
+			Role:     string(grant.Ceiling()),
+			Scopes:   scopeNamesOf(grant.Scopes),
+		}
+	}
+	return view
+}
+
+// scopeNamesOf is a grant's platform scopes in the wire form a request writes
+// them in, and nil for the overwhelming majority of keys, which hold none.
+func scopeNamesOf(scopes []kitchenv1alpha1.PlatformScope) []string {
+	if len(scopes) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		names = append(names, string(scope))
+	}
+	return names
+}
+
+// personalKeyGrantOf is the platform's grant for one of an account's keys, and
+// nil when it has none — which is a key that holds nothing, not a key that
+// holds everything.
+func personalKeyGrantOf(
+	kitchen *kitchenv1alpha1.Kitchen,
+	subject, name string,
+) *kitchenv1alpha1.PersonalKeyGrant {
+	if kitchen == nil {
+		return nil
+	}
+	for i := range kitchen.Spec.Access.PersonalKeys {
+		grant := &kitchen.Spec.Access.PersonalKeys[i]
+		if grant.Key == name && grant.Subject == subject {
+			return grant
+		}
+	}
+	return nil
 }
 
 func (s *Server) listPersonalKeys(w http.ResponseWriter, req *http.Request) {
+	caller, _ := CallerFrom(req.Context())
 	keys, _, ok := s.personalKeysOf(w, req)
 	if !ok {
+		return
+	}
+	// The narrowing lives on the singleton, so the list is a join: the
+	// identity provider says which credentials exist, and the platform says
+	// what each may do. A key on one side and not the other is reported as
+	// such rather than quietly dropped — see personalKeyView.Unknown.
+	kitchen, err := s.getKitchen(req)
+	if err != nil {
+		s.writeError(w, err)
 		return
 	}
 
 	now := s.now()
 	views := make([]personalKeyView, 0, len(keys))
 	for _, key := range keys {
-		views = append(views, newPersonalKeyView(key, now))
+		views = append(views, newPersonalKeyView(key, personalKeyGrantOf(kitchen, caller.Subject, key.Name), now))
 	}
 	writeList(w, views)
 }
@@ -193,6 +307,10 @@ func (s *Server) createPersonalKey(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	expires, ok := personalKeyExpiry(w, body.ExpiresInDays, s.now())
+	if !ok {
+		return
+	}
+	grant, ok := s.personalKeyGrantFrom(req.Context(), w, kitchen, caller, body, name, expires)
 	if !ok {
 		return
 	}
@@ -231,6 +349,14 @@ func (s *Server) createPersonalKey(w http.ResponseWriter, req *http.Request) {
 			"email":   caller.Email,
 			"expires": expires.UTC().Format(time.RFC3339),
 			"change":  "personal-key-issued",
+			// And what it was issued *for*. A record that said only that a
+			// key exists would leave the reviewer's question — how much of
+			// this person is this credential — answerable only by reading the
+			// singleton as it stands today.
+			"unrestricted": grant.Unrestricted,
+			"role":         string(grant.Role),
+			"projects":     grant.Projects,
+			"scopes":       scopeNamesOf(grant.Scopes),
 		},
 	}) {
 		return
@@ -263,13 +389,161 @@ func (s *Server) createPersonalKey(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Both halves, or neither — the platform credential's rule, and here the
+	// half that would be left behind is the dangerous one: a key at the
+	// issuer that the platform has no grant for holds nothing, so a caller
+	// would be handed a credential that authenticates and can do nothing, and
+	// would find out from the first 404 rather than from this response.
+	grant.Subject, grant.Email = issued.Subject, issued.Email
+	patch := settingsAccessPatch(kitchen)
+	kitchen.Spec.Access.PersonalKeys = append(kitchen.Spec.Access.PersonalKeys, grant)
+	if err := s.Client.Patch(ctx, kitchen, patch); err != nil {
+		s.revokePersonalKey(ctx, w, directory, caller.Subject, name, err)
+		return
+	}
+
 	s.log().Info("personal key issued through the api",
 		"key", name, "subject", issued.Subject, "expires", expires.UTC().Format(time.RFC3339),
+		"unrestricted", grant.Unrestricted, "role", string(grant.Role), "projects", grant.Projects,
 		"caller", callerName(caller))
 	writeJSON(w, http.StatusCreated, issuedPersonalKeyView{
-		personalKeyView: newPersonalKeyView(issued.PersonalKey, s.now()),
+		personalKeyView: newPersonalKeyView(issued.PersonalKey, &grant, s.now()),
 		Key:             issued.Secret,
 	})
+}
+
+// revokePersonalKey takes a key back after the grant it was issued for could
+// not be written, and answers the request either way. It is keys.go's `revoke`
+// one credential over, and the two outcomes are worth different words for the
+// same reason: one is a request that changed nothing, the other is a
+// credential somebody has to go and remove by hand.
+func (s *Server) revokePersonalKey(
+	ctx context.Context,
+	w http.ResponseWriter,
+	directory accountDirectory,
+	subject, name string,
+	cause error,
+) {
+	if _, err := directory.DeletePersonalKey(ctx, subject, name); err != nil {
+		s.log().Error(err, "a personal key was issued that nothing granted anything to, and could not be "+
+			"taken back", "key", name, "cause", cause.Error())
+		writeJSON(w, http.StatusInternalServerError, errorBody{Error: fmt.Sprintf(
+			"the personal key %s was created at the identity provider but the platform could not record "+
+				"what it may do, and the key could not be taken back either: it authenticates and can do "+
+				"nothing. Revoke it and try again", name)})
+		return
+	}
+	s.log().Info("took back a personal key whose grant could not be written",
+		"key", name, "cause", cause.Error())
+	s.writeError(w, cause)
+}
+
+// personalKeyGrantFrom is what the request asked the key to be allowed to do,
+// checked against what the caller may actually hand out.
+//
+// Three refusals, and each is a rule that would otherwise only be enforced at
+// resolution — where it would be enforced silently, leaving somebody holding a
+// credential that does less than the screen said it would:
+//
+//   - a project the caller cannot see is not a project they may scope a key
+//     to, and is answered as not found for the reason every other unreadable
+//     project is;
+//   - a role above what the caller holds on a named project is refused rather
+//     than clamped, because a key issued as `admin` that silently resolves to
+//     `developer` is a key whose first failure is somebody else's outage;
+//   - a platform scope asked for by anybody but an operator is refused
+//     outright: scopes are what an operator hands to a machine.
+func (s *Server) personalKeyGrantFrom(
+	ctx context.Context,
+	w http.ResponseWriter,
+	kitchen *kitchenv1alpha1.Kitchen,
+	caller Caller,
+	body createPersonalKeyRequest,
+	name string,
+	expires time.Time,
+) (kitchenv1alpha1.PersonalKeyGrant, bool) {
+	grant := kitchenv1alpha1.PersonalKeyGrant{
+		Key:      name,
+		Expires:  metav1.NewTime(expires),
+		IssuedAt: metav1.NewTime(s.now()),
+	}
+
+	role := strings.TrimSpace(body.Role)
+	projects := trimmed(body.Projects)
+	scopes := trimmed(body.Scopes)
+	if role == "" {
+		// Nothing narrows it: the key is its owner, entire. A request that
+		// named projects or scopes without a role is a request that meant to
+		// narrow and did not say how, which is refused rather than granted
+		// everything.
+		if len(projects) > 0 || len(scopes) > 0 {
+			badRequest(w, "role is required to narrow a personal key: name the most this key may hold — "+
+				"viewer, developer or admin — on the projects it reaches. A key with no role is the "+
+				"whole of what you can do, which is what leaving projects and scopes out asks for")
+			return grant, false
+		}
+		grant.Unrestricted = true
+		return grant, true
+	}
+
+	parsed, ok := access.ParseProjectRole(role)
+	if !ok {
+		badRequest(w, "role must be viewer, developer or admin (got %q)", body.Role)
+		return grant, false
+	}
+	grant.Role = kitchenv1alpha1.AccessRole(parsed.String())
+
+	for _, name := range projects {
+		project := &kitchenv1alpha1.Project{}
+		if err := s.get(ctx, name, project); err != nil {
+			s.writeError(w, err)
+			return grant, false
+		}
+		held := access.ProjectRoleFor(caller.access(), kitchen, project)
+		if !held.AtLeast(access.ProjectViewer) {
+			// The caller cannot see it, so they are told what every other
+			// caller who cannot see a project is told.
+			s.writeError(w, apierrors.NewNotFound(
+				schema.GroupResource{Group: kitchenv1alpha1.GroupVersion.Group, Resource: "projects"}, name))
+			return grant, false
+		}
+		if !held.AtLeast(parsed) {
+			badRequest(w, "you hold %s on %s, so a key of yours cannot hold %s there: a personal key is "+
+				"the lesser of itself and the person it belongs to, and one issued above that would "+
+				"quietly do less than it says", held, name, parsed)
+			return grant, false
+		}
+	}
+	grant.Projects = projects
+
+	if len(scopes) > 0 {
+		if !platformRoleFrom(ctx).AtLeast(access.PlatformOperator) {
+			forbidden(w, "a platform scope on a personal key needs the operator role: scopes reach the "+
+				"platform's own surface, and a key cannot carry what its owner could not")
+			return grant, false
+		}
+		held, ok := parseScopes(w, scopes)
+		if !ok {
+			return grant, false
+		}
+		grant.Scopes = held
+	}
+	return grant, true
+}
+
+// trimmed is a request's list with the blanks taken out, which is what
+// distinguishes "named nothing" from "named an empty string".
+func trimmed(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // personalKeyNameTaken is the refusal a name already in use gets, from either
@@ -305,12 +579,18 @@ func (s *Server) deletePersonalKey(w http.ResponseWriter, req *http.Request) {
 			break
 		}
 	}
-	if found == nil {
+	// A grant whose key is already gone at the issuer is still this route's to
+	// remove: it is the half that stays behind when a revocation was
+	// interrupted, and leaving it would mean the only way to tidy it is
+	// kubectl. It is the platform credential's reasoning, and the same shape.
+	at := indexOfPersonalKey(kitchen, caller.Subject, name)
+	if found == nil && at < 0 {
 		s.writeError(w, apierrors.NewNotFound(
 			schema.GroupResource{Group: kitchenv1alpha1.GroupVersion.Group, Resource: "personalkeys"}, name))
 		return
 	}
 
+	patch := settingsAccessPatch(kitchen)
 	if !s.recorded(w, req, audit.Transition{
 		Object:     kitchen,
 		Kind:       audit.KindPersonalKey,
@@ -325,6 +605,23 @@ func (s *Server) deletePersonalKey(w http.ResponseWriter, req *http.Request) {
 			"change":  "personal-key-revoked",
 		},
 	}) {
+		return
+	}
+
+	if found == nil {
+		// Only the grant is left. Nothing to revoke at the issuer, so the
+		// write below is the whole of the revocation.
+		if at >= 0 {
+			kitchen.Spec.Access.PersonalKeys = append(
+				kitchen.Spec.Access.PersonalKeys[:at], kitchen.Spec.Access.PersonalKeys[at+1:]...)
+			if err := s.Client.Patch(ctx, kitchen, patch); err != nil {
+				s.writeError(w, err)
+				return
+			}
+		}
+		s.log().Info("removed the grant of a personal key that was already gone",
+			"key", name, "subject", caller.Subject)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
@@ -344,9 +641,39 @@ func (s *Server) deletePersonalKey(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The credential went first, for keys.go's reason: of the two ways this
+	// can end up half done, a grant naming a key that no longer exists is a
+	// line to tidy up, and a key that still works is not.
+	if at >= 0 {
+		kitchen.Spec.Access.PersonalKeys = append(
+			kitchen.Spec.Access.PersonalKeys[:at], kitchen.Spec.Access.PersonalKeys[at+1:]...)
+		if err := s.Client.Patch(ctx, kitchen, patch); err != nil {
+			s.log().Error(err, "a revoked personal key's grant is still on the platform",
+				"key", name, "subject", caller.Subject)
+			writeJSON(w, http.StatusInternalServerError, errorBody{Error: fmt.Sprintf(
+				"the personal key %s was revoked and no longer works, but what it was allowed to do is "+
+					"still recorded on the platform: revoke it again to finish the job", name)})
+			return
+		}
+	}
+
 	s.log().Info("personal key revoked through the api",
 		"key", name, "subject", caller.Subject, "caller", callerName(caller))
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// indexOfPersonalKey is where one account's named key sits in the platform's
+// list of what its personal keys may do, or -1.
+func indexOfPersonalKey(kitchen *kitchenv1alpha1.Kitchen, subject, name string) int {
+	if kitchen == nil {
+		return -1
+	}
+	for i, grant := range kitchen.Spec.Access.PersonalKeys {
+		if grant.Key == name && grant.Subject == subject {
+			return i
+		}
+	}
+	return -1
 }
 
 // personalKeysOf reads the calling account's own keys at the identity

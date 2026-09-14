@@ -111,6 +111,14 @@ browser sign-in may issue one (so no credential mints its own successor), it
 expires within ninety days, it is listed and revocable by name, and both ends
 of its life are in the audit log.
 
+**A key can also be narrower than the person.** Issued with a `role`, it is
+fine-grained: it reaches the projects it names and holds at most that role
+inside them — the *lesser* of the role and what its owner holds there, resolved
+on every request — wears no operator hat, and cannot create a project. The
+narrowing is recorded on the Kitchen singleton beside the platform credentials,
+so a key with no entry there holds nothing at all rather than falling back to
+being its owner.
+
 **Revocation is at the issuer**, for all three kinds. Deleting a key stops it
 working immediately, and the operator has nothing to invalidate because it
 never held anything; `DELETE /projects/{name}/keys/{key}` deletes it there and
@@ -343,7 +351,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall | any account — filtered |
 | GET | `/me` | Who the caller is: subject, address, name and platform role | any account |
 | GET | `/me/keys` | The caller's own personal keys: name, prefix, when each was made, last used and when it lapses. Never a value | any account |
-| POST | `/me/keys` | Issue one. The key is in this response and in no other. It carries every role the caller holds, which is why only a browser sign-in may ask | any signed-in person |
+| POST | `/me/keys` | Issue one, unrestricted or scoped to named projects at a named role. The key is in this response and in no other; only a browser sign-in may ask | any signed-in person |
 | DELETE | `/me/keys/{key}` | Revoke one of the caller's own keys. `204`. A key may revoke itself | any account |
 | GET | `/status` | The platform as it is running: cluster, tunnel, build queue, components | any account — body varies |
 | GET | `/alerts` | Every open delivery this caller may read, at the tier they read it at, with what is mitigating it. `?project=` narrows | any account — filtered |

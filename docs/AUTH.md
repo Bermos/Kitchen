@@ -755,8 +755,8 @@ is every project, because that is what a platform scope means when nobody
 narrowed it; the screen that issues one offers the narrowing.
 
 **It is visible, and it is recertified.** The grant is on the singleton, so a
-platform credential appears in `GET /access/identities` and in a recertification
-cycle like every other identity, with its last-active date beside it and its
+platform credential — and, since #595, a personal key — appears in
+`GET /access/identities` and in a recertification cycle like every other identity, with its last-active date beside it and its
 scopes in the column a reviewer decides from. A lapsed one is still surveyed —
 "there is a credential here nobody has cleaned up" is exactly what a review is
 for.
@@ -803,7 +803,7 @@ signed in ([#593](https://github.com/Bermos/Kitchen/issues/593)).
 |---|---|---|---|
 | Account | one created for it | one created for it | **the person's own** |
 | Account's address | `<project>.<key>@machines.kitchen.local` | `<name>@platform.kitchen.local` | their own address |
-| What it holds | a project **role** | platform **scopes** | **everything its owner holds** |
+| What it holds | a project **role** | platform **scopes** | **at most what its owner holds** |
 | Issued by | `POST /projects/{name}/keys` | `POST /platform/credentials` | `POST /me/keys` |
 | Who may issue one | the project's `admin` | an `operator` | **only a signed-in browser** |
 | Expires | no | yes | yes |
@@ -849,6 +849,48 @@ Four things bound it, and each is enforced rather than advised:
   items](#open-items).
 - **It is never read back.** The value is in the creation response and nowhere
   else, like every other credential this platform issues.
+
+**And it can be narrower than the person**
+([#595](https://github.com/Bermos/Kitchen/issues/595)). A key is issued either
+unrestricted — the whole of what its owner can do — or fine-grained: for named
+projects, at most a named role inside them, plus any platform scopes an
+operator chose. Three things make that hold:
+
+- **The token says which key is asking.** A personal key's token is otherwise
+  indistinguishable from its owner's browser token — same `sub`, same address,
+  same roles — so the issuer puts the key's name in a `kitchen_key` claim, and
+  puts it there for a personal key and nothing else
+  (`auth/src/personalkeys.ts`). It is not an identity and grants nothing: every
+  role still resolves from the subject, and this says which *credential* is
+  presenting it.
+- **The narrowing is a ceiling, applied in `internal/access`.** What a key
+  holds on a project is the **lesser** of its role and what its owner holds
+  there, resolved on every request by the one package every membership question
+  already goes through — the API's guard, the preview gate, the project list.
+  So a key cannot be widened by editing its entry, by its owner being promoted
+  later, or by asking the question through a different door. A narrowed key
+  also wears **no operator hat**, whatever its owner wears, and may not create
+  a project: its creator would become that project's admin, which is the one
+  act that would hand a key something it was not issued for.
+- **The grant lives on the Kitchen singleton**, in `spec.access.personalKeys`,
+  beside the platform credentials — so `kubectl get kitchen -o yaml` shows
+  every personal key this installation has issued and what each may do, and the
+  access survey rows them beside the people they copy. **A key with no entry
+  holds nothing**, which is what makes deleting one a revocation rather than a
+  promotion, and which is why every key gets an entry, unrestricted ones
+  included.
+
+A key's **platform scopes** are honoured only while its owner is still an
+operator. A credential that kept them after its owner stopped being one would
+be a credential outliving the authority that issued it.
+
+**Why a role and not a permission grid.** GitHub's fine-grained tokens name a
+permission per resource; Kitchen names a role, because a role is what this
+platform enforces and what every client derives its controls from. A key that
+could be given "may deploy but not read logs" would be a second vocabulary for
+saying what a developer is, resolved in a second place, and the two would drift
+the first time a route was added. The narrowing that matters — *which projects*
+— is the one Kitchen did not have.
 
 **There is deliberately no role knob.** A personal key that could be narrowed
 would be a second, weaker way of writing grants the platform already has,
@@ -1483,16 +1525,6 @@ Until one of the two is decided, the key path is the whole of it. See
 - **Browser sign-in for the CLI**: a device authorization grant in the OAuth
   provider, or a seeded loopback client. Neither exists yet; the section above
   says what each would take.
-- **Personal keys are not in the identity survey.** A platform credential is a
-  grant on the singleton, so it appears in `GET /access/identities` and in a
-  recertification cycle with its own row. A personal key is not a grant at all
-  — it is a second way to present an identity somebody already has — so a
-  reviewer sees the person and not how many keys are outstanding for them.
-  That is honest about the model and thin as evidence: "who holds a long-lived
-  credential for this platform" is answerable from the audit log's
-  `PersonalKey` records and from nowhere else. Surfacing a count beside each
-  person on the survey would take one read per subject at the issuer, or a
-  listing endpoint the `/kitchen` prefix does not have yet.
 - **A mail transport, or a decision not to have one**: password reset, address
   changes, invitations and operator-created accounts all wait on it, and every
   one of them is a hole a person falls into rather than a feature nobody asked

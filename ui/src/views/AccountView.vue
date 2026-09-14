@@ -188,9 +188,38 @@ const newKeyName = ref("");
 const newKeyDays = ref(30);
 const keyNameProblem = computed(() => (newKeyName.value ? credentialNameProblem(newKeyName.value) : ""));
 
+// What the key may do (#595). `unrestricted` is the key that is you, entire —
+// what this screen issued before it could narrow one — and the alternative is
+// a role plus, optionally, the projects it applies to. There is no permission
+// grid: a role is what the API enforces, and a second vocabulary for saying
+// what a developer is would be a second opinion that drifts.
+const ACCESS_CHOICES = [
+  { label: "Everything I can do", value: "unrestricted" },
+  { label: "Only what I choose", value: "narrowed" },
+];
+const KEY_ROLES = [
+  { label: "viewer — read, and change nothing", value: "viewer" },
+  { label: "developer — deploy, roll back, change variables", value: "developer" },
+  { label: "admin — the project's settings and its people too", value: "admin" },
+];
+
+const newKeyAccess = ref("narrowed");
+const newKeyRole = ref("developer");
+const newKeyProjects = ref<string[]>([]);
+const narrowing = computed(() => newKeyAccess.value === "narrowed");
+
+// The projects this account can see, which is the most a key of theirs can
+// ever reach: the API refuses a key scoped to a project its owner cannot see,
+// so offering one here would be offering a refusal.
+const { data: projectList } = useAsync(() => api.projects());
+const projectOptions = computed(() => (projectList.value ?? []).map((project) => project.name));
+
 function openIssue() {
   newKeyName.value = "";
   newKeyDays.value = 30;
+  newKeyAccess.value = "narrowed";
+  newKeyRole.value = "developer";
+  newKeyProjects.value = [];
   keyError.value = "";
   issuing.value = true;
 }
@@ -208,6 +237,14 @@ async function createKey() {
     const key = await api.createPersonalKey({
       name: newKeyName.value.trim(),
       expiresInDays: newKeyDays.value,
+      // A role is what narrows it; leaving it out is how the API is asked for
+      // a key that is its owner, entire.
+      ...(narrowing.value
+        ? {
+            role: newKeyRole.value,
+            ...(newKeyProjects.value.length ? { projects: [...newKeyProjects.value] } : {}),
+          }
+        : {}),
     });
     issuing.value = false;
     copied.value = false;
@@ -276,6 +313,21 @@ async function revokeKey() {
 function keyLifetime(key: PersonalKey): string {
   if (!key.expires) return "no expiry recorded";
   return key.expired ? `expired ${timeAgo(key.expires)}` : `expires ${timeAgo(key.expires)}`;
+}
+
+/**
+ * How much of its owner a key carries, in the words the row shows.
+ *
+ * The unrecognised case is a state rather than a scope: a key the platform has
+ * no grant for authenticates and can do nothing, and a row that showed it as
+ * unscoped would show the most alarming state as the most permissive one.
+ */
+function keyReach(key: PersonalKey): string {
+  if (key.unknown) return "nothing — this platform has no record of it";
+  if (!key.scope) return "everything you can do";
+  const where = key.scope.projects?.length ? key.scope.projects.join(", ") : "every project you can see";
+  const scopes = key.scope.scopes?.length ? `, ${key.scope.scopes.join(" ")}` : "";
+  return `${key.scope.role} on ${where}${scopes}`;
 }
 
 // --- the sessions -----------------------------------------------------------
@@ -417,9 +469,9 @@ async function revoke(token: string) {
           <div>
             <h2 class="text-sm font-medium text-highlighted">Personal keys</h2>
             <p class="text-xs text-muted mt-1">
-              A credential that is you: every project role you hold, and the operator role if you have it. It is what a
-              script needs to do what you would do — and it is issued here because only a signed-in browser may make
-              one. A credential cannot mint another.
+              A credential that acts as you — all of what you can do, or a slice of it: issued for the projects you
+              choose, at most the role you choose inside them. It is issued here because only a signed-in browser may
+              make one: a credential cannot mint another.
             </p>
           </div>
           <UButton size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openIssue">
@@ -443,6 +495,7 @@ async function revoke(token: string) {
             <thead>
               <tr class="text-left text-xs text-muted border-b border-default">
                 <th class="px-3 py-2 font-medium">Key</th>
+                <th class="px-3 py-2 font-medium">May</th>
                 <th class="px-3 py-2 font-medium">Life</th>
                 <th class="px-3 py-2 font-medium">Last used</th>
                 <th class="px-3 py-2"></th>
@@ -450,7 +503,7 @@ async function revoke(token: string) {
             </thead>
             <tbody>
               <tr v-if="!keys.length">
-                <td colspan="4" class="px-3 py-8 text-center text-muted">
+                <td colspan="5" class="px-3 py-8 text-center text-muted">
                   {{ keysLoading ? "Loading…" : "No personal keys." }}
                 </td>
               </tr>
@@ -458,6 +511,9 @@ async function revoke(token: string) {
                 <td class="px-3 py-2">
                   <p class="text-highlighted font-mono">{{ key.name }}</p>
                   <p class="text-xs text-dimmed font-mono">{{ key.prefix }}… · made {{ timeAgo(key.created) }}</p>
+                </td>
+                <td class="px-3 py-2 text-xs" :class="key.unknown ? 'text-warning' : 'text-toned'">
+                  {{ keyReach(key) }}
                 </td>
                 <td class="px-3 py-2 text-xs" :class="key.expired ? 'text-warning' : 'text-toned'">
                   {{ keyLifetime(key) }}
@@ -594,15 +650,49 @@ async function revoke(token: string) {
           </UFormField>
 
           <UFormField
+            label="This key may do"
+            help="A narrowed key never carries the operator role and cannot create a project, whoever issues it."
+          >
+            <USelect v-model="newKeyAccess" :items="ACCESS_CHOICES" class="w-full" />
+          </UFormField>
+
+          <template v-if="narrowing">
+            <UFormField
+              label="At most"
+              help="The ceiling, not a grant: on each project the key holds the lesser of this and what you hold there."
+            >
+              <USelect v-model="newKeyRole" :items="KEY_ROLES" class="w-full" />
+            </UFormField>
+
+            <UFormField
+              label="On these projects"
+              help="Leave empty for every project you can see. A project you cannot see cannot be scoped to."
+            >
+              <USelectMenu
+                v-model="newKeyProjects"
+                :items="projectOptions"
+                multiple
+                searchable
+                placeholder="every project you can see"
+                class="w-full"
+              />
+            </UFormField>
+          </template>
+
+          <UFormField
             label="Lifetime"
-            help="A key that carries every role you hold and has to outlive a quarter is one to reissue, which is an action somebody takes and the log records."
+            help="A key that has to outlive a quarter is one to reissue, which is an action somebody takes and the log records."
           >
             <USelect v-model="newKeyDays" :items="LIFETIME_OPTIONS" class="w-full" />
           </UFormField>
 
-          <p class="text-xs text-muted">
-            Anything holding this key can do anything you can, on every project you are on. Give it to a script you
-            control, not to a service somebody else runs.
+          <p v-if="narrowing" class="text-xs text-muted">
+            Anything holding this key can do what the key says, on the projects it names, as you. Give it to a script
+            you control.
+          </p>
+          <p v-else class="text-xs text-warning">
+            Anything holding this key can do anything you can, on every project you are on — including, if you are an
+            operator, the platform itself. Narrow it unless it genuinely needs all of that.
           </p>
         </form>
       </template>
@@ -651,7 +741,8 @@ async function revoke(token: string) {
           </div>
           <p class="text-xs text-muted">
             Sign in with it — <span class="font-mono">kitchen login --api-key-stdin</span> — or exchange it at the
-            platform's token endpoint the way CI does. It stops working
+            platform's token endpoint the way CI does. It may
+            <span class="font-mono">{{ issued ? keyReach(issued) : "" }}</span>, and it stops working
             {{ issued?.expires ? timeAgo(issued.expires) : "when it expires" }}.
           </p>
         </div>

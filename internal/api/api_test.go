@@ -185,6 +185,23 @@ func (i *issuer) tokenFor(t *testing.T, subject, email string) string {
 	}, nil)
 }
 
+// tokenFromKey mints what a *personal key* is exchanged for: the caller's own
+// token, plus the `kitchen_key` claim naming which of their keys presented
+// it (#595). It is the only thing that tells such a token from the browser's.
+func (i *issuer) tokenFromKey(t *testing.T, key string) string {
+	t.Helper()
+	return i.sign(t, map[string]any{
+		"sub":            testSubject,
+		"email":          testCaller,
+		"email_verified": true,
+		"kitchen_key":    key,
+		"iss":            i.url(),
+		"aud":            i.url(),
+		"iat":            time.Now().Add(-time.Minute).Unix(),
+		"exp":            time.Now().Add(time.Hour).Unix(),
+	}, nil)
+}
+
 // tokenFromClient mints a token the way an OAuth client's code exchange does:
 // the same account, the same audience, plus the `azp` naming which client the
 // issuer handed it to.

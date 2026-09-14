@@ -50,6 +50,27 @@ import { log } from "./log.js";
  * column is what holds it.
  */
 
+/**
+ * The claim a token minted from a personal key carries: the key's name.
+ *
+ * It is the whole of what makes a personal key *narrowable* (#595). A personal
+ * key's token is otherwise indistinguishable from its owner's browser token —
+ * same `sub`, same address, same roles — so a platform that wants to say "this
+ * credential may deploy shop and nothing else" has to be able to tell which
+ * credential is asking. Kitchen resolves the narrowing from its own state, as
+ * it resolves every other grant; this claim is the only part of the question
+ * the issuer can answer, because the issuer is the only place that knows which
+ * key was presented.
+ *
+ * It is the key's *name*, not its row id: the name is what the platform's
+ * grant, its screens and `kitchen keys revoke` all address a key by, and an
+ * opaque id would mean a lookup to make any of them legible. One name is one
+ * key per account, which is enforced when one is issued.
+ *
+ * It is never the key's value, which appears in one response and nowhere else.
+ */
+export const PERSONAL_KEY_CLAIM = "kitchen_key";
+
 /** 32 bytes as hex is the api-key plugin's `defaultKeyLength`. @see src/keys.ts */
 const KEY_BYTES = 32;
 
@@ -253,4 +274,41 @@ export async function deletePersonalKey(
 
 	log.info("revoked a personal key", { subject: removed.subject, name });
 	return removed;
+}
+
+/**
+ * The name of the personal key a session was minted from, or null for a
+ * session that is anything else.
+ *
+ * The api-key plugin's session carries the key's row id as its `session.id`
+ * (and the key's *value* as `session.token`, which is why nothing here reads
+ * that field). A browser's session carries a session row's id there instead,
+ * so the lookup is what tells the two apart: a session id is not an `apikey`
+ * row, and an `apikey` row that belongs to somebody else is not this caller's.
+ *
+ * Only a **person's** key answers. A project's CI key and a platform
+ * credential are api-key sessions too, but they belong to accounts created for
+ * them — what they may do is decided by the account, and a claim naming the
+ * key would be a second answer to a question already settled. So the claim
+ * appears exactly when a personal key minted the token, which is what lets
+ * Kitchen read its presence as "this is a credential, not a browser".
+ */
+export async function personalKeyOfSession(
+	auth: Auth,
+	config: Config,
+	session: { user: { id: string; email: string }; session: { id?: string } },
+): Promise<string | null> {
+	const id = session.session?.id;
+	if (!id || !isPerson(config, session.user.email)) {
+		return null;
+	}
+	const ctx = await auth.$context;
+	const row = await ctx.adapter.findOne<{ id: string; name?: string | null; referenceId?: string | null }>({
+		model: "apikey",
+		where: [{ field: "id", value: id }],
+	});
+	if (!row || row.referenceId !== session.user.id || !row.name) {
+		return null;
+	}
+	return row.name;
 }

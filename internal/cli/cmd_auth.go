@@ -381,6 +381,13 @@ half of this question.`),
 				if who.Kind != "" {
 					lines += fmt.Sprintf("%s %s\n", s.Key.Render("kind         "), who.Kind)
 				}
+				// The credential in hand, when it is a personal key. It is
+				// printed before the scopes because it is the line that
+				// explains the others: a narrowed key's holder is an admin
+				// whose token is not, and nothing else here says so.
+				if who.Key != nil {
+					lines += fmt.Sprintf("%s %s\n", s.Key.Render("key          "), heldKey(who.Key))
+				}
 				// Printed for a credential whatever it holds, and for anybody
 				// else only when they hold something. The API answers no
 				// scopes for a credential that has lapsed — which is the
@@ -409,6 +416,26 @@ half of this question.`),
 // The other two values — `person` and `key` — are printed as they arrive and
 // need no constant here, because nothing branches on them.
 const kindCredential = "credential"
+
+// heldKey is the personal key in hand, in one line: what it is called and how
+// much of its owner it carries.
+//
+// The unrecognised case is the one worth the words. A key the platform has no
+// grant for authenticates perfectly and can do nothing, so somebody running
+// this because their pipeline started failing is looking straight at the
+// answer — and "revoked here" is a different fix from "you need access".
+func heldKey(key *accountKey) string {
+	switch {
+	case key.Unknown:
+		return key.Name + " — this platform has no record of it, so it holds nothing. Issue a new one"
+	case key.Unrestricted:
+		return key.Name + " (unrestricted: everything you can do)"
+	case len(key.Projects) == 0:
+		return fmt.Sprintf("%s (%s on your projects)", key.Name, key.Role)
+	default:
+		return fmt.Sprintf("%s (%s on %s)", key.Name, key.Role, strings.Join(key.Projects, ", "))
+	}
+}
 
 // heldScopes is what a credential holds, and the sentence a credential that
 // holds nothing gets instead of an empty line.

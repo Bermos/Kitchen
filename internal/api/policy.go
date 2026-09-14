@@ -1210,6 +1210,18 @@ func (s *Server) guard(requires requirement, handler http.HandlerFunc) http.Hand
 					requires.Doing, callerName(caller), callerCredentialKind(caller)))
 				return
 			}
+			// A *narrowed* personal key is a credential too, whatever address
+			// it carries (#595). What this requirement refuses is an account
+			// widening itself, and creating a project is exactly that for a
+			// key that was issued to reach two projects: its creator becomes
+			// the new project's admin. An unrestricted key is its owner and is
+			// admitted, because refusing it would refuse the person.
+			if grant := access.PersonalKeyGrantFor(caller.access(), kitchen); grant != nil && grant.Narrowed() {
+				forbidden(w, fmt.Sprintf("%s is not something a narrowed personal key may do: the key %s "+
+					"reaches %s, and this would give it something it was not issued for. Sign in, or use "+
+					"a key that was not narrowed", requires.Doing, caller.PersonalKey, reachOf(*grant)))
+				return
+			}
 
 		case requireInteractive:
 			if caller.ClientID == "" {
@@ -1227,6 +1239,14 @@ func (s *Server) guard(requires requirement, handler http.HandlerFunc) http.Hand
 			}
 
 		case requireProjectRole:
+			// A key the platform has no grant for holds nothing anywhere, so
+			// every role check below would refuse it as "you have no role" —
+			// which is true and sends whoever is holding it to ask for one.
+			// The state is different and is worth its own sentence.
+			if access.HoldsUnknownKey(caller.access(), kitchen) {
+				s.refuseUnknownKey(w, caller)
+				return
+			}
 			if !s.allowedOnProject(w, &req, requires, caller, kitchen) {
 				return
 			}
@@ -1432,6 +1452,29 @@ func (s *Server) allowedOnProject(
 // The message follows the rule kitchen.validate follows for the chart's
 // guards: say what is wrong *and* what would fix it. Every one of them is
 // built from the table's own words, so no handler carries a refusal string.
+// refuseUnknownKey answers a caller holding a personal key the platform has no
+// grant for.
+//
+// It is a 403 rather than a 401: the token is valid and says who the caller is,
+// and what is missing is the platform's own record of what this credential may
+// do. Saying so is the whole point — the alternative refusal, "you have no role
+// on shop", is true of a credential belonging to somebody who administers shop,
+// and sends them to ask for access they already have.
+func (s *Server) refuseUnknownKey(w http.ResponseWriter, caller Caller) {
+	forbidden(w, fmt.Sprintf("the personal key %s is not one this platform recognises: it was revoked "+
+		"here, or its grant was removed, and a key the platform has no record of holds nothing at all. "+
+		"Issue a new one from the dashboard's Account screen", caller.PersonalKey))
+}
+
+// reachOf says what a narrowed key may touch, in one phrase a refusal can end
+// with: the projects it names, or every project its owner can reach.
+func reachOf(grant kitchenv1alpha1.PersonalKeyGrant) string {
+	if len(grant.Projects) == 0 {
+		return fmt.Sprintf("your projects as %s", grant.Ceiling())
+	}
+	return fmt.Sprintf("%s as %s", strings.Join(grant.Projects, ", "), grant.Ceiling())
+}
+
 func forbidden(w http.ResponseWriter, reason string) {
 	writeJSON(w, http.StatusForbidden, errorBody{Error: reason})
 }
