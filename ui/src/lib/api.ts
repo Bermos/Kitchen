@@ -294,6 +294,19 @@ export interface Project {
    * an environment actually runs is its release's list, on
    * GET /environments/{name}/processes. */
   processes?: Process[];
+  /**
+   * The workload list the *repository* declares, when it declares one (#593):
+   * what the last production build read out of kitchen.json, and which build
+   * and commit it read it from.
+   *
+   * It is a second field rather than more rows in `processes` because only
+   * one of the two is editable here — this is somebody's committed file, and
+   * a write would not change it. A project with one *runs* this list: the
+   * file replaces the project's own rather than adding to it, so anything
+   * asking "which workloads does this project have" reads this where it is
+   * set.
+   */
+  declaredProcesses?: DeclaredProcesses;
   /** The configuration files this project places into its workloads. A plain
    * file carries its content; a secret one carries a digest of what the
    * platform holds and never the content. */
@@ -2110,6 +2123,61 @@ export interface PlatformCredential {
  */
 export interface IssuedPlatformCredential extends PlatformCredential {
   key: string;
+}
+
+/**
+ * What a repository declares about its own workloads, as the platform last
+ * read it (#593).
+ *
+ * The provenance travels with the list because the list is somebody else's
+ * statement: "this project has a process called bridge" is only actionable
+ * beside "declared in kitchen.json at 4f2c9ab", which is what tells a workload
+ * that is declared now from one somebody has since taken out of the file.
+ */
+export interface DeclaredProcesses {
+  build?: string;
+  commit?: string;
+  /** Where in the repository the file was found — `kitchen.json`, or whatever
+   * the build root made of it. */
+  path?: string;
+  processes: Process[];
+}
+
+/**
+ * One personal key (#593): the credential somebody signs their own automation
+ * with.
+ *
+ * It is the platform credential's shape minus the scopes, and the absence is
+ * the whole difference: a personal key holds no grant of its own, because it
+ * *is* its owner — every project role they hold and the operator role if they
+ * wear one. There is nothing to narrow and nothing to display but its life.
+ */
+export interface PersonalKey {
+  name: string;
+  prefix?: string;
+  created: string;
+  expires: string;
+  /** Whether it has already lapsed. Answered rather than left to be worked
+   * out from two dates, so a list can show a dead key as dead. */
+  expired?: boolean;
+  lastUsed?: string;
+}
+
+/** A personal key with its value, which this response carries and no other. */
+export interface IssuedPersonalKey extends PersonalKey {
+  key: string;
+}
+
+/**
+ * What `POST /me/keys` takes: a name, and how long it should last.
+ *
+ * `expiresInDays` defaults to 30 and is capped at 90 — the platform
+ * credential's bounds, deliberately not looser for a credential that carries
+ * more.
+ */
+export interface NewPersonalKey {
+  name: string;
+  expiresInDays?: number;
 }
 
 /**
@@ -5070,6 +5138,19 @@ export const api = {
       "DELETE",
       `/platform/credentials/${encodeURIComponent(name)}`,
     ),
+
+  // Somebody's own keys (#593). They are under `/me` because that is what
+  // they are about: no subject travels, and no caller can see anybody else's.
+  // Issuing one needs a token issued to this dashboard's own OAuth client,
+  // which is the token this dashboard holds — a credential cannot mint a copy
+  // of a person.
+  personalKeys: () => list<PersonalKey>("/me/keys")(),
+  createPersonalKey: (key: NewPersonalKey) =>
+    request<IssuedPersonalKey>("POST", "/me/keys", key),
+  // Answers 204. A key may revoke itself, which is what should happen the
+  // moment one leaks.
+  deletePersonalKey: (name: string) =>
+    request<void>("DELETE", `/me/keys/${encodeURIComponent(name)}`),
 
   projectBuilds: (name: string) => list<Build>(`/projects/${name}/builds`)(),
   projectReleases: (name: string) =>

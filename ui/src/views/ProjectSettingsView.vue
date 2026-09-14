@@ -181,6 +181,19 @@ function open(section: SettingsSection) {
 // top of everything: a pane is now a screen's worth of form, and a warning two
 // panes away is a warning nobody reads.
 const config = computed(() => data.value?.builds.find((build) => build.config)?.config);
+// What the repository declares about the *workloads*, which the project itself
+// records (#593) rather than leaving on the build alone. It is read from here
+// rather than from the build above because it is the same list everything else
+// answers from — the claim route, the reconciler — so a screen that showed the
+// build's copy could show a workload the platform would refuse a volume for.
+const declaredProcesses = computed(() => project.value?.declaredProcesses);
+/** Every workload a claim may name: the repository's list where it declares
+ * one, and the project's own otherwise — the same answer the API validates a
+ * claim against, so the picker cannot offer a name the API refuses or hide one
+ * it would accept. */
+const workloadNames = computed(() =>
+  (declaredProcesses.value?.processes ?? project.value?.processes ?? []).map((p) => p.name),
+);
 const declares = computed(() => config.value?.declares ?? []);
 function declaredInRepo(field: string): boolean {
   return declares.value.includes(field);
@@ -908,9 +921,9 @@ async function deleteProject() {
             v-else-if="current.id === 'processes'"
             :project="project.name"
             :role="project.role"
-            :processes="project.processes"
+            :processes="declaredProcesses?.processes ?? project.processes"
             :built-here="builtHere"
-            :declared-in="declaredInRepo('processes') ? config?.path : undefined"
+            :declared-in="declaredProcesses?.path ?? (declaredInRepo('processes') ? config?.path : undefined)"
             @saved="refresh"
           />
 
@@ -921,7 +934,7 @@ async function deleteProject() {
                 v-if="mayClaim"
                 :project="project.name"
                 :role="project.role"
-                :processes="project.processes?.map((p) => p.name)"
+                :processes="workloadNames"
                 @saved="refresh"
               >
                 <UButton icon="i-lucide-plus" size="xs">New claim</UButton>
