@@ -233,6 +233,23 @@ func TestAPersonalKeyIsNamedOnceAndRevokedByName(t *testing.T) {
 	}
 }
 
+// A caller that is not a person holds no personal keys, and is told so as an
+// empty list rather than as a fault: `kitchen keys list` on a CI key should
+// answer the question it was asked.
+func TestACredentialHoldsNoPersonalKeys(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+	directory := h.withDirectory()
+	directory.personalKeysErr = idp.ErrNotAPerson
+
+	recorder := h.do(t, http.MethodGet, personalKeysPath, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if keys := decode[listBody[personalKeyView]](t, recorder).Items; len(keys) != 0 {
+		t.Errorf("a credential was answered with keys: %+v", keys)
+	}
+}
+
 // A lapsed key is reported as lapsed rather than left for the reader to work
 // out from two dates. The issuer deletes the row when it is next presented, so
 // this is the window in between.

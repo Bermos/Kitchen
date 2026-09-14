@@ -617,7 +617,7 @@ func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitch
 		if latest == nil || b.CreationTimestamp.After(latest.CreationTimestamp.Time) {
 			latest = b
 		}
-		if declaresProcesses(b) && (declaring == nil || b.CreationTimestamp.After(declaring.CreationTimestamp.Time)) {
+		if maySayWhatIsDeclared(b) && (declaring == nil || b.CreationTimestamp.After(declaring.CreationTimestamp.Time)) {
 			declaring = b
 		}
 	}
@@ -629,8 +629,8 @@ func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitch
 	project.Status.LatestBuildRef = &kitchenv1alpha1.LocalObjectReference{Name: latest.Name}
 }
 
-// declaresProcesses reports whether a Build is one whose kitchen.json the
-// project's workload list may be read from (#593).
+// maySayWhatIsDeclared reports whether a Build is one the project's workload
+// list may be read from (#593).
 //
 // Two conditions, and both are about trusting the file. It has to have
 // **succeeded**: a build that failed may have failed *on* the declaration, and
@@ -640,26 +640,33 @@ func (r *ProjectReconciler) updateReferences(ctx context.Context, project *kitch
 // (the reasoning `repoconfig.Runtime` records for `runtime.security`), so a
 // list read from one would let a fork declare a workload and then claim a
 // volume for it.
-func declaresProcesses(build *kitchenv1alpha1.Build) bool {
-	return build.Status.Phase == kitchenv1alpha1.BuildSucceeded &&
-		build.PullRequestNumber() == nil &&
-		build.Status.Config != nil
+//
+// A build that carries no `status.config` still qualifies, and that is the
+// difference between "the repository declares no workloads" and "nothing has
+// looked": a commit that deleted kitchen.json is a build saying the list is
+// empty, and it has to be able to say so.
+func maySayWhatIsDeclared(build *kitchenv1alpha1.Build) bool {
+	return build.Status.Phase == kitchenv1alpha1.BuildSucceeded && build.PullRequestNumber() == nil
 }
 
 // updateDeclaredProcesses records what the repository declares, from the last
-// build entitled to say so — or clears the record when nothing does.
+// build entitled to say so.
 //
-// Clearing is the half worth stating: a file that stops declaring workloads,
-// or a project whose builds have all been pruned, leaves `spec.processes` as
-// the whole answer again. Keeping a list nobody declares any more would let a
-// claim be written for a workload no deploy would ever materialize, which is
-// the same failure as #593 with the two lists the other way round.
+// Two absences, and they are deliberately different. A qualifying build that
+// declares **nothing** clears the record: the file stopped naming workloads,
+// `spec.processes` is the whole answer again, and keeping a list nobody
+// declares any more would let a claim be written for a workload no deploy
+// would materialize — #593 with the two lists the other way round. **No
+// qualifying build at all** leaves the record alone, because that is not a
+// statement about the repository: a project whose builds the retention sweep
+// has collected still runs the workloads its last release declared, and
+// clearing on a pruned build would make a volume claim start being refused for
+// a workload that has been serving for months.
 func (r *ProjectReconciler) updateDeclaredProcesses(
 	project *kitchenv1alpha1.Project,
 	build *kitchenv1alpha1.Build,
 ) {
 	if build == nil {
-		project.Status.DeclaredProcesses = nil
 		return
 	}
 	// The file's list, held to the project's own posture as the ceiling —

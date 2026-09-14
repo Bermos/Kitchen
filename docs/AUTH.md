@@ -844,7 +844,9 @@ Four things bound it, and each is enforced rather than advised:
   audit records of kind `PersonalKey`, classified as access writes beside the
   platform credentials — the issuance record is the one place the log can tie
   a credential to the person it is a copy of, because everything after it is
-  indistinguishable from them.
+  indistinguishable from them. Visible to its *owner* and to the log, that is:
+  it is not a grant, so it has no row in the identity survey — see [Open
+  items](#open-items).
 - **It is never read back.** The value is in the creation response and nowhere
   else, like every other credential this platform issues.
 
@@ -1481,6 +1483,16 @@ Until one of the two is decided, the key path is the whole of it. See
 - **Browser sign-in for the CLI**: a device authorization grant in the OAuth
   provider, or a seeded loopback client. Neither exists yet; the section above
   says what each would take.
+- **Personal keys are not in the identity survey.** A platform credential is a
+  grant on the singleton, so it appears in `GET /access/identities` and in a
+  recertification cycle with its own row. A personal key is not a grant at all
+  — it is a second way to present an identity somebody already has — so a
+  reviewer sees the person and not how many keys are outstanding for them.
+  That is honest about the model and thin as evidence: "who holds a long-lived
+  credential for this platform" is answerable from the audit log's
+  `PersonalKey` records and from nowhere else. Surfacing a count beside each
+  person on the survey would take one read per subject at the issuer, or a
+  listing endpoint the `/kitchen` prefix does not have yet.
 - **A mail transport, or a decision not to have one**: password reset, address
   changes, invitations and operator-created accounts all wait on it, and every
   one of them is a hole a person falls into rather than a feature nobody asked

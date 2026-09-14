@@ -38,7 +38,7 @@ import (
 // healthy, and POST /claims refused a volume for it as naming a process the
 // project did not have.
 func TestAProductionBuildRecordsWhatTheRepositoryDeclares(t *testing.T) {
-	project := projectFor("services")
+	project := projectFor()
 	succeeded := buildFor("services-4f2c9ab", "4f2c9ab", time.Now().Add(-time.Hour))
 	succeeded.Status.Phase = kitchenv1alpha1.BuildSucceeded
 	succeeded.Status.Config = &kitchenv1alpha1.RepoConfig{
@@ -87,7 +87,7 @@ func TestOnlyASucceededProductionBuildMaySayWhatTheRepositoryDeclares(t *testing
 	failed.Status.Phase = kitchenv1alpha1.BuildFailed
 	failed.Status.Config = config
 
-	project := projectFor("services")
+	project := projectFor()
 	r := reconcilerWith(t, project, preview, failed)
 	r.updateReferences(context.Background(), project)
 
@@ -96,12 +96,32 @@ func TestOnlyASucceededProductionBuildMaySayWhatTheRepositoryDeclares(t *testing
 	}
 }
 
+// A record survives the builds being collected. A project that deploys rarely
+// still runs the workloads its last release declared, so a retention sweep
+// that took its builds must not start a volume claim being refused for a
+// workload that has been serving for months.
+func TestAPrunedBuildDoesNotUnsayWhatTheRepositoryDeclared(t *testing.T) {
+	project := projectFor()
+	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
+		Build:     "services-collected",
+		Commit:    "4f2c9ab",
+		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
+	}
+
+	r := reconcilerWith(t, project)
+	r.updateReferences(context.Background(), project)
+
+	if project.Status.DeclaredProcesses == nil {
+		t.Fatal("a project with no builds left unsaid what its repository declares")
+	}
+}
+
 // A file that stops declaring workloads takes the record with it: the
 // project's own list is the whole answer again, and a claim written against a
 // workload nothing declares any more is refused rather than left pointing at
 // a mount no deploy would make.
 func TestADeclarationThatStopsBeingMadeIsCleared(t *testing.T) {
-	project := projectFor("services")
+	project := projectFor()
 	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
 		Build:     "services-old",
 		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
@@ -119,9 +139,34 @@ func TestADeclarationThatStopsBeingMadeIsCleared(t *testing.T) {
 	}
 }
 
-func projectFor(name string) *kitchenv1alpha1.Project {
+// And a commit that deleted the file entirely says the same thing. A build
+// with no kitchen.json is a build reporting that the repository declares no
+// workloads, which is a statement — unlike having no build at all.
+func TestACommitThatDeletedTheFileClearsTheRecord(t *testing.T) {
+	project := projectFor()
+	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
+		Build:     "services-old",
+		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
+	}
+
+	newer := buildFor("services-new", "ddddddd", time.Now())
+	newer.Status.Phase = kitchenv1alpha1.BuildSucceeded
+
+	r := reconcilerWith(t, project, newer)
+	r.updateReferences(context.Background(), project)
+
+	if project.Status.DeclaredProcesses != nil {
+		t.Errorf("the record outlived the file: %+v", project.Status.DeclaredProcesses)
+	}
+}
+
+// declaringProject is the project every test here reads, and the one every
+// build below belongs to.
+const declaringProject = "services"
+
+func projectFor() *kitchenv1alpha1.Project {
 	return &kitchenv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: PlatformNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: declaringProject, Namespace: PlatformNamespace},
 	}
 }
 
@@ -133,7 +178,7 @@ func buildFor(name, sha string, created time.Time) *kitchenv1alpha1.Build {
 			CreationTimestamp: metav1.NewTime(created),
 		},
 		Spec: kitchenv1alpha1.BuildSpec{
-			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: "services"},
+			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: declaringProject},
 			Git:        kitchenv1alpha1.GitRevision{SHA: sha},
 		},
 	}

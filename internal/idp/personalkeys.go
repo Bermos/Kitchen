@@ -100,10 +100,16 @@ func (c *Client) PersonalKeys(ctx context.Context, subject string) ([]PersonalKe
 	what := "listing an account's personal keys"
 	query := url.Values{"subject": []string{subject}}
 	body, err := c.callDirectory(ctx, "GET", c.cfg.DirectoryURL+PersonalKeysPath+"?"+query.Encode(), nil, what)
-	if errors.Is(err, errDirectoryNotFound) {
+	switch {
+	case errors.Is(err, errDirectoryNotFound):
 		return nil, fmt.Errorf("%s: %w", what, ErrNoPersonalKeyDirectory)
-	}
-	if err != nil {
+	case errors.Is(err, errDirectoryRefused):
+		// The account is a credential's rather than a person's, which is the
+		// only 400 this read can earn: everything else it sends is built
+		// here. A credential asking about its own personal keys holds none,
+		// and the caller decides whether that is an empty list or a refusal.
+		return nil, fmt.Errorf("%s: %w: %s", what, ErrNotAPerson, err)
+	case err != nil:
 		return nil, err
 	}
 	answer := &personalKeysResponse{}
@@ -172,10 +178,12 @@ func (c *Client) DeletePersonalKey(ctx context.Context, subject, name string) (*
 	what := fmt.Sprintf("revoking the personal key %q", name)
 	query := url.Values{"subject": []string{subject}, "name": []string{name}}
 	body, err := c.callDirectory(ctx, "DELETE", c.cfg.DirectoryURL+PersonalKeysPath+"?"+query.Encode(), nil, what)
-	if errors.Is(err, errDirectoryNotFound) {
+	switch {
+	case errors.Is(err, errDirectoryNotFound):
 		return nil, fmt.Errorf("%s: %w", what, ErrKeyNotFound)
-	}
-	if err != nil {
+	case errors.Is(err, errDirectoryRefused):
+		return nil, fmt.Errorf("%s: %w: %s", what, ErrNotAPerson, err)
+	case err != nil:
 		return nil, err
 	}
 	removed := &PersonalKey{}
