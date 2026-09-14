@@ -669,21 +669,36 @@ func (r *ProjectReconciler) updateDeclaredProcesses(
 	if build == nil {
 		return
 	}
-	// The file's list, held to the project's own posture as the ceiling —
-	// the same call the build and the Release make, so that this cannot
-	// report a workload under a posture nothing would admit. Passing no base
-	// is what makes it answer "what did the *file* declare" rather than
-	// "what would this build run".
+	// The file's list, through the one implementation of what the file's
+	// `processes` means. Passing no base is what makes it answer "what did
+	// the *file* declare" rather than "what would this build run", and the
+	// posture is passed because that call takes it — nothing of it survives
+	// into what is recorded here.
 	declared := repoconfig.Processes(nil, project.Spec.Runtime.Security, build.Status.Config)
 	if len(declared) == 0 {
 		project.Status.DeclaredProcesses = nil
 		return
 	}
+	// Reduced to a name and a shape. The workload itself is on the Build
+	// that read it and on the Release that froze it; a second copy of the
+	// whole ProcessSpec schema here cost more CRD than the chart's Helm
+	// release may hold — see DeclaredProcess.
+	processes := make([]kitchenv1alpha1.DeclaredProcess, 0, len(declared))
+	for _, process := range declared {
+		processes = append(processes, kitchenv1alpha1.DeclaredProcess{
+			Name: process.Name,
+			Type: process.Type,
+		})
+	}
+	var path string
+	if build.Status.Config != nil {
+		path = build.Status.Config.Path
+	}
 	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
 		Build:     build.Name,
 		Commit:    build.Spec.Git.SHA,
-		Path:      build.Status.Config.Path,
-		Processes: declared,
+		Path:      path,
+		Processes: processes,
 	}
 }
 

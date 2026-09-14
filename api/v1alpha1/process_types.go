@@ -774,23 +774,29 @@ func FindProcess(processes []ProcessSpec, name string) *ProcessSpec {
 // process cannot take. It is what a volume claim's process is checked
 // against, in the API and in the reconciler alike.
 //
-// It reads [Project.EffectiveProcesses] rather than `spec.processes`, and
-// that is the whole of #593. A workload can be declared in two places — on
-// the project, or in the repository's kitchen.json — and the file replaces
-// the project's list wherever a Release is made from it: the build builds
-// those workloads, the environment materializes them, and
-// `GET /environments/{name}/processes` reports them running. None of that was
-// written anywhere a claim could be checked against, so a repository could
-// declare a worker, deploy it, watch it serve, and be told by `POST /claims`
-// that the project has no such process.
+// It reads the repository's declaration where there is one, and that is the
+// whole of #593. A workload can be declared in two places — on the project,
+// or in the repository's kitchen.json — and the file replaces the project's
+// list wherever a Release is made from it: the build builds those workloads,
+// the environment materializes them, and `GET /environments/{name}/processes`
+// reports them running. None of that was written anywhere a claim could be
+// checked against, so a repository could declare a worker, deploy it, watch
+// it serve, and be told by `POST /claims` that the project has no such
+// process.
 //
 // The answer this gives is therefore "what would the next deploy run", which
 // is the question every caller of it is actually asking.
 func (p *Project) ProcessNames() []string {
-	processes := p.EffectiveProcesses()
-	names := make([]string, 0, len(processes)+1)
+	declared := p.DeclaredProcesses()
+	names := make([]string, 0, max(len(p.Spec.Processes), len(declared))+1)
 	names = append(names, WebProcessName)
-	for _, process := range processes {
+	if len(declared) > 0 {
+		for _, process := range declared {
+			names = append(names, process.Name)
+		}
+		return names
+	}
+	for _, process := range p.Spec.Processes {
 		names = append(names, process.Name)
 	}
 	return names
@@ -826,7 +832,7 @@ func (p *Project) ProcessNamesSentence() string {
 // DeclaredProcesses is the workload list the repository declares, as the last
 // production build to read a kitchen.json saw it, and nil for a project whose
 // workloads are all its own.
-func (p *Project) DeclaredProcesses() []ProcessSpec {
+func (p *Project) DeclaredProcesses() []DeclaredProcess {
 	if p.Status.DeclaredProcesses == nil {
 		return nil
 	}
@@ -836,26 +842,33 @@ func (p *Project) DeclaredProcesses() []ProcessSpec {
 // AllProcesses is every workload either list names: the project's own, with
 // the repository's declarations merged over them by name.
 //
-// It is deliberately *not* [Project.EffectiveProcesses]. That one answers
-// "what would the next deploy run", which is the right question for anything
-// that has to resolve to a running workload — a volume claim's mount. This
-// one answers "what could this project's workloads be called", which is the
-// right question for a declaration written *beside* them: an offering naming a
+// It is deliberately *not* [Project.ProcessNames]. That one answers "what
+// would the next deploy run", which is the right question for anything that
+// has to resolve to a running workload — a volume claim's mount. This one
+// answers "what could this project's workloads be called", which is the right
+// question for a declaration written *beside* them: an offering naming a
 // workload, or a configuration file listing the workloads it is placed into.
 // Holding those to the effective list would refuse an offering for a workload
 // that is visibly serving the moment its declaration moved into kitchen.json,
 // which is #593 one field over; holding them to `spec.processes` alone would
 // refuse it for the same reason in the other direction.
+//
+// A declared workload arrives as the [ProcessSpec] its record can support — a
+// name and a type — because that is what the callers of this read: a name to
+// match, and whether the workload is [ProcessSpec.Addressed]. The rest of what
+// a declared workload is lives on the Build that read it and on the Release
+// that froze it, which is where it was always written.
 func (p *Project) AllProcesses() []ProcessSpec {
 	declared := p.DeclaredProcesses()
 	all := make([]ProcessSpec, 0, len(p.Spec.Processes)+len(declared))
 	all = append(all, p.Spec.Processes...)
 	for _, process := range declared {
+		spec := ProcessSpec{Name: process.Name, Type: process.Type}
 		if at := indexOfProcess(all, process.Name); at >= 0 {
-			all[at] = process
+			all[at] = spec
 			continue
 		}
-		all = append(all, process)
+		all = append(all, spec)
 	}
 	return all
 }
@@ -880,20 +893,4 @@ func indexOfProcess(processes []ProcessSpec, name string) int {
 		}
 	}
 	return -1
-}
-
-// EffectiveProcesses is what an environment of this project would materialize
-// besides its web process: the repository's list where it declares one, and
-// the project's own otherwise.
-//
-// It is [ProcessNames]'s answer with the specs attached, and it applies the
-// same rule the build and the Release apply — the file replaces rather than
-// merges (internal/repoconfig.Processes says why a worker the commit no
-// longer declares must not survive) — so a reader of this is looking at the
-// list the next deploy would run.
-func (p *Project) EffectiveProcesses() []ProcessSpec {
-	if declared := p.DeclaredProcesses(); len(declared) > 0 {
-		return declared
-	}
-	return p.Spec.Processes
 }

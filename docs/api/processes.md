@@ -438,7 +438,7 @@ the file:
 {"name": "services", "processes": [],
  "declaredProcesses": {
    "build": "services-4f2c9ab", "commit": "4f2c9ab", "path": "kitchen.json",
-   "processes": [{"name": "bridge", "type": "service", "port": 8080}]}}
+   "processes": [{"name": "bridge", "type": "service"}]}}
 ```
 
 It is a second field rather than more rows in `processes`, because only one of
@@ -447,6 +447,16 @@ the two is editable here: `processes` is the project's own list, which `PATCH
 write would not change and the next build would put back. Folding them together
 would have the workloads editor read a file's workloads and send them back as
 the project's, which is how a declaration leaves a repository by accident.
+
+**A name and a shape, not a workload.** What a declared workload *is* — its
+build, its command, its posture, its init steps — is answered where it was
+already written: on the build that read the file, and on
+`GET /environments/{name}/processes` for the one that is running. This carries
+the two things neither of those can be asked for cheaply: which workloads
+exist, and whether each is the kind of thing anything can address. The
+reduction is not tidiness — a second copy of the whole workload schema on the
+Project's status generated 64KB of CRD, which put the chart's Helm release over
+the 1MiB a release Secret may hold, and `helm install` failed outright.
 
 Three things follow, and they are the point of recording it:
 

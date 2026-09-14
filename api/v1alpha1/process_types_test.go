@@ -154,7 +154,7 @@ func TestTheProcessListIsWhatTheNextDeployWouldRun(t *testing.T) {
 		Build:     "services-4f2c9ab",
 		Commit:    "4f2c9ab",
 		Path:      RepoConfigFileName,
-		Processes: []ProcessSpec{{Name: "bridge", Type: ProcessService, Port: 8080}},
+		Processes: []DeclaredProcess{{Name: "bridge", Type: ProcessService}},
 	}
 
 	if names := project.ProcessNames(); !slices.Equal(names, []string{WebProcessName, "bridge"}) {
@@ -163,8 +163,8 @@ func TestTheProcessListIsWhatTheNextDeployWouldRun(t *testing.T) {
 	if names := project.AllProcessNames(); !slices.Equal(names, []string{WebProcessName, "worker", "bridge"}) {
 		t.Errorf("a collision is checked against both lists, got %v", names)
 	}
-	if processes := project.EffectiveProcesses(); len(processes) != 1 || processes[0].Name != "bridge" {
-		t.Errorf("the effective list is the file's: %+v", processes)
+	if processes := project.AllProcesses(); len(processes) != 2 {
+		t.Errorf("both lists' workloads are what a declaration is checked against: %+v", processes)
 	}
 
 	// The sentence a refusal is made of says where the list came from, so
@@ -184,7 +184,7 @@ func TestADeclarationReplacesTheProjectsOwnEntryOfTheSameName(t *testing.T) {
 	project := &Project{
 		Spec: ProjectSpec{Processes: []ProcessSpec{{Name: "bridge", Type: ProcessWorker}}},
 		Status: ProjectStatus{DeclaredProcesses: &DeclaredProcesses{
-			Processes: []ProcessSpec{{Name: "bridge", Type: ProcessService, Port: 9000}},
+			Processes: []DeclaredProcess{{Name: "bridge", Type: ProcessService}},
 		}},
 	}
 	all := project.AllProcesses()

@@ -944,14 +944,41 @@ type DeclaredProcesses struct {
 	// +optional
 	Path string `json:"path,omitempty"`
 
-	// Processes is the list the file declared, with the project's own
-	// security posture already applied as the ceiling — the same merge the
-	// build and the Release do, so that this cannot report a workload
-	// running under a posture nothing would admit.
+	// Processes is the list the file declared, as a name and a shape each.
+	//
+	// **Not the workloads themselves.** A `ProcessSpec` is the whole of what
+	// a workload is — its build, its command, its posture, its init steps —
+	// and a second copy of that schema on this status cost 64KB of generated
+	// CRD, which put the chart's Helm release over the 1MiB a release Secret
+	// may hold: `helm install` failed outright, on a schema nothing would
+	// have read. What this list is *for* is answering "is `bridge` one of
+	// this project's workloads, and is it the kind of thing that can be
+	// addressed" — a claim's process, an offering's, a file's readers — and
+	// a name and a type answer all three.
+	//
+	// The workload itself stays where it was already written and already
+	// costs nothing new: on the Build that read the file, and on the Release
+	// that froze it.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
-	Processes []ProcessSpec `json:"processes,omitempty"`
+	Processes []DeclaredProcess `json:"processes,omitempty"`
+}
+
+// DeclaredProcess is one workload a repository declares, reduced to what
+// anything outside the build has to decide from: what it is called, and
+// whether it is the kind of workload that can be addressed.
+type DeclaredProcess struct {
+	// Name is what the workload is called — the name a claim, an offering or
+	// a configuration file refers to it by.
+	Name string `json:"name"`
+
+	// Type is its shape: worker, service, cron or task. It is here because
+	// one question about a declared workload is not answerable from the name
+	// — whether anything may *address* it, which is what an offering is
+	// refused for.
+	// +optional
+	Type ProcessType `json:"type,omitempty"`
 }
 
 // PreviewCapacityStatus is the project's preview ceiling as the platform last

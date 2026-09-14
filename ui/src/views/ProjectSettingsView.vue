@@ -192,7 +192,9 @@ const declaredProcesses = computed(() => project.value?.declaredProcesses);
  * claim against, so the picker cannot offer a name the API refuses or hide one
  * it would accept. */
 const workloadNames = computed(() =>
-  (declaredProcesses.value?.processes ?? project.value?.processes ?? []).map((p) => p.name),
+  declaredProcesses.value?.processes?.length
+    ? declaredProcesses.value.processes.map((p) => p.name)
+    : (project.value?.processes ?? []).map((p) => p.name),
 );
 const declares = computed(() => config.value?.declares ?? []);
 function declaredInRepo(field: string): boolean {
@@ -921,7 +923,9 @@ async function deleteProject() {
             v-else-if="current.id === 'processes'"
             :project="project.name"
             :role="project.role"
-            :processes="declaredProcesses?.processes ?? project.processes"
+            :processes="project.processes"
+            :declared="declaredProcesses?.processes"
+            :declared-at="declaredProcesses?.commit"
             :built-here="builtHere"
             :declared-in="declaredProcesses?.path ?? (declaredInRepo('processes') ? config?.path : undefined)"
             @saved="refresh"

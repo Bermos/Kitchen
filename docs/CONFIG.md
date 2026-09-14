@@ -459,8 +459,10 @@ into it. A workload is defined by the code it runs, so one the commit no longer
 names is one whose command may no longer be in the image; merging would keep it
 running until somebody noticed.
 
-What that list is, the platform records on the project as `declaredProcesses`
-once a production build has read it — so everything that asks "does this
+Which workloads that list names, the platform records on the project as
+`declaredProcesses` — a name and a shape each, not the workloads themselves,
+which stay on the build that read the file — once a production build has read
+it — so everything that asks "does this
 project have a workload called `bridge`" gets the same answer, the claim route
 included ([#593](https://github.com/Bermos/Kitchen/issues/593)). Before that it
 was written only onto the Build, and a volume for a workload declared here was

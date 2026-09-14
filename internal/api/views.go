@@ -405,23 +405,36 @@ func newProjectView(project *kitchenv1alpha1.Project, role access.ProjectRole, l
 }
 
 // declaredProcessesView is what a repository declares about its own
-// workloads, as the platform last read it: the list, and the build and commit
-// it came from.
+// workloads, as the platform last read it: which workloads there are, and the
+// build and commit the list came from.
 //
 // The provenance is not decoration. "This project has a process called bridge"
 // is only actionable beside "declared in kitchen.json at 4f2c9ab" — it is what
 // tells a workload that is declared now from one somebody has since taken out
 // of the file, and it is the sentence a screen needs in order to say why a
 // workload is here but not editable.
+//
+// **A name and a type, not a workload.** What a declared workload *is* — its
+// build, its command, its posture — is answered where it was already written:
+// on the build that read the file (`GET /builds/{name}`) and on what the
+// environment is running (`GET /environments/{name}/processes`). This answers
+// the one question those two cannot: which workloads the platform will accept
+// a claim, an offering or a configuration file for.
 type declaredProcessesView struct {
 	// Build is the build that read the file, Commit the commit it read, and
 	// Path where in the repository it was found.
 	Build  string `json:"build,omitempty"`
 	Commit string `json:"commit,omitempty"`
 	Path   string `json:"path,omitempty"`
-	// Processes is the list itself, in the same shape the project's own
-	// workloads are answered in.
-	Processes []processView `json:"processes"`
+	// Processes is the list itself.
+	Processes []declaredProcessView `json:"processes"`
+}
+
+// declaredProcessView is one declared workload: what it is called, and whether
+// it is the kind of thing anything can address.
+type declaredProcessView struct {
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
 }
 
 // newDeclaredProcessesView answers what the repository declares, and nil for
@@ -435,14 +448,13 @@ func newDeclaredProcessesView(project *kitchenv1alpha1.Project) *declaredProcess
 		Build:     declared.Build,
 		Commit:    declared.Commit,
 		Path:      declared.Path,
-		Processes: make([]processView, 0, len(declared.Processes)),
+		Processes: make([]declaredProcessView, 0, len(declared.Processes)),
 	}
 	for _, process := range declared.Processes {
-		// The project's own posture is the unit half here for the same
-		// reason it is for the project's own list: this is what the platform
-		// would run *now*, so the ceiling is today's.
-		view.Processes = append(view.Processes,
-			newProcessView(process, nil, "", project.Spec.Runtime.Security))
+		view.Processes = append(view.Processes, declaredProcessView{
+			Name: process.Name,
+			Type: string(process.Type),
+		})
 	}
 	return view
 }

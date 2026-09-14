@@ -137,8 +137,8 @@ func TestAVolumeMayNameAWorkloadTheRepositoryDeclares(t *testing.T) {
 		Build:  testBuild,
 		Commit: testCommit,
 		Path:   kitchenv1alpha1.RepoConfigFileName,
-		Processes: []kitchenv1alpha1.ProcessSpec{
-			{Name: "bridge", Type: kitchenv1alpha1.ProcessService, Port: 8080},
+		Processes: []kitchenv1alpha1.DeclaredProcess{
+			{Name: "bridge", Type: kitchenv1alpha1.ProcessService},
 		},
 	}
 	// Written through the object rather than the status subresource: the
@@ -189,7 +189,7 @@ func TestAProjectReportsWhatItsRepositoryDeclares(t *testing.T) {
 		Build:     testBuild,
 		Commit:    testCommit,
 		Path:      kitchenv1alpha1.RepoConfigFileName,
-		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
+		Processes: []kitchenv1alpha1.DeclaredProcess{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
 	}
 	// Written through the object rather than the status subresource: the
 	// harness's fake client only splits the two for the kinds that need it.

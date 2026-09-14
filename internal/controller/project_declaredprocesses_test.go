@@ -105,7 +105,7 @@ func TestAPrunedBuildDoesNotUnsayWhatTheRepositoryDeclared(t *testing.T) {
 	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
 		Build:     "services-collected",
 		Commit:    "4f2c9ab",
-		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
+		Processes: []kitchenv1alpha1.DeclaredProcess{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
 	}
 
 	r := reconcilerWith(t, project)
@@ -124,7 +124,7 @@ func TestADeclarationThatStopsBeingMadeIsCleared(t *testing.T) {
 	project := projectFor()
 	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
 		Build:     "services-old",
-		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
+		Processes: []kitchenv1alpha1.DeclaredProcess{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
 	}
 
 	newer := buildFor("services-new", "ccccccc", time.Now())
@@ -146,7 +146,7 @@ func TestACommitThatDeletedTheFileClearsTheRecord(t *testing.T) {
 	project := projectFor()
 	project.Status.DeclaredProcesses = &kitchenv1alpha1.DeclaredProcesses{
 		Build:     "services-old",
-		Processes: []kitchenv1alpha1.ProcessSpec{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
+		Processes: []kitchenv1alpha1.DeclaredProcess{{Name: "bridge", Type: kitchenv1alpha1.ProcessService}},
 	}
 
 	newer := buildFor("services-new", "ddddddd", time.Now())

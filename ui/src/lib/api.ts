@@ -2140,7 +2140,25 @@ export interface DeclaredProcesses {
   /** Where in the repository the file was found — `kitchen.json`, or whatever
    * the build root made of it. */
   path?: string;
-  processes: Process[];
+  /**
+   * The workloads the file declares, as a name and a shape each — not the
+   * workloads themselves.
+   *
+   * What a declared workload *is* (its build, its command, its posture) is
+   * answered where it was already written: on the build that read the file,
+   * and on what the environment is running. This answers the one question
+   * those cannot — which workloads the platform will accept a claim, an
+   * offering or a configuration file for — and it is deliberately small,
+   * because a second copy of the whole workload schema on the Project cost
+   * more generated CRD than the chart's Helm release may hold.
+   */
+  processes: DeclaredProcess[];
+}
+
+/** One workload a repository declares: what it is called, and its shape. */
+export interface DeclaredProcess {
+  name: string;
+  type?: string;
 }
 
 /**

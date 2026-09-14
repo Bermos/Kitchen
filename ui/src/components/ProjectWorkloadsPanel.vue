@@ -46,6 +46,15 @@ const props = defineProps<{
   /** The repository's `kitchen.json`, where one declared this list — its path,
    * for the notice. Absent means the project's own declaration stands. */
   declaredIn?: string;
+  /** The workloads that file declares, as the project recorded them (#593):
+   * a name and a shape each. It is what the platform will accept a claim or
+   * an offering for, and it is the half the list below cannot show — the
+   * project's own `processes` is empty for a repository that declares its
+   * workloads in the file. */
+  declared?: { name: string; type?: string }[];
+  /** The commit the declaration was read at, so the list reads as a fact
+   * about a commit rather than as a claim about now. */
+  declaredAt?: string;
 }>();
 const emit = defineEmits<{ saved: [] }>();
 
@@ -221,6 +230,25 @@ async function save() {
             project's wholesale — a workload the file does not name is a workload the commit does not have. Changing
             one here would hold until the next build set it back, so this reads instead. Change the file.
           </p>
+          <!-- What the file declared, which is the half the editor below
+               cannot show: a project whose workloads live in the file has an
+               empty list of its own. A name and a shape, because that is what
+               the project records — what each workload runs is on the build
+               that read it and on the environment running it. -->
+          <div v-if="declared?.length" class="flex flex-wrap items-center gap-1 pt-1">
+            <UBadge
+              v-for="workload in declared"
+              :key="workload.name"
+              color="neutral"
+              variant="subtle"
+              size="sm"
+              class="font-mono"
+              :title="workload.type ? `a ${workload.type} workload` : undefined"
+            >
+              {{ workload.name }}<span v-if="workload.type" class="text-dimmed">&nbsp;·&nbsp;{{ workload.type }}</span>
+            </UBadge>
+            <span v-if="declaredAt" class="text-xs text-dimmed">read at {{ declaredAt.slice(0, 7) }}</span>
+          </div>
         </div>
       </div>
     </div>
