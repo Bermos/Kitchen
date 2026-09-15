@@ -452,10 +452,15 @@ const userMenu = computed(() => [
        the two different numbers, and the one this wants is the one that is
        visible now.
 
-       Below `lg` nothing here applies. The aside is `fixed inset-y-0` there
+       Below `lg` none of *this* applies. The aside is `fixed inset-y-0` there
        and already behaves; making the frame bounded on a phone would trade
        this fault for the address bar never retracting again, which is a
-       change to every screen rather than a fix to one. -->
+       change to every screen rather than a fix to one.
+
+       The scroll handling in `router.ts` is a different matter and is **not**
+       gated: a `scrollBehavior` takes `history.scrollRestoration` at every
+       width, so a phone is under its rules too. Said there, and in
+       docs/UI.md. -->
   <div class="min-h-screen lg:min-h-0 lg:h-dvh lg:overflow-hidden flex">
     <!-- The drawer's backdrop, and the largest possible target for closing it.
 
@@ -699,7 +704,15 @@ const userMenu = computed(() => [
         </UDropdownMenu>
       </header>
 
-      <main class="flex-1 overflow-y-auto">
+      <!-- `tabindex="-1"` is not for the tab order — it is what lets `router.ts`
+           put focus here when a new screen opens. At `lg` the document is no
+           longer a scrollport, so the keys that scroll a page reach this
+           element only when the browser considers it focused; and a landmark
+           taking focus is also how a screen reader is told a new page has
+           arrived. `focus:outline-none` because that focus is programmatic, and
+           a ring around the whole page on every navigation is not a thing
+           anybody asked for. -->
+      <main tabindex="-1" class="flex-1 overflow-y-auto focus:outline-none">
         <!-- The content column. It was 72rem, which is a comfortable measure
              for prose and too narrow for a table: every list on the platform
              has a commit subject, a phase, a duration and a time in it, and at
