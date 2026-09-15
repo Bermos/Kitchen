@@ -81,21 +81,48 @@ func (objectStoreClaimShaper) deletionOutcome(claim *kitchenv1alpha1.ResourceCla
 }
 
 // claimObjectStoreView is what the claim asked its bucket to be, as it
-// answered it.
+// answered it, and where the bucket is reached.
 type claimObjectStoreView struct {
 	Versioning bool   `json:"versioning,omitempty"`
 	PublicRead bool   `json:"publicRead,omitempty"`
 	Size       string `json:"size,omitempty"`
+
+	// Endpoint and PublicEndpoint are the two addresses the binding
+	// carries: the in-cluster one the application's own reads and writes
+	// use, and — where the platform publishes the store — the one a URL
+	// handed to somebody else has to be presigned against (#601).
+	//
+	// Neither is a credential. An address published on the internet is not
+	// a secret and having it grants nothing: the store admits nobody
+	// anonymously, which is why the binding's keys are still never read
+	// back here.
+	Endpoint       string `json:"endpoint,omitempty"`
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// InCluster says whether Endpoint is an address only the cluster
+	// resolves, which is the whole of what an absent PublicEndpoint means.
+	// On an in-cluster store it is a store the platform publishes nowhere,
+	// and nothing presigned here opens in a browser; elsewhere it is a
+	// store whose one address was already public. A screen given only the
+	// absence tells one of them the other's story.
+	InCluster bool `json:"inCluster,omitempty"`
 }
 
-// objectStoreOf is the claim's bucket requirements, and nothing at all for
-// a claim that asked for nothing.
+// objectStoreOf is the claim's bucket requirements and where its bucket is,
+// and nothing at all for a claim that asked for nothing and has not bound.
 func objectStoreOf(claim *kitchenv1alpha1.ResourceClaim) *claimObjectStoreView {
 	cfg := claim.ObjectStore()
-	if !cfg.Versioning && !cfg.PublicRead && cfg.Size == "" {
+	where := claim.Status.ObjectStore
+	if !cfg.Versioning && !cfg.PublicRead && cfg.Size == "" && where == nil {
 		return nil
 	}
-	return &claimObjectStoreView{Versioning: cfg.Versioning, PublicRead: cfg.PublicRead, Size: cfg.Size}
+	view := &claimObjectStoreView{Versioning: cfg.Versioning, PublicRead: cfg.PublicRead, Size: cfg.Size}
+	if where != nil {
+		view.Endpoint = where.Endpoint
+		view.PublicEndpoint = where.PublicEndpoint
+		view.InCluster = where.InCluster
+	}
+	return view
 }
 
 // validObjectStoreConfig checks the shape of what an objectStore claim asks

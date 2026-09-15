@@ -40,9 +40,10 @@ var (
 )
 
 const (
-	endpoint = "http://kitchen-objectstore.kitchen-system.svc.cluster.local:9000"
-	rootKey  = "root"
-	rootPass = "hunter2hunter2"
+	endpoint       = "http://kitchen-objectstore.kitchen-system.svc.cluster.local:9000"
+	publicEndpoint = "https://objectstore.apps.example.com"
+	rootKey        = "root"
+	rootPass       = "hunter2hunter2"
 )
 
 func scoped(store *objectstoretest.Store, inCluster bool) *objectstore.S3 {
@@ -53,6 +54,15 @@ func scoped(store *objectstoretest.Store, inCluster bool) *objectstore.S3 {
 		Buckets:         store,
 		Admin:           store,
 	}
+}
+
+// published is the bundled store as it is once the platform publishes an
+// address for it: the same in-cluster endpoint, and a second one in front of
+// the shared Gateway.
+func published(store *objectstoretest.Store) *objectstore.S3 {
+	s := scoped(store, true)
+	s.Config.PublicEndpoint = publicEndpoint
+	return s
 }
 
 // shopsBucket is what project "shop"'s claim "uploads" is named, and
@@ -144,9 +154,9 @@ func TestPublicReadIsRefusedInClusterAndHonouredElsewhere(t *testing.T) {
 	store := objectstoretest.New()
 	_, err := scoped(store, true).ProvisionWith(ctx, shopCDN, objectstore.Requirements{PublicRead: true})
 	if !errors.Is(err, objectstore.ErrUnsatisfiable) {
-		t.Fatalf("the bundled store is reached inside the cluster alone; want ErrUnsatisfiable, got %v", err)
+		t.Fatalf("the bundled store admits nobody anonymously; want ErrUnsatisfiable, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "inside the cluster") {
+	if !strings.Contains(err.Error(), "admits nobody anonymously") {
 		t.Errorf("the refusal says why: %v", err)
 	}
 	if len(store.Buckets) != 0 || len(store.Users) != 0 {
@@ -439,5 +449,98 @@ func TestAStoreWithNoTaggingStillProvisions(t *testing.T) {
 	}
 	if instance.Name != shopsBucket {
 		t.Fatalf("the bucket is %q", instance.Name)
+	}
+}
+
+// Publishing an address must not publish a bucket (#601). The bundled store
+// now has a name the internet resolves, and that changes nothing about what
+// it hands out without a signature: the claim is still refused, and the
+// anonymous read policy that would have made the objects readable is still
+// never written.
+//
+// The refusal itself is what is asserted rather than the absence of a
+// success: an assertion that a bucket "is not public" holds just as well for
+// a store where nothing was created at all.
+func TestAPublishedBundledStoreStillRefusesAPubliclyReadableBucket(t *testing.T) {
+	ctx := context.Background()
+	store := objectstoretest.New()
+
+	_, err := published(store).ProvisionWith(ctx, shopCDN, objectstore.Requirements{PublicRead: true})
+	if !errors.Is(err, objectstore.ErrUnsatisfiable) {
+		t.Fatalf("publishing an address is not publishing a bucket; want ErrUnsatisfiable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), objectstore.BindingKeyPublicEndpoint) {
+		t.Errorf("the refusal names the address a URL is presigned against instead: %v", err)
+	}
+	if len(store.Buckets) != 0 || len(store.Users) != 0 || len(store.Policies) != 0 {
+		t.Errorf("a refusal creates nothing: %v / %v / %v", store.Buckets, store.Users, store.Policies)
+	}
+
+	// And an ordinary claim through the same published store gets the scoped
+	// policy and no anonymous grant of any kind.
+	instance, err := published(store).Provision(ctx, shopUploads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if public := store.Buckets[instance.ID].PublicRead; public != nil {
+		t.Errorf("no anonymous read policy is written for a bucket at the published store: %s", public)
+	}
+	// The policy has to exist before its contents mean anything: "does not
+	// grant the world" is also true of a policy that was never written, and
+	// an assertion that holds for "" is an assertion that has stopped
+	// working the day scoped provisioning changes.
+	policy, ok := store.Policies[objectstore.PolicyName(instance.ID)]
+	if !ok || len(policy) == 0 {
+		t.Fatalf("the bucket has no policy at all, so there is nothing here to call private: %v", store.Policies)
+	}
+	if strings.Contains(string(policy), `"AWS":["*"]`) || strings.Contains(string(policy), `"Principal"`) {
+		t.Errorf("the bucket's policy names the scoped user and nobody else: %s", policy)
+	}
+}
+
+// The two addresses, and which of them the binding carries where.
+func TestTheBindingCarriesThePublicAddressOnlyWhereThereIsOne(t *testing.T) {
+	ctx := context.Background()
+
+	store := objectstoretest.New()
+	instance, err := published(store).Provision(ctx, shopUploads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Binding.Endpoint != endpoint {
+		t.Errorf("the in-cluster address keeps its value and meaning, got %q", instance.Binding.Endpoint)
+	}
+	if instance.Binding.PublicEndpoint != publicEndpoint {
+		t.Errorf("the second address is what a presigned URL is signed against, got %q",
+			instance.Binding.PublicEndpoint)
+	}
+	data := instance.Binding.Data()
+	if got := string(data[objectstore.BindingKeyEndpoint]); got != endpoint {
+		t.Errorf("the Secret's %s key is %q", objectstore.BindingKeyEndpoint, got)
+	}
+	if got := string(data[objectstore.BindingKeyPublicEndpoint]); got != publicEndpoint {
+		t.Errorf("the Secret's %s key is %q", objectstore.BindingKeyPublicEndpoint, got)
+	}
+	if got := published(store).Address().Data()[objectstore.BindingKeyPublicEndpoint]; string(got) != publicEndpoint {
+		t.Errorf("the address refresh carries it too, got %q", got)
+	}
+
+	// A store the platform publishes nowhere — and every external store,
+	// whose own endpoint is already an address the internet resolves —
+	// carries no such key at all. Present and empty would read to an
+	// application as an address, and it would presign against "".
+	plain := objectstoretest.New()
+	other, err := scoped(plain, true).Provision(ctx, shopUploads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := other.Binding.Data()[objectstore.BindingKeyPublicEndpoint]; ok {
+		t.Errorf("a store with no public address carries no %s key", objectstore.BindingKeyPublicEndpoint)
+	}
+	// The refresh writes it present-and-empty instead, which is how the key
+	// is taken back off a binding that had one.
+	refresh := scoped(plain, true).Address().Data()
+	if got, ok := refresh[objectstore.BindingKeyPublicEndpoint]; !ok || len(got) != 0 {
+		t.Errorf("the address refresh clears the key rather than leaving a stale one: %q, present %v", got, ok)
 	}
 }
