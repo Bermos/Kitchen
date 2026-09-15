@@ -37,14 +37,17 @@ import (
 // nothing could say so before the write was made: the confirm step revealed
 // nothing the release list had not already shown.
 //
-// **The diff is computed here because the values must not leave.** The API
-// never reads a variable's value back — `envVarView` reports only that a
-// variable has one — so a client cannot compare two snapshots itself without
-// the platform first handing it every literal the project ever set. The
-// comparison happens on this side of the wire and only the verdict crosses it:
-// `changed`, never what it changed to. That is the whole answer to "does the
-// diff need an endpoint" — it needs one precisely so that it does not need the
-// values.
+// **The diff is computed here because the values must not leave.** This route
+// is a viewer's, and a viewer is never answered a literal — `envVarView`
+// reports only that a variable has one. Nothing answers a *release's* frozen
+// literals at any role: `GET /projects/{name}/env` (#598) is one project's
+// variables as they stand now, at `developer`, which is a different question
+// from what two snapshots hold. So a client cannot compare two snapshots
+// itself without the platform first handing it every literal the project ever
+// set. The comparison happens on this side of the wire and only the verdict
+// crosses it: `changed`, never what it changed to. That is the whole answer to
+// "does the diff need an endpoint" — it needs one precisely so that it does
+// not need the values.
 //
 // The runtime and the process list are a different matter and are reported in
 // full: a port, a replica count and a cron expression are configuration a

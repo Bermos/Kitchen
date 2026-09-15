@@ -185,9 +185,10 @@ describe("the variable diff", () => {
     expect(changeSign("unchanged")).toBe("=");
   });
 
-  // The panel never shows a value, because the API never reads one back. What
-  // it shows instead is what kind of change it is — and where the *source*
-  // moved, which is the change no diff of values would have explained.
+  // The panel never shows a value, because nothing answers a release's frozen
+  // literals. What it shows instead is what kind of change it is — and where
+  // the *source* moved, which is the change no diff of values would have
+  // explained.
   it("says what changed without ever having a value to say", () => {
     expect(changeDetail({ name: "A", change: "removed", againstSource: "value" })).toBe("a value → unset");
     expect(changeDetail({ name: "A", change: "added", source: "secret" })).toBe("unset → a secret");

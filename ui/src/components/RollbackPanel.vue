@@ -444,8 +444,10 @@ function commitLabel(build: Build): string {
               </div>
 
               <!-- The variable diff. The values are not here and cannot be:
-                   the API never reads one back, so the comparison is the
-                   server's and only its verdict crosses the wire. -->
+                   nothing answers a *release's* frozen literals, so the
+                   comparison is the server's and only its verdict crosses the
+                   wire. (A project's variables as they stand now are readable,
+                   on the Variables panel — that is a different question.) -->
               <div class="mb-6">
                 <div class="flex items-baseline justify-between gap-3 mb-2">
                   <p class="text-[0.7rem] uppercase tracking-wide text-muted">Environment variables in the snapshot</p>

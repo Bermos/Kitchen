@@ -316,12 +316,14 @@ is part of the answer; a caller that wants only the differences filters on
 `change`. The variables are ordered by how much a reader needs them: changed,
 then removed, then added, then unchanged.
 
-**There is no value in it, and that is the reason the route exists.** The API
-never reads an environment variable's value back — [a project's
-variables](projects.md) report only that there is one — so two snapshots cannot
-be compared by a client without the platform first handing over every literal
-the project ever set. The comparison is made here instead and only the verdict
-crosses the wire: `changed`, never what it changed to. What *does* travel is
+**There is no value in it, and that is the reason the route exists.** This is a
+`viewer`'s read, and a viewer is never answered a literal — the values a
+developer can ask for are [one project's variables as they stand
+now](projects.md#reading-what-a-variables-own-value-is), not two releases'
+frozen snapshots, which nothing answers. So two snapshots cannot be compared by
+a client without the platform first handing over every literal the project ever
+set. The comparison is made here instead and only the verdict crosses the wire:
+`changed`, never what it changed to. What *does* travel is
 where each side's value comes from (`source` and `againstSource`: `value`,
 `secret` or `claim`) and, for a reference-backed variable, the key it reads
 (`ref`, `againstRef`) — neither is a secret, and both explain a change no

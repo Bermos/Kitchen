@@ -26,10 +26,21 @@ for something the dashboard can do.
 
 The corollaries that shape how such writes are built:
 
-- **The API never reads credentials back.** Writing a credential means the
-  operator creates the Secret from the request body; no response ever echoes
-  it. Secrets the API wrote carry `app.kubernetes.io/managed-by: kitchen` and
-  are deleted with their connection — secrets anything else wrote are not.
+- **The API never reads credentials back**, and a credential is what the
+  platform holds *on somebody's behalf* — a connection's token, a project's
+  own secret, the content of a secret configuration file, a claim's binding.
+  Writing one means the operator creates the Secret from the request body; no
+  response ever echoes it. Secrets the API wrote carry
+  `app.kubernetes.io/managed-by: kitchen` and are deleted with their
+  connection — secrets anything else wrote are not.
+  **A literal a developer typed into an environment variable is not one**
+  (#598): `spec.env[].value` is cleartext on the Project object, so
+  `GET /projects/{name}/env` answers it back — at `developer`, the role that
+  may already replace it, on a route of its own so that every viewer's read
+  stays names only, and recorded, because it is the one way a stored value
+  leaves. The line is literal yes, *pointer* no: a variable naming a
+  `fromSecret` or a `fromResourceClaim` answers with the reference and is
+  never resolved.
 - **A write surface waits for its reconciler.** An API over objects nothing
   reconciles only looks like it works, so a route lands with the controller
   behind it — which is why Domain and ResourceClaim writes arrived only once
@@ -117,10 +128,14 @@ keeps all three:
   `--no-input` is implied whenever stdin is not a terminal — a question with
   nobody to answer it is a failure naming the flag, never a wait.
 - **The API never reads credentials back, so neither does the CLI.**
-  `kitchen env list` prints the whole variable list and no values; `env set`
-  sends every variable back by name and a value only for the ones it is
-  changing, which is what makes a partial change possible against a route that
-  replaces the whole list. Signing in stores an API key and exchanges it at the
+  `kitchen env list` prints the whole variable list and no values, and
+  `--values` is what asks the one route that answers the literals — never a
+  secret's, and a separate, recorded read rather than something a list hands
+  over by default. `env set` sends every variable back by name and a value
+  only for the ones it is changing, which is what makes a partial change
+  possible against a route that replaces the whole list; that mechanism is
+  untouched by the read, because a value the CLI was shown is still not one it
+  edits. Signing in stores an API key and exchanges it at the
   issuer — there is no browser flow, because the identity provider's OAuth
   plugin implements no device grant (docs/CLI.md says what it would take).
 

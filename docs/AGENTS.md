@@ -252,18 +252,21 @@ kitchen config check --json
 environment refused the release it produced; add `--detach` to return as soon
 as it is queued.
 
-### Values are never readable
+### A variable's own value is readable; a secret's is not
 
-`kitchen env list` prints every variable's name and whether it has a value,
-**never the value**. No route on the platform answers one, so there is no
-flag, no `env pull`, and no way to reconstruct a `.env` file. This is not an
-obstacle to work around — do not try to read a value out of a running
-container either.
+`kitchen env list` prints every variable's name and whether it has a value.
+`kitchen env list --values` prints the literals as well — that is a separate,
+recorded request, and it needs `developer`. A variable reading one of the
+project's own secrets or a resource claim's binding answers with the reference
+it names and **never** with what is behind it, on either call: no route on the
+platform answers a secret's value, so do not go looking for one, and do not try
+to read it out of a running container either. There is still no `env pull` and
+no `.env` to reconstruct.
 
-The consequence for editing: `kitchen env set` sends the whole list back by
-name, with a value only for the variables it is changing. That is what makes a
-partial change possible against a route that replaces the list. Use the
-command; do not hand-build the `PATCH`.
+The consequence for editing is unchanged: `kitchen env set` sends the whole
+list back by name, with a value only for the variables it is changing. That is
+what makes a partial change possible against a route that replaces the list. Use
+the command; do not hand-build the `PATCH`.
 
 ## Reading a failure
 

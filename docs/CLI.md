@@ -450,7 +450,7 @@ give.
 | `kitchen cancel` | Stop a build that is still running | `POST /builds/{name}/cancel` |
 | `kitchen logs` | An environment's or a build's logs, `--follow` to tail | `GET /environments/{name}/logs`, `GET /builds/{name}/logs` |
 | `kitchen processes` | The workloads an environment runs besides its web process; (`runs`, `run`) one workload's run history and running it now — a scheduled job off its schedule, or a deploy task again; (`set`, `rm`) declaring one workload of the project and taking one off | `GET /environments/{name}/processes`, `GET`/`POST /environments/{name}/processes/{process}/runs`, `GET`/`PATCH /projects/{name}` |
-| `kitchen env list/set/rm` | The project's environment variables | `PATCH /projects/{name}/env` |
+| `kitchen env list/set/rm` | The project's environment variables; `list --values` reads each literal back, which is a `developer`'s read and never a secret's | `GET`/`PATCH /projects/{name}/env`, `GET /projects/{name}` |
 | `kitchen secret list/set/rm` | The project's own secrets — credentials the platform did not mint | `GET /projects/{name}/secrets`, `PUT`/`DELETE /projects/{name}/secrets/{secret}` |
 | `kitchen files list/set/rm` | The configuration files the project places into its workloads — what software the platform did not build is configured by | `GET /projects/{name}`, `PATCH /projects/{name}`, `PUT /projects/{name}/files/{file}` |
 | `kitchen rollback` | Put an environment back on an earlier release, saying what that changes first | `GET /releases/{name}/config-diff`, `PATCH /environments/{name}` |
@@ -673,19 +673,30 @@ carries the environment's phase and URL either way.
 
 ### Environment variables
 
-Two things about the API shape this command, and both are deliberate (see
-[the API reference](api/projects.md#changing-a-projects-environment-variables)):
+Three things about the API shape this command, and all three are deliberate
+(see [the API reference](api/projects.md#changing-a-projects-environment-variables)):
 
-- **A value goes in and never comes back out.** Reading a project reports
-  whether a variable has one, not what it is. So `kitchen env list` prints the
-  whole list and reveals nothing, and there is no `env pull` — there is nothing
-  to pull.
+- **A literal is readable; what a variable points at is not.** `kitchen env
+  list` prints names and whether each has a value; `--values` reads the
+  literals back, from a route that wants `developer` where the plain list wants
+  `viewer`. A variable reading a secret or a resource claim answers with the
+  reference it names, and nothing resolves it — so there is still no way here
+  to read a secret.
+- **Asking for the values is a separate act**, which is why it is a flag and
+  not the default. The platform records the read, and a value on a terminal is
+  a value in scrollback and in a CI job's log. There is no `env pull` either: a
+  copy of a project's whole configuration on disk is not what asking after one
+  variable is.
 - **The write replaces the whole list**, and a variable whose `value` the
   request leaves out keeps the one it already has. That is what makes a
   one-variable change possible without reading any values: the CLI sends every
-  variable back by name and a value only for the ones it is changing.
+  variable back by name and a value only for the ones it is changing. Reading
+  the values does not change that — `env set` still asks the plain list, and a
+  value somebody looked at is not one the CLI sends back.
 
 ```sh
+kitchen env list                       # names, and whether each has a value
+kitchen env list --values              # and what each literal is
 kitchen env set LOG_LEVEL=debug DATABASE_POOL=10
 kitchen env set API_URL=https://api.example.com --preview API_URL=https://api.invalid
 kitchen env set --from-secret API_KEY=kitchen-project-secrets:shop-api-key

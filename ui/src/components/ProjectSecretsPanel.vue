@@ -191,8 +191,9 @@ async function remove() {
           dashboard, not to the API, not to anyone on the project. Replacing one means typing the new one.
         </p>
         <p class="text-xs text-dimmed mt-1">
-          Point a variable at one to use it. Replacing the value then reaches what is already running, which a
-          variable's own value does not — that lands in the next release.
+          Point a variable at one to use it — the variable then holds the reference, which is all anybody reading it
+          ever sees. Replacing the value reaches what is already running, which a variable's own value does not; that
+          lands in the next release.
         </p>
       </div>
       <UButton v-if="maySet" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openSet()">

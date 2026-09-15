@@ -1479,8 +1479,10 @@ export interface ReleaseAttestation {
 
 /** How one entry of a release's configuration snapshot compares with
  * another's. `change` is the platform's own verdict over two literals it holds
- * and the dashboard does not: the API never reads a value back, so the
- * comparison is made on the server and only the verdict crosses the wire.
+ * and the dashboard does not: nothing answers a release's frozen literals, so
+ * the comparison is made on the server and only the verdict crosses the wire.
+ * (`projectEnvValues` answers what a variable holds *now*, which is a
+ * different question and a different route.)
  *
  * The direction is the write's — the release named in the path is where the
  * environment is going, so a variable the live release sets and the target

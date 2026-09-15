@@ -805,7 +805,7 @@ func TestEnvListAnswersValuesOnlyWhenAskedFor(t *testing.T) {
 	h := newHarness(t)
 	h.env["KITCHEN_PROJECT"] = testProject
 	h.platform.project = &project{Name: testProject, Env: []envVar{
-		{Name: "LOG_LEVEL", Set: true, PreviewSet: true, Value: "debug", PreviewValue: "trace"},
+		{Name: "LOG_LEVEL", Set: true, PreviewSet: true, Value: testValue, PreviewValue: "trace"},
 		{Name: "API_KEY", Set: true, Value: literal},
 		{Name: "DATABASE_URL", FromClaim: &keyRef{Name: "shop-db", Key: "url"}},
 	}}
@@ -813,7 +813,7 @@ func TestEnvListAnswersValuesOnlyWhenAskedFor(t *testing.T) {
 	if code := h.run("env", "list", "--json"); code != exitOK {
 		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
 	}
-	if out := h.stdout.String(); strings.Contains(out, literal) || strings.Contains(out, "debug") {
+	if out := h.stdout.String(); strings.Contains(out, literal) || strings.Contains(out, testValue) {
 		t.Fatalf("the plain list printed a value: %s", out)
 	}
 	if reads := h.platform.sent("GET", "/env"); len(reads) != 0 {
@@ -834,7 +834,7 @@ func TestEnvListAnswersValuesOnlyWhenAskedFor(t *testing.T) {
 	for _, variable := range answered.Items {
 		byName[variable.Name] = variable
 	}
-	if byName["LOG_LEVEL"].Value != "debug" || byName["LOG_LEVEL"].PreviewValue != "trace" {
+	if byName["LOG_LEVEL"].Value != testValue || byName["LOG_LEVEL"].PreviewValue != "trace" {
 		t.Fatalf("--values did not answer the literals: %+v", byName["LOG_LEVEL"])
 	}
 	// The line the whole feature is: a variable that reads a claim answers

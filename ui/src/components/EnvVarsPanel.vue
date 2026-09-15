@@ -42,11 +42,12 @@ import { may, refusal } from "../lib/policy";
 // that is what it holds and the platform resolves nothing.
 //
 // The list replaces the stored one wholesale, so every variable has to be in
-// what is sent. Values are the exception, and deliberately: the API reports
-// only that a variable has one, so a variable whose `value` the request leaves
-// out keeps the one it already has. That is the bargain that lets the whole
-// list be replaced without the dashboard ever holding a secret it was not
-// given.
+// what is sent. Values are the exception, and deliberately: a variable whose
+// `value` the request leaves out keeps the one it already has. That is the
+// bargain that lets the whole list be replaced without the dashboard ever
+// holding a value it was not given, and revealing one does not change it — a
+// value drawn on the screen is not a draft, so replacing one still means
+// typing the new one.
 
 const props = defineProps<{ project: string; role?: string; env?: EnvVar[] }>();
 const emit = defineEmits<{ saved: [] }>();
@@ -60,6 +61,11 @@ const mayReveal = computed(() => may("GET /api/v1/projects/{name}/env", caller.v
 // button would have been.
 const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/env", caller.value));
 
+// Whether the values were asked for, rather than whether any arrived: a
+// project whose every variable reads a secret is answered no literals at all,
+// and the control still has to become "Hide".
+const shown = ref(false);
+
 // Drafts are loaded once per project, not on every payload: the project view
 // polls every ten seconds, and a re-load on each answer would type over
 // somebody mid-edit.
@@ -71,6 +77,7 @@ watch(
     if (name && name !== loadedFor.value) {
       loadedFor.value = name;
       drafts.value = envVarDrafts(env);
+      shown.value = false;
     }
   },
   { immediate: true },
@@ -80,12 +87,12 @@ watch(
 // them off the screen and asks again next time — there is nothing kept, so a
 // page left open does not go on holding them.
 const revealing = ref(false);
-const shown = computed(() => drafts.value.some((draft) => draft.shown !== undefined));
 async function showValues() {
   if (!mayReveal.value || revealing.value) return;
   revealing.value = true;
   try {
     drafts.value = withShownValues(drafts.value, await api.projectEnvValues(props.project));
+    shown.value = true;
   } catch (err) {
     toast.add({
       title: "Reading the values failed",
@@ -98,6 +105,7 @@ async function showValues() {
 }
 function hideValues() {
   drafts.value = withoutShownValues(drafts.value);
+  shown.value = false;
 }
 
 function addEnvVar() {
@@ -134,8 +142,10 @@ async function save() {
     const saved = await api.updateProjectEnv(props.project, envVarWrites(drafts.value));
     // The answer is the project, so the new list goes back under the form
     // without a second read — and the typed values are gone from the drafts
-    // with it.
+    // with it. So is anything that had been revealed: it is now what the
+    // platform held a moment ago, and saying so would take a second read.
     drafts.value = envVarDrafts(saved.env);
+    shown.value = false;
     toast.add({
       title: "Environment variables saved",
       description: "They land in the next release: what is running keeps its release's snapshot until the next deploy.",

@@ -954,8 +954,8 @@ may well mean; a body with no `env` at all is a `400` rather than the same
 thing, because that is a client that forgot the field and not one asking for an
 empty list.
 
-A value goes in and never comes back out. Reading a project reports whether a
-variable has one, not what it is:
+Reading a project reports whether a variable has a value, not what it is — that
+is `viewer`'s read, and the values are a route of their own below:
 
 ```json
 {"env": [
@@ -964,13 +964,14 @@ variable has one, not what it is:
     "fromSecret": {"name": "shop-api-key", "key": "key"}}]}
 ```
 
-A plain variable is exactly where somebody in a hurry pastes an API key, so it
-is held to the same rule as a connection's credential. Replacing the whole list
-therefore does not mean sending the values back: a variable whose `value` the
-request leaves out keeps the one it already has, and an empty `value` clears it
-— the bargain the credential fields make too. Repointing a variable at a
-`fromSecret` or a `fromClaim` drops the value it used to carry, since the
-reference is what replaces it.
+Replacing the whole list does not mean sending the values back: a variable
+whose `value` the request leaves out keeps the one it already has, and an empty
+`value` clears it — the bargain the credential fields make too. Repointing a
+variable at a `fromSecret` or a `fromClaim` drops the value it used to carry,
+since the reference is what replaces it. That mechanism is what makes a
+one-variable change possible from a client holding only the names list, and it
+is unaffected by the read below: a value somebody has looked at is still not a
+value they send back.
 
 The answer is the project, so a client that changed a variable renders the new
 list without a second read. Variables land in the next release's snapshot, like
@@ -1018,6 +1019,55 @@ and a reference stored before this rule existed came through a door that had
 none; either way the environment refuses to deploy it, and says so with
 `Ready=False` and reason `EnvSecretRefRefused` rather than starting a pod that
 reads the credential.
+
+## Reading what a variable's own value is
+
+`GET /projects/{name}/env` answers the same list with the literals on it. It
+wants `developer`, where reading the project wants `viewer`.
+
+```json
+{"items": [
+   {"name": "PUBLIC_URL", "set": true, "previewSet": true,
+    "value": "https://shop.example.com", "previewValue": "https://preview.invalid"},
+   {"name": "API_KEY", "set": false, "previewSet": false,
+    "fromSecret": {"name": "shop-api-key", "key": "key"}},
+   {"name": "DATABASE_URL", "set": false, "previewSet": false,
+    "fromClaim": {"name": "shop-db", "key": "url"}}]}
+```
+
+**A literal is readable; everything a variable *points at* is not** (#598).
+`value` and `previewValue` are cleartext the project typed, sitting on the
+Project object where `kubectl get project -o yaml` has always shown them — so
+declining to answer them cost a developer the ability to check what
+`LOG_LEVEL` is set to and protected nothing. A `fromSecret` or a `fromClaim` is
+the other kind: it comes back as the reference it names, and nothing on this
+path reads the Secret or the binding behind it. A variable naming a reference
+therefore carries no `value`, no `previewValue`, and `set: false` — including
+in the case this API refuses to write and `kubectl` does not, where a literal
+was left sitting beside a reference.
+
+**Three things put it at `developer` rather than at `viewer`.** The role that
+may already overwrite a literal is the one that may read it, so the read grants
+no authority the write did not. A literal can be a URL with a token in it,
+which is why the argument has to be made against the payload rather than
+against the name of the route. And leaving the viewer's reads alone is what
+keeps [the secrets list](secrets.md#reading-them) a `viewer`'s for the reason
+it always was — it is names only.
+
+**The read is recorded**, as an audit-pack export is: a `GET` leaves no other
+trace, and this is the one route that hands a stored value back.
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" \
+  "https://kitchen.apps.example.com/api/v1/audit?kind=ProjectEnvRead&project=shop"
+```
+
+The record names the variables whose literals were answered, how many the
+project has, and never a value.
+
+From a terminal it is `kitchen env list --values`, which is a flag rather than
+the default for the same reason this is a separate route: a value on a terminal
+is a value in scrollback and in a CI job's log.
 
 ## Acquiring a new digest
 

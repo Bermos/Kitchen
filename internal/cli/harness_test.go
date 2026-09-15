@@ -241,10 +241,8 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.answerPromotion(w, strings.TrimPrefix(path, "/promotions/"))
 	case strings.HasSuffix(path, "/audit-pack"):
 		p.answerAuditPack(w, req)
-	case strings.HasSuffix(path, "/env") && req.Method == http.MethodPatch:
-		p.patchEnv(w, body)
 	case strings.HasSuffix(path, "/env"):
-		p.answerEnvValues(w)
+		p.answerEnv(w, req, body)
 	case strings.HasPrefix(path, "/projects/"):
 		p.answerProject(w, req, body)
 	case strings.HasSuffix(path, "/logs"):
@@ -723,11 +721,20 @@ func (p *platform) answerPromotion(w http.ResponseWriter, name string) {
 	writeAnswer(w, http.StatusNotFound, errorBody{Error: "promotions.kitchen.bermos.dev \"" + name + "\" not found"})
 }
 
-// answerEnvValues is the values route: the project's variables with the
-// literals on them. The stub holds the whole list on the project and hands the
-// value fields over here and nowhere else, so a test that finds a value in an
-// answer to any other call has found the CLI asking the wrong route.
-func (p *platform) answerEnvValues(w http.ResponseWriter) {
+// answerEnv is both halves of the variables route: the write, and the read
+// that answers the literals. They share one case in serve's dispatch for the
+// reason that dispatch is split up at all — a pair of cases per resource is a
+// branch nobody reading it needs.
+//
+// The stub holds the whole list on the project and hands the value fields over
+// here and nowhere else (answerProject strips them), so a test that finds a
+// value in the answer to any other call has found the CLI asking the wrong
+// route.
+func (p *platform) answerEnv(w http.ResponseWriter, req *http.Request, body []byte) {
+	if req.Method == http.MethodPatch {
+		p.patchEnv(w, body)
+		return
+	}
 	items := []envVar{}
 	if p.project != nil {
 		items = append(items, p.project.Env...)

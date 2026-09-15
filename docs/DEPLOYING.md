@@ -145,16 +145,21 @@ Three kinds, and picking the wrong one is the most common early mistake.
 
 ```sh
 kitchen env list                       # every name, and whether it is set
+kitchen env list --values              # and what each one holds
 kitchen env set NODE_ENV=production
 kitchen env rm FEATURE_FLAG
 ```
 
-Or the Variables panel in the dashboard.
+Or the Variables panel in the dashboard, where **Show values** does the same.
 
-**Values are never readable.** No route on the platform answers one, so
-`kitchen env list` prints names and whether a value is set and nothing else,
-and there is no `env pull`. That is not a gap to work around — it is why a
-leaked dashboard session is not a leaked configuration.
+**A variable's own value is readable; what it points at is not.** `value` and
+`previewValue` are literals you typed, so the platform hands them back — to a
+`developer`, on a route of its own, and it records the read. A variable reading
+one of the project's own secrets or a resource claim's binding answers with the
+reference it names and never with what is behind it, which is why a credential
+belongs in a secret rather than in a variable. There is no `env pull` and no
+`.env` to reconstruct: the list is one request, and a file of everything on
+disk is a different thing from looking one variable up.
 
 A variable can have a different value in previews:
 
