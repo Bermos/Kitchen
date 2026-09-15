@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.42.0](https://github.com/Bermos/Kitchen/compare/v0.41.0...v0.42.0) (2026-09-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** a personal key issued by 0.41.0 holds nothing until it is reissued. That release wrote the credential at the identity provider and nothing on the platform, because there was nothing yet to narrow; a key now holds what its entry on the Kitchen singleton says, and a key with no entry is refused rather than read as unrestricted — which is what makes removing an entry a revocation. Such a key reads as unrecognised in `kitchen keys list` and on the Account screen.
+
+### Features
+
+* **api:** read a variable's own value back, never what it points at ([#606](https://github.com/Bermos/Kitchen/issues/606)) ([68a8318](https://github.com/Bermos/Kitchen/commit/68a83186a85a9ae8f84caf01992a559e8c1aaf77)), closes [#610](https://github.com/Bermos/Kitchen/issues/610)
+* **auth:** narrow a personal key to named projects and a role inside them ([#596](https://github.com/Bermos/Kitchen/issues/596)) ([f5f53d5](https://github.com/Bermos/Kitchen/commit/f5f53d51f8ce8e28d1e9413b9fa57e874a9bd43d))
+
+
+### Bug fixes
+
+* **operator:** say why a deploy failed on the deployment status and in the pull request ([#605](https://github.com/Bermos/Kitchen/issues/605)) ([b1dbc2e](https://github.com/Bermos/Kitchen/commit/b1dbc2e549934a04dc5239eaa1071312ef570ad6))
+* **ui:** focus the shell's main landmark so a new screen can be scrolled by keyboard ([25bccf2](https://github.com/Bermos/Kitchen/commit/25bccf21b5f9026f291cef6861d063abadc95a99)), closes [#600](https://github.com/Bermos/Kitchen/issues/600)
+* **ui:** make the shell a fixed-height frame so the sidebar stays put ([9cd43e8](https://github.com/Bermos/Kitchen/commit/9cd43e822aae9e72576ba2b8e7b2927960c0c092)), closes [#600](https://github.com/Bermos/Kitchen/issues/600)
+
 ## [0.41.0](https://github.com/Bermos/Kitchen/compare/v0.40.5...v0.41.0) (2026-09-14)
 
 
