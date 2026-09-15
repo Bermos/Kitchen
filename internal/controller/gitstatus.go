@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -343,6 +344,7 @@ func (g gitReporting) reportEnvironment(
 		Protected:    protected,
 		Internal:     project.Spec.Exposure.IsInternal(),
 		DashboardURL: g.environmentPage(ctx, env),
+		Failure:      previewFailureSentence(env, state),
 	}
 	id, err := reporter.UpsertComment(ctx, repo, gitprovider.Comment{
 		PullRequest: env.Spec.Preview.PullRequest,
@@ -460,17 +462,90 @@ func dashboardURL(kitchen *kitchenv1alpha1.Kitchen, section, name string) string
 }
 
 // deploymentDescription is the one line a provider shows next to a deployment.
+//
+// A failed one says why (#597). It used to be a switch over the state and
+// nothing else, so every failed deploy of every environment read
+// "<env> could not be deployed" — the one thing the reader already knew — while
+// the sentence saying what actually happened sat on the Environment two fields
+// away. A pull request comment that is wrong four times in ten and never says
+// how teaches a reviewer to stop reading it.
+//
+// The fact leads and the reason follows, because every provider truncates
+// this: GitHub cuts it at a hundred and forty characters, so a reader who
+// only gets the first clause still learns which environment and that it did
+// not deploy, and the pull request comment carries the sentence whole.
 func deploymentDescription(env *kitchenv1alpha1.Environment, state gitprovider.DeploymentState) string {
 	switch state {
 	case gitprovider.DeploymentSuccess:
 		return fmt.Sprintf("%s is live", env.Name)
 	case gitprovider.DeploymentFailure:
+		if reason := deployFailureReason(env); reason != "" {
+			return fmt.Sprintf("%s could not be deployed: %s", env.Name, reason)
+		}
 		return fmt.Sprintf("%s could not be deployed", env.Name)
 	case gitprovider.DeploymentInactive:
 		return fmt.Sprintf("%s was removed", env.Name)
 	default:
 		return fmt.Sprintf("%s is deploying", env.Name)
 	}
+}
+
+// deployFailureReason is why an environment's deploy did not finish, in the
+// words the platform already put on it.
+//
+// Both paths that make an Environment Degraded write their sentence twice:
+// once on the condition the fault is specifically about — the deploy tasks, or
+// the workload whose container the kubelet would not start — and once on
+// Ready, which is where every reader of "is this environment all right" takes
+// its answer from. So Ready is read first not as a fallback but because it is
+// the one condition guaranteed to be carrying the sentence, and because it is
+// the sentence the dashboard draws: the pull request comment and the screen
+// then say the same thing in the same words, which is the half of this a
+// reviewer cross-checks.
+//
+// The two specific conditions are read after it for an Environment written by
+// an older operator, or by anything that set one of them without setting
+// Ready.
+func deployFailureReason(env *kitchenv1alpha1.Environment) string {
+	for _, condType := range []string{condReady, condDeployTasks, condWorkloadAvailable} {
+		condition := meta.FindStatusCondition(env.Status.Conditions, condType)
+		if condition == nil || condition.Status != metav1.ConditionFalse {
+			continue
+		}
+		if message := strings.TrimSpace(condition.Message); message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+// previewFailureSentence is what the pull request comment says about a deploy
+// that did not finish.
+//
+// An environment that recorded nothing still gets a sentence, because
+// "Failed" in a table with no account beside it is exactly what a reviewer
+// cannot act on — and "nobody wrote down why" is at least an honest answer,
+// and one that is itself worth reporting.
+func previewFailureSentence(env *kitchenv1alpha1.Environment, state gitprovider.DeploymentState) string {
+	if state != gitprovider.DeploymentFailure {
+		return ""
+	}
+	if reason := deployFailureReason(env); reason != "" {
+		return reason
+	}
+	return "the platform recorded no reason for it"
+}
+
+// fullStop ends a sentence exactly once, whatever the sentence it was handed
+// already did. The messages this renders are conditions written by half a
+// dozen places in the operator and they do not agree about the last
+// character.
+func fullStop(sentence string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(sentence), ".")
+	if trimmed == "" {
+		return ""
+	}
+	return trimmed + "."
 }
 
 // deploymentStateFor translates an Environment's phase into the deployment
@@ -518,6 +593,20 @@ type previewComment struct {
 	// refusals differ in exactly this — a ceiling frees itself and a fork
 	// needs somebody with admin on the project.
 	RefusedNext string
+	// Failure is why this deploy did not finish, set exactly when the status
+	// row above reads Failed (#597).
+	//
+	// It is a different thing from Refused, which is a preview that was never
+	// created. This one was created, it was deployed into, and something
+	// stopped it — a deploy task that failed, a container the kubelet would
+	// not start, a volume step that did not run — and the sentence is the
+	// platform's own account of which.
+	//
+	// The comment is where it has to be legible, because the comment is the
+	// only surface an outside reviewer has: the deployment status's
+	// description is cut short by the provider and the dashboard is behind
+	// the platform's login.
+	Failure string
 }
 
 // marker identifies the platform's own comment. It is per environment rather
@@ -559,6 +648,13 @@ func (c previewComment) body() string {
 	}
 	if c.DashboardURL != "" {
 		fmt.Fprintf(&b, "| **Dashboard** | [%s](%s) |\n", c.Environment, c.DashboardURL)
+	}
+
+	// Directly under the table, ahead of the notes about the gate and the
+	// exposure: those explain a preview that is working and this one is the
+	// answer to the question the Failed row has just raised.
+	if c.Failure != "" {
+		fmt.Fprintf(&b, "\n**This deploy did not finish.** %s\n", fullStop(c.Failure))
 	}
 
 	if c.Internal {

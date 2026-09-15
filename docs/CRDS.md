@@ -3366,14 +3366,25 @@ repository without overwriting each other:
   failed and `error` when the platform could not run it at all. `target_url` is the
   build's page in the dashboard.
 - **A deployment per Environment**, named after the Environment, carrying the URL:
-  `in_progress` while the workload comes up, `success` once it is available, `inactive`
-  when a preview is torn down. Previews are marked transient, production is marked
-  production.
+  `in_progress` while the workload comes up, `success` once it is available, `failure`
+  when the environment went `Degraded`, `inactive` when a preview is torn down. Previews
+  are marked transient, production is marked production.
 - **One comment per preview**, rewritten in place on every push rather than appended to,
   found by an invisible `<!-- kitchen-preview: <environment> -->` marker and thereafter
   by the ID recorded in `status.gitReport`. It states that a protected preview asks an
   anonymous visitor to sign in, because a reviewer who is not a platform user would
   otherwise read the gate as a broken link.
+
+**A failure says why**, and says it in the words already on the Environment (#597). Two
+things make an environment `Degraded` and both already hold a sentence: a deploy task
+that failed, carrying its run's own message, and a container the kubelet refused,
+carrying the kubelet's. It is read off the `Ready` condition, which both paths to
+`Degraded` write that same sentence onto as they write the condition the fault is
+specifically about — so the deployment status, the pull request comment and the
+environment's page in the dashboard are one sentence rather than three.
+The description leads with the fact (`<environment> could not be deployed: …`) because
+GitHub cuts it at 140 characters; the comment carries the sentence whole, under the
+status table, because a reviewer who cannot sign in has no other surface to read it on.
 
 **None of it can fail a deployment.** A revoked token is the Connection reconciler's
 business — it probes the credential and turns `CredentialsValid` red — and a build that
