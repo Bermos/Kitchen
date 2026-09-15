@@ -39,7 +39,7 @@ function remove(index: number) {
 <template>
   <div class="space-y-3">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="min-w-0">
         <h2 v-if="props.heading === 'h2'" class="text-sm font-medium text-highlighted">Before it starts</h2>
         <h3 v-else class="text-xs font-medium text-highlighted">Before it starts</h3>
         <p class="text-xs text-muted mt-1">
@@ -51,6 +51,7 @@ function remove(index: number) {
       </div>
       <UButton
         v-if="props.mayEdit"
+        class="shrink-0"
         color="neutral"
         variant="subtle"
         size="xs"

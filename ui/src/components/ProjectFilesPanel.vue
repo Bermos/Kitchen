@@ -193,9 +193,9 @@ function contentSummary(file: ConfigFileDraft): string {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
+  <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="min-w-0">
         <h2 class="text-sm font-medium text-highlighted">Files</h2>
         <p class="text-xs text-muted mt-1">
           Configuration files <span class="font-mono">{{ project }}</span> places into its workloads. Applications
@@ -209,7 +209,7 @@ function contentSummary(file: ConfigFileDraft): string {
           already running.
         </p>
       </div>
-      <UButton v-if="mayEdit" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openEditor()">
+      <UButton v-if="mayEdit" class="shrink-0" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openEditor()">
         Add a file
       </UButton>
     </div>

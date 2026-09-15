@@ -81,7 +81,7 @@ const resolution = computed(() => bucketLabel(series.value?.bucketSeconds));
   <div v-if="!history.error.value || series">
     <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
       <h2 class="text-sm font-medium text-highlighted">History</h2>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <span v-if="series" class="text-[11px] text-dimmed font-mono">
           {{ resolution }}<template v-if="series.rollup"> · rollup</template>
         </span>
