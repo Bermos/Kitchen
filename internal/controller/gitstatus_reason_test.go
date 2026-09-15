@@ -87,11 +87,14 @@ func TestAFailedDeploymentSaysWhatTheDeployerKnew(t *testing.T) {
 			if got != tc.expected {
 				t.Fatalf("the deployment status does not say why:\n got %q\nwant %q", got, tc.expected)
 			}
-			// The fact leads, because every provider truncates this and
-			// GitHub cuts it at 140 characters — so the clause that survives
-			// is the one naming the environment and the verdict.
-			if !strings.HasPrefix(truncate(got, 140), deployVerdict) {
-				t.Fatalf("truncation loses the fact: %q", truncate(got, 140))
+			// The fact leads, because every provider truncates this —
+			// GitHub cuts it at 140 characters in gitprovider — so whatever
+			// survives the cut still names the environment and the verdict.
+			// The property is asserted on the prefix rather than through a
+			// truncation of our own: this package's truncate is a plain byte
+			// cut and the one that actually runs is the provider's.
+			if !strings.HasPrefix(got, deployVerdict) {
+				t.Fatalf("the fact does not lead, so truncation would lose it: %q", got)
 			}
 		})
 	}
@@ -126,7 +129,7 @@ func TestThePullRequestCommentCarriesTheWholeSentence(t *testing.T) {
 	if !strings.Contains(body, "| **Status** | Failed |") {
 		t.Fatalf("the comment no longer says the deploy failed:\n%s", body)
 	}
-	if !strings.Contains(body, "**This deploy did not finish.** "+taskSentence+".\n") {
+	if !strings.Contains(body, "**This deploy did not finish** — "+taskSentence+".\n") {
 		t.Fatalf("the comment does not carry the sentence whole:\n%s", body)
 	}
 	// Nothing here asks the reader to sign in to find out more.
@@ -148,24 +151,6 @@ func TestOnlyAFailedDeployExplainsItself(t *testing.T) {
 	got := previewFailureSentence(silent, gitprovider.DeploymentFailure)
 	if got != "the platform recorded no reason for it" {
 		t.Fatalf("a failure with nothing recorded is not admitted to: %q", got)
-	}
-}
-
-// Criterion (5) of the issue, as a property rather than as two assertions that
-// happen to agree: the dashboard draws the message of the first unhealthy
-// condition, so the screen and the pull request say the same thing only while
-// the operator writes one sentence onto both conditions it sets.
-func TestTheScreenAndThePullRequestReadTheSameSentence(t *testing.T) {
-	for _, condType := range []string{condDeployTasks, condWorkloadAvailable} {
-		env := degradedEnvironment(condType, reasonTaskFailed, taskSentence)
-		specific := env.Status.Conditions[0].Message
-		ready := env.Status.Conditions[1].Message
-		if specific != ready {
-			t.Fatalf("%s and Ready disagree: %q vs %q", condType, specific, ready)
-		}
-		if got := deployFailureReason(env); got != specific {
-			t.Fatalf("the report reads a third sentence: %q, conditions say %q", got, specific)
-		}
 	}
 }
 

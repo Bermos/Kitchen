@@ -1716,11 +1716,18 @@ func (r *EnvironmentReconciler) reportDeployStatus(
 	state := deploymentStateFor(env.Status.Phase)
 	// A report that repeats the last one is not posted. The comparison
 	// carries the empty error, so a report that failed last time is retried
-	// on the next pass rather than remembered as done.
+	// on the next pass rather than remembered as done — and it carries the
+	// description, because since #597 that is what was *said* rather than a
+	// restatement of the state. A failure whose reason has changed (the
+	// missing Secret is created, and the container is then refused for a
+	// second cause) is a new thing to say about the same commit, and
+	// suppressing it would leave the pull request on the first cause for ever
+	// while the dashboard, which reads the conditions, moved on.
 	candidate := &kitchenv1alpha1.GitReport{
-		Revision: revision.SHA,
-		State:    string(state),
-		URL:      env.Status.URL,
+		Revision:    revision.SHA,
+		State:       string(state),
+		URL:         env.Status.URL,
+		Description: deploymentDescription(env, state),
 	}
 	if candidate.Matches(env.Status.GitReport) {
 		return

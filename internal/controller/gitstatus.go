@@ -293,10 +293,11 @@ func (g gitReporting) reportEnvironment(
 
 	now := metav1.Now()
 	report := &kitchenv1alpha1.GitReport{
-		Revision: revision.SHA,
-		State:    string(state),
-		URL:      env.Status.URL,
-		At:       &now,
+		Revision:    revision.SHA,
+		State:       string(state),
+		URL:         env.Status.URL,
+		Description: deploymentDescription(env, state),
+		At:          &now,
 	}
 	if previous != nil {
 		report.CommentID = previous.CommentID
@@ -313,7 +314,7 @@ func (g gitReporting) reportEnvironment(
 			Ref:         revision.Branch,
 			Environment: env.Name,
 			State:       state,
-			Description: deploymentDescription(env, state),
+			Description: report.Description,
 			URL:         env.Status.URL,
 			// A promotion stage is neither: it is not torn down with a pull
 			// request, and it is not production. Before #490 every rung was
@@ -653,8 +654,12 @@ func (c previewComment) body() string {
 	// Directly under the table, ahead of the notes about the gate and the
 	// exposure: those explain a preview that is working and this one is the
 	// answer to the question the Failed row has just raised.
+	// The lead-in ends in a dash rather than a full stop so that the sentence
+	// can follow it unaltered: every condition message in the operator starts
+	// lower case, and capitalising one here would make the comment and the
+	// screen differ in the one place they are meant to agree.
 	if c.Failure != "" {
-		fmt.Fprintf(&b, "\n**This deploy did not finish.** %s\n", fullStop(c.Failure))
+		fmt.Fprintf(&b, "\n**This deploy did not finish** — %s\n", fullStop(c.Failure))
 	}
 
 	if c.Internal {
