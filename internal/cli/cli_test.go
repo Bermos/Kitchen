@@ -796,6 +796,54 @@ func TestEnvSetKeepsEveryOtherVariableWithoutReadingItsValue(t *testing.T) {
 	}
 }
 
+// `env list` is the default and says only what is there; `--values` is the act
+// of asking, on a second route. Both halves matter: a value has to arrive when
+// it was asked for, and must not when it was not (#598).
+func TestEnvListAnswersValuesOnlyWhenAskedFor(t *testing.T) {
+	const literal = "sk-live-only-with-the-flag"
+
+	h := newHarness(t)
+	h.env["KITCHEN_PROJECT"] = testProject
+	h.platform.project = &project{Name: testProject, Env: []envVar{
+		{Name: "LOG_LEVEL", Set: true, PreviewSet: true, Value: "debug", PreviewValue: "trace"},
+		{Name: "API_KEY", Set: true, Value: literal},
+		{Name: "DATABASE_URL", FromClaim: &keyRef{Name: "shop-db", Key: "url"}},
+	}}
+
+	if code := h.run("env", "list", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	if out := h.stdout.String(); strings.Contains(out, literal) || strings.Contains(out, "debug") {
+		t.Fatalf("the plain list printed a value: %s", out)
+	}
+	if reads := h.platform.sent("GET", "/env"); len(reads) != 0 {
+		t.Fatalf("the plain list called the values route: %d times", len(reads))
+	}
+
+	h.stdout.Reset()
+	if code := h.run("env", "list", "--values", "--json"); code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, h.stderr.String())
+	}
+	answered := struct {
+		Items []envVar `json:"items"`
+	}{}
+	if err := json.Unmarshal(h.stdout.Bytes(), &answered); err != nil {
+		t.Fatalf("--json is not JSON: %v: %s", err, h.stdout.String())
+	}
+	byName := map[string]envVar{}
+	for _, variable := range answered.Items {
+		byName[variable.Name] = variable
+	}
+	if byName["LOG_LEVEL"].Value != "debug" || byName["LOG_LEVEL"].PreviewValue != "trace" {
+		t.Fatalf("--values did not answer the literals: %+v", byName["LOG_LEVEL"])
+	}
+	// The line the whole feature is: a variable that reads a claim answers
+	// the reference and never a resolved value, with the flag as without it.
+	if claim := byName["DATABASE_URL"]; claim.Value != "" || claim.FromClaim == nil {
+		t.Fatalf("a claim-backed variable answered a value: %+v", claim)
+	}
+}
+
 func TestEnvSetReadsAFileAndReferences(t *testing.T) {
 	h := newHarness(t)
 	h.env["KITCHEN_PROJECT"] = testProject

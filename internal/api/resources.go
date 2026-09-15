@@ -1566,6 +1566,77 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, s.withFileContent(ctx, project, s.projectView(ctx, project)))
 }
 
+// getProjectEnv answers a project's environment variables with the literal
+// values the project typed (#598).
+//
+// **A literal a developer typed is not a credential the platform holds**, and
+// keeping the two apart is the whole of this route. `value` and `previewValue`
+// are cleartext on the Project object; refusing to answer them cost a
+// developer the ability to check what `LOG_LEVEL` is set to and protected
+// nothing that `kubectl get project -o yaml` did not already hand over. What
+// a variable *points at* is a different thing and stays where it is: a
+// `fromSecret` or a `fromClaim` is answered as the reference it names, and
+// nothing here reads the Secret or the binding behind it.
+//
+// It is a route of its own rather than a widening of `GET /projects/{name}`
+// because that route is a viewer's, and a viewer keeps names only. See the
+// table in internal/api/policy.go for the argument, made against these fields.
+//
+// The read is recorded before it is answered, the way an audit pack export is:
+// this is the one place a stored value leaves the platform, and a `GET` leaves
+// no other trace of having happened.
+func (s *Server) getProjectEnv(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+
+	project := &kitchenv1alpha1.Project{}
+	if err := s.get(ctx, req.PathValue("name"), project); err != nil {
+		s.writeError(w, err)
+		return
+	}
+
+	views := envVarValueViews(project.Spec.Env)
+	if !s.recorded(w, req, projectEnvReadTransition(project, views)) {
+		return
+	}
+
+	caller, _ := CallerFrom(ctx)
+	s.log().Info("project environment variable values read through the api",
+		"project", project.Name, "caller", callerName(caller))
+	writeList(w, views)
+}
+
+// projectEnvReadTransition is the record a values read leaves: which variables
+// were answered, which of them held a literal, and never a literal itself.
+//
+// It is a function so that the record can be read on its own — what it must
+// not carry is the whole point, and a test over the marshalled transition
+// catches a field added later that a field-by-field one would not.
+func projectEnvReadTransition(
+	project *kitchenv1alpha1.Project,
+	views []envVarValueView,
+) audit.Transition {
+	literals := make([]string, 0, len(views))
+	for _, view := range views {
+		if view.Value != "" || view.PreviewValue != "" {
+			literals = append(literals, view.Name)
+		}
+	}
+	return audit.Transition{
+		Object:    project,
+		Kind:      audit.KindProjectEnvRead,
+		Operation: clickhouse.AuditExport,
+		Project:   project.Name,
+		Reason: fmt.Sprintf("the values of %d of %s's environment variables were read",
+			len(literals), project.Name),
+		// The names whose literals were answered, and never the literals: a
+		// log that copied them would be a second place they live, which is
+		// the rule the env write's own record already follows. `variables` is
+		// the whole list's length, so a read that answered nothing but
+		// references is tellable from one that answered nothing at all.
+		Details: map[string]any{"variables": len(views), "values": literals},
+	}
+}
+
 // patchProjectEnv is the developer's half of a project: its environment
 // variables, which docs/AUTH.md puts in the day job next to builds, redeploys
 // and rollbacks, while the project's own settings stay the admin's.

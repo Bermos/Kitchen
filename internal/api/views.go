@@ -101,20 +101,47 @@ func conditionViews(conditions []metav1.Condition) []conditionView {
 }
 
 // envVarView is one of a project's environment variables, minus its value.
-// A literal value is reported as present and never echoed: a plain variable is
-// exactly where somebody pastes an API key, and the API never reads a
-// credential back. A secret- or claim-backed variable carries the reference it
-// was written as, which was never a credential to begin with.
+// It is what every route carrying a project answers with, and those are a
+// viewer's: a viewer is told that a variable exists and what it reads, never
+// what it holds. The literal itself is a separate route at the role that may
+// write one (envVarValueView, below).
+//
+// A secret- or claim-backed variable carries the reference it was written as,
+// which was never a credential to begin with.
 type envVarView struct {
 	Name string `json:"name"`
-	// Set and PreviewSet are the whole of what a screen needs from a value:
-	// whether there is one, so a configured variable reads differently from
-	// an empty one. Both are false for a reference-backed variable, which
-	// holds no literal value of its own.
+	// Set and PreviewSet are the whole of what a screen needs from a value
+	// here: whether there is one, so a configured variable reads differently
+	// from an empty one. Both are false for a reference-backed variable,
+	// which holds no literal value of its own.
 	Set        bool        `json:"set"`
 	PreviewSet bool        `json:"previewSet"`
 	FromSecret *keyRefView `json:"fromSecret,omitempty"`
 	FromClaim  *keyRefView `json:"fromClaim,omitempty"`
+}
+
+// envVarValueView is the same variable with the literal the project typed
+// (#598). It is answered by `GET /projects/{name}/env` alone, which is a
+// developer's, and by nothing a viewer can call.
+//
+// It embeds envVarView rather than restating it so that the two cannot drift:
+// a field added to the viewer's list appears here too, and one client type
+// decodes both routes.
+//
+// **The reference half and the literal half are exclusive here, and that is
+// enforced rather than assumed.** envVarsFromRequest refuses a variable that
+// names two sources, but a Project written with kubectl is under no such rule
+// — so a variable that names a Secret or a claim is answered with the
+// reference and nothing else, and its stored literal is dropped on the way
+// out. Nothing on this path ever reads the Secret or the binding: what a
+// reference points at stays where it is.
+type envVarValueView struct {
+	envVarView
+	// Value and PreviewValue are the literals, verbatim. Absent for a
+	// reference-backed variable and for one with nothing in it — `set` and
+	// `previewSet` above are what tell those two apart.
+	Value        string `json:"value,omitempty"`
+	PreviewValue string `json:"previewValue,omitempty"`
 }
 
 // keyRefView names one key of a Secret or a ResourceClaim binding.
@@ -123,18 +150,41 @@ type keyRefView struct {
 	Key  string `json:"key"`
 }
 
+func envVarViewOf(v kitchenv1alpha1.EnvVar) envVarView {
+	view := envVarView{Name: v.Name, Set: v.Value != "", PreviewSet: v.PreviewValue != ""}
+	if v.SecretRef != nil {
+		view.FromSecret = &keyRefView{Name: v.SecretRef.Name, Key: v.SecretRef.Key}
+	}
+	if v.FromResourceClaim != nil {
+		view.FromClaim = &keyRefView{Name: v.FromResourceClaim.Name, Key: v.FromResourceClaim.Key}
+	}
+	return view
+}
+
 func envVarViews(env []kitchenv1alpha1.EnvVar) []envVarView {
 	if len(env) == 0 {
 		return nil
 	}
 	out := make([]envVarView, 0, len(env))
 	for _, v := range env {
-		view := envVarView{Name: v.Name, Set: v.Value != "", PreviewSet: v.PreviewValue != ""}
-		if v.SecretRef != nil {
-			view.FromSecret = &keyRefView{Name: v.SecretRef.Name, Key: v.SecretRef.Key}
-		}
-		if v.FromResourceClaim != nil {
-			view.FromClaim = &keyRefView{Name: v.FromResourceClaim.Name, Key: v.FromResourceClaim.Key}
+		out = append(out, envVarViewOf(v))
+	}
+	return out
+}
+
+// envVarValueViews is the variable list with its literals, for the one route
+// that answers them.
+func envVarValueViews(env []kitchenv1alpha1.EnvVar) []envVarValueView {
+	out := make([]envVarValueView, 0, len(env))
+	for _, v := range env {
+		view := envVarValueView{envVarView: envVarViewOf(v)}
+		if view.FromSecret != nil || view.FromClaim != nil {
+			// A pointer, not a literal: the answer is the reference it names.
+			// The literal half goes with it, so that `set: true` cannot
+			// suggest a value this route is withholding.
+			view.Set, view.PreviewSet = false, false
+		} else {
+			view.Value, view.PreviewValue = v.Value, v.PreviewValue
 		}
 		out = append(out, view)
 	}

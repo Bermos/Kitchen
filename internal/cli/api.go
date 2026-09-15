@@ -135,15 +135,25 @@ type keyRef struct {
 	Key  string `json:"key"`
 }
 
-// envVar is one of a project's environment variables — never its value. The
-// API reports whether a variable has one, not what it is, which is why
-// `kitchen env list` can print the whole list and reveal nothing.
+// envVar is one of a project's environment variables.
+//
+// It decodes both routes that answer variables, because one is the other with
+// two more fields. `GET /projects/{name}` is a viewer's and reports whether a
+// variable has a value, not what it is; `GET /projects/{name}/env` is a
+// developer's and answers the literal as well (#598).
 type envVar struct {
 	Name       string  `json:"name"`
 	Set        bool    `json:"set"`
 	PreviewSet bool    `json:"previewSet"`
 	FromSecret *keyRef `json:"fromSecret,omitempty"`
 	FromClaim  *keyRef `json:"fromClaim,omitempty"`
+	// Value and PreviewValue are the literals the project typed, answered by
+	// the values route alone — so they are empty unless `env list --values`
+	// asked. They are empty for a reference-backed variable however it was
+	// asked: a `fromSecret` or a `fromClaim` comes back as the reference it
+	// names and is never resolved, here or on the platform.
+	Value        string `json:"value,omitempty"`
+	PreviewValue string `json:"previewValue,omitempty"`
 }
 
 // projectSecret is one of a project's own secrets — the credentials Kitchen
@@ -1578,6 +1588,17 @@ func (c *client) setProcesses(ctx context.Context, name string, processes []proc
 	body := map[string]any{"processes": processes}
 	return answer, c.do(ctx, "changing "+name+"'s workloads",
 		http.MethodPatch, "/projects/"+name, nil, body, answer)
+}
+
+// projectEnv reads a project's variables *with* their literal values — the one
+// route on this API that answers a stored value, and a developer's rather than
+// a viewer's for that reason. A `fromSecret` or a `fromClaim` still comes back
+// as the reference it names: what a variable points at is not read.
+func (c *client) projectEnv(ctx context.Context, name string) ([]envVar, error) {
+	answer := &list[envVar]{}
+	err := c.do(ctx, "reading "+name+"'s environment variable values", http.MethodGet,
+		"/projects/"+name+"/env", nil, nil, answer)
+	return answer.Items, err
 }
 
 func (c *client) setEnv(ctx context.Context, name string, env []envVarWrite) (*project, error) {

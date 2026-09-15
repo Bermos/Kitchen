@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { envVarDrafts, envVarWrites, newEnvVarDraft, renamed } from "./envvars";
+import {
+  envVarDrafts,
+  envVarWrites,
+  newEnvVarDraft,
+  renamed,
+  withoutShownValues,
+  withShownValues,
+} from "./envvars";
 
 describe("env var drafts", () => {
   it("carries presence over from the API, and never a value", () => {
@@ -50,6 +57,45 @@ describe("env var drafts", () => {
     expect(envVarWrites(drafts)).toEqual([{ name: "SITE_URL" }]);
     // A variable the form added is not a rename of anything.
     expect(renamed(newEnvVarDraft())).toBe(false);
+  });
+
+  it("shows a literal once it has been read, and never what a reference points at", () => {
+    const drafts = envVarDrafts([
+      { name: "LOG_LEVEL", set: true, previewSet: true },
+      { name: "API_KEY", set: false, previewSet: false, fromSecret: { name: "kitchen-project-secrets", key: "api" } },
+      { name: "DATABASE_URL", set: false, previewSet: false, fromClaim: { name: "shop-db", key: "url" } },
+    ]);
+    // What the values route answers: the literals, and the references
+    // restated with no literal on them.
+    const shown = withShownValues(drafts, [
+      { name: "LOG_LEVEL", set: true, previewSet: true, value: "debug", previewValue: "trace" },
+      { name: "API_KEY", set: false, previewSet: false, fromSecret: { name: "kitchen-project-secrets", key: "api" } },
+      { name: "DATABASE_URL", set: false, previewSet: false, fromClaim: { name: "shop-db", key: "url" } },
+    ]);
+    expect(shown[0].shown).toEqual({ value: "debug", previewValue: "trace" });
+    expect(shown[1].shown).toBeUndefined();
+    expect(shown[2].shown).toBeUndefined();
+
+    // Revealing is drawing, not editing: the write is unchanged, so a value
+    // somebody looked at is still not one they sent back.
+    expect(envVarWrites(shown)).toEqual([
+      { name: "LOG_LEVEL" },
+      { name: "API_KEY", fromSecret: { name: "kitchen-project-secrets", key: "api" } },
+      { name: "DATABASE_URL", fromClaim: { name: "shop-db", key: "url" } },
+    ]);
+
+    expect(withoutShownValues(shown).every((draft) => draft.shown === undefined)).toBe(true);
+  });
+
+  it("does not type a revealed value over what somebody is writing", () => {
+    const drafts = envVarDrafts([{ name: "LOG_LEVEL", set: true, previewSet: false }]);
+    drafts[0].value = "warn";
+    const shown = withShownValues(drafts, [
+      { name: "LOG_LEVEL", set: true, previewSet: false, value: "debug" },
+    ]);
+    expect(shown[0].value).toBe("warn");
+    expect(shown[0].shown).toEqual({ value: "debug", previewValue: undefined });
+    expect(envVarWrites(shown)).toEqual([{ name: "LOG_LEVEL", value: "warn" }]);
   });
 
   it("opens a new variable's value field, and drops nameless rows", () => {

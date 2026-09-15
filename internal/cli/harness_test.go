@@ -243,6 +243,8 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.answerAuditPack(w, req)
 	case strings.HasSuffix(path, "/env") && req.Method == http.MethodPatch:
 		p.patchEnv(w, body)
+	case strings.HasSuffix(path, "/env"):
+		p.answerEnvValues(w)
 	case strings.HasPrefix(path, "/projects/"):
 		p.answerProject(w, req, body)
 	case strings.HasSuffix(path, "/logs"):
@@ -583,7 +585,16 @@ func (p *platform) answerProject(w http.ResponseWriter, req *http.Request, body 
 	if req.Method == http.MethodPatch {
 		p.patchProject(body)
 	}
-	writeAnswer(w, http.StatusOK, p.project)
+	// The project route is a viewer's and carries no literal, whatever the
+	// fixture holds — so a CLI that printed a value off this call would be
+	// printing one the real API never sent. The values live on /env alone.
+	answer := *p.project
+	answer.Env = make([]envVar, 0, len(p.project.Env))
+	for _, variable := range p.project.Env {
+		variable.Value, variable.PreviewValue = "", ""
+		answer.Env = append(answer.Env, variable)
+	}
+	writeAnswer(w, http.StatusOK, answer)
 }
 
 // patchProject is the settings write, and the only part of it any test needs:
@@ -710,6 +721,18 @@ func (p *platform) answerPromotion(w http.ResponseWriter, name string) {
 		}
 	}
 	writeAnswer(w, http.StatusNotFound, errorBody{Error: "promotions.kitchen.bermos.dev \"" + name + "\" not found"})
+}
+
+// answerEnvValues is the values route: the project's variables with the
+// literals on them. The stub holds the whole list on the project and hands the
+// value fields over here and nowhere else, so a test that finds a value in an
+// answer to any other call has found the CLI asking the wrong route.
+func (p *platform) answerEnvValues(w http.ResponseWriter) {
+	items := []envVar{}
+	if p.project != nil {
+		items = append(items, p.project.Env...)
+	}
+	writeAnswer(w, http.StatusOK, list[envVar]{Items: items})
 }
 
 func (p *platform) patchEnv(w http.ResponseWriter, body []byte) {

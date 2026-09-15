@@ -178,8 +178,9 @@ func newSecretRemoveCommand(r *Runtime) *cobra.Command {
 		Long: strings.TrimSpace(`
 Remove one of the project's own secrets.
 
-There is no way to read it back first — the platform never answers a value — so
-a secret removed by mistake has to be found again wherever it came from.
+There is no way to read it back first — the platform never answers a secret's
+value — so a secret removed by mistake has to be found again wherever it came
+from.
 
 A secret an environment variable still reads is refused rather than removed:
 the variable would leave the application unable to start, and the refusal names

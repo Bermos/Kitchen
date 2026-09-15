@@ -776,6 +776,40 @@ func TestAViewerChangesNoEnvVars(t *testing.T) {
 	}
 }
 
+// The read that carries values is a developer's too, and the refusal names the
+// role it wants. This is the decision the feature turns on (#598): a viewer
+// keeps the names list and never the literals, so that the secrets list next
+// to it can go on being a viewer's for the reason it always was.
+func TestAViewerReadsNoEnvVarValues(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleViewer)
+
+	recorder := h.do(t, http.MethodGet, envPath, "")
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	want := "you have viewer on " + feedProject +
+		"; reading a project's environment variable values needs developer"
+	if got := errorOf(t, recorder.Body.String()); got != want {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+
+	// The names list is still theirs, which is the half that did not move.
+	project := h.do(t, http.MethodGet, "/api/v1/projects/"+feedProject, "")
+	if project.Code != http.StatusOK {
+		t.Fatalf("a viewer must still read the project: %d %s", project.Code, project.Body.String())
+	}
+}
+
+// A developer reads them, which is the whole of decision D1: the role that may
+// overwrite a literal may read it.
+func TestADeveloperReadsEnvVarValues(t *testing.T) {
+	h := asMember(t, kitchenv1alpha1.AccessRoleDeveloper)
+
+	if recorder := h.do(t, http.MethodGet, envPath, ""); recorder.Code != http.StatusOK {
+		t.Fatalf("a developer must be able to read the values: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // An admin holds everything a developer does, so both halves answer them.
 func TestAnAdminChangesBothHalvesOfAProject(t *testing.T) {
 	h := asMember(t, kitchenv1alpha1.AccessRoleAdmin)

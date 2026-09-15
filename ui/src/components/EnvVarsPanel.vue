@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api, type EnvVar } from "../lib/api";
-import { type EnvVarDraft, envVarDrafts, envVarWrites, newEnvVarDraft, renamed } from "../lib/envvars";
+import {
+  type EnvVarDraft,
+  envVarDrafts,
+  envVarWrites,
+  newEnvVarDraft,
+  renamed,
+  withoutShownValues,
+  withShownValues,
+} from "../lib/envvars";
 import { callerFor } from "../lib/me";
 import { may, refusal } from "../lib/policy";
 
@@ -16,13 +24,22 @@ import { may, refusal } from "../lib/policy";
 // no settings form, and had no way to change a variable while it lived inside
 // one.
 //
-// **Reading them is every role's, and the tab is keyed to that.** `GET
-// /projects/{name}` is a viewer's route and already carries the list — names,
+// **Reading the list is every role's, and the tab is keyed to that.** `GET
+// /projects/{name}` is a viewer's route and already carries it — names,
 // whether each has a value, and the references the backed ones were written
 // as — so withholding the screen would be the dashboard enforcing something
 // the API does not. A viewer gets exactly this, with the add, replace, remove
-// and save affordances gone rather than disabled. No value is involved either
-// way: the API stopped reading them back, so there is nothing here to leak.
+// and save affordances gone rather than disabled.
+//
+// **Reading a *value* is the developer's, and it is asked for** (#598). The
+// literals ride a route of their own at the role that may replace them, and
+// the platform records the read — so this screen does not fetch them with the
+// page. The project view polls every ten seconds; a panel that carried the
+// values would put a line in the audit log every ten seconds and leave a
+// credential-shaped string on a screen nobody is looking at. "Show values" is
+// one read, and "Hide" takes them back off. A variable reading a secret or a
+// claim is untouched either way: it draws the reference it names, because
+// that is what it holds and the platform resolves nothing.
 //
 // The list replaces the stored one wholesale, so every variable has to be in
 // what is sent. Values are the exception, and deliberately: the API reports
@@ -38,6 +55,7 @@ const toast = useToast();
 
 const caller = computed(() => callerFor(props.role, props.project));
 const maySave = computed(() => may("PATCH /api/v1/projects/{name}/env", caller.value));
+const mayReveal = computed(() => may("GET /api/v1/projects/{name}/env", caller.value));
 // Why not, in the words the API refuses in — under the list, where the save
 // button would have been.
 const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/env", caller.value));
@@ -57,6 +75,30 @@ watch(
   },
   { immediate: true },
 );
+
+// Showing the values is one read, made when it is asked for. Hiding them takes
+// them off the screen and asks again next time — there is nothing kept, so a
+// page left open does not go on holding them.
+const revealing = ref(false);
+const shown = computed(() => drafts.value.some((draft) => draft.shown !== undefined));
+async function showValues() {
+  if (!mayReveal.value || revealing.value) return;
+  revealing.value = true;
+  try {
+    drafts.value = withShownValues(drafts.value, await api.projectEnvValues(props.project));
+  } catch (err) {
+    toast.add({
+      title: "Reading the values failed",
+      description: err instanceof Error ? err.message : String(err),
+      color: "error",
+    });
+  } finally {
+    revealing.value = false;
+  }
+}
+function hideValues() {
+  drafts.value = withoutShownValues(drafts.value);
+}
 
 function addEnvVar() {
   drafts.value.push(newEnvVarDraft());
@@ -119,10 +161,12 @@ async function save() {
       <div>
         <h2 class="text-sm font-medium text-highlighted">Environment variables</h2>
         <p class="text-xs text-muted mt-1">
-          What <span class="font-mono">{{ project }}</span> runs with. Values are never read back — by anybody, this
-          dashboard included — so a variable that has one shows <span class="font-mono">•••• set</span><template
-            v-if="maySave"
-          >, and replacing it means typing the new one</template>. They land in new releases: what is running keeps its
+          What <span class="font-mono">{{ project }}</span> runs with. A variable that has a value shows
+          <span class="font-mono">•••• set</span><template v-if="mayReveal">, and <strong>Show values</strong> reads
+            what it is — a separate request, which the platform records</template><template
+            v-else-if="maySave"
+          >, and replacing it means typing the new one</template>. A variable reading a secret or a claim shows the
+          reference it names and never what is behind it. They land in new releases: what is running keeps its
           release's snapshot until the next deploy.
         </p>
         <p class="text-xs text-dimmed mt-1">
@@ -130,16 +174,29 @@ async function save() {
           these — so a variable named PORT here still wins.
         </p>
       </div>
-      <UButton
-        v-if="maySave"
-        color="neutral"
-        variant="subtle"
-        size="xs"
-        icon="i-lucide-plus"
-        @click="addEnvVar"
-      >
-        Add variable
-      </UButton>
+      <div class="flex items-center gap-2">
+        <UButton
+          v-if="mayReveal && drafts.length"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          :loading="revealing"
+          :icon="shown ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+          @click="shown ? hideValues() : showValues()"
+        >
+          {{ shown ? "Hide" : "Show values" }}
+        </UButton>
+        <UButton
+          v-if="maySave"
+          color="neutral"
+          variant="subtle"
+          size="xs"
+          icon="i-lucide-plus"
+          @click="addEnvVar"
+        >
+          Add variable
+        </UButton>
+      </div>
     </div>
 
     <form class="space-y-4" @submit.prevent="save">
@@ -160,6 +217,14 @@ async function save() {
                 autocomplete="off"
                 class="flex-1 min-w-0 font-mono"
               />
+              <!-- A revealed value is drawn as itself, once it has been asked for
+                   and where the variable has not been renamed away from it. -->
+              <p
+                v-else-if="envVar.shown && envVar.set && !renamed(envVar)"
+                class="flex-1 min-w-0 font-mono text-sm text-highlighted break-all"
+              >
+                {{ envVar.shown.value }}
+              </p>
               <UBadge
                 v-else
                 :color="envVar.set && renamed(envVar) ? 'warning' : 'neutral'"
@@ -199,6 +264,12 @@ async function save() {
                 autocomplete="off"
                 class="flex-1 min-w-0 font-mono"
               />
+              <p
+                v-else-if="envVar.shown && envVar.previewSet && !renamed(envVar)"
+                class="flex-1 min-w-0 font-mono text-sm text-highlighted break-all"
+              >
+                {{ envVar.shown.previewValue }}
+              </p>
               <UBadge
                 v-else
                 :color="envVar.previewSet && renamed(envVar) ? 'warning' : 'neutral'"

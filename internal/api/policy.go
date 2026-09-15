@@ -285,18 +285,52 @@ func (s *Server) routes() []route {
 		// applied to a write.
 		{"PATCH /api/v1/projects/{name}/env", s.patchProjectEnv,
 			onProject(access.ProjectDeveloper, ofProject, "changing a project's environment variables")},
+		// The same variables with the literal values the project typed (#598)
+		// — the one route on this API that answers a stored value.
+		//
+		// **Developer, which is the role that may already replace them**, and
+		// the argument is made against what the response carries rather than
+		// against what the route is called:
+		//
+		//   - `value` and `previewValue` are literals somebody holding the
+		//     row above can overwrite at will, and the same cleartext that
+		//     sits on the Project object. Reading one grants no authority the
+		//     write did not already grant.
+		//   - `fromSecret` and `fromClaim` are the references the viewer's
+		//     list already carries, restated and never resolved. The handler
+		//     reads no Secret and no claim binding, so a credential the
+		//     platform holds on somebody's behalf still never leaves it — and
+		//     a variable that names one is answered with the reference alone,
+		//     its stored literal dropped on the way out.
+		//   - `name`, `set` and `previewSet` are the viewer's list verbatim.
+		//
+		// **It is a route of its own so that the viewer's reads stay names
+		// only.** `GET /projects/{name}` and the secrets list below are a
+		// viewer's precisely because they carry no value; putting the
+		// literals on either would make the comment below false as written. A
+		// literal can be a URL with a token in it, so the values sit at the
+		// role that may write them rather than on a route answering everybody
+		// who can see the project.
+		//
+		// The read is recorded (audit.KindProjectEnvRead, an `export`): a GET
+		// leaves no other trace, and this is the one way the product hands a
+		// stored value back.
+		{"GET /api/v1/projects/{name}/env", s.getProjectEnv,
+			onProject(access.ProjectDeveloper, ofProject, "reading a project's environment variable values")},
 		// The project's own secrets — a credential Kitchen did not mint, which
 		// an environment variable then reads instead of carrying in cleartext.
 		// They sit beside the variables and take the same roles for the same
 		// reason: this is the day job, not the project's settings, and the
 		// whole point is that it is no harder than `env` was.
 		//
-		// **Reading is a viewer's and it is names only.** A value never leaves
-		// the operator — no route here answers one — so the read is exactly
-		// what `GET /projects/{name}` already tells a viewer about a
-		// variable: that there is one, and what to reference it by. Hiding the
-		// list from a viewer would withhold nothing and would leave the
-		// Variables screen unable to say where a variable's value comes from.
+		// **Reading is a viewer's and it is names only.** A secret's value
+		// never leaves the operator — no route on this API answers one, and
+		// the variables route above answers the reference rather than what it
+		// points at — so the read is exactly what `GET /projects/{name}`
+		// already tells a viewer about a variable: that there is one, and
+		// what to reference it by. Hiding the list from a viewer would
+		// withhold nothing and would leave the Variables screen unable to say
+		// where a variable's value comes from.
 		{"GET /api/v1/projects/{name}/secrets", s.listProjectSecrets,
 			onProject(access.ProjectViewer, ofProject, "reading a project's secrets")},
 		{"PUT /api/v1/projects/{name}/secrets/{secret}", s.setProjectSecret,
@@ -548,9 +582,12 @@ func (s *Server) routes() []route {
 			onProject(access.ProjectViewer, ofEnvironment, "reading an environment's metrics")},
 		// Operator-only, and a developer needing it is a bug: it answers with
 		// the materialized Deployment, whose manifest carries every literal
-		// environment variable the project set. docs/AUTH.md says what to do
-		// about a developer who needs one — file the missing product surface,
-		// rather than widening the role.
+		// environment variable the project set *and* the Secret names behind
+		// the referenced ones. docs/AUTH.md says what to do about a developer
+		// who needs one — file the missing product surface, rather than
+		// widening the role. `GET /projects/{name}/env` (#598) is one such
+		// surface, filed and built: a developer wanting to know what a
+		// variable holds asks that and never this.
 		{"GET /api/v1/environments/{name}/objects", s.environmentObjects,
 			operatorOnly("reading an environment's Kubernetes objects")},
 		{"GET /api/v1/environments/{name}/requests", s.environmentRequests,
