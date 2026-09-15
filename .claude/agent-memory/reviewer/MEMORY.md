@@ -84,6 +84,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 - 2026-09-09: A new kind step asserted a `.spec` field the envtest in the same PR already asserts, twelve minutes later on a cluster, while the job it was added to already runs probe pods with `-H 'Host: ...'` and the Cilium leg has an LB address (hack/install-cilium.sh's LB IPAM) — so the behavioural assertion (which Host gets a 301 and which does not) was available and was not taken. Ask: does the cluster case assert something the unit test cannot, or restate it?
 - 2026-09-09: The new kind step had executed zero times on the head under review — one matrix leg died on `go mod download` in the image build and skipped every later step, the other had not reached it. The 2026-09-08 lesson recurred within a day. Ask, every time: did this step *run* on this head?
 
+- 2026-09-15: Moving a page's scroll from the document into an element kills keyboard scrolling until something inside is focused: `<main>` is full of links, so Chrome's keyboard-focusable-scrollers rule does not make it focusable, and with focus on `<body>` Space/PageDown/arrows act on a viewport that can no longer scroll. No test in `ui/` can see it and there is no browser in CI. Ask: after this layout change, what scrolls when nothing is focused?
+- 2026-09-15: `ui/` has no browser, so a layout fix is provable only in `dist/assets/*.css` — and presence is not the check, *order* is: a `min-h-screen` floor emitted after a `lg:h-dvh` would silently beat it, since `min-height` wins over `height` and a media query adds no specificity. Ask: where in the built stylesheet does each competing utility sit?
+
 ## Decisions that should have been surfaced
 
 - 2026-09-09: Whether two open branches collide is one command, not an argument: `git fetch origin pull/<n>/head:prN && git merge-tree --write-tree prN HEAD` lists the conflicted paths. #577 and #578 shared no Go code and collided only in `docs/api/domains.md`, where both appended to the same paragraph. Run it for every pair of concurrent PRs on one subsystem before ranking the interaction risk.
@@ -115,6 +118,9 @@ them through. Each is a question to ask of every diff. Dated, one line each.
 
 - 2026-09-09: A body sorted a long-running Deployment into its "short-lived helper binaries" list — `cmd/gate`, the forward-auth gate, runs a controller-runtime cache and never exits — so a default it *loses* (the client-side rate limiter, 20/30 until controller-runtime 0.21) was justified by a fact that is false. Ask: for every binary a body sorts into "makes a bounded number of requests and exits", is it a Job or a Deployment?
 - 2026-09-09: `rest.Config.QPS`/`Burst` is a per-client, per-GVK token bucket — controller-runtime's client builds one REST client per GVK — so "the operator is bounded at 20 queries a second" is never true of a restored default; it is 20 per kind per client. Ask: does the sentence describing a rate limit say per what?
+
+- 2026-09-15: A `scrollBehavior` is not media-gated however `lg:`-prefixed the CSS half is: declaring one at all flips `history.scrollRestoration` to `manual` at every width (vue-router `dist/vue-router.mjs:1169`) and its reset runs on a phone too, so "below `lg` nothing changes" in the body and "none of it applies" in docs/UI.md were both false about the router half. Ask: is the non-CSS half of a responsive change gated the way the classes are?
+- 2026-09-15: "Back returns to where it was" was written into docs/UI.md while the restore writes `main.scrollTop` one `nextTick` after the route is confirmed — when `useAsync` has every view at `data = null` and the scrollport is a loading skeleton, so the CSSOM setter clamps to ~0 and nothing re-applies it. Ask: does a restored scroll coordinate land on content that has arrived, or on the placeholder that precedes it?
 
 ## Commit and title
 
