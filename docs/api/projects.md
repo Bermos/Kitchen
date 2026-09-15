@@ -1054,8 +1054,12 @@ against the name of the route. And leaving the viewer's reads alone is what
 keeps [the secrets list](secrets.md#reading-them) a `viewer`'s for the reason
 it always was — it is names only.
 
-**The read is recorded**, as an audit-pack export is: a `GET` leaves no other
-trace, and this is the one route that hands a stored value back.
+**On an installation that keeps an audit log, the read is recorded**, as an
+audit-pack export is: a `GET` leaves no other trace, and this is the one route
+that hands a stored value back. Where `spec.compliance.audit` is off there is
+no log to record it in — the same installation [the audit
+routes](audit.md#when-there-is-nothing-to-read) answer `503` for — so the read
+happens and nothing says it did.
 
 ```sh
 curl -sS -H "authorization: Bearer $TOKEN" \

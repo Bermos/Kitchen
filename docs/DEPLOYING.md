@@ -154,7 +154,8 @@ Or the Variables panel in the dashboard, where **Show values** does the same.
 
 **A variable's own value is readable; what it points at is not.** `value` and
 `previewValue` are literals you typed, so the platform hands them back — to a
-`developer`, on a route of its own, and it records the read. A variable reading
+`developer`, on a route of its own, and it records the read where the
+installation keeps an audit log. A variable reading
 one of the project's own secrets or a resource claim's binding answers with the
 reference it names and never with what is behind it, which is why a credential
 belongs in a secret rather than in a variable. There is no `env pull` and no

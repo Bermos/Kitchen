@@ -683,8 +683,9 @@ Three things about the API shape this command, and all three are deliberate
   reference it names, and nothing resolves it — so there is still no way here
   to read a secret.
 - **Asking for the values is a separate act**, which is why it is a flag and
-  not the default. The platform records the read, and a value on a terminal is
-  a value in scrollback and in a CI job's log. There is no `env pull` either: a
+  not the default. The platform records the read where the installation keeps
+  an audit log, and a value on a terminal is a value in scrollback and in a CI
+  job's log. There is no `env pull` either: a
   copy of a project's whole configuration on disk is not what asking after one
   variable is.
 - **The write replaces the whole list**, and a variable whose `value` the

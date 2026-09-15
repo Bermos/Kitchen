@@ -130,8 +130,8 @@ keeps all three:
 - **The API never reads credentials back, so neither does the CLI.**
   `kitchen env list` prints the whole variable list and no values, and
   `--values` is what asks the one route that answers the literals — never a
-  secret's, and a separate, recorded read rather than something a list hands
-  over by default. `env set` sends every variable back by name and a value
+  secret's, and a separate read (recorded, where the installation keeps an
+  audit log) rather than something a list hands over by default. `env set` sends every variable back by name and a value
   only for the ones it is changing, which is what makes a partial change
   possible against a route that replaces the whole list; that mechanism is
   untouched by the read, because a value the CLI was shown is still not one it

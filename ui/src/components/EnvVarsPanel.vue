@@ -32,14 +32,20 @@ import { may, refusal } from "../lib/policy";
 // and save affordances gone rather than disabled.
 //
 // **Reading a *value* is the developer's, and it is asked for** (#598). The
-// literals ride a route of their own at the role that may replace them, and
-// the platform records the read — so this screen does not fetch them with the
-// page. The project view polls every ten seconds; a panel that carried the
-// values would put a line in the audit log every ten seconds and leave a
-// credential-shaped string on a screen nobody is looking at. "Show values" is
-// one read, and "Hide" takes them back off. A variable reading a secret or a
-// claim is untouched either way: it draws the reference it names, because
-// that is what it holds and the platform resolves nothing.
+// literals ride a route of their own at the role that may replace them, so
+// this screen does not fetch them with the page — for two reasons, and
+// neither of them is how often the screen loads:
+//
+//   - Where the installation keeps an audit log, the platform records the
+//     read. One line per deliberate act is the record somebody can act on; a
+//     line per page load is noise that buries it.
+//   - A value drawn on load is a value left on an unattended screen, and a
+//     literal can be a URL with a token in it. Asking is what makes somebody
+//     present for it.
+//
+// "Show values" is one read, and "Hide" takes them back off. A variable
+// reading a secret or a claim is untouched either way: it draws the reference
+// it names, because that is what it holds and the platform resolves nothing.
 //
 // The list replaces the stored one wholesale, so every variable has to be in
 // what is sent. Values are the exception, and deliberately: a variable whose
@@ -66,9 +72,10 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/env
 // and the control still has to become "Hide".
 const shown = ref(false);
 
-// Drafts are loaded once per project, not on every payload: the project view
-// polls every ten seconds, and a re-load on each answer would type over
-// somebody mid-edit.
+// Drafts are loaded once per project, not on every payload. The settings view
+// does not poll — it reads once and re-reads after a write (#470) — but it
+// re-reads on every save, and rebuilding the drafts from an answer that
+// arrived while somebody was typing would take the edit away from them.
 const loadedFor = ref("");
 const drafts = ref<EnvVarDraft[]>([]);
 watch(
@@ -231,7 +238,7 @@ async function save() {
                    and where the variable has not been renamed away from it. -->
               <p
                 v-else-if="envVar.shown && envVar.set && !renamed(envVar)"
-                class="flex-1 min-w-0 font-mono text-sm text-highlighted break-all"
+                class="flex-1 min-w-0 font-mono text-sm text-toned break-all"
               >
                 {{ envVar.shown.value }}
               </p>
@@ -276,7 +283,7 @@ async function save() {
               />
               <p
                 v-else-if="envVar.shown && envVar.previewSet && !renamed(envVar)"
-                class="flex-1 min-w-0 font-mono text-sm text-highlighted break-all"
+                class="flex-1 min-w-0 font-mono text-sm text-toned break-all"
               >
                 {{ envVar.shown.previewValue }}
               </p>

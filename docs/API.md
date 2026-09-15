@@ -254,7 +254,7 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/projects/{name}` | One project — its env vars by name and whether each has a value, never the value itself (that is the route below, at `developer`); its configuration files, and a secret one's digest rather than its content | `viewer` |
 | PATCH | `/projects/{name}` | Change its settings — branch, previews, build, runtime, workloads, configuration files, what it offers other projects. Not its env vars | `admin` |
 | PATCH | `/projects/{name}/env` | Change its environment variables — the whole list | `developer` |
-| GET | `/projects/{name}/env` | The same variables with the literal values the project typed — the one route that answers a stored value. A variable reading a secret or a claim answers the reference it names, never what is behind it, and the read is recorded | `developer` |
+| GET | `/projects/{name}/env` | The same variables with the literal values the project typed — the one route that answers a stored value. A variable reading a secret or a claim answers the reference it names, never what is behind it, and the read is recorded where the installation keeps an audit log | `developer` |
 | GET | `/projects/{name}/secrets` | Its own secrets by name, and the reference each is read by. Never a value | `viewer` |
 | PUT | `/projects/{name}/secrets/{secret}` | Set one, or replace the value of one already there. The value goes in and never comes back out | `developer` |
 | DELETE | `/projects/{name}/secrets/{secret}` | Remove one, unless a variable still reads it | `developer` |

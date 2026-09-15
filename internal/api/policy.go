@@ -312,9 +312,9 @@ func (s *Server) routes() []route {
 		// role that may write them rather than on a route answering everybody
 		// who can see the project.
 		//
-		// The read is recorded (audit.KindProjectEnvRead, an `export`): a GET
-		// leaves no other trace, and this is the one way the product hands a
-		// stored value back.
+		// The read is recorded (audit.KindProjectEnvRead, an `export`) wherever
+		// the installation keeps an audit log: a GET leaves no other trace,
+		// and this is the one way the product hands a stored value back.
 		{"GET /api/v1/projects/{name}/env", s.getProjectEnv,
 			onProject(access.ProjectDeveloper, ofProject, "reading a project's environment variable values")},
 		// The project's own secrets — a credential Kitchen did not mint, which

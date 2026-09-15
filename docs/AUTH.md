@@ -521,9 +521,28 @@ and three things hold it in place:
 - It answers a **literal, never what a variable points at**. A `fromSecret` or
   a `fromResourceClaim` comes back as the reference it names; nothing on that
   path reads the Secret or the binding, so a credential still never leaves the
-  operator. Reading the values is recorded as an export
-  (kind `ProjectEnvRead`), because a `GET` leaves no other trace and this is
-  the one way the product hands a stored value back.
+  operator.
+- **On an installation that keeps an audit log**, the read is recorded as an
+  export (kind `ProjectEnvRead`), because a `GET` leaves no other trace and
+  this is the one way the product hands a stored value back. Where
+  `spec.compliance.audit` is off there is no log to record it in and no
+  evidence that it happened — the same gap [the audit
+  routes](api/audit.md#when-there-is-nothing-to-read) answer `503` for, and
+  worth knowing before turning the log off.
+
+**The role is a person's argument, and it reaches every credential that holds
+the role.** The reason the read sits at `developer` is that whoever may
+overwrite a literal may read it — which is an argument about somebody with
+hands. It applies unchanged to the non-human holders of that role: a CI key
+belongs to a [machine account](#machine-accounts) granted a project role in
+`spec.access`, and `developer` is the ordinary grant for one, because builds
+and cancellations are `developer`. A [personal key](#personal-keys) narrowed to
+`developer` on a project is the same. Such a credential could already overwrite
+every literal the project holds; from the release this landed in it can also
+read them all back, and reading is quiet where overwriting is loud. Nothing
+about it is new authority — it is the existing grant, doing a new thing — but
+an installation that issues `developer` keys widely should know that it did.
+Narrowing a key to `viewer` leaves it the names and no values.
 
 Five rules go with that table:
 

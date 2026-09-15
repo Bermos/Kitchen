@@ -1584,7 +1584,11 @@ func (s *Server) patchProject(w http.ResponseWriter, req *http.Request) {
 //
 // The read is recorded before it is answered, the way an audit pack export is:
 // this is the one place a stored value leaves the platform, and a `GET` leaves
-// no other trace of having happened.
+// no other trace of having happened. On an installation that keeps no audit
+// log (`spec.compliance.audit` off) there is nothing to append to and
+// `recorded` answers true, so the route works and the read is not evidenced —
+// which is that installation's choice rather than this route's, and is said
+// out loud in docs/AUTH.md rather than left to be discovered.
 func (s *Server) getProjectEnv(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 

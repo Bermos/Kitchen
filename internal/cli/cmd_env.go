@@ -43,10 +43,10 @@ import (
 //     project's whole configuration on disk is not what asking after one
 //     variable is.
 //   - **Asking for the values is a separate act.** They ride a route of their
-//     own, the read is recorded in the audit log, and a terminal keeps what it
-//     was shown — in scrollback, and in a CI job's log. So `env list` prints
-//     names and presence, and `--values` is what asks for the rest, on the
-//     table and under `--json` alike.
+//     own, the read is recorded wherever the installation keeps an audit log,
+//     and a terminal keeps what it was shown — in scrollback, and in a CI
+//     job's log. So `env list` prints names and presence, and `--values` is
+//     what asks for the rest, on the table and under `--json` alike.
 //   - **The write replaces the whole list**, and a variable whose `value` the
 //     request leaves out keeps the one it already has. That is what makes a
 //     one-variable change possible without reading any values: the CLI sends
@@ -100,17 +100,18 @@ Each one says whether it has a value (set), whether it has a different one in
 previews (previewSet), or which Secret or resource claim it reads instead.
 
 --values asks for the literals as well. It is a separate request, to a route
-that wants developer where this one wants viewer, and the platform records the
-read in its audit log. A variable reading a secret or a resource claim is
-unaffected: it answers with the reference it names and never with what is
-behind it.`),
+that wants developer where this one wants viewer, and where the installation
+keeps an audit log the platform records the read. A variable reading a secret
+or a resource claim is unaffected: it answers with the reference it names and
+never with what is behind it.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
 			return listEnv(commandContext(cmd), r, values)
 		}),
 	}
 	cmd.Flags().BoolVar(&values, "values", false,
-		"read each variable's own value as well — an audited read, and never a secret's")
+		"read each variable's own value as well — recorded where the installation keeps an "+
+			"audit log, and never a secret's")
 
 	return describe(cmd, meta{
 		Calls:  []string{"GET /api/v1/projects/{name}", "GET /api/v1/projects/{name}/env"},

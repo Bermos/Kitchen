@@ -98,12 +98,13 @@ decided on its own is attributed to the reconciler that decided it
 (`system:controller/build`), never to "the operator". `correlation` ties every
 record from one cause together — for a deploy, the commit.
 
-### The three records of a read
+### The three records of a copy leaving
 
-Almost everything here is a change. Three records are not, and they are the
-places where something the platform holds is *copied out* — a `GET` leaves no
-other trace, so the record is the whole of the evidence that it happened. All
-three carry `operation: export`:
+Almost everything here is a change to what the platform holds. Three records
+are not: they are the places where a copy of it *leaves*, and the record is the
+whole of the evidence that it did. Two of the three are reads, where a `GET`
+would otherwise leave no trace at all; the third is a backup, which is started
+by a `POST` and changes nothing either. All three carry `operation: export`:
 
 | `kind` | What was taken |
 |---|---|
