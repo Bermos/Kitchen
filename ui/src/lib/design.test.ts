@@ -537,17 +537,25 @@ describe("the shell's frame", () => {
   });
 
   it("has one <main>, and it is what scrolls inside the frame", () => {
-    const mains: { file: string; cls: string[] }[] = [];
+    const mains: { file: string; node: Node }[] = [];
     for (const file of everything) {
       walk(templateOf(file), (node) => {
-        if (node.tag === "main") mains.push({ file: file.name, cls: classes(node) });
+        if (node.tag === "main") mains.push({ file: file.name, node });
       });
     }
     // `router.ts` finds the element a navigation scrolls by this tag, because
     // there is exactly one of it. A second would make that a guess.
     expect(mains.map((m) => m.file), "the dashboard has one <main>, and it is the shell's").toEqual(["AppShell.vue"]);
-    expect(mains[0].cls, "the shell's <main> is the one thing inside the frame that scrolls").toContain(
+    expect(classes(mains[0].node), "the shell's <main> is the one thing inside the frame that scrolls").toContain(
       "overflow-y-auto",
     );
+    // And `router.ts` focuses it when a new screen opens, so that the keys
+    // which scroll a page reach it — the document is no longer a scrollport at
+    // `lg`. Without the attribute that focus call is a silent no-op.
+    const tabindex = mains[0].node.props?.find((p) => p.type === ATTRIBUTE && p.name === "tabindex");
+    expect(
+      tabindex?.value?.content,
+      "the shell's <main> is focusable programmatically, which is what makes it keyboard-scrollable",
+    ).toBe("-1");
   });
 });

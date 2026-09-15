@@ -263,19 +263,43 @@ the one thing that moves. Navigation is the one thing on a screen that should
 never need scrolling to reach, and a rail as tall as the *page* has its foot
 below the fold before anybody has scrolled at all (#600).
 
-Two consequences are worth knowing before adding to the shell. The rail's own
-navigation scrolls **within the rail** — that is what `flex-1 min-h-0
-overflow-y-auto` on it has always said, and a bounded aside is what makes it
-true. And the scroll a navigation leaves behind is an element's rather than the
-document's, so `router.ts` owns it: a new screen opens at the top, the same
-screen asked a different question keeps its place, and a back or a forward
-returns to where it was. A screen that scrolls to a place inside itself — the
-`?section=` a finding's evidence link carries — still does that for itself,
-once its own data has arrived.
+The rail's own navigation scrolls **within the rail** — that is what `flex-1
+min-h-0 overflow-y-auto` on it has always said, and a bounded aside is what
+makes it true.
 
-Below `lg` none of it applies. The rail is an off-canvas drawer there and the
-document scrolls as it always did, because a bounded frame on a phone buys a
-rail that stays put at the price of an address bar that never retracts again.
+**Below `lg` the frame does not apply.** The rail is an off-canvas drawer there
+and the document is still what scrolls, because a bounded frame on a phone buys
+a rail that stays put at the price of an address bar that never retracts again.
+
+**Where a navigation leaves the reader is `router.ts`'s, at every width.** That
+half is not gated and cannot be: declaring a `scrollBehavior` at all switches
+`history.scrollRestoration` to `manual` everywhere, so a phone is under these
+rules too, and a new screen opening at the top is a change there rather than a
+fix.
+
+- **A new screen opens at the top.** Reading halfway down a list and clicking
+  into one of its rows opens that row's screen at its own beginning.
+- **The same screen asked a different question keeps its place** — a filter, a
+  window, the `?denied=` the route guard adds. The reader has not gone
+  anywhere. A settings pane is the one case where that reads wrong, and it is
+  the screen's to fix rather than the router's (#609).
+- **A back or a forward is aimed at where it was**, and lands there as far as
+  the screen allows. The aim is taken one tick after the route is confirmed,
+  when every view's data is still `null` and there is almost nothing to scroll,
+  so on most screens it lands near the top — which is where the browser's own
+  restoration put it before this, for the same reason. Making it land properly
+  is #608.
+- **A screen that scrolls to a place inside itself** — the `?section=` a
+  finding's evidence link carries — still does that for itself, once its own
+  data has arrived, which is long after any of the above.
+
+**A new screen also takes focus to `<main>`**, which carries `tabindex="-1"` for
+the purpose. At `lg` the document is no longer a scrollport, and a browser sends
+the keys that scroll a page through the scroll chain of whatever has focus — so
+without it the space bar does nothing on a long screen until something inside
+the page is clicked or tabbed to. It is the same move that tells a screen reader
+a new page has arrived, and it is a new screen's to make: a filter changing
+would otherwise take focus off the control that changed it.
 
 ## The overlay layer
 
