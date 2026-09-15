@@ -522,3 +522,32 @@ describe("the scope rule", () => {
     ).toEqual([]);
   });
 });
+
+describe("the shell's frame", () => {
+  const shell = everything.find((file) => file.name === "AppShell.vue")!;
+
+  it("declares a height at lg, not only a minimum", () => {
+    const cls = classes(elementChildren(templateOf(shell))[0]);
+    // A minimum is a floor: the root grows with whatever a screen puts inside
+    // it, the document is what scrolls, and the rail — `lg:static`, so part of
+    // that row — scrolls away with it (#600). The header's `shrink-0`, the
+    // scroll container on `<main>` and the `flex-1 min-h-0 overflow-y-auto` on
+    // both rail navs are all shapes that do nothing until this is a height.
+    expect(cls, 'the shell is a frame, not a column that grows (docs/UI.md)').toContain("lg:h-dvh");
+  });
+
+  it("has one <main>, and it is what scrolls inside the frame", () => {
+    const mains: { file: string; cls: string[] }[] = [];
+    for (const file of everything) {
+      walk(templateOf(file), (node) => {
+        if (node.tag === "main") mains.push({ file: file.name, cls: classes(node) });
+      });
+    }
+    // `router.ts` finds the element a navigation scrolls by this tag, because
+    // there is exactly one of it. A second would make that a guess.
+    expect(mains.map((m) => m.file), "the dashboard has one <main>, and it is the shell's").toEqual(["AppShell.vue"]);
+    expect(mains[0].cls, "the shell's <main> is the one thing inside the frame that scrolls").toContain(
+      "overflow-y-auto",
+    );
+  });
+});

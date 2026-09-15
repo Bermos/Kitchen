@@ -255,6 +255,28 @@ stopped being true is `—` rather than the number it used to be.
 `design.test.ts` requires the control on every view that calls `usePoll`, and
 requires that nothing but `PageHeader` places it.
 
+### The shell is a frame, not a column that grows
+
+**On a large screen the shell is exactly as tall as the screen, and the page
+scrolls inside it.** The rail and the top bar stay where they are; `<main>` is
+the one thing that moves. Navigation is the one thing on a screen that should
+never need scrolling to reach, and a rail as tall as the *page* has its foot
+below the fold before anybody has scrolled at all (#600).
+
+Two consequences are worth knowing before adding to the shell. The rail's own
+navigation scrolls **within the rail** — that is what `flex-1 min-h-0
+overflow-y-auto` on it has always said, and a bounded aside is what makes it
+true. And the scroll a navigation leaves behind is an element's rather than the
+document's, so `router.ts` owns it: a new screen opens at the top, the same
+screen asked a different question keeps its place, and a back or a forward
+returns to where it was. A screen that scrolls to a place inside itself — the
+`?section=` a finding's evidence link carries — still does that for itself,
+once its own data has arrived.
+
+Below `lg` none of it applies. The rail is an off-canvas drawer there and the
+document scrolls as it always did, because a bounded frame on a phone buys a
+rail that stays put at the price of an address bar that never retracts again.
+
 ## The overlay layer
 
 Every overlay Nuxt UI opens — a dropdown menu, a select, a modal — is
