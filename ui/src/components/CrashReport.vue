@@ -114,6 +114,7 @@ function levelClass(line: LogLine): string {
             </p>
           </div>
           <UButton
+            class="shrink-0"
             icon="i-lucide-refresh-cw"
             size="xs"
             color="neutral"

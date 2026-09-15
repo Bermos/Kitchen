@@ -189,9 +189,9 @@ async function save() {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
+  <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="min-w-0">
         <h2 class="text-sm font-medium text-highlighted">Workloads</h2>
         <p class="text-xs text-muted mt-1">
           What <span class="font-mono">{{ project }}</span> runs besides the web process: the queue workers, the
@@ -206,6 +206,7 @@ async function save() {
       </div>
       <UButton
         v-if="mayEdit"
+        class="shrink-0"
         color="neutral"
         variant="subtle"
         size="xs"
@@ -534,7 +535,7 @@ async function save() {
           The list replaces the one stored, so removing a workload here removes it. It reaches an environment through
           the next release.
         </p>
-        <UButton type="submit" :loading="saving" :disabled="problems.length > 0" icon="i-lucide-check">
+        <UButton type="submit" class="shrink-0" :loading="saving" :disabled="problems.length > 0" icon="i-lucide-check">
           Save workloads
         </UButton>
       </div>

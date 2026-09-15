@@ -133,7 +133,7 @@ function flagsOf(entry: { orphaned?: boolean; inactive?: boolean; unknown?: bool
           somebody has to look.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <UButton
           size="xs"
           color="neutral"
@@ -219,6 +219,7 @@ function flagsOf(entry: { orphaned?: boolean; inactive?: boolean; unknown?: bool
         </div>
         <UButton
           v-if="mayDecide && review.phase !== 'Closed'"
+          class="shrink-0"
           size="xs"
           color="neutral"
           variant="subtle"

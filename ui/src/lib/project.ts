@@ -377,9 +377,10 @@ export function claimPlan(claim: Claim): string {
  * Twelve panels behind a rail is a normal shape; twelve panels on one scroll is
  * the shape #470 objects to — and since the settings-bound panels are more
  * lines than the whole of the host page was, a single-scroll Settings would
- * re-create the problem one level down. Each pane is its own `max-w-3xl`
- * column, which is how "one page, one form width" is honoured rather than
- * asserted (docs/UI.md).
+ * re-create the problem one level down. Each pane declares its own width and
+ * the column applies it, which is how "one page, one form width" is honoured
+ * rather than asserted (docs/UI.md) — and how the panes that are a table
+ * rather than a form stop being drawn in half a wide screen.
  *
  * The id is in the address as `?section=`, so a pane is a link: "the fork
  * policy is here" is a thing somebody can send.
@@ -389,6 +390,16 @@ export interface SettingsSection {
   label: string;
   /** What this pane answers, under its heading. */
   description: string;
+  /** How wide the pane is drawn, decided by what the pane is *about* rather
+   * than by which controls happen to be on it. A pane about something somebody
+   * fills in keeps the form width — a 1400px-wide text input is worse, not
+   * better — whatever table it shows as evidence; a pane about a list takes
+   * the whole column, whatever form it carries for adding to that list, since
+   * the empty half of a wide screen is the reader's loss (#599). Members is
+   * the case that proves it is not "has a form": it is about who is on the
+   * project and takes the column, with an add row and a role select on every
+   * line. docs/UI.md, "The page", is the rule. */
+  width: "form" | "column";
   /** A pane that only exists for a project built from a repository — a project
    * running a vendored image has no branch, no previews and no build. */
   builtHereOnly?: boolean;
@@ -399,49 +410,97 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "source",
     label: "Source",
     description: "Where this project's software comes from, and what is done to it before it runs.",
+    width: "form",
   },
   {
     id: "processes",
     label: "Processes",
     description: "What this project runs besides its web process: workers, services, scheduled jobs and deploy tasks.",
+    width: "form",
   },
   {
     id: "resources",
     label: "Attached resources",
     description: "What this project depends on, and what it costs to take one away.",
+    width: "form",
   },
   {
     id: "offerings",
     label: "Offerings",
     description: "What this project offers the other projects on this platform, and who may bind to it.",
+    width: "column",
   },
-  { id: "variables", label: "Variables", description: "The environment this project's processes start with." },
-  { id: "files", label: "Files", description: "The configuration files the platform places into the workloads." },
-  { id: "secrets", label: "Secrets", description: "The credentials a variable points at. Nothing here is read back." },
-  { id: "domains", label: "Domains", description: "The hostnames attached to this project's environments." },
-  { id: "members", label: "Members", description: "Who is on this project, and what each of them may do." },
-  { id: "keys", label: "Keys", description: "The non-human members: one key, one project, issued and revoked here." },
   {
+    id: "variables",
+    label: "Variables",
+    description: "The environment this project's processes start with.",
+    width: "form",
+  },
+  {
+    id: "files",
+    label: "Files",
+    description: "The configuration files the platform places into the workloads.",
+    width: "column",
+  },
+  {
+    id: "secrets",
+    label: "Secrets",
+    description: "The credentials a variable points at. Nothing here is read back.",
+    width: "column",
+  },
+  {
+    id: "domains",
+    label: "Domains",
+    description: "The hostnames attached to this project's environments.",
+    width: "column",
+  },
+  {
+    id: "members",
+    label: "Members",
+    description: "Who is on this project, and what each of them may do.",
+    width: "column",
+  },
+  {
+    id: "keys",
+    label: "Keys",
+    description: "The non-human members: one key, one project, issued and revoked here.",
+    width: "column",
+  },
+  {
+    // The one pane about a list that keeps the form width, and the exception
+    // docs/UI.md points at: its subscriptions are drawn as cards rather than
+    // as a table, and a card list at 1400px is a long thin line of text
+    // instead of more columns. The delivery tables inside an expanded card are
+    // detail within a card, not the pane's own content.
     id: "notifications",
     label: "Notifications",
     description: "Where this project's own activity is sent.",
+    width: "form",
   },
   {
     id: "runtime",
     label: "Runtime",
     description: "How much of this project runs, what it is started with, and what the platform asks it before sending anyone to it.",
+    width: "form",
   },
   {
     id: "security",
     label: "Security",
     description: "What the containers are allowed to be, for every workload this project ships.",
+    width: "form",
   },
   {
     id: "continuity",
     label: "Continuity",
     description: "What class of data this handles, and the tolerances the institution set for it.",
+    width: "form",
   },
-  { id: "danger", label: "Danger zone", description: "Removing the project and everything it is running." },
+  {
+    id: "danger",
+    label: "Danger zone",
+    description: "Removing the project and everything it is running.",
+    width: "form",
+  },
 ];
 
 /** The section a `?section=` names, or the first one for anything else. A

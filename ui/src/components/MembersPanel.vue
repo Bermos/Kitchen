@@ -148,7 +148,7 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
+  <div class="space-y-4">
     <div>
       <h2 class="text-sm font-medium text-highlighted">People</h2>
       <p class="text-xs text-muted mt-1">

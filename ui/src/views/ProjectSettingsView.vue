@@ -66,10 +66,12 @@ import VolumeInitEditor from "../components/VolumeInitEditor.vue";
 // this issue objects to, and a single-scroll Settings would have re-created the
 // problem one level down (#470, decision 2).
 //
-// So: one pane at a time, each `max-w-3xl`, each with its own address
-// (`?section=`), and **nothing on this screen polls**. It is read once and
-// re-read after a write, because a form that reloads under the cursor is worse
-// than one that is a few seconds stale.
+// So: one pane at a time, each at the width of what it is about — the form
+// width for a pane somebody fills in, the whole column for a pane about a list
+// (#599) — each with its own address (`?section=`), and
+// **nothing on this screen polls**. It is read once and re-read after a write,
+// because a form that reloads under the cursor is worse than one that is a few
+// seconds stale.
 //
 // The pane list is `SETTINGS_SECTIONS` in `lib/project.ts` rather than markup,
 // because `routes.ts` maps the old page's section names onto the same ids and
@@ -738,10 +740,16 @@ async function deleteProject() {
           </button>
         </nav>
 
-        <!-- One pane, one form width. This is the `max-w-3xl` docs/UI.md means
-             by "this page is a form", declared once here rather than per
-             panel. -->
-        <div class="min-w-0 flex-1 max-w-3xl space-y-6">
+        <!-- One pane, one width, declared once here rather than per panel.
+             A pane about something somebody fills in is `max-w-3xl` — the
+             `max-w-3xl` docs/UI.md means by "this page is a form" — and a pane
+             about a list takes the whole column instead, because a list pays
+             none of the cost that cap exists to avoid (#599). It is what the
+             pane is about rather than which controls are on it: Members takes
+             the column with an add row on it, attached resources keeps the
+             form width with a claims table on it. Which is which is `width` on
+             the pane, beside the rail it is listed in. -->
+        <div class="min-w-0 flex-1 space-y-6" :class="current.width === 'form' ? 'max-w-3xl' : ''">
           <!-- Which of this pane's fields the repository has taken over.
                Beside the pane rather than once at the top of everything: the
                file wins for the settings it names, so a Save that silently does
