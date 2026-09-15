@@ -54,6 +54,19 @@ const (
 	// Registry is the bundled container registry, published so the node's
 	// container runtime can pull from it.
 	Registry = "registry"
+	// ObjectStore is the bundled object store, published so that a URL an
+	// application presigns for somebody else's browser resolves to
+	// something (#601). The store itself admits nobody anonymously; the
+	// address is what a signature is made against.
+	//
+	// It is deliberately not the shorter `objects`. Every label here is a
+	// name no project may have, and reserving one retroactively breaks any
+	// installation already holding it — `objects` is an ordinary thing to
+	// call a project and `objectstore` is very nearly not, so the break is
+	// theoretical rather than plausible. The cost is a few more characters
+	// in every presigned URL an application hands out, which is the right
+	// way round.
+	ObjectStore = "objectstore"
 )
 
 // reservation is one reserved label and what the platform serves there. The
@@ -70,6 +83,7 @@ var reservations = []reservation{
 	{Auth, "the identity provider every sign-in goes through"},
 	{PreviewGate, "the gate protected previews are signed in at"},
 	{Registry, "the platform's own container registry"},
+	{ObjectStore, "the platform's own object store, where a presigned URL points"},
 }
 
 // Reserved lists the labels the platform keeps for itself, in the order they

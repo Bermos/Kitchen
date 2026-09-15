@@ -93,6 +93,8 @@ var _ Addressable = (*S3)(nil)
 func (s *S3) Address() Address {
 	return Address{
 		Endpoint:       s.Config.Endpoint,
+		PublicEndpoint: s.Config.PublicEndpoint,
+		InCluster:      s.Config.InCluster,
 		Region:         s.Config.Region,
 		ForcePathStyle: s.Config.ForcePathStyle,
 		CACert:         s.CACert,
@@ -193,10 +195,11 @@ func (s *S3) recordProject(ctx context.Context, bucket, project string) {
 // answering the quota in bytes where a size was asked for.
 func (s *S3) refuseUnsatisfiable(req Requirements) (uint64, error) {
 	if req.PublicRead && s.Config.InCluster {
-		return 0, fmt.Errorf("%w: the bundled object store is reached at a Service address inside the cluster "+
-			"and nowhere else, so a publicly readable bucket would publish nothing — serve the objects through "+
-			"the application, or claim through an s3 connection to a store that is on the internet",
-			ErrUnsatisfiable)
+		return 0, fmt.Errorf("%w: the bundled object store admits nobody anonymously, so a publicly readable "+
+			"bucket is not something it can be asked for — the platform publishes an address for the store and "+
+			"not its objects. Hand out a URL presigned against the binding's %s instead, serve the objects "+
+			"through the application, or claim through an s3 connection to a store that offers public buckets",
+			ErrUnsatisfiable, BindingKeyPublicEndpoint)
 	}
 	if req.Size == "" {
 		return 0, nil
@@ -280,6 +283,7 @@ func (s *S3) ensureBucket(ctx context.Context, bucket string, versioning bool) (
 	}
 	binding := Binding{
 		Endpoint:        s.Config.Endpoint,
+		PublicEndpoint:  s.Config.PublicEndpoint,
 		Bucket:          bucket,
 		Region:          s.Config.Region,
 		AccessKeyID:     s.AccessKeyID,

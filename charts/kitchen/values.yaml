@@ -1611,6 +1611,14 @@ objectStore:
   # -- The region every bucket reports. A formality every S3 client insists
   # on; the seeded Connection is told the same value.
   region: us-east-1
+  # -- Hostname the store is published on outside the cluster, which is the
+  # name a presigned URL is signed against. Defaults to
+  # `objectstore.<kitchen.baseDomain>`, on the shared Gateway and the platform's
+  # own wildcard certificate. It is never what the platform's own clients use
+  # — those keep going straight to the Service address — and it does not
+  # exist at all in `kitchen.tls.mode: none`, where there is no certificate to
+  # ride.
+  host: ""
   # TLS inside the cluster, for the store applications actually talk to.
   #
   # On by default. Until it existed every object, every upload and every

@@ -656,6 +656,38 @@ spec:
                   connection, say — so no environment reading it idles to zero. The
                   environment reconciler reads it and says so on the environment.
                 type: boolean
+              objectStore:
+                description: |-
+                  ObjectStore is where an objectStore claim's bucket is addressed, and
+                  empty for every other type. It is the store's half of the binding
+                  repeated as a fact anybody may read: no credential and no bucket
+                  policy, only the two addresses — because the whole difficulty of the
+                  binding is knowing which of them to use for what (#601).
+                properties:
+                  endpoint:
+                    description: |-
+                      Endpoint is the store inside the cluster, which is what the
+                      application's own reads and writes go to.
+                    type: string
+                  inCluster:
+                    description: |-
+                      InCluster is whether Endpoint is an address only this cluster
+                      resolves, which is what tells those two emptinesses apart. An empty
+                      PublicEndpoint on an in-cluster store means the platform is
+                      publishing it nowhere and no URL presigned here can be opened from a
+                      browser; on a store of somebody else's it means Endpoint was already
+                      public and needs no second address. Saying "no publicEndpoint" alone
+                      gives one of them the other's advice, which is the bug #601 was
+                      filed from.
+                    type: boolean
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is the store from outside the cluster, which is what a
+                      URL handed to somebody else has to be presigned against. Empty for a
+                      store the platform publishes nowhere, and for every store whose
+                      Endpoint is already an address the internet resolves.
+                    type: string
+                type: object
               phase:
                 description: ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
                 enum:

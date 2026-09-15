@@ -32,7 +32,11 @@ Kitchen assumes these exist; the chart does **not** install them:
 - **Gateway API CRDs**, at the version your Cilium release requires — Cilium
   pins this tightly and it moves quickly, so read its docs rather than assuming
   the newest is right. The release states it on its Gateway API page, and CI
-  resolves the same value from the Cilium version it targets.
+  resolves the same value from the Cilium version it targets. One floor of the
+  chart's own: **standard channel v1.4 or newer**, where `BackendTLSPolicy`
+  lives. Without that kind the bundled object store still runs and still
+  serves applications, and it is published nowhere — see
+  [Why it has two addresses](#why-it-has-two-addresses).
 - **A default StorageClass.** ClickHouse and the identity provider's Postgres
   are StatefulSets whose `volumeClaimTemplates` leave `storageClass` empty, so
   they take the cluster default. With no default they stay `Pending`
@@ -1275,21 +1279,72 @@ each other. `objectStore.tls.enabled=false` is the one way to run the bundled
 store in plaintext, and leaves `InternalCAReady` False on the Kitchen singleton
 with reason `StoreInTheClear`, naming what is readable.
 
-### Why it is not published on the Gateway
+### Why it has two addresses
 
-The registry has to be, because the node's container runtime pulls images
-and trusts nothing the cluster says about a certificate. Nothing like that is
-in the path here: an application runs in the cluster and reaches the store at
-`kitchen-objectstore.kitchen-system.svc.cluster.local:9000`, on a Service
-address nothing outside can reach — so there is no hostname to publish, and it
-works in `kitchen.tls.mode=none`, where the store still serves TLS from the
-platform's own CA.
+An application runs in the cluster and reaches the store at
+`kitchen-objectstore.kitchen-system.svc.cluster.local:9000`. That is the
+address every binding's `endpoint` carries and every read and write uses, and
+it is right for all of them: server-side traffic has no business leaving the
+cluster and coming back through the Gateway.
 
-The corollary is stated rather than hidden: **a bucket in the bundled store
-cannot be publicly readable**, because there is no public to read it. A claim
-that asks for `publicRead` is refused with that reason rather than granted a
-policy that publishes nothing; serve the objects through the application, or
-claim through an `s3` connection to a store that is on the internet.
+It is wrong for exactly one thing, and it is the thing a bucket is often
+wanted for. An AWS SigV4 presigned URL signs the *host* it is made for, so a
+URL signed against a `.svc.cluster.local` name is invalid at every other name
+and resolves nowhere in a browser (#601). So the store is **also** published
+on the shared Gateway at `objectstore.<kitchen.baseDomain>` —
+`objectStore.host` overrides the name — riding the platform's own wildcard
+certificate, and every binding carries that address as `publicEndpoint`. An
+application presigns against `publicEndpoint` and reads and writes through
+`endpoint`.
+
+The route is the operator's, because the shared Gateway is, and beside it goes
+a `BackendTLSPolicy`: the store serves HTTPS on its `.svc` name, so the
+Gateway has to be told to speak TLS to it and that the platform's internal CA
+is what vouches for it. The two trust paths stay apart — publicly trusted
+certificate in front, platform CA behind — and the public address carries no
+`caCert`. It needs the Gateway API's `BackendTLSPolicy` kind, which is in the
+standard channel of the Gateway API from v1.4 on, which is a floor on a
+prerequisite this chart does not install — see
+[Prerequisites](#prerequisites). A cluster below it publishes no store and
+says so on the singleton rather than failing.
+
+Two consequences, stated rather than hidden:
+
+- **In `kitchen.tls.mode=none` the store is not published.** There is no
+  publicly trusted certificate to ride and an address served in the clear
+  would carry every presigned request with it. The store still runs and still
+  serves TLS from the platform's own CA; bindings carry no `publicEndpoint`,
+  and `status.objectStore.unpublished` on the Kitchen singleton says so in
+  words.
+- **The admin API is not published with the S3 API.** MinIO serves both on
+  port 9000, under `/minio/admin/`, and the store's route must match `/`
+  because a bucket is the first path segment. A second, more specific route
+  carves that prefix back out and the Gateway answers it itself with a `302`
+  to the store's root, so nothing of the admin API is reachable through
+  `objectstore.<kitchen.baseDomain>`. The redirect is a refusal rather than a
+  relocation: the standard channel has no fixed-response filter and
+  `RequestRedirect.statusCode` admits only `301` or `302`, so `mc admin info`
+  against the published address follows it into an `AccessDenied` from the S3
+  handler. Administration from inside the cluster is unchanged — the operator
+  uses the Service address, which is behind no route.
+- **The metrics endpoint is not carved out, and one value would publish it.**
+  `/minio/v2/metrics/` is authenticated by default — MinIO requires a bearer
+  token unless `MINIO_PROMETHEUS_AUTH_TYPE=public` is set, and this chart sets
+  no such variable — so there is nothing anonymous there today. But
+  `objectStore.extraEnv` can set it, which is an ordinary thing to do so that
+  an in-cluster Prometheus can scrape without a token, and that was a decision
+  with in-cluster consequences only until the store gained a public address.
+  Set it and the bucket inventory — names of the form
+  `kitchen-<project>-<claim>`, so a list of projects and their claims — plus
+  object counts and sizes are readable by anyone. Scrape the Service address
+  instead, or leave the token authentication on.
+- **A bucket in the bundled store still cannot be publicly readable.**
+  Publishing an address is not publishing a bucket: the store admits nobody
+  anonymously, an unsigned request to the published name is refused exactly as
+  one inside the cluster is, and a claim that asks for `publicRead` is refused
+  with that reason. Hand out a URL presigned against `publicEndpoint`, serve
+  the objects through the application, or claim through an `s3` connection to
+  a store that offers public buckets.
 
 ### The seeded connection
 
@@ -2445,6 +2500,7 @@ kubectl delete namespace kitchen-system
 | `objectStore.auth.accessKeyId` | `kitchen` | The root user; mints every bucket's own credential and is never handed to an application. |
 | `objectStore.auth.secretAccessKey` | `""` | Generated on install, preserved on upgrade. |
 | `objectStore.region` | `us-east-1` | What every bucket reports, and what the seeded Connection is told. |
+| `objectStore.host` | `""` | Hostname the store is published on outside the cluster, which is what a presigned URL is signed against. Defaults to `objectstore.<kitchen.baseDomain>`; nothing is published in `kitchen.tls.mode=none`. See [Why it has two addresses](#why-it-has-two-addresses). |
 | `objectStore.tls.enabled` | `true` | Serve the store over HTTPS, with a certificate the operator requests from the platform's internal CA, and hand every binding the CA certificate to verify it against. Off is the one way to run it in the clear; see [How applications reach it](#how-applications-reach-it). |
 | `objectStore.service.port` | `9000` | |
 | `objectStore.persistence.enabled` | `true` | PVC for the store. Every object dies with the pod without it. |

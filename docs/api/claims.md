@@ -234,12 +234,75 @@ curl -sS -X POST -H "authorization: Bearer $TOKEN" \
 ```
 
 The binding secret carries `endpoint`, `bucket`, `region`, `accessKeyId`,
-`secretAccessKey`, `forcePathStyle` and — for the bundled store — `caCert` and
-`caCertFile`.
+`secretAccessKey`, `forcePathStyle` and — for the bundled store —
+`publicEndpoint`, `caCert` and `caCertFile`.
 `forcePathStyle` is not decoration: MinIO addresses a bucket in the path and
 AWS in the host name, and an application that guesses wrong fails on every
 request — so the Connection says which, once, and every binding carries the
 answer.
+
+**There are two addresses and they are not interchangeable (#601).**
+`endpoint` is where the application's own reads and writes go, and for the
+bundled store it is an in-cluster Service address. That is right for every
+request the application makes itself and useless for the one thing a bucket is
+often wanted for: handing somebody else a URL they fetch from a browser. An
+AWS SigV4 presigned URL signs the *host* it is made for — the report that
+opened #601 shows it, `X-Amz-SignedHeaders=…host` — so a URL signed against
+`kitchen-objectstore.kitchen-system.svc.cluster.local` is invalid at every
+other name and resolves nowhere outside the cluster.
+
+So the platform publishes the bundled store at `objectstore.<baseDomain>`, on its
+own wildcard certificate, and the binding carries that address as
+`publicEndpoint`. The rule an application follows is one line:
+
+| What you are doing | Which address |
+|---|---|
+| The application's own reads, writes, listings, deletes | `endpoint` |
+| Any URL you presign and hand to somebody else | `publicEndpoint`, falling back to `endpoint` where the binding carries none |
+
+```python
+# The application's own traffic never leaves the cluster.
+inside = boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT"], ...)
+inside.put_object(Bucket=bucket, Key=key, Body=pdf)
+
+# The link in the email is signed for the address the browser will resolve.
+outside = boto3.client("s3", endpoint_url=os.environ["S3_PUBLIC_ENDPOINT"], ...)
+url = outside.generate_presigned_url("get_object",
+                                     Params={"Bucket": bucket, "Key": key}, ExpiresIn=900)
+```
+
+`publicEndpoint` is **absent, not empty**, where there is nothing to publish
+against: a store whose `endpoint` is already an address the internet resolves
+(AWS S3, R2, a MinIO a team runs) needs no second one, and the bundled store
+is not published at all in `tls.mode: none` — there is no publicly trusted
+certificate to ride there, and an address published in the clear would carry
+every presigned request with it. The platform says which on the Kitchen
+singleton, as `status.objectStore.publicEndpoint` and, when there is none,
+`status.objectStore.unpublished`.
+
+**Publishing an address is not publishing a bucket.** The store admits nobody
+anonymously: a request to the published name without a signature is refused
+exactly as one inside the cluster is, `objectStore.publicRead` is still
+refused at the bundled store, and the presigned URL — which expires — is the
+whole of what is handed out.
+
+**Nor is it publishing the whole server.** MinIO serves its admin API on the
+same port as the S3 API, under `/minio/admin/`, and the route in front of the
+store has to match `/` because with path-style addressing a bucket is the
+first path segment. So a second, more specific route carves `/minio/admin/`
+back out: a request for it through the published name is answered by the
+Gateway itself and never reaches the admin handler. What it answers is a
+`302` to the store's root — a refusal rather than a relocation, and a
+redirect rather than a `403` only because the Gateway API's standard channel
+has no fixed-response filter and `RequestRedirect.statusCode` admits `301` or
+`302` and nothing else. So `mc admin info` pointed at the published address
+follows it and ends in `AccessDenied` from the S3 handler, which is the
+refusal arriving by a longer road. In-cluster
+administration is untouched — the operator provisions every bucket through
+`endpoint`, which no route sits in front of. The public address also carries *no* `caCert`:
+it rides the platform's publicly trusted wildcard certificate, which the
+host's own roots vouch for, and the private CA below belongs to `endpoint`
+alone.
 
 **`caCert` is how an application verifies a store the internet has never heard
 of.** The bundled store is reached at a `.svc` address over `https://`, with a
@@ -278,9 +341,9 @@ key and needs neither variable (#456).
 
 **Where the store is can change under a binding that is otherwise still
 correct** — the bundled store gaining a certificate is exactly that — so
-`endpoint`, `region`, `forcePathStyle`, `caCert` and `caCertFile` are rewritten
-over an existing binding each reconcile, and the bucket and its credential are
-left alone. An application reading the changed Secret is rolled by the operator on
+`endpoint`, `publicEndpoint`, `region`, `forcePathStyle`, `caCert` and
+`caCertFile` are rewritten over an existing binding each reconcile, and the
+bucket and its credential are left alone. An application reading the changed Secret is rolled by the operator on
 its own, the way a rotated credential reaches it.
 
 **A bucket per claim, with a credential scoped to it.** Never a prefix in a
@@ -294,7 +357,7 @@ connection's own credential, and the bucket is the isolation.
 | Field | Default | What it does |
 |---|---|---|
 | `objectStore.versioning` | off | Keep every version of an object, so an overwrite or a delete can be undone at the store |
-| `objectStore.publicRead` | off | Anyone may read the bucket's objects without a credential. Only a store on the internet can honour it — the bundled store is reached at a Service address inside the cluster alone, and refuses it saying so |
+| `objectStore.publicRead` | off | Anyone may read the bucket's objects without a credential. The bundled store refuses it saying so: it admits nobody anonymously, and the address the platform publishes for it is an address, not an open bucket — hand out a URL presigned against `publicEndpoint` instead |
 | `objectStore.size` | no limit | A Kubernetes quantity the bucket may not grow past — a hard quota at a MinIO, refused at a store without the admin API to set one |
 
 As with `postgres`, this endpoint checks the shape and the provisioner
@@ -1522,7 +1585,7 @@ Three limits on that, all deliberate:
   the database the application is reading, so the binding stands, the claim
   stays `Bound`, and the reconcile is requeued to try again.
 - **An `objectStore` binding is kept in step by its store's half alone** —
-  `endpoint`, `region`, `forcePathStyle`, `caCert` and `caCertFile` — and never recomposed
+  `endpoint`, `publicEndpoint`, `region`, `forcePathStyle`, `caCert` and `caCertFile` — and never recomposed
   whole. A store that mints a credential per bucket mints a *new* one every
   time it is asked, so recomposing would rotate every bucket's key on every
   reconcile and roll every pod reading it, for ever.
