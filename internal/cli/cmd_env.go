@@ -31,13 +31,22 @@ import (
 
 // `kitchen env` — a project's environment variables.
 //
-// Two things about the API shape this whole command, and both are deliberate
-// (docs/API.md, "Changing a project's environment variables"):
+// Three things about the API shape this whole command, and all three are
+// deliberate (docs/API.md, "Changing a project's environment variables"):
 //
-//   - **A value goes in and never comes back out.** Reading a project reports
-//     whether a variable has one, not what it is. So `kitchen env list` can
-//     print the whole list and reveal nothing, and there is no `env pull` that
-//     writes a .env file — there is nothing to pull.
+//   - **A literal is readable; what a variable points at is not** (#598). A
+//     `value` or a `previewValue` is cleartext the project typed, and
+//     `GET /projects/{name}/env` answers it to the role that may replace it.
+//     A `fromSecret` or a `fromClaim` comes back as the reference it names and
+//     is never resolved, so there is still no way here to read a secret — and
+//     still no `env pull` that writes a .env file, because a copy of a
+//     project's whole configuration on disk is not what asking after one
+//     variable is.
+//   - **Asking for the values is a separate act.** They ride a route of their
+//     own, the read is recorded wherever the installation keeps an audit log,
+//     and a terminal keeps what it was shown — in scrollback, and in a CI
+//     job's log. So `env list` prints names and presence, and `--values` is
+//     what asks for the rest, on the table and under `--json` alike.
 //   - **The write replaces the whole list**, and a variable whose `value` the
 //     request leaves out keeps the one it already has. That is what makes a
 //     one-variable change possible without reading any values: the CLI sends
@@ -45,7 +54,13 @@ import (
 //     changing.
 //
 // Which means `env set` and `env rm` are the same request with a different
-// list, and neither of them can leak or lose a value it never saw.
+// list. They read the viewer's list and never the values one, so neither of
+// them can leak or lose a value it never saw.
+
+// emptyValue is what the VALUE column says for a variable that has a name and
+// nothing in it — which is a thing somebody can set on purpose, and different
+// from a variable whose value this command did not ask for.
+const emptyValue = "empty"
 
 func newEnvCommand(r *Runtime) *cobra.Command {
 	cmd := &cobra.Command{
@@ -54,9 +69,10 @@ func newEnvCommand(r *Runtime) *cobra.Command {
 		Long: strings.TrimSpace(`
 A project's environment variables: what is set, and setting or removing one.
 
-Values are write-only on this platform — the API reports whether a variable has
-one, never what it is — so this command can list every variable without showing
-a secret, and there is nothing to read back into a .env file.
+A variable's own value is a literal the project typed, and "kitchen env list
+--values" reads it back. What a variable *points at* is not: a variable reading
+a secret or a resource claim answers with the reference it names, never with
+what is behind it.
 
 Variables land in the next release's snapshot. What is already running keeps
 the configuration it was released with until the next deploy.`),
@@ -71,6 +87,8 @@ the configuration it was released with until the next deploy.`),
 }
 
 func newEnvListCommand(r *Runtime) *cobra.Command {
+	var values bool
+
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -79,38 +97,63 @@ func newEnvListCommand(r *Runtime) *cobra.Command {
 List the project's environment variables.
 
 Each one says whether it has a value (set), whether it has a different one in
-previews (previewSet), or which Secret or resource claim it reads instead. The
-values themselves are never answered by the API.`),
+previews (previewSet), or which Secret or resource claim it reads instead.
+
+--values asks for the literals as well. It is a separate request, to a route
+that wants developer where this one wants viewer, and where the installation
+keeps an audit log the platform records the read. A variable reading a secret
+or a resource claim is unaffected: it answers with the reference it names and
+never with what is behind it.`),
 		Args: cobra.NoArgs,
 		RunE: run(func(cmd *cobra.Command, _ []string) error {
-			client, err := r.client()
-			if err != nil {
-				return err
-			}
-			name, err := r.projectName()
-			if err != nil {
-				return err
-			}
-			ctx, cancel := r.context(commandContext(cmd))
-			defer cancel()
-
-			found, err := client.project(ctx, name)
-			if err != nil {
-				return err
-			}
-			answer := list[envVar]{Items: found.Env}
-			if answer.Items == nil {
-				answer.Items = []envVar{}
-			}
-			return r.printer().document(answer, func(s tui.Styles) string { return renderEnv(s, answer.Items) })
+			return listEnv(commandContext(cmd), r, values)
 		}),
 	}
+	cmd.Flags().BoolVar(&values, "values", false,
+		"read each variable's own value as well — recorded where the installation keeps an "+
+			"audit log, and never a secret's")
+
 	return describe(cmd, meta{
-		Calls:    []string{"GET /api/v1/projects/{name}"},
-		Output:   output{Mode: outputDocument, Kind: "envVarList"},
-		Needs:    needs{Auth: true, Project: true},
-		Examples: []example{{"What is set", "kitchen env list --json"}},
+		Calls:  []string{"GET /api/v1/projects/{name}", "GET /api/v1/projects/{name}/env"},
+		Output: output{Mode: outputDocument, Kind: "envVarList"},
+		Needs:  needs{Auth: true, Project: true},
+		Examples: []example{
+			{"What is set", "kitchen env list --json"},
+			{"What each one holds", "kitchen env list --values --json"},
+		},
 	})
+}
+
+// listEnv reads the list, from one route or the other.
+//
+// Which route is called is the whole of the difference: nothing filters a
+// value out after the fact, because a value the CLI never asked for is one the
+// platform never sent.
+func listEnv(parent context.Context, r *Runtime, values bool) error {
+	client, err := r.client()
+	if err != nil {
+		return err
+	}
+	name, err := r.projectName()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := r.context(parent)
+	defer cancel()
+
+	var items []envVar
+	if values {
+		items, err = client.projectEnv(ctx, name)
+	} else {
+		var found *project
+		if found, err = client.project(ctx, name); found != nil {
+			items = found.Env
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return printEnvList(r, items, values)
 }
 
 func newEnvSetCommand(r *Runtime) *cobra.Command {
@@ -182,9 +225,10 @@ func newEnvRemoveCommand(r *Runtime) *cobra.Command {
 		Long: strings.TrimSpace(`
 Remove environment variables from the project.
 
-Removing one drops whatever it held, and there is no way to read it back first
-— the API never answers a value. A name the project does not have is a failure
-rather than a silent success, so a typo cannot read as a removal.`),
+Removing one drops whatever it held; "kitchen env list --values" is how to see
+what that is first, and it is a removal either way. A name the project does not
+have is a failure rather than a silent success, so a typo cannot read as a
+removal.`),
 		Args: cobra.MinimumNArgs(1),
 		RunE: run(func(cmd *cobra.Command, args []string) error {
 			return removeEnv(commandContext(cmd), r, args, yes)
@@ -447,43 +491,63 @@ func readAssignments(r *Runtime, path string) ([]string, error) {
 	return assignments, nil
 }
 
+// printEnv draws the list after a write. A write answers the project, which is
+// the viewer's shape, so there are no literals in it to draw.
 func printEnv(r *Runtime, updated *project) error {
-	answer := list[envVar]{Items: updated.Env}
+	return printEnvList(r, updated.Env, false)
+}
+
+func printEnvList(r *Runtime, variables []envVar, values bool) error {
+	answer := list[envVar]{Items: variables}
 	if answer.Items == nil {
 		answer.Items = []envVar{}
 	}
-	return r.printer().document(answer, func(s tui.Styles) string { return renderEnv(s, answer.Items) })
+	return r.printer().document(answer, func(s tui.Styles) string { return renderEnv(s, answer.Items, values) })
 }
 
 // renderEnv draws the list a person reads: what is there, and where each one's
-// value comes from. Never a value — there is none to draw.
-func renderEnv(s tui.Styles, variables []envVar) string {
+// value comes from — or, where the values were asked for, what each literal
+// is. A reference-backed variable draws its reference either way, because that
+// is what it holds.
+func renderEnv(s tui.Styles, variables []envVar, values bool) string {
 	if len(variables) == 0 {
 		return "No environment variables.\n"
 	}
 	rows := make([][]string, 0, len(variables))
 	for _, variable := range variables {
-		rows = append(rows, []string{variable.Name, envSource(s, variable), envPreview(s, variable)})
+		rows = append(rows, []string{
+			variable.Name,
+			envSource(s, variable, values),
+			envPreview(s, variable, values),
+		})
 	}
 	return s.Table([]string{"NAME", "VALUE", "PREVIEW"}, rows)
 }
 
-func envSource(s tui.Styles, variable envVar) string {
+func envSource(s tui.Styles, variable envVar, values bool) string {
 	switch {
 	case variable.FromSecret != nil:
 		return s.Accent.Render("secret " + variable.FromSecret.Name + ":" + variable.FromSecret.Key)
 	case variable.FromClaim != nil:
 		return s.Accent.Render("claim " + variable.FromClaim.Name + ":" + variable.FromClaim.Key)
+	case values && variable.Value != "":
+		return variable.Value
+	case values:
+		return s.Subtle.Render(emptyValue)
 	case variable.Set:
 		return s.OK.Render("set")
 	default:
-		return s.Subtle.Render("empty")
+		return s.Subtle.Render(emptyValue)
 	}
 }
 
-func envPreview(s tui.Styles, variable envVar) string {
-	if variable.PreviewSet {
+func envPreview(s tui.Styles, variable envVar, values bool) string {
+	switch {
+	case values && variable.PreviewValue != "":
+		return variable.PreviewValue
+	case !values && variable.PreviewSet:
 		return s.OK.Render("set")
+	default:
+		return s.Subtle.Render(noValue)
 	}
-	return s.Subtle.Render(noValue)
 }

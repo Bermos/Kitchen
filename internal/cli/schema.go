@@ -439,11 +439,14 @@ var publishedShapes = map[string]struct {
 		"project's settings as they stand, and where it is going. `promotion` is set instead of a " +
 		"move when the environment declares requirements", redeployed{}},
 	"environmentList": {"A list of environments", list[environment]{}},
-	"envVarList":      {"A project's environment variables. Values are never answered", list[envVar]{}},
+	"envVarList": {"A project's environment variables: name, whether each has a value (set) and a " +
+		"preview one (previewSet), or the Secret or claim it reads. `value` and `previewValue` " +
+		"carry the literals, and are answered only where they were asked for — never for a " +
+		"variable that reads a secret or a claim", list[envVar]{}},
 	"secret": {"One of a project's own secrets: its name, and the `fromSecret` reference an " +
-		"environment variable reads it by. Never a value — no route on the platform answers one",
-		projectSecret{}},
-	"secretList": {"A project's own secrets, by name. Values are never answered",
+		"environment variable reads it by. Never a value — no route on the platform answers a " +
+		"secret's", projectSecret{}},
+	"secretList": {"A project's own secrets, by name. A secret's value is never answered",
 		list[projectSecret]{}},
 	"personalKeyList": {"The calling account's own keys: name, prefix, when each was made, when " +
 		"it was last used and when it lapses. Values are never answered — a personal key exists " +

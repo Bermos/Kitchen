@@ -98,6 +98,24 @@ decided on its own is attributed to the reconciler that decided it
 (`system:controller/build`), never to "the operator". `correlation` ties every
 record from one cause together — for a deploy, the commit.
 
+### The three records of a copy leaving
+
+Almost everything here is a change to what the platform holds. Three records
+are not: they are the places where a copy of it *leaves*, and the record is the
+whole of the evidence that it did. Two of the three are reads, where a `GET`
+would otherwise leave no trace at all; the third is a backup, which is started
+by a `POST` and changes nothing either. All three carry `operation: export`:
+
+| `kind` | What was taken |
+|---|---|
+| `EvidenceExport` | An [audit pack](audit-pack.md) for one project over one range: the range, the digest, the size and the section counts |
+| `Kitchen` | A platform backup — every credential the installation holds, leaving in one archive |
+| `ProjectEnvRead` | The literal values of a project's [environment variables](projects.md#reading-what-a-variables-own-value-is): which variables were answered, how many the project has, and never a value |
+
+```
+GET /audit?kind=ProjectEnvRead&project=shop
+```
+
 ### Privileged records
 
 Most of the log is what the platform is *running*: builds, releases, rollbacks,

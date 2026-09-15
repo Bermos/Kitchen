@@ -18,8 +18,10 @@ undone by anything that recreates the namespace, and it puts cluster access
 back on the path of a routine change.
 
 **`env[].value`.** The credential goes into the Project spec in cleartext,
-where every member of the project can read it, the API reads it back, and the
-audit log records it in a before-and-after.
+where every developer on the project can read it — `GET /projects/{name}/env`
+answers a literal, because a literal is [not a credential the platform
+holds](projects.md#reading-what-a-variables-own-value-is) — and where nothing
+records that it was ever rotated.
 
 So a project secret is neither. The value goes in and never comes back out —
 the same bargain a [connection's credential](connections.md) makes — and the
@@ -70,9 +72,17 @@ states the boundary in full.
 ## Reading them
 
 `GET /projects/{name}/secrets` answers `{"items": [...]}` of exactly the shape
-above — names and references, sorted by name. **There is no route on this
-platform that answers a value**, here or anywhere else, so a listing reveals
-nothing and is a `viewer`'s read like the variables it belongs to.
+above — names and references, sorted by name. **No route on this platform
+answers a secret's value**: not this one, and not the variables route beside
+it, which answers a `fromSecret` as the reference it names and never resolves
+it. So a listing reveals nothing and is a `viewer`'s read, exactly as the
+project's variable *names* are.
+
+That is why this list stays a `viewer`'s where reading [what a variable's own
+value is](projects.md#reading-what-a-variables-own-value-is) is a
+`developer`'s. A literal somebody typed is cleartext on the Project object; a
+secret is a value the platform holds on the project's behalf, and holding it is
+the whole of what this feature is.
 
 Who set each one and when is the audit log's answer rather than a field here,
 which is the stronger one: it cannot be edited, and it is one query.

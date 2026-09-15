@@ -32,6 +32,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	kitchenv1alpha1 "github.com/Bermos/Kitchen/api/v1alpha1"
+	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
@@ -444,10 +445,10 @@ func TestPatchingEnvVarsWantsTheListAndClearsItWhenAsked(t *testing.T) {
 	}
 }
 
-// The value of a plain env var is where somebody pastes an API key, so it is
-// held to the same rule as a connection's credential: it goes in and it never
-// comes back out — of the patch's own answer or of any later read.
-func TestProjectEnvVarValuesAreNeverReadBack(t *testing.T) {
+// A literal is answered on one route and on no other (#598): every route that
+// carries a project is a viewer's, and a viewer is told that a variable exists
+// and never what it holds.
+func TestProjectEnvVarValuesAreNeverOnAViewersRoute(t *testing.T) {
 	h := newHarness(t, nil, fixtures()...)
 
 	const secret = "sk-live-3f9a1c-never-echo-me"
@@ -485,6 +486,122 @@ func TestProjectEnvVarValuesAreNeverReadBack(t *testing.T) {
 	}
 	if stored.Spec.Env[0].Value != secret || stored.Spec.Env[0].PreviewValue != previewSecret {
 		t.Fatalf("the value did not stick: %+v", stored.Spec.Env)
+	}
+
+	// And it is answered by the one route that exists to answer it.
+	values := decode[listBody[envVarValueView]](t, h.do(t, http.MethodGet, envPath, ""))
+	if len(values.Items) != 1 ||
+		values.Items[0].Value != secret || values.Items[0].PreviewValue != previewSecret {
+		t.Fatalf("the values route did not answer the literals: %+v", values.Items)
+	}
+}
+
+// The line the whole feature is: a literal the project typed comes back, and
+// everything a variable *points at* does not. A reference is answered as the
+// reference it names, and the handler resolves nothing — so a Project carrying
+// both (which this API refuses to write, and kubectl does not) is still
+// answered with the reference alone.
+func TestReadingEnvValuesAnswersLiteralsAndNeverWhatAReferencePointsAt(t *testing.T) {
+	h := newHarness(t, nil, fixtures()...)
+
+	const literal = "debug"
+	const strayLiteral = "sk-live-written-by-kubectl-beside-a-ref"
+
+	write := h.do(t, http.MethodPatch, envPath, `{
+		"env": [
+			{"name": "LOG_LEVEL", "value": "`+literal+`", "previewValue": "trace"},
+			{"name": "API_KEY", "fromSecret": {"name": "shop-api-key", "key": "key"}},
+			{"name": "DATABASE_URL", "fromClaim": {"name": "shop-db", "key": "url"}}
+		]
+	}`)
+	if write.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", write.Code, write.Body.String())
+	}
+
+	// The fourth is written round the side, with a literal the reference is
+	// supposed to have replaced. Only kubectl can produce this; the read has
+	// to answer it all the same.
+	stored := &kitchenv1alpha1.Project{}
+	if err := h.server.get(context.Background(), feedProject, stored); err != nil {
+		t.Fatal(err)
+	}
+	stored.Spec.Env = append(stored.Spec.Env, kitchenv1alpha1.EnvVar{
+		Name: "SMTP_PASSWORD", Value: strayLiteral, PreviewValue: strayLiteral,
+		SecretRef: &kitchenv1alpha1.SecretKeySelector{
+			Name: controller.ProjectSecretsName, Key: "smtp"},
+	})
+	if err := h.server.Client.Update(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := h.do(t, http.MethodGet, envPath, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); strings.Contains(body, strayLiteral) {
+		t.Fatalf("a literal sitting behind a reference was answered: %s", body)
+	}
+
+	items := decode[listBody[envVarValueView]](t, recorder).Items
+	if len(items) != 4 {
+		t.Fatalf("want every variable answered, got %+v", items)
+	}
+	if items[0].Value != literal || items[0].PreviewValue != "trace" || !items[0].Set {
+		t.Fatalf("the literal variable did not answer its values: %+v", items[0])
+	}
+	for _, reference := range items[1:] {
+		if reference.Value != "" || reference.PreviewValue != "" {
+			t.Fatalf("%s answered a literal: %+v", reference.Name, reference)
+		}
+		if reference.Set || reference.PreviewSet {
+			t.Fatalf("%s reads a reference and must not report a literal: %+v", reference.Name, reference)
+		}
+		if reference.FromSecret == nil && reference.FromClaim == nil {
+			t.Fatalf("%s lost the reference it names: %+v", reference.Name, reference)
+		}
+	}
+}
+
+// Reading a value is the one way this product hands a stored value back, and a
+// GET leaves no other trace — so it is recorded. The record says which
+// variables were answered and never what any of them holds, checked over the
+// marshalled transition so that a field added later cannot leak quietly.
+func TestTheAuditRecordOfAnEnvValueReadCarriesNoValue(t *testing.T) {
+	const literal = "sk-live-must-not-reach-the-log"
+	project := &kitchenv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: feedProject, Namespace: testNamespace},
+	}
+	views := envVarValueViews([]kitchenv1alpha1.EnvVar{
+		{Name: "API_KEY", Value: literal, PreviewValue: literal},
+		{Name: "DATABASE_URL", FromResourceClaim: &kitchenv1alpha1.ResourceClaimKeySelector{
+			Name: "shop-db", Key: "url"}},
+	})
+
+	transition := projectEnvReadTransition(project, views)
+	if transition.Kind != "ProjectEnvRead" || transition.Project != feedProject {
+		t.Fatalf("the record is not about the project's variables: %+v", transition)
+	}
+	// An export: a copy of something the platform holds leaving it, which is
+	// what an audit pack's record is and for the same reason.
+	if transition.Operation != clickhouse.AuditExport {
+		t.Fatalf("the read is not recorded as an export: %q", transition.Operation)
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"reason": transition.Reason, "details": transition.Details,
+		"from": transition.From, "to": transition.To,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), literal) {
+		t.Fatalf("the record carries a value: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "API_KEY") {
+		t.Fatalf("the record does not say which variable was read: %s", encoded)
+	}
+	// And not the one that held no literal of its own.
+	if strings.Contains(string(encoded), "DATABASE_URL") {
+		t.Fatalf("the record names a variable whose value was not answered: %s", encoded)
 	}
 }
 

@@ -241,8 +241,8 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		p.answerPromotion(w, strings.TrimPrefix(path, "/promotions/"))
 	case strings.HasSuffix(path, "/audit-pack"):
 		p.answerAuditPack(w, req)
-	case strings.HasSuffix(path, "/env") && req.Method == http.MethodPatch:
-		p.patchEnv(w, body)
+	case strings.HasSuffix(path, "/env"):
+		p.answerEnv(w, req, body)
 	case strings.HasPrefix(path, "/projects/"):
 		p.answerProject(w, req, body)
 	case strings.HasSuffix(path, "/logs"):
@@ -583,7 +583,16 @@ func (p *platform) answerProject(w http.ResponseWriter, req *http.Request, body 
 	if req.Method == http.MethodPatch {
 		p.patchProject(body)
 	}
-	writeAnswer(w, http.StatusOK, p.project)
+	// The project route is a viewer's and carries no literal, whatever the
+	// fixture holds — so a CLI that printed a value off this call would be
+	// printing one the real API never sent. The values live on /env alone.
+	answer := *p.project
+	answer.Env = make([]envVar, 0, len(p.project.Env))
+	for _, variable := range p.project.Env {
+		variable.Value, variable.PreviewValue = "", ""
+		answer.Env = append(answer.Env, variable)
+	}
+	writeAnswer(w, http.StatusOK, answer)
 }
 
 // patchProject is the settings write, and the only part of it any test needs:
@@ -710,6 +719,27 @@ func (p *platform) answerPromotion(w http.ResponseWriter, name string) {
 		}
 	}
 	writeAnswer(w, http.StatusNotFound, errorBody{Error: "promotions.kitchen.bermos.dev \"" + name + "\" not found"})
+}
+
+// answerEnv is both halves of the variables route: the write, and the read
+// that answers the literals. They share one case in serve's dispatch for the
+// reason that dispatch is split up at all — a pair of cases per resource is a
+// branch nobody reading it needs.
+//
+// The stub holds the whole list on the project and hands the value fields over
+// here and nowhere else (answerProject strips them), so a test that finds a
+// value in the answer to any other call has found the CLI asking the wrong
+// route.
+func (p *platform) answerEnv(w http.ResponseWriter, req *http.Request, body []byte) {
+	if req.Method == http.MethodPatch {
+		p.patchEnv(w, body)
+		return
+	}
+	items := []envVar{}
+	if p.project != nil {
+		items = append(items, p.project.Env...)
+	}
+	writeAnswer(w, http.StatusOK, list[envVar]{Items: items})
 }
 
 func (p *platform) patchEnv(w http.ResponseWriter, body []byte) {

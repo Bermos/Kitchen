@@ -172,7 +172,8 @@ export function changeSign(change: ConfigChange): string {
 }
 
 /** What a variable's row says instead of a value. There is no value to say —
- * the API never reads one back — so the row says what *kind* of change it is
+ * nothing answers a release's frozen literals — so the row says what *kind* of
+ * change it is
  * and, where the source moved, what it moved between. That is the part
  * somebody acts on anyway: a variable that went from a literal to a claim
  * binding has changed in a way no diff of values would have explained. */

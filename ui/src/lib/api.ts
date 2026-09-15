@@ -33,16 +33,28 @@ export interface KeyRef {
   key: string;
 }
 
-/** One of a project's environment variables, as read. Values never come back
- * out of the API — `set` and `previewSet` say only that there is one — and
- * secret- and claim-backed variables carry the reference they were written
- * as. */
+/** One of a project's environment variables, as read.
+ *
+ * It is the shape of both routes that answer variables, because one is the
+ * other with two more fields. The project itself is a viewer's read and says
+ * only that a variable has a value (`set`, `previewSet`); `projectEnvValues`
+ * is a developer's and answers `value` and `previewValue` as well. So the two
+ * literals are absent unless that call is what filled this in.
+ *
+ * A secret- or claim-backed variable carries the reference it was written as
+ * and never a literal, on either route: what a variable points at is not read
+ * back by anything. */
 export interface EnvVar {
   name: string;
   set: boolean;
   previewSet: boolean;
   fromSecret?: KeyRef;
   fromClaim?: KeyRef;
+  /** The literal the project typed. Answered by `projectEnvValues` alone, and
+   * never for a variable that reads a secret or a claim. */
+  value?: string;
+  /** The same for the preview override. */
+  previewValue?: string;
 }
 
 /**
@@ -1467,8 +1479,10 @@ export interface ReleaseAttestation {
 
 /** How one entry of a release's configuration snapshot compares with
  * another's. `change` is the platform's own verdict over two literals it holds
- * and the dashboard does not: the API never reads a value back, so the
- * comparison is made on the server and only the verdict crosses the wire.
+ * and the dashboard does not: nothing answers a release's frozen literals, so
+ * the comparison is made on the server and only the verdict crosses the wire.
+ * (`projectEnvValues` answers what a variable holds *now*, which is a
+ * different question and a different route.)
  *
  * The direction is the write's — the release named in the path is where the
  * environment is going, so a variable the live release sets and the target
@@ -5111,6 +5125,12 @@ export const api = {
   // second read.
   updateProjectEnv: (name: string, env: EnvVarWrite[]) =>
     request<Project>("PATCH", `/projects/${name}/env`, { env }),
+  // A project's variables with their literal values — the one call on this
+  // API that answers a stored value, which is why it is a developer's where
+  // reading the project is a viewer's, and why the platform records it. What a
+  // variable *points at* is still not read: a `fromSecret` or a `fromClaim`
+  // comes back as the reference it names.
+  projectEnvValues: (name: string) => list<EnvVar>(`/projects/${name}/env`)(),
   deleteProject: (name: string) =>
     request<Project>("DELETE", `/projects/${name}`),
 

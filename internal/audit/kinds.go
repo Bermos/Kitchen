@@ -184,6 +184,23 @@ const (
 	// this says who changed them to that.
 	KindSignalPolicy = "SignalPolicy"
 
+	// KindProjectEnvRead records a *read*, as KindEvidenceExport does:
+	// somebody asked the platform for the literal values of a project's
+	// environment variables (#598). That is the one route on this API which
+	// hands a stored value back, and a `GET` leaves no other trace — so
+	// without this record "who took a copy of what this application is
+	// configured with, and when" has no answer at all.
+	//
+	// It is its own kind rather than a KindProject record carrying the export
+	// operation, for KindEvidenceExport's reason: the log filters on kind and
+	// has no filter on operation, so "every time this project's variables
+	// were read out" has to be one query, and buried among every settings
+	// change the project ever had it would not be.
+	//
+	// The record names the variables that were answered and never their
+	// values — the same bargain KindProjectSecret's record makes.
+	KindProjectEnvRead = "ProjectEnvRead"
+
 	// KindPersonalKey is a personal key issued or revoked (#593): the
 	// credential somebody signs their own automation with, which carries
 	// their own identity and every role they hold.
