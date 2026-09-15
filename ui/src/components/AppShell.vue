@@ -436,7 +436,27 @@ const userMenu = computed(() => [
 </script>
 
 <template>
-  <div class="min-h-screen flex">
+  <!-- The shell is a frame, not a column that grows.
+
+       `min-h-screen` is a floor: the root grew with whatever the screen put
+       inside it, the *document* scrolled, and the rail — `lg:static`, so part
+       of this row — scrolled away with it (#600). Navigation is the one thing
+       on a screen that should never need scrolling to reach, and the rest of
+       the shell was already written for the opposite arrangement: the header
+       is `h-14 shrink-0`, `<main>` is a scroll container, and both rail navs
+       are `flex-1 min-h-0 overflow-y-auto`, which does nothing at all until
+       the aside has a bounded height.
+
+       So at `lg` the root takes a height and the scrolling moves inside it.
+       `dvh` rather than `vh` because a browser whose toolbar retracts makes
+       the two different numbers, and the one this wants is the one that is
+       visible now.
+
+       Below `lg` nothing here applies. The aside is `fixed inset-y-0` there
+       and already behaves; making the frame bounded on a phone would trade
+       this fault for the address bar never retracting again, which is a
+       change to every screen rather than a fix to one. -->
+  <div class="min-h-screen lg:min-h-0 lg:h-dvh lg:overflow-hidden flex">
     <!-- The drawer's backdrop, and the largest possible target for closing it.
 
          It and the rail below it are the only two z-indices in the dashboard,
@@ -452,10 +472,16 @@ const userMenu = computed(() => [
       @click="sidebarOpen = false"
     />
 
+    <!-- `lg:overflow-y-auto` is the rail's last resort, not its scrolling: the
+         navs below carry that, and inside a bounded aside they now do. What
+         this answers is a window shorter than the parts of the rail that do
+         not flex — the brand, the labels, the scope's own links and the status
+         at the foot come to about 400px — where the frame above would
+         otherwise clip the foot of it with no way to reach it. -->
     <aside
       id="sidebar"
       :inert="sidebarHidden"
-      class="w-56 shrink-0 border-r border-default bg-muted flex flex-col fixed inset-y-0 left-0 z-50 transition-transform lg:static lg:translate-x-0"
+      class="w-56 shrink-0 border-r border-default bg-muted flex flex-col fixed inset-y-0 left-0 z-50 transition-transform lg:static lg:translate-x-0 lg:overflow-y-auto"
       :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'"
     >
       <div class="flex items-center h-14 border-b border-default">
