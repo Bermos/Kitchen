@@ -378,16 +378,23 @@ func refusalMessage(workload, kubelet string, declared []string) string {
 	if len(declared) == 0 {
 		return message
 	}
-	// Where to change it depends on whose declaration it is. The web process
-	// has only the unit's; every other workload runs the unit's with its own
-	// written over it, so the sentence names both rather than sending a
-	// reader to a field that is not the one in force.
+	// Where the posture lives depends on whose declaration it is. The web
+	// process has only the unit's; every other workload runs the unit's with
+	// its own written over it, so the sentence names both rather than sending
+	// a reader to a field that is not the one in force.
 	where := "the project's settings (spec.runtime.security), or in kitchen.json"
 	if workload != kitchenv1alpha1.WebProcessName {
 		where = "the project's settings (spec.runtime.security), or on this workload alone " +
 			"(its own `security`, which is merged over the project's field by field), or in kitchen.json"
 	}
+	// Stated as a fact rather than as an instruction, because since #597 this
+	// sentence is also published on the pull request, where the reader may be
+	// anonymous and may have no way to act on it. docs/UI.md's rule about
+	// rewording an operator's instruction applies to strings the controller
+	// writes, and one sentence on both surfaces is what keeps the screen and
+	// the comment saying the same thing in the same words.
 	return fmt.Sprintf(
-		"%s. This workload runs under a security posture: %s. Change it in %s, and redeploy",
+		"%s. This workload runs under a security posture: %s. That posture is set in %s, "+
+			"and a workload takes a change to it on its next deploy",
 		message, strings.Join(declared, "; "), where)
 }

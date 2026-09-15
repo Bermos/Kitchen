@@ -157,6 +157,26 @@ func TestAContainerRefusedUnderThePostureIsReportedInWords(t *testing.T) {
 	if !strings.Contains(message, "could not be started") {
 		t.Fatalf("the message is not in the vocabulary of whoever deployed it: %q", message)
 	}
+	// Since #597 this same sentence is published on the pull request, where
+	// the reader may be anonymous and may have no way to act on it — so it
+	// states where the posture is set and what a change to it does, and tells
+	// nobody to go and do anything. docs/UI.md's rule about rewording an
+	// operator's instruction applies to strings the controller writes, and
+	// one sentence on both surfaces is what keeps the screen and the comment
+	// saying the same thing in the same words.
+	for _, instruction := range []string{"Change it in", "and redeploy"} {
+		if strings.Contains(message, instruction) {
+			t.Fatalf("the sentence instructs a reader who may not be able to act (%q): %q",
+				instruction, message)
+		}
+	}
+	if !strings.Contains(message, "That posture is set in") ||
+		!strings.Contains(message, "spec.runtime.security") {
+		t.Fatalf("the sentence no longer says where the posture is set: %q", message)
+	}
+	if !strings.Contains(message, "takes a change to it on its next deploy") {
+		t.Fatalf("the sentence drops what a change to the posture does: %q", message)
+	}
 	// The operator's half: which pod is carrying it, recorded on the status
 	// rather than said in the sentence a developer reads.
 	if refused == nil || refused.Pod != "shop-production-abc" || refused.Container != AppContainerName {

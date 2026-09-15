@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -418,6 +419,299 @@ var _ = Describe("Deploy status on the commit", func() {
 			Expect(env.Status.GitReport.CommentID).To(Equal("4242"))
 			Expect(env.Status.GitReport.State).To(Equal(string(gitprovider.DeploymentSuccess)))
 			Expect(env.Status.GitReport.Error).To(BeEmpty())
+		})
+
+		// #597: a failed deploy used to read "<env> could not be deployed" and
+		// nothing else, on the deployment status and in the comment alike —
+		// the one thing the reviewer already knew, while the sentence saying
+		// what happened sat on the Environment two fields away.
+		It("says why a deploy failed, in the same words on the status and in the comment", func() {
+			_, err := envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			// A container the kubelet will not create. Nothing above the pod
+			// carries its reason, which is the whole point: the platform is
+			// the only thing that can carry it to the pull request.
+			const kubelet = `secret "gitshop-db-pr-7" not found`
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      envName + "-59f4c",
+					Namespace: appNS,
+					Labels:    webLabels(map[string]string{labelEnvironment: envName}),
+				},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{
+					{Name: AppContainerName, Image: "harbor.example.com/kitchen/gitshop@sha256:feedface"},
+				}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pod,
+					client.GracePeriodSeconds(0)))).To(Succeed())
+			})
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: AppContainerName,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason: "CreateContainerConfigError", Message: kubelet,
+				}},
+			}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			_, err = envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDegraded))
+
+			// The sentence the platform wrote down, whole. Asserting the exact
+			// string rather than "not the old one" is deliberate: a substring
+			// check passes against half a fix and an absence check passes
+			// against the nothing the unfixed code writes.
+			const why = "the container of web could not be started: " +
+				`CreateContainerConfigError: secret "gitshop-db-pr-7" not found`
+
+			// The dashboard draws the first unhealthy condition's message, so
+			// the words on the screen and the words in the pull request are
+			// the same words only if the operator wrote one sentence onto
+			// both conditions.
+			ready := meta.FindStatusCondition(env.Status.Conditions, condReady)
+			workload := meta.FindStatusCondition(env.Status.Conditions, condWorkloadAvailable)
+			Expect(ready).NotTo(BeNil())
+			Expect(workload).NotTo(BeNil())
+			Expect(ready.Message).To(Equal(why))
+			Expect(workload.Message).To(Equal(why))
+
+			last := reporter.deployments[len(reporter.deployments)-1]
+			Expect(last.State).To(Equal(gitprovider.DeploymentFailure))
+			Expect(last.Description).To(Equal(envName + " could not be deployed: " + why))
+
+			// The comment is the only surface an anonymous reviewer has: the
+			// description is cut at a hundred and forty characters by the
+			// provider and the dashboard is behind the platform's login, so
+			// this one carries the sentence whole.
+			body := reporter.lastComment().Body
+			Expect(body).To(ContainSubstring("| **Status** | Failed |"))
+			Expect(body).To(ContainSubstring("**This deploy did not finish** — " + why + ".\n"))
+			// That this surface carries no instruction to a reader who may be
+			// unable to act is asserted where the sentence is built and a
+			// posture is actually declared — this release declares none, so
+			// the clause is not in `why` at all: see
+			// TestAContainerRefusedUnderThePostureIsReportedInWords.
+		})
+
+		// The blocker found reviewing #605: the description and the comment
+		// now depend on a reason, and the de-duplication key did not. A
+		// failure posted for a commit stood for ever while the dashboard,
+		// which reads the conditions, moved on to the second cause.
+		It("posts again when the reason changes under the same commit and state", func() {
+			_, err := envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      envName + "-2f0ba",
+					Namespace: appNS,
+					Labels:    webLabels(map[string]string{labelEnvironment: envName}),
+				},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{
+					{Name: AppContainerName, Image: "harbor.example.com/kitchen/gitshop@sha256:feedface"},
+				}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pod,
+					client.GracePeriodSeconds(0)))).To(Succeed())
+			})
+
+			refuseWith := func(message string) {
+				Expect(k8sClient.Get(ctx,
+					types.NamespacedName{Name: pod.Name, Namespace: appNS}, pod)).To(Succeed())
+				pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+					Name: AppContainerName,
+					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+						Reason: "CreateContainerConfigError", Message: message,
+					}},
+				}}
+				ExpectWithOffset(1, k8sClient.Status().Update(ctx, pod)).To(Succeed())
+				_, err := envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			}
+
+			refuseWith(`secret "gitshop-db-pr-7" not found`)
+			published := len(reporter.deployments)
+			Expect(reporter.deployments[published-1].Description).To(ContainSubstring("gitshop-db-pr-7"))
+
+			// The Secret is created, and the pod is then refused for a second
+			// cause. Same commit, same `failure`, same URL — a different
+			// thing to say.
+			refuseWith(`configmap "gitshop-files-pr-7" not found`)
+
+			Expect(reporter.deployments).To(HaveLen(published + 1))
+			last := reporter.deployments[len(reporter.deployments)-1]
+			Expect(last.State).To(Equal(gitprovider.DeploymentFailure))
+			Expect(last.Description).To(ContainSubstring("gitshop-files-pr-7"))
+			Expect(last.Description).NotTo(ContainSubstring("gitshop-db-pr-7"))
+
+			// And the comment a reviewer is looking at, which is the surface
+			// the first cause would have been frozen on.
+			body := reporter.lastComment().Body
+			Expect(body).To(ContainSubstring("gitshop-files-pr-7"))
+			Expect(body).NotTo(ContainSubstring("gitshop-db-pr-7"))
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.GitReport.Description).To(Equal(last.Description))
+		})
+
+		// Criterion (5) for the other path to Degraded, read off the writer
+		// rather than off a fixture: `awaitingDeployTasks` puts one sentence
+		// onto the DeployTasks condition and onto Ready, and the report has
+		// to be carrying that same sentence — not a third wording of it.
+		It("carries a failed deploy task's own sentence, in the words on both conditions", func() {
+			const jobSaid = `relation "orders" already exists`
+			withTask := releaseName + "-task"
+			Expect(k8sClient.Create(ctx, &kitchenv1alpha1.Release{
+				ObjectMeta: metav1.ObjectMeta{Name: withTask, Namespace: namespace},
+				Spec: kitchenv1alpha1.ReleaseSpec{
+					ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: projectName},
+					BuildRef:   kitchenv1alpha1.LocalObjectReference{Name: buildName},
+					Image:      "harbor.example.com/kitchen/gitshop@sha256:feedface",
+					ConfigSnapshot: kitchenv1alpha1.ConfigSnapshot{
+						Runtime: kitchenv1alpha1.RuntimeSpec{Port: 3000},
+						Processes: []kitchenv1alpha1.ProcessSpec{{
+							Name:    "migrate",
+							Type:    kitchenv1alpha1.ProcessTask,
+							Command: []string{"npm", "run", "migrate"},
+						}},
+					},
+				},
+			})).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &kitchenv1alpha1.Release{
+					ObjectMeta: metav1.ObjectMeta{Name: withTask, Namespace: namespace},
+				}))).To(Succeed())
+			})
+
+			env := &kitchenv1alpha1.Environment{}
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			env.Spec.ReleaseRef = kitchenv1alpha1.ReleaseReference{Name: withTask}
+			Expect(k8sClient.Update(ctx, env)).To(Succeed())
+
+			// One pass starts the run and reports the deploy as in flight.
+			_, err := envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+			jobs := &batchv1.JobList{}
+			Expect(k8sClient.List(ctx, jobs, client.InNamespace(appNS),
+				client.MatchingLabels{labelEnvironment: envName, labelProcess: "migrate"})).To(Succeed())
+			Expect(jobs.Items).To(HaveLen(1))
+			run := jobs.Items[0]
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &run,
+					client.PropagationPolicy(metav1.DeletePropagationBackground)))).To(Succeed())
+			})
+
+			// envtest runs no Job controller, so the run ends because this
+			// says it did — the way the controller ends one, interim
+			// condition first.
+			now := metav1.Now()
+			run.Status.StartTime = &now
+			run.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue,
+					Reason: "BackoffLimitExceeded", LastTransitionTime: now},
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+					Reason: "BackoffLimitExceeded", Message: jobSaid, LastTransitionTime: now},
+			}
+			Expect(k8sClient.Status().Update(ctx, &run)).To(Succeed())
+
+			_, err = envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, envKey, env)).To(Succeed())
+			Expect(env.Status.Phase).To(Equal(kitchenv1alpha1.EnvironmentDegraded))
+			blocked := meta.FindStatusCondition(env.Status.Conditions, condDeployTasks)
+			ready := meta.FindStatusCondition(env.Status.Conditions, condReady)
+			Expect(blocked).NotTo(BeNil())
+			Expect(ready).NotTo(BeNil())
+
+			// Anchored to what actually happened, so the three assertions
+			// below cannot all agree on nothing.
+			Expect(blocked.Reason).To(Equal(reasonTaskFailed))
+			Expect(blocked.Message).To(ContainSubstring("migrate failed"))
+			Expect(blocked.Message).To(ContainSubstring(run.Name))
+			Expect(blocked.Message).To(ContainSubstring(jobSaid))
+
+			// The property: one sentence, written by the reconciler onto both
+			// conditions, and the report carrying that one rather than a
+			// third wording.
+			Expect(ready.Message).To(Equal(blocked.Message))
+			last := reporter.deployments[len(reporter.deployments)-1]
+			Expect(last.State).To(Equal(gitprovider.DeploymentFailure))
+			Expect(last.Description).To(Equal(envName + " could not be deployed: " + blocked.Message))
+			Expect(reporter.lastComment().Body).To(
+				ContainSubstring("**This deploy did not finish** — " + blocked.Message))
+		})
+
+		// #597 asks whether an environment that dips through Degraded on its
+		// way to Live leaves a `failure` behind that the later `success` never
+		// erases. The recovery *is* published, and this is what says so: the
+		// de-duplication key carries the state, so a success does not match
+		// the failure already recorded — which makes it the deployment's
+		// newest status and rewrites the comment in place. So a preview found
+		// at `Failed` in its comment, at rest, is one that is still Degraded
+		// rather than one that flickered.
+		//
+		// The `failure` does stay in that deployment's status history under
+		// the success, and a recovery that lands after a newer push is posted
+		// against the *newer* deployment, leaving the older record's final
+		// status a failure for ever. Neither is what this pins; #604 carries
+		// what that means for the numbers in #597.
+		It("publishes the recovery, so a dip through Degraded does not read as a failed deploy", func() {
+			_, err := envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      envName + "-7cb81",
+					Namespace: appNS,
+					Labels:    webLabels(map[string]string{labelEnvironment: envName}),
+				},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{
+					{Name: AppContainerName, Image: "harbor.example.com/kitchen/gitshop@sha256:feedface"},
+				}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pod,
+					client.GracePeriodSeconds(0)))).To(Succeed())
+			})
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: AppContainerName,
+				State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+					Reason: "CreateContainerConfigError", Message: "configmap not found",
+				}},
+			}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			_, err = envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reporter.deployments[len(reporter.deployments)-1].State).
+				To(Equal(gitprovider.DeploymentFailure))
+
+			// The kubelet gets what it was waiting for and the container
+			// starts, which on a cluster is a pod watch and one more pass.
+			Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
+			makeAvailable()
+			_, err = envs.Reconcile(ctx, reconcile.Request{NamespacedName: envKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			last := reporter.deployments[len(reporter.deployments)-1]
+			Expect(last.State).To(Equal(gitprovider.DeploymentSuccess))
+			Expect(last.Description).To(Equal(envName + " is live"))
+			// And the comment the reviewer reads is the recovered one, in
+			// place, rather than the failure with a success underneath it.
+			body := reporter.lastComment().Body
+			Expect(body).To(ContainSubstring("| **Status** | Ready |"))
+			Expect(body).NotTo(ContainSubstring("This deploy did not finish"))
 		})
 
 		It("still comments when the provider keeps no deployment record", func() {

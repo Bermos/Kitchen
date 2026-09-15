@@ -2092,6 +2092,8 @@ status:
     revision: ab12cd34ef56              # absent where nothing is reported to
     state: success                      # in_progress | success | failure | inactive
     url: https://my-shop-pr-42.apps.example.com
+    description: my-shop-pr-42 is live  # the line published beside it, and the
+                                        # reason when that line is a failure
     commentID: "204819274"              # the PR comment that is rewritten in place
     error: ""                           # why the last post did not land
     at: "2026-08-14T10:30:04Z"
@@ -2198,9 +2200,12 @@ disappoints. Every terminal run also lands in the activity feed as
 
 `gitReport` is bookkeeping for [deploy status](#deploy-status-back-on-the-commit): an
 Environment reconciles far more often than it changes, and without a record of what was
-already said, every pass would post the same deployment status again. It is also where a
-refused post is recorded — never as a condition, because reporting is commentary on a
-deployment rather than a part of it.
+already said, every pass would post the same deployment status again. It records the
+`description` as well as the state, because since #597 the line published beside a
+failure carries a *reason* — and a reason that changes under the same commit, in the same
+state, at the same URL is a new thing to say rather than a repeat of the last one. It is
+also where a refused post is recorded — never as a condition, because reporting is
+commentary on a deployment rather than a part of it.
 
 Reconcile (the heart of the operator): in the project namespace, ensure an apps/v1
 Deployment (from the Release's image + config snapshot), Service, `HTTPRoute` attached to
@@ -3366,14 +3371,35 @@ repository without overwriting each other:
   failed and `error` when the platform could not run it at all. `target_url` is the
   build's page in the dashboard.
 - **A deployment per Environment**, named after the Environment, carrying the URL:
-  `in_progress` while the workload comes up, `success` once it is available, `inactive`
-  when a preview is torn down. Previews are marked transient, production is marked
-  production.
+  `in_progress` while the workload comes up, `success` once it is available, `failure`
+  when the environment went `Degraded`, `inactive` when a preview is torn down. Previews
+  are marked transient, production is marked production.
 - **One comment per preview**, rewritten in place on every push rather than appended to,
   found by an invisible `<!-- kitchen-preview: <environment> -->` marker and thereafter
   by the ID recorded in `status.gitReport`. It states that a protected preview asks an
   anonymous visitor to sign in, because a reviewer who is not a platform user would
   otherwise read the gate as a broken link.
+
+**A failure says why**, and says it in the words already on the Environment (#597). Two
+things make an environment `Degraded` and both already hold a sentence: a deploy task
+that failed, carrying its run's own message, and a container the kubelet refused,
+carrying the kubelet's. It is read off the `Ready` condition, which both paths to
+`Degraded` write that same sentence onto as they write the condition the fault is
+specifically about — so the deployment status, the pull request comment and the
+environment's page in the dashboard are one sentence rather than three.
+The description leads with the fact (`<environment> could not be deployed: …`) because
+GitHub cuts it at 140 characters; the comment carries the sentence whole, under the
+status table, because a reviewer who cannot sign in has no other surface to read it on.
+
+Two things follow from that surface being public. The sentence is stated as a *fact* and
+never as an instruction — a workload refused under a posture says where the posture is set
+and that a change reaches it on the next deploy, rather than telling a reader who may be
+anonymous to go and change it, which is [docs/UI.md](UI.md)'s rule applied to a string the
+controller writes. And a condition message can name registry hostnames, Secret and
+ConfigMap names, environment-variable keys and the declared posture, so a project whose
+repository is public publishes those to anyone reading the pull request; container output
+is not among them, because a deploy task's pod uses the default termination-message policy
+rather than `FallbackToLogsOnError`.
 
 **None of it can fail a deployment.** A revoked token is the Connection reconciler's
 business — it probes the credential and turns `CredentialsValid` red — and a build that

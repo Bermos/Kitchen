@@ -4689,6 +4689,20 @@ spec:
                       platform keeps up to date, so the next report rewrites that comment
                       instead of hunting for it — or appending a second one.
                     type: string
+                  description:
+                    description: |-
+                      Description is the line published beside the deployment: the sentence
+                      the reader actually reads, rather than the state's name.
+
+                      It is recorded because it is the only part of a report that is not a
+                      function of the three fields above. A failed deploy carries the reason
+                      the platform had at the time (#597), and a reason that changes — the
+                      missing Secret is created and the container is then refused for a
+                      second cause — is a different thing said about the same commit in the
+                      same state at the same URL. Without this the first sentence would stand
+                      on the pull request for ever while the dashboard, which reads the
+                      conditions directly, moved on to the second.
+                    type: string
                   error:
                     description: |-
                       Error is why the last attempt did not land, empty when it did. A

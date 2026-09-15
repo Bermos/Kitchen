@@ -356,6 +356,20 @@ type GitReport struct {
 	// +optional
 	URL string `json:"url,omitempty"`
 
+	// Description is the line published beside the deployment: the sentence
+	// the reader actually reads, rather than the state's name.
+	//
+	// It is recorded because it is the only part of a report that is not a
+	// function of the three fields above. A failed deploy carries the reason
+	// the platform had at the time (#597), and a reason that changes — the
+	// missing Secret is created and the container is then refused for a
+	// second cause — is a different thing said about the same commit in the
+	// same state at the same URL. Without this the first sentence would stand
+	// on the pull request for ever while the dashboard, which reads the
+	// conditions directly, moved on to the second.
+	// +optional
+	Description string `json:"description,omitempty"`
+
 	// CommentID is the provider-side ID of the pull request comment the
 	// platform keeps up to date, so the next report rewrites that comment
 	// instead of hunting for it — or appending a second one.
@@ -376,6 +390,11 @@ type GitReport struct {
 // Matches reports whether a report says the same thing about the same commit
 // as the one already posted. The comment ID and timestamp are deliberately
 // not compared: they are how the report was delivered, not what it said.
+//
+// The description is compared, because since #597 it is what was said rather
+// than a restatement of the state: two failures of one commit under two
+// different causes are two reports, and suppressing the second would leave the
+// pull request on the first cause permanently.
 func (g *GitReport) Matches(other *GitReport) bool {
 	if g == nil || other == nil {
 		return false
@@ -383,6 +402,7 @@ func (g *GitReport) Matches(other *GitReport) bool {
 	return g.Revision == other.Revision &&
 		g.State == other.State &&
 		g.URL == other.URL &&
+		g.Description == other.Description &&
 		g.Error == other.Error
 }
 
