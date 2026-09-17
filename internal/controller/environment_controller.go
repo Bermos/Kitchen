@@ -263,6 +263,8 @@ func (r *EnvironmentReconciler) git() gitReporting {
 // +kubebuilder:rbac:groups=http.keda.sh,resources=httpscaledobjects,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile drives an Environment towards its Release.
+//
+//nolint:gocyclo // This is the controller's orchestration path across all environment surfaces.
 func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -300,6 +302,14 @@ func (r *EnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	project, halt, err := r.projectOf(ctx, env)
 	if project == nil {
 		return halt, err
+	}
+	if policyEnv, err := PolicyEnvironmentFor(ctx, r.Client, env.Namespace, env); err != nil {
+		return ctrl.Result{}, err
+	} else if policyEnv != nil && ApplyPolicyEnvironment(env, policyEnv) {
+		if err := r.Update(ctx, env); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	release, halt, err := r.releaseOf(ctx, env)

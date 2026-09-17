@@ -170,6 +170,7 @@ var Kinds = []Kind{
 	{Kind: "Project", Plural: "projects"},
 	{Kind: "Build", Plural: "builds"},
 	{Kind: "Release", Plural: "releases"},
+	{Kind: "PlatformEnvironment", Plural: "platformenvironments"},
 	{Kind: "Environment", Plural: "environments"},
 	{Kind: "Domain", Plural: "domains"},
 	{Kind: "ResourceClaim", Plural: "resourceclaims"},

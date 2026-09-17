@@ -197,6 +197,10 @@ export type Route =
   | "POST /api/v1/platform/storage/claims/{name}/resize"
   | "GET /api/v1/platform/events"
   | "GET /api/v1/platform/ingest"
+  | "GET /api/v1/platform/environments"
+  | "POST /api/v1/platform/environments"
+  | "GET /api/v1/platform/environments/{name}"
+  | "PATCH /api/v1/platform/environments/{name}"
   | "GET /api/v1/platform/retention"
   | "PATCH /api/v1/platform/retention"
   | "GET /api/v1/platform/policy"
@@ -376,6 +380,10 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "POST /api/v1/platform/storage/claims/{name}/resize": { kind: "operator", doing: "growing one of the platform's volumes" },
   "GET /api/v1/platform/events": { kind: "operator", doing: "reading the platform's cluster events", scope: "platform.read" },
   "GET /api/v1/platform/ingest": { kind: "operator", doing: "reading the platform's ingest", scope: "platform.read" },
+  "GET /api/v1/platform/environments": { kind: "operator", doing: "reading the platform's policy environments" },
+  "POST /api/v1/platform/environments": { kind: "operator", doing: "creating a platform policy environment" },
+  "GET /api/v1/platform/environments/{name}": { kind: "operator", doing: "reading a platform policy environment" },
+  "PATCH /api/v1/platform/environments/{name}": { kind: "operator", doing: "changing a platform policy environment" },
   "GET /api/v1/platform/retention": { kind: "operator", doing: "reading the platform's retention", scope: "platform.read" },
   "PATCH /api/v1/platform/retention": { kind: "operator", doing: "changing the platform's retention" },
   "GET /api/v1/platform/policy": { kind: "operator", doing: "reading the platform's signal policy" },

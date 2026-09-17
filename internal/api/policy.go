@@ -829,6 +829,14 @@ func (s *Server) routes() []route {
 			operatorOr(access.ScopePlatformRead, "reading the platform's cluster events")},
 		{"GET /api/v1/platform/ingest", s.platformIngest,
 			operatorOr(access.ScopePlatformRead, "reading the platform's ingest")},
+		{"GET /api/v1/platform/environments", s.listPlatformEnvironments,
+			operatorOnly("reading the platform's policy environments")},
+		{"POST /api/v1/platform/environments", s.createPlatformEnvironment,
+			operatorOnly("creating a platform policy environment")},
+		{"GET /api/v1/platform/environments/{name}", s.getPlatformEnvironment,
+			operatorOnly("reading a platform policy environment")},
+		{"PATCH /api/v1/platform/environments/{name}", s.patchPlatformEnvironment,
+			operatorOnly("changing a platform policy environment")},
 
 		// How long each class of what the platform keeps is kept, and how far
 		// back each class actually goes. The operator's, like every other
