@@ -180,6 +180,12 @@ type ReleaseReference struct {
 type EnvironmentSpec struct {
 	ProjectRef LocalObjectReference `json:"projectRef"`
 
+	// PolicyEnvironmentRef binds this runtime environment to an instance-wide
+	// policy environment. When unset, this environment's own governance fields
+	// remain authoritative for backward compatibility.
+	// +optional
+	PolicyEnvironmentRef *LocalObjectReference `json:"policyEnvironmentRef,omitempty"`
+
 	// +kubebuilder:default=production
 	Type EnvironmentType `json:"type,omitempty"`
 

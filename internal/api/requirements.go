@@ -333,12 +333,22 @@ func resolveBar(
 // artifact, and who may change that. The table let the caller in on a project
 // role; the ownership rule is enforced here, before the body is even read,
 // because it does not depend on what the change is.
+//
+//nolint:gocyclo // The endpoint validates and applies every governance field on one route.
 func (s *Server) patchEnvironmentRequirements(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
 	env := &kitchenv1alpha1.Environment{}
 	if err := s.get(ctx, req.PathValue("name"), env); err != nil {
 		s.writeError(w, err)
+		return
+	}
+	if policyEnv, err := controller.PolicyEnvironmentFor(ctx, s.Client, s.Namespace, env); err != nil {
+		s.writeError(w, err)
+		return
+	} else if policyEnv != nil {
+		badRequest(w, "environment %q is bound to platform environment %q: change governance on PATCH /api/v1/platform/environments/%s",
+			env.Name, policyEnv.Name, policyEnv.Name)
 		return
 	}
 

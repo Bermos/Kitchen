@@ -389,6 +389,7 @@ into says so where its release would be.`),
 // sets them afterwards through the requirements endpoint, which is where
 // changing them lives anyway.
 func newEnvironmentCreateCommand(r *Runtime) *cobra.Command {
+	var policyEnvironment string
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Declare an environment before anything deploys into it",
@@ -426,7 +427,7 @@ What it demands is set afterwards, and by a platform operator:
 			ctx, cancel := r.context(commandContext(cmd))
 			defer cancel()
 
-			declared, err := client.declareEnvironment(ctx, project, args[0])
+			declared, err := client.declareEnvironment(ctx, project, args[0], policyEnvironment)
 			if err != nil {
 				return err
 			}
@@ -436,6 +437,8 @@ What it demands is set afterwards, and by a platform operator:
 			})
 		}),
 	}
+	cmd.Flags().StringVar(&policyEnvironment, "policy-environment", "",
+		"instance-wide policy environment to bind this runtime environment to")
 
 	return describe(cmd, meta{
 		Calls:  []string{"POST /api/v1/projects/{name}/environments"},

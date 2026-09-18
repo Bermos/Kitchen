@@ -82,6 +82,7 @@ rules:
       - projects
       - builds
       - releases
+      - platformenvironments
       - environments
       - domains
       - resourceclaims
