@@ -68,7 +68,7 @@ const phaseTone: Record<string, string> = {
           An expired one blocks further promotions until it is resolved or replaced.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <UButton size="xs" color="neutral" :variant="historical ? 'solid' : 'subtle'" @click="toggleHistorical">
           {{ historical ? "Showing history" : "Active only" }}
         </UButton>

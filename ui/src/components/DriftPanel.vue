@@ -78,7 +78,7 @@ function time(iso?: string): string {
           promotion uses — no rebuild, no redeploy.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <UButton size="xs" color="neutral" :variant="all ? 'solid' : 'subtle'" @click="refine">
           {{ all ? "All pairs" : "Drifting only" }}
         </UButton>

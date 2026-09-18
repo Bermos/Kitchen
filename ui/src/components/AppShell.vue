@@ -590,7 +590,7 @@ const userMenu = computed(() => [
             variant="ghost"
             size="xs"
             aria-label="New project"
-            class="-mr-1.5"
+            class="-mr-1.5 shrink-0"
           />
         </div>
         <nav class="px-2 space-y-0.5 overflow-y-auto flex-1 min-h-0">

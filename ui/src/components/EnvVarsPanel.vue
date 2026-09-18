@@ -173,9 +173,9 @@ async function save() {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
+  <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="min-w-0">
         <h2 class="text-sm font-medium text-highlighted">Environment variables</h2>
         <p class="text-xs text-muted mt-1">
           What <span class="font-mono">{{ project }}</span> runs with. A variable that has a value shows
@@ -191,7 +191,7 @@ async function save() {
           these — so a variable named PORT here still wins.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 shrink-0">
         <UButton
           v-if="mayReveal && drafts.length"
           color="neutral"

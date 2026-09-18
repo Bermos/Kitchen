@@ -365,7 +365,7 @@ function clock(iso: string | undefined): string {
   <div v-if="!unavailable">
     <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
       <h2 class="text-sm font-medium text-highlighted">Signals</h2>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <!-- The window these numbers are true of is the one the store could
              answer, not the one that was asked for: they come off indivisible
              buckets, so the start is snapped to the rollup's resolution. -->
