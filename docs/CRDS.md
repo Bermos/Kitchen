@@ -159,6 +159,7 @@ spec:
     secretRef: { name: kitchen-registry }   # written by the chart; the registry's own username and password
   objectStore:
     enabled: false                      # the MinIO the platform can run for itself; off by default
+    host: objectstore.apps.example.com  # where it is published for presigned URLs; defaults to objectstore.<baseDomain>
     service: kitchen-objectstore        # the Service every bucket is reached at, written by the chart
     port: 9000
     region: us-east-1                   # what every bucket reports; a formality S3 clients insist on
@@ -503,21 +504,50 @@ good default, not a fixture the platform keeps reinstating. While it is still
 there and still labelled `app.kubernetes.io/managed-by: kitchen`, its URL and
 credential are kept in step with the registry.
 
-`objectStore` is the same shape with the route left out. The chart runs a
-single MinIO with a volume when its `objectStore.enabled` is set, and the
-operator seeds an `s3` Connection (`kitchen-objectstore`) pointing at its
-Service, with the root credential the chart generated once. There is no
-route because nothing outside the cluster needs one: an application runs in
-the cluster and reaches the store at its Service address, and the node's
-container runtime — the reason the registry needs a publicly trusted
-certificate — is not in the path. The corollary is that a bucket in it cannot
-be publicly readable, and a claim asking for that is refused with the reason.
+`objectStore` is the same shape. The chart runs a single MinIO with a volume
+when its `objectStore.enabled` is set, and the operator seeds an `s3`
+Connection (`kitchen-objectstore`) pointing at its Service, with the root
+credential the chart generated once.
+
+**It has two addresses and they are not interchangeable (#601).** An
+application runs in the cluster and reaches the store at its Service address,
+which is what every binding's `endpoint` carries and what every read and write
+uses. But an AWS SigV4 presigned URL signs the host it is made for, so a URL
+signed against `kitchen-objectstore.kitchen-system.svc.cluster.local` is
+invalid at any other name and resolves nowhere in a browser. So the operator
+also writes an HTTPRoute publishing the store at `objectstore.<baseDomain>` —
+`spec.objectStore.host` overrides it — on the shared Gateway and the
+platform's own wildcard certificate, and the binding carries that address as
+`publicEndpoint`. The route is the operator's for the reason the registry's
+is: it needs the shared Gateway to exist first. Beside it goes a
+`BackendTLSPolicy`, because the store serves HTTPS on its `.svc` name and the
+Gateway has to be told both to speak TLS to it and that the platform's own CA
+is what vouches for it — the two trust paths, public and internal, stay
+apart.
+
+Publishing the port is not publishing the whole server. MinIO's admin API
+shares it with the S3 API under `/minio/admin/`, and the store's route has to
+match `/` — path-style addressing makes a bucket the first path segment — so a
+second, more specific route out-precedences it for that prefix and the Gateway
+answers there itself. The operator's own provisioning is unaffected: it goes
+to the Service address, which is behind no route.
+
+The published half needs TLS to exist, exactly as the registry's does: in
+`tls.mode: none` the store runs and is not published, bindings carry no
+`publicEndpoint`, and `status.objectStore.unpublished` says so in words rather
+than leaving an absence. Publishing an address publishes no object — the store
+admits nobody anonymously, an unsigned request to the published name is
+refused exactly as one inside the cluster is, and a bucket in it still cannot
+be publicly readable, so a claim asking for that is refused with the reason.
 The seeded Connection is written with `forcePathStyle: true` (MinIO needs
-it), `inCluster: true` (what refuses the public bucket), and the default
-`scopedCredentials`, so every claim's bucket gets a user and a policy of its
-own minted from the root credential; no application is ever handed the root.
+it), `inCluster: true` (what refuses the public bucket), the published address
+as `publicEndpoint` where there is one, and the default `scopedCredentials`,
+so every claim's bucket gets a user and a policy of its own minted from the
+root credential; no application is ever handed the root.
 `status.objectStore.connection` is a seed on the registry's terms: deleted,
-it stays deleted.
+it stays deleted, and `status.objectStore.endpoint` and
+`status.objectStore.publicEndpoint` are where the platform reports the two
+addresses.
 
 `access.operators` is the platform role, and the only one there is: an account
 on the list is an operator — everything, everywhere, and project `admin` on
@@ -718,7 +748,9 @@ which is whether the platform mints a user and a policy per bucket through
 the MinIO admin API (the default) or hands every claim the connection's own
 key pair (S3 and R2, which have no such API). The seeded one for the bundled
 store additionally carries `inCluster: true`, which is what refuses a
-publicly readable bucket: there is no public to read it.
+publicly readable bucket — the platform publishes an address for that store,
+not its objects — and `publicEndpoint`, the published address every binding
+through it presigns against.
 `inngest` (capability `backgroundJobs`) is an Inngest Cloud account an
 `inngest` claim reads its keys from, and `inngestSelfHosted` is the same
 capability served by an Inngest this cluster runs: one server per claim and
@@ -1074,7 +1106,8 @@ take.** The name has to work as a DNS label of at most 46 characters — every
 name the platform derives from it has to fit Kubernetes' 63-character limit —
 and beyond that it may not be one the platform already publishes under
 `spec.baseDomain`: `kitchen` (the API and the dashboard), `auth` (the identity
-provider), `previews` (the preview gate) or `registry` (the bundled registry).
+provider), `previews` (the preview gate), `registry` (the bundled registry) or
+`objectstore` (the bundled object store).
 Nor may it have the shape `<name>-pr-<number>`, which is where the platform
 publishes another project's pull request preview. The list is
 `internal/platformhost`, which is also where the operator's own hostnames come
@@ -2692,8 +2725,8 @@ Two consequences worth knowing:
 Somewhere to put a file the application did not build into its image — user
 uploads, generated exports — instead of the container filesystem, which loses
 it on the next deploy. It provisions through an
-`objectStore`-capable Connection (`s3`), and the binding is the six things an
-S3 client needs:
+`objectStore`-capable Connection (`s3`), and the binding is what an S3 client
+needs — including, for the bundled store, a second address:
 
 ```yaml
 apiVersion: kitchen.bermos.dev/v1alpha1
@@ -2708,11 +2741,14 @@ spec:
   config:
     objectStore:                        # all of it optional; applied when the bucket is created
       versioning: true                  # keep every version of an object
-      publicRead: false                 # anyone may read — refused by the bundled store, which nothing outside reaches
+      publicRead: false                 # anyone may read — refused by the bundled store, which admits nobody unsigned
       size: 50Gi                        # a hard quota at a MinIO; refused at a store with no admin API
 status:
   phase: Bound
-  secretName: shop-uploads-binding      # binding keys: endpoint, bucket, region, accessKeyId, secretAccessKey, forcePathStyle
+  secretName: shop-uploads-binding      # binding keys: endpoint, publicEndpoint, bucket, region, accessKeyId, secretAccessKey, forcePathStyle
+  objectStore:                          # the same two addresses as a fact anybody may read; neither is a credential
+    endpoint: https://kitchen-objectstore.kitchen-system.svc.cluster.local:9000   # this application's own reads and writes
+    publicEndpoint: https://objectstore.apps.example.com                          # what a URL for somebody else is presigned against
   instanceID: kitchen-my-shop-shop-uploads   # the bucket's name at the store, which is what it is found again by
   instanceName: kitchen-my-shop-shop-uploads # the same name, recorded as what a later reconcile looks up
   dataProvenance: production
@@ -2723,6 +2759,17 @@ status:
       secretName: shop-uploads-binding-my-shop-pr-41
       provenance: synthetic             # an empty bucket never held production objects
 ```
+
+**Two addresses, and which is for what.** `endpoint` is where this
+application's own reads and writes go. `publicEndpoint`, which the bundled
+store's bindings carry, is where a URL handed to somebody else has to be
+presigned — an AWS SigV4 presigned URL signs the host it is made for, so one
+signed against the in-cluster address is invalid everywhere a browser could
+present it (#601). A store whose `endpoint` is already public carries no
+second key, so the rule an application follows is `publicEndpoint` where there
+is one and `endpoint` otherwise. The published address carries no `caCert`: it
+rides the platform's publicly trusted wildcard certificate, while the private
+CA belongs to `endpoint` alone.
 
 **A bucket per claim with a credential scoped to it**, never a prefix in a
 shared bucket — a prefix is not an isolation boundary. Where the store speaks
@@ -2742,7 +2789,8 @@ every binding.
 The requirements are typed for the same reason `config.postgres` is: a
 provider reads each one and either honours it or refuses the claim *before*
 creating anything, with the reason on the `Ready` condition. The bundled
-store refuses `publicRead` because it is reached inside the cluster alone; a
+store refuses `publicRead` because it admits nobody anonymously — the address
+the platform publishes for it is an address, not an open bucket; a
 store without the admin API refuses `size` because a quota is set through it;
 a store that does not implement versioning refuses `versioning`.
 

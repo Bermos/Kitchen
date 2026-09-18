@@ -6995,6 +6995,13 @@ spec:
                       store, which is an s3 Connection someone creates. The chart renders
                       the store itself only when its own objectStore.enabled is set.
                     type: boolean
+                  host:
+                    description: |-
+                      Host the store is published on outside the cluster, and therefore the
+                      name a presigned URL is signed against. Defaults to
+                      objectstore.<baseDomain>; it is never what the platform's own clients use,
+                      which stays the Service address.
+                    type: string
                   port:
                     default: 9000
                     description: Port the store's Service publishes.
@@ -8200,7 +8207,22 @@ spec:
                       while the store stays enabled.
                     type: string
                   endpoint:
-                    description: Endpoint the store is reached at inside the cluster.
+                    description: |-
+                      Endpoint the store is reached at inside the cluster, which is what
+                      every application's own reads and writes use.
+                    type: string
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is where the store is published outside the cluster,
+                      and the address a presigned URL has to be signed against. Empty for an
+                      installation that publishes it nowhere, with Unpublished below saying
+                      why.
+                    type: string
+                  unpublished:
+                    description: |-
+                      Unpublished says, when PublicEndpoint is empty, why the store has no
+                      address outside the cluster — tls.mode none, or nowhere to publish it.
+                      Empty whenever it does have one.
                     type: string
                 type: object
               registry:
@@ -14534,6 +14556,38 @@ spec:
                   connection, say — so no environment reading it idles to zero. The
                   environment reconciler reads it and says so on the environment.
                 type: boolean
+              objectStore:
+                description: |-
+                  ObjectStore is where an objectStore claim's bucket is addressed, and
+                  empty for every other type. It is the store's half of the binding
+                  repeated as a fact anybody may read: no credential and no bucket
+                  policy, only the two addresses — because the whole difficulty of the
+                  binding is knowing which of them to use for what (#601).
+                properties:
+                  endpoint:
+                    description: |-
+                      Endpoint is the store inside the cluster, which is what the
+                      application's own reads and writes go to.
+                    type: string
+                  inCluster:
+                    description: |-
+                      InCluster is whether Endpoint is an address only this cluster
+                      resolves, which is what tells those two emptinesses apart. An empty
+                      PublicEndpoint on an in-cluster store means the platform is
+                      publishing it nowhere and no URL presigned here can be opened from a
+                      browser; on a store of somebody else's it means Endpoint was already
+                      public and needs no second address. Saying "no publicEndpoint" alone
+                      gives one of them the other's advice, which is the bug #601 was
+                      filed from.
+                    type: boolean
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is the store from outside the cluster, which is what a
+                      URL handed to somebody else has to be presigned against. Empty for a
+                      store the platform publishes nowhere, and for every store whose
+                      Endpoint is already an address the internet resolves.
+                    type: string
+                type: object
               phase:
                 description: ClaimPhase is the coarse lifecycle summary of a ResourceClaim.
                 enum:

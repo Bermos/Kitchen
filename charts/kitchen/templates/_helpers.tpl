@@ -695,8 +695,15 @@ resolve and a certificate the node already trusts.
 The bundled object store: a name, and the root credential the operator seeds
 its Connection with. The chart runs the store, its Service and its volume;
 the operator seeds the Connection, because its credential is a Secret the
-API never reads back. There is no route: the store is reached at its
-Service address, inside the cluster.
+API never reads back, and the operator writes the route, because the shared
+Gateway is the operator's.
+
+There are two addresses and they are not interchangeable. Applications reach
+the store at its Service address, inside the cluster, and that is what every
+read and write uses. The route publishes a second address for the one thing a
+Service address cannot do: an AWS SigV4 presigned URL signs the host it is
+made for, so a URL handed to somebody else's browser has to be signed against
+a name that browser can resolve (#601).
 */}}
 {{- define "kitchen.objectStoreFullname" -}}
 {{- printf "%s-objectstore" (include "kitchen.fullname" .) }}
@@ -738,6 +745,28 @@ including the `.cluster.local` form an application's binding carries.
 */}}
 {{- define "kitchen.objectStoreHost" -}}
 {{- printf "%s.%s.svc" (include "kitchen.objectStoreFullname" .) .Release.Namespace }}
+{{- end }}
+
+{{/*
+Whether the store gets an address outside the cluster at all. It rides the
+platform's own wildcard certificate, so `tls.mode: none` publishes nothing
+rather than carrying presigned requests in the clear — the same argument as
+`kitchen.registryEnabled`, and the operator says the same thing in its
+ObjectStoreReady condition. Gated on configuration alone: nothing here asks
+the cluster anything, so every render in CI answers the same way.
+*/}}
+{{- define "kitchen.objectStorePublicHost" -}}
+{{- if ne .Values.kitchen.tls.mode "none" }}
+{{- if .Values.objectStore.host }}
+{{- .Values.objectStore.host }}
+{{- else if .Values.kitchen.baseDomain }}
+{{- printf "objectstore.%s" .Values.kitchen.baseDomain }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- define "kitchen.objectStorePublished" -}}
+{{- if and .Values.objectStore.enabled (include "kitchen.objectStorePublicHost" .) }}true{{ end }}
 {{- end }}
 
 {{/*

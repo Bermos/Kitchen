@@ -1979,6 +1979,16 @@ cannot write it carries on and exchanges every time.
   stands, through the one error shape every command already answers with. A
   flag would only be a way to spell a role the caller either holds or does not.
 
+  Publishing the bundled object store (#601) is the same decision yet again,
+  and adds nothing at all to type: it added no route and renamed none — the
+  operator writes an HTTPRoute, which is a cluster object and not a surface —
+  and what a developer needs from it comes back on routes that already exist.
+  `kitchen api GET /claims/<name> | jq .objectStore` prints both of a
+  bucket's addresses, which is the one thing a second binding key makes
+  somebody ask, and an operator reads where the platform publishes its own
+  store — or why it publishes it nowhere — off the `ObjectStoreReady`
+  condition on `kitchen api GET /settings`.
+
   **Point-in-time recovery is the first of these that added routes**, four of
   them, and the decision is still `kitchen api` — which is why it is written
   down here rather than assumed. Recovering is one line with the moment in it,

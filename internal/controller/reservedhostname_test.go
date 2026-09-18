@@ -55,6 +55,7 @@ func TestTheOperatorPublishesOnlyReservedHostnames(t *testing.T) {
 	for what, host := range map[string]string{
 		"the preview gate's route": previewGateHost(kitchen),
 		"the registry's route":     registryHost(kitchen),
+		"the object store's route": objectStorePublicHost(kitchen),
 		"the API and dashboard":    apiURL.Hostname(),
 	} {
 		if host == "" {
@@ -67,11 +68,12 @@ func TestTheOperatorPublishesOnlyReservedHostnames(t *testing.T) {
 		}
 	}
 
-	// And the two constants the operator spells its subdomains with are the
+	// And the constants the operator spells its subdomains with are the
 	// package's own, so they cannot drift from the refusal.
-	if PreviewGateHostPrefix != platformhost.PreviewGate || RegistryHostPrefix != platformhost.Registry {
-		t.Errorf("the operator's subdomains are not platformhost's: %q and %q",
-			PreviewGateHostPrefix, RegistryHostPrefix)
+	if PreviewGateHostPrefix != platformhost.PreviewGate || RegistryHostPrefix != platformhost.Registry ||
+		ObjectStoreHostPrefix != platformhost.ObjectStore {
+		t.Errorf("the operator's subdomains are not platformhost's: %q, %q and %q",
+			PreviewGateHostPrefix, RegistryHostPrefix, ObjectStoreHostPrefix)
 	}
 }
 

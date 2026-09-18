@@ -32,7 +32,9 @@ limitations under the License.
 // provisioner talks to whatever the Connection's endpoint is — the MinIO the
 // chart runs in this cluster, or a store somebody else runs. What differs
 // between the two is who created the Connection, and the one thing the
-// bundled store cannot do, which is publish a bucket to the internet.
+// bundled store cannot do, which is publish a bucket to the internet: the
+// platform publishes an *address* for it (#601), and every request to that
+// address is still signed or refused.
 //
 // Isolation is a bucket per claim and, where the store speaks the MinIO
 // admin API, a user and a policy per bucket: never a prefix in a shared
@@ -84,7 +86,26 @@ type Binding struct {
 	// Endpoint is the store's URL including the scheme —
 	// http://kitchen-objectstore.kitchen-system.svc.cluster.local:9000, or
 	// https://s3.eu-central-1.amazonaws.com.
+	//
+	// It is the address the application's own reads and writes go to, and
+	// for the bundled store it is an in-cluster one: nothing outside the
+	// cluster resolves it, which is exactly right for server-side traffic
+	// and useless for a URL handed to somebody else. PublicEndpoint below
+	// is the other half of that (#601).
 	Endpoint string
+	// PublicEndpoint is where the same store answers from outside the
+	// cluster, for the store the platform publishes on its shared Gateway.
+	// Empty for every other store, where Endpoint is already an address the
+	// internet resolves.
+	//
+	// It exists because an AWS SigV4 presigned URL signs the host it is
+	// made for: a URL signed against the in-cluster address is invalid at
+	// any other name, so an application that presigns a GET for somebody
+	// else's browser has to sign against this one. It is a second address
+	// rather than a replacement because every server-side call should keep
+	// going straight to the store instead of out through the Gateway and
+	// back.
+	PublicEndpoint string
 	// Bucket the credential is scoped to.
 	Bucket string
 	// Region the store reports; a formality every S3 client insists on.
@@ -114,7 +135,11 @@ type Binding struct {
 
 // The keys of the binding Secret, spelled once.
 const (
-	BindingKeyEndpoint        = "endpoint"
+	BindingKeyEndpoint = "endpoint"
+	// BindingKeyPublicEndpoint carries the address the same store answers
+	// on from outside the cluster, where the platform publishes one. A
+	// binding without it is a store whose `endpoint` is already public.
+	BindingKeyPublicEndpoint  = "publicEndpoint"
 	BindingKeyBucket          = "bucket"
 	BindingKeyRegion          = "region"
 	BindingKeyAccessKeyID     = "accessKeyId"
@@ -147,6 +172,11 @@ func (b Binding) Data() map[string][]byte {
 		BindingKeySecretAccessKey: []byte(b.SecretAccessKey),
 		BindingKeyForcePathStyle:  []byte(pathStyle),
 	}
+	if b.PublicEndpoint != "" {
+		// Same rule as the CA below: a key that is present and empty reads
+		// as an address, and an application would presign against "".
+		data[BindingKeyPublicEndpoint] = []byte(b.PublicEndpoint)
+	}
 	if b.CACert != "" {
 		data[BindingKeyCACert] = []byte(b.CACert)
 	}
@@ -163,16 +193,28 @@ func (b Binding) Data() map[string][]byte {
 // carry the news. The reconciler writes these keys over an existing binding
 // Secret and leaves the rest of it alone.
 type Address struct {
-	Endpoint       string
+	Endpoint string
+	// PublicEndpoint is where the store answers from outside the cluster,
+	// empty for a store the platform does not publish. It moves with the
+	// rest of the address: `tls.mode` none, or the store being unpublished,
+	// takes it away from every binding that carried it.
+	PublicEndpoint string
+	// InCluster is whether Endpoint is an address only the cluster
+	// resolves. It is deliberately **not** in Data below — it is a fact
+	// about the store rather than something an S3 client needs — and it is
+	// carried here because it is the only thing that tells an empty
+	// PublicEndpoint meaning: a bundled store nobody is publishing, or an
+	// external store that never needed a second address (#601).
+	InCluster      bool
 	Region         string
 	ForcePathStyle bool
 	CACert         string
 }
 
-// Data is the address as those keys of the binding Secret. `caCert` appears
-// with an empty value for a store that has none, because this is applied over
-// a Secret that may carry a stale one — and the absence has to be able to
-// travel too.
+// Data is the address as those keys of the binding Secret. `caCert` and
+// `publicEndpoint` appear with an empty value for a store that has neither,
+// because this is applied over a Secret that may carry a stale one — and the
+// absence has to be able to travel too.
 func (a Address) Data() map[string][]byte {
 	pathStyle := "false"
 	if a.ForcePathStyle {
@@ -180,6 +222,7 @@ func (a Address) Data() map[string][]byte {
 	}
 	return map[string][]byte{
 		BindingKeyEndpoint:       []byte(a.Endpoint),
+		BindingKeyPublicEndpoint: []byte(a.PublicEndpoint),
 		BindingKeyRegion:         []byte(a.Region),
 		BindingKeyForcePathStyle: []byte(pathStyle),
 		BindingKeyCACert:         []byte(a.CACert),
