@@ -31,6 +31,8 @@ import (
 	"github.com/Bermos/Kitchen/internal/controller"
 )
 
+// +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=platformenvironments,verbs=get;list;watch;create;update;patch
+
 type platformEnvironmentView struct {
 	Name         string            `json:"name"`
 	Owners       []string          `json:"owners,omitempty"`
