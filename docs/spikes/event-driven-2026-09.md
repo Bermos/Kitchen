@@ -42,19 +42,37 @@ The conclusion, before the working:
 - **Durable execution should not pick the substrate.** Only three engines give
   real in-product tenancy in one deployment — Temporal (namespaces), Hatchet
   (tenants), Cadence (domains) — and each is a control plane of its own to
-  operate. The cheapest credible durable-step story in Go is embedded and
+  operate. The cheapest credible durable-step story is embedded and
   Postgres-backed (the DBOS and River pattern), against the database a
-  `postgres` claim already provisions per environment. So: transport first,
-  steps as a library concern on top, and the engine question kept open until
-  the transport is in use.
-- **The library is thin on purpose, and it owns the observability layer.**
-  Package-level declarations of topics, subscriptions and schedules; a
-  CloudEvents envelope; OpenTelemetry producer and consumer spans joined by
-  span links, with the `messaging.*` attributes — which the Go NATS ecosystem
-  does not otherwise provide. The platform's part is the binding — a URL and a
-  credential per environment, and nothing else — so the application never
-  learns which broker it is on, and the broker can change without the
-  application changing.
+  `postgres` claim already provisions per environment — and it is also the
+  one part that genuinely needs a helper per language. So: transport first,
+  steps on top, and the engine question kept open until the transport is in
+  use and the demand is known.
+- **The SDK is HTTP, and the platform's own dispatcher is the observability
+  layer.** A library per language is the trap: the field's own best case is
+  Dapr, which with a sidecar doing the work still maintains six SDKs, and the
+  survey found NATS instrumented officially in two runtimes and Kafka in six.
+  What every runtime *does* have is an HTTP server and an HTTP client, both
+  already instrumented with W3C `traceparent` propagation. So the application
+  publishes by POSTing a CloudEvent to a platform address it is handed in an
+  environment variable, and a subscription is a private route the platform
+  POSTs to — the shape of Google Pub/Sub push, Knative Eventing, Vercel Queues
+  and Dapr's own subscriber contract. The dispatcher is one Go implementation
+  that emits every metric, every retry, every dead letter and every span, for
+  every language at once; the trace crosses the queue through the header the
+  application's existing instrumentation already reads. What ships per
+  language is a published contract and a conformance test, and at most a
+  helper of a few hundred lines that anybody can write. A native NATS
+  credential stays available for the application that wants pull, batching
+  and ordering, and it gets the broker's server-side metrics and nothing
+  the platform cannot see.
+- **Observability comes in three tiers, and the first two need no client code
+  in any language.** The broker reports lag, in-flight, redeliveries, failed
+  deliveries and per-account traffic for any unmodified client. The
+  platform's dispatcher adds delivery latency, processing time, outcome by
+  status and a trace per delivery. Only what happens *inside* a handler is
+  the application's to instrument, and for that the OTLP endpoint every pod
+  is already handed is enough.
 - **Previews are where every competitor is weakest**, and where accounts make
   Kitchen strong by construction: Cloudflare documents that a preview publishes
   into the production queue, Encore skips cron in previews, Vercel partitions
@@ -138,7 +156,7 @@ makes the options below comparable.
 | **Durable execution** | A function whose steps are memoised so a crash resumes rather than restarts; `sleep` for a day without holding a pod; wait for a named event; fan-out and gather | an engine (Temporal, Hatchet, Inngest, Restate) *or* a library over a database (DBOS, River, go-workflows) |
 | **Triggers** | A schedule; a message on a queue; a person pressing a button; a deploy | the platform — three of four already exist as process types |
 | **Tenancy** | A preview's messages never reach production's consumers; a project's never reach another's unless offered; quotas so a preview cannot starve production | the substrate's tenancy unit, and what it costs |
-| **Observability** | Lag and retry depth per subscription; a list of failed messages with replay; a trace that crosses the queue; a map of who publishes what to whom | the library (spans), the operator (broker facts), the dashboard |
+| **Observability** | Lag and retry depth per subscription; a list of failed messages with replay; a trace that crosses the queue; a map of who publishes what to whom | the broker (facts about consumers), the platform's dispatcher (deliveries and spans), the dashboard |
 
 The brief asks for all five. The order they are built in is the decision, and
 the recommendation below is transport, tenancy and observability first, with
@@ -303,8 +321,9 @@ PRODUCER span, `process` a CONSUMER span, batches joined by span links,
 contract, the way Encore generates API docs from its model. And one finding
 that decides who writes the tracing: **NATS has no official OpenTelemetry
 instrumentation in Go**, only community wrappers, and Watermill's is
-third-party. The library has to own that layer, and it is a differentiator
-when it does.
+third-party — and the next section shows the same is true of most other
+languages. Somebody has to own that layer; the question is whether it is a
+library in every language or one dispatcher in the platform.
 
 **Two cautionary data points on portability.** Nitric's authors pivoted to a
 hosted product and the framework's last push was February 2026; Deno's new
@@ -312,6 +331,176 @@ Deploy dropped `kv.enqueue` and `listenQueue` when Deploy Classic shut down in
 July 2026. Platform-specific queue APIs get abandoned. The in-application API
 should stay thin and backend-neutral — a Publisher and a Subscriber over a
 CloudEvents envelope — so the platform can change brokers under it.
+
+## Observability without a library per language
+
+The brief says *developer experience first, with a library*, and a library
+means one per language the teams write in — which is where the first draft of
+this spike went wrong, by surveying Go. A Kitchen wrapper around every
+broker client in every language is a maintenance load the platform should
+refuse, and it is worth knowing exactly what is observable without one before
+deciding what the "library" is.
+
+### Tier 0 — what the broker reports for any unmodified client
+
+JetStream keeps, per consumer, `num_pending` (the backlog), `num_ack_pending`
+(in flight), `num_redelivered`, `num_waiting`, the delivered and acknowledged
+sequence pair with their last-active timestamps; per stream, message and byte
+counts and the first and last sequence with timestamps; per account, storage
+and memory used against limits, stream and consumer counts, API totals and
+errors; per connection, messages and bytes in and out, subscriptions, idle
+time, the account and the user the platform issued. It publishes advisories
+on `$JS.EVENT.ADVISORY.>`: `MAX_DELIVERIES` and `MSG_TERMINATED` with the
+stream sequence of the message that failed, `MSG_NAKED`, and — when the
+consumer's `sample_freq` is set, which the platform sets because it owns the
+consumer — an ACK metric carrying the time from delivery to acknowledgement.
+`prometheus-nats-exporter` and `nats-surveyor` turn all of it into metrics
+(`jetstream_consumer_num_pending`, `nats_jetstream_delivery_exceeded_count`
+and so on); there is no NATS receiver in otelcol-contrib, so the collector
+the platform already runs scrapes one of those through its Prometheus
+receiver, or the operator reads the JetStream API directly as it reads
+Deployments today.
+
+That is, with no code in the application: backlog, in-flight, redeliveries,
+failed messages by sequence, acknowledgement latency, and per-environment
+traffic attributed by credential rather than by anything the client set. It
+is more than Kafka gives (lag per group, and no in-flight, redelivery or
+dead-letter data for consumer groups until a KIP that is not released) and
+about what RabbitMQ gives (ready, unacked, redelivered per queue, dead letters
+by reason). NATS's 2.11 message tracing does not add to it: it only fires for
+a message that already carries a sampled `traceparent`, and it emits JSON to
+a subject rather than spans.
+
+**What Tier 0 cannot do, on any broker: a trace that crosses the queue.**
+Trace context has to be written into the message by the producer and read
+back by the consumer; no broker invents it, and eBPF instrumentation
+propagates context for HTTP and gRPC only.
+
+### Tier 1 — what the ecosystem already instruments
+
+Where each language's OpenTelemetry ecosystem instruments each client,
+checked against the contrib repositories at head on 2026-09-22. *Y* is
+official (OTel contrib, an agent, or first-party in the client), *C* is
+community only, *–* is nothing found.
+
+| | Java | Node | Python | .NET | Go | Ruby | PHP | Rust |
+|---|---|---|---|---|---|---|---|---|
+| **Kafka** | Y | Y (kafkajs) | Y | Y | C (`kotel`, `otelsarama`) | Y | Y | – |
+| **RabbitMQ / AMQP 0-9-1** | Y | Y | Y | Y | compile-time only, C library | Y | Y | – |
+| **NATS / JetStream** | Y (agent ≥ 2.21, Oct 2025) | – (open since 2021) | – | Y (NATS.Net v3, first-party) | C | – | – | C |
+| **Redis Streams** | DB spans, no messaging semantics, no propagation, everywhere | | | | | | | |
+| **HTTP server and client, W3C propagation** | Y | Y | Y | Y | Y | Y | Y | Y (client is community) |
+
+Three things to take from the table. **Kafka and AMQP are instrumented in six
+runtimes, NATS in two**, and for NATS the two are Java and .NET, which are
+not where a Vue-and-Node shop lives. **Go and Rust "have instrumentation"
+only in the sense that the developer wires it**; the zero-code paths are the
+Java, .NET, Node and Python agents. And **HTTP is the one row with a Y in
+every column** — every runtime's server and client instrumentation reads and
+writes `traceparent`, and the eBPF instrumentation adds it with no code at
+all. On the tenancy substrate this spike recommends, Tier 1 is close to
+empty for the languages that matter; on HTTP it is complete.
+
+### Tier 2 — the platform delivers, and observes what it delivers
+
+The consequence: put the platform's own dispatcher on the path, over HTTP,
+and every language gets the same instrumentation from one implementation.
+This is not novel. Google Pub/Sub push, Knative Eventing, Vercel Queues,
+Dapr's subscriber contract and EventBridge API destinations are the same
+shape — Google's documentation lists "unable to use client libraries" as a
+reason to choose push — and the semantics are settled enough to copy rather
+than design:
+
+- **Publish** is `POST` of a CloudEvent to an address the environment is
+  handed in `KITCHEN_EVENTS_URL` with a token beside it, the way Knative's
+  SinkBinding injects `K_SINK` and this platform injects `KITCHEN_URL`.
+  Binary content mode by default — `ce-id`, `ce-source`, `ce-type` as
+  headers, the body as-is — so a bare HTTP client is the whole client. The
+  publish endpoint copies the caller's HTTP `traceparent` into the event's
+  `traceparent` attribute as the *creation context*, once, which is what the
+  CloudEvents distributed-tracing extension says the attribute is for.
+- **A subscription is a private route** on the environment: the dispatcher
+  `POST`s each event to it and reads the status. Knative's table is the one
+  to adopt — `2xx` acknowledges; `408`, `409`, `429` and `5xx` retry, with
+  `Retry-After` honoured; `400`, `401`, `403`, `415` go to the dead-letter
+  stream without retry; `410` disables the subscription — with one choice to
+  make explicit, `404`, which Knative retries (the route may not be ready)
+  and Dapr drops; retry it for a bounded window. Retry, backoff, maximum
+  deliveries and the dead-letter destination are the subscription's
+  declaration, exactly Knative's `DeliverySpec`.
+- **The trace crosses the queue for free.** Per delivery the dispatcher emits
+  a CONSUMER `process` span linked to the creation context and an HTTP CLIENT
+  span beneath it, and sends a fresh `traceparent` header; the application's
+  existing HTTP server instrumentation makes a SERVER span under it, which is
+  the default shape the OpenTelemetry messaging conventions describe for a
+  push delivery. The application wrote no messaging code and its handler is
+  on the trace, in every language, with the `cloudevents.event_id` on the
+  span to find it by.
+- **Every metric is the dispatcher's**: deliveries, outcome by status class,
+  dispatch latency, processing time (the handler's response time), retries,
+  dead letters, per subscription and per environment — Knative's
+  `event_count`, `event_dispatch_latencies`, `event_processing_latencies`
+  labelled by trigger, Vercel's *max message age* and *retry depth* — and they
+  land in the same ClickHouse the platform already writes, on the same
+  `kitchen.project` / `kitchen.environment` attributes, so the dashboard
+  draws them like it draws requests.
+- **Scale to zero comes with it rather than against it.** A delivery is a
+  request, it is routed through the KEDA interceptor with the environment's
+  `Host` like any in-cluster caller, and the interceptor holds it until the
+  backend is ready — the same wake-up the preview gate already relies on, and
+  the opposite of a pull consumer holding a connection open (#268). The
+  dispatcher's in-flight count per subscription is the scaling signal.
+  Timeouts have to be sized for a cold start plus the handler, `502`/`503`/
+  `504` from the interceptor are retries, and the interceptor's 300-second
+  response-header default needs a per-route override for event routes.
+- **Sign every delivery, even in-cluster.** Anything that can send the right
+  `Host` header reaches a "private" route through the shared interceptor, so
+  a delivery carries a Standard Webhooks HMAC (`webhook-id`,
+  `webhook-timestamp`, `webhook-signature`) or a platform JWT with the
+  subscription as audience, as Pub/Sub does. `ce-id` plus `ce-source` is the
+  idempotency key, and the publish endpoint accepts one too.
+- **Long handlers get an escape hatch that is still HTTP**: answer `202` with
+  a lease, then acknowledge, extend or reject through three platform
+  endpoints — Vercel's `ExtendLease` and `Acknowledge` as plain HTTP. The
+  simple default stays "2xx is the ack" with a bounded synchronous handler,
+  which is Pub/Sub's ten-minute cap.
+- **Ordering and throughput are the honest costs.** Push pays a request per
+  event; batched CloudEvents recover some of it but must be solicited.
+  Ordering under parallel push means one in flight per key, and a redelivery
+  replays the key's successors (Pub/Sub's rule); default to unordered
+  parallel delivery with an adaptive window that grows on success and shrinks
+  on latency or failures, and deprioritise retries behind fresh events so a
+  poison message cannot stall a subscription. An application that needs
+  batching, ordering or a hundred thousand events a second takes the native
+  NATS credential and gets Tier 0.
+
+### Tier 3 — the sidecar, and why not
+
+Dapr is the mature version of "one implementation instruments every
+language" and it is worth saying why it is not the answer: a sidecar on every
+pod, and a control plane of operator, injector, certificate authority,
+placement and a scheduler StatefulSet with embedded etcd, to arrive at a
+subscriber contract the dispatcher above implements in one process — and
+still six SDKs. The lesson to take from it is the contract, not the runtime.
+
+### What this leaves as "the library"
+
+A **published contract** — the status table, the headers, the signature, the
+idempotency rule — written the way Knative's data-plane specification and
+Standard Webhooks are written, with a **conformance test** an implementation
+in any language can be run against. Per language, at most a helper that
+parses a binary-mode CloudEvent and registers a route, which is the size of
+thing a team, or a model, writes in an afternoon and the platform does not
+have to own. The Encore-style typed declarations that the first draft wanted
+at package level become the `events` block in `kitchen.json` — topics,
+subscriptions with their route, retry and concurrency — which the platform
+reads at the commit it builds, freezes into the Release, and provisions
+from; that is the same mechanism as `processes`, and it is language-neutral
+by construction. Inngest's own published SDK specification is the cautionary
+precedent: a contract stays library-free only while it is stateless, and it
+was step memoisation that forced a library back in. Durable steps, when they
+come, are the one place a per-language helper becomes real, which is a
+reason to keep them in phase three.
 
 ## The options for Kitchen
 
@@ -321,7 +510,7 @@ the premises the platform already holds (it owns its cluster; nothing needs
 `kubectl`; claims are the contract; previews are isolated by construction;
 one-node clusters are normal; KEDA is there).
 
-### A — a shared NATS JetStream, an account per environment, a Kitchen library
+### A — a shared NATS JetStream, an account per environment, an HTTP contract
 
 **Substrate.** One NATS StatefulSet in `kitchen-system`, rendered by the chart
 like ClickHouse and MinIO are — NATS needs no CRD, so none of the Helm
@@ -355,38 +544,45 @@ the environment's — **the DLQ NATS does not ship is the one thing the platform
 builds**, and it is what makes "failed events, with replay" a screen rather
 than a runbook.
 
-**Autoscaling, and the scale-to-zero problem #268 left.** A subscription's
-worker is a `worker` process scaled by a KEDA `ScaledObject` on the JetStream
-scaler: pending messages above a threshold wake it, none idle it to zero.
-That is *per workload* rather than per project, which is the answer #271 asked
-for and connect-mode Inngest could not give, because the decision is KEDA's
-from the broker's numbers rather than the HTTP interceptor's from a socket.
+**Delivery, and the scale-to-zero problem #268 left.** The default
+subscription is a route: the platform's dispatcher pulls from the JetStream
+consumer and `POST`s each event to the environment, through the KEDA
+interceptor, which wakes a parked environment for the delivery and idles it
+after — *per delivery* rather than per project, the answer #271 asked for and
+connect-mode Inngest could not give. A subscription that asks for `pull`
+instead is a `worker` process holding the native credential, scaled by a KEDA
+`ScaledObject` on the JetStream scaler: pending messages above a threshold
+wake it, none idle it to zero. Both are per workload; neither holds a socket
+the interceptor cannot see through.
 
-**The library.** Go first, TypeScript second; the wire protocol is NATS plus
-CloudEvents, so any language with a NATS client works in the meantime, and
-the library is convenience and instrumentation rather than a protocol.
-Package-level declarations in Encore's shape, a handler per subscription with
-retry, ack deadline and concurrency beside it, a `Publisher` that stamps the
-CloudEvents attributes and the `traceparent`, PRODUCER and CONSUMER spans with
-the `messaging.*` attributes and span links, and the two environment variables
-the binding provides. A `kitchen events describe` mode emits the declaration
-set as a manifest — the one input the operator provisions from.
+**The "library" is a contract.** `KITCHEN_EVENTS_URL` and a token to
+publish; a route per subscription that the platform calls; a status table,
+a signature and an idempotency rule written down and tested for conformance
+— the previous section is the whole of it. No client library is shipped or
+maintained per language; a helper of a few hundred lines is what a team adds
+if it wants one, and the native NATS credential is there for the application
+that wants pull, batching and ordering.
 
-**Where the declaration lives** is a decision of its own (below). The
-platform's precedent is `kitchen.json`, frozen into the Release so a rollback
-runs the subscriptions that release declared; the field's precedent is
-code-derived. The two compose: the library can validate at start-up that every
-topic it uses is declared, and fail with a message naming the missing line.
+**Where the declaration lives.** In `kitchen.json`: an `events` block of
+topics and subscriptions, each subscription naming its route, its retry and
+backoff, its maximum deliveries and its concurrency. It is frozen into the
+Release so a rollback runs the subscriptions that release declared, it is
+reviewed in the pull request that adds the handler, and it is the one input
+the operator provisions from — the same mechanism as `processes`, and
+language-neutral by construction. A code-derived manifest (Encore's parser,
+Nitric's describe mode) would need a tool per language and is exactly what
+this shape avoids.
 
-**Monitoring.** The operator reads each account's stream and consumer info —
-pending, ack pending, redelivered, the oldest unacknowledged message's age —
-and answers it on the environment's routes: a topics table, a subscriptions
-table with *max message age* and *retry depth*, the dead-letter list with
-replay and drop, each event's trace link where the application published one
-through the library. Two signals join the catalogue, consumer-lagging and
-retry-depth, and land in the diagnostics strip like every other. A flow map
-— who publishes what, who consumes it — falls out of the declarations and is
-the one screen Encore has that nothing else here does.
+**Monitoring.** Tier 0 from the broker and Tier 2 from the dispatcher land
+on the environment's routes: a topics table; a subscriptions table with
+backlog, in-flight, *max message age* and *retry depth*, dispatch latency and
+processing time, outcome by status class; the dead-letter list with the
+event, the last status the route answered, replay and drop; and each
+delivery's trace, which reaches into the handler through the application's
+own HTTP instrumentation. Two signals join the catalogue, consumer-lagging
+and retry-depth, and land in the diagnostics strip like every other. A flow
+map — who publishes what, who consumes it — falls out of the declarations and
+is the one screen Encore has that nothing else here does.
 
 **Durable steps** are a second phase, and this shape does not decide them:
 a `step.Run(ctx, "charge", fn)` memoised in a per-environment JetStream
@@ -401,9 +597,11 @@ it — which is #489's `offers` and `service` claim with `speaks: events`, and
 not a second mechanism.
 
 **Cost.** One StatefulSet (three pods where the cluster has three nodes, one
-where it has one), a reconciler, a library, three routes and a screen. Per
-environment: a JWT, a Secret, a few streams. The DLQ path and the observability
-layer are the two pieces nothing hands over.
+where it has one), a reconciler, a dispatcher, a published contract, three
+routes and a screen. Per environment: a JWT, a Secret, a few streams. The
+dispatcher — retry, dead letters, signing, the spans — is the one piece
+nothing hands over, and it is one Go process rather than a library per
+language.
 
 ### B — Hatchet as a shared engine, a tenant per environment
 
@@ -454,24 +652,26 @@ does not have to be re-opened from scratch.
 
 ### The comparison
 
-| | A · NATS + library | B · Hatchet | C · Postgres per env | D · Temporal |
+| | A · NATS + HTTP contract | B · Hatchet | C · Postgres per env | D · Temporal |
 |---|---|---|---|---|
 | Deployment per environment | **no** — an account | no — a tenant | **yes** — a database | no — a namespace |
 | Isolation | structural, by credential | by token, in-product | physical | by namespace, via Authorizer |
 | Preview cost | JWT + streams | a tenant row | a Postgres | a namespace + shards |
 | Cross-project events | account export/import — fits #489 | no | no | no |
-| Durable steps | phase two, library or engine | **built in** | library (DBOS/River) | built in |
-| Library | Kitchen's, thin, owns OTel | Hatchet's SDK | River/DBOS-shaped | Temporal's SDK |
-| Monitoring source | JetStream API per account | tenant REST + Prometheus | tables | gRPC per namespace |
+| Durable steps | phase three, helper or engine | **built in** | library (DBOS/River) | built in |
+| What the app needs | an HTTP server and client; a contract, no library | Hatchet's SDK (Go, Python, TS) | River/DBOS-shaped, one language each | Temporal's SDK (Go, Java, TS, Python, .NET, PHP, Ruby) |
+| Languages covered | all, by HTTP | three | one per library | seven |
+| Monitoring source | JetStream API per account + the dispatcher, for every language | tenant REST + Prometheus | tables | gRPC per namespace |
 | Footprint | one small StatefulSet | engine + API + Postgres | 0.1–0.25 GiB × envs | 8+ pods + Postgres |
 | Licence | Apache-2.0 | MIT | MPL / PostgreSQL | MIT |
 | Fits one-node cluster | yes | yes | yes, until it does not | no |
 | Vendor-roadmap exposure | low (CNCF, protocol-level) | high | low | medium |
 
 **Recommendation: A**, with B held as the answer to "and then durable steps"
-if the library-over-Postgres route proves too thin, and C's transactional
-enqueue noted as a feature the library can offer against a `postgres` claim
-later (an outbox the library drains into the bus).
+if the helper-over-Postgres route proves too thin, and C's transactional
+enqueue noted as something the dispatcher can offer later against a
+`postgres` claim (an outbox table the platform drains into the bus, which
+needs no client code either).
 
 ## Decisions the discussion has to make
 
@@ -485,12 +685,12 @@ work.
    *steps*, not a queue.
 2. **Where the declaration lives.** In `kitchen.json` (`events.topics`,
    `events.subscriptions`, `events.schedules` — the precedent, reviewable in
-   the pull request, frozen into the Release, no parser to write), or derived
-   from code (`kitchen events describe` running the built image in a describe
-   mode after the build, Nitric's approach; Encore's static parser is a
-   project of its own). The recommendation is `kitchen.json` first with the
-   library checking its own declarations against it at start-up, and a
-   `describe` that *generates* the block as the second step.
+   the pull request, frozen into the Release, no parser to write, and
+   language-neutral), or derived from code (Nitric's describe mode, Encore's
+   static parser — each a tool per language, which is the thing the HTTP
+   contract exists to avoid). The recommendation is `kitchen.json`, and
+   `kitchen config check` refusing a subscription whose route the build
+   cannot see is the nearest thing to a start-up check.
 3. **Bundled in the chart or an Addon.** NATS needs no CRD, so the chart can
    render it beside ClickHouse; the question is whether it is on by default.
    Recommendation: rendered by the chart, `events.enabled` defaulting to true,
@@ -499,14 +699,16 @@ work.
 4. **What a schedule becomes.** Today a `cron` process is a Kubernetes CronJob
    and a run is a pod. The field calls a handler inside the running
    application instead, and NATS 2.14 can publish on a schedule. Either the
-   `cron` process stays and the library adds a *scheduled subscription* as a
+   `cron` process stays and the contract adds a *scheduled subscription* as a
    second shape, or the CronJob is reframed as one implementation of a
    schedule trigger. Recommendation: add, do not replace — a CronJob is the
    right shape for a nightly report that wants its own pod and timeout.
-5. **Languages.** Go first, because it is what the operator, the CLI and the
-   reference client are written in; TypeScript second, because the dashboards
-   people deploy are Vue and their backends are Node. The wire format keeps
-   every other language working with a NATS client alone.
+5. **Push by default, pull on request.** The HTTP contract is the default
+   subscription shape and the reason no library is shipped; the native NATS
+   credential is the opt-in for an application that needs batching, ordering
+   or more throughput than a request per event, and it gets Tier 0
+   observability and no more. The decision is whether the native credential
+   is handed out at all in phase one, or only once somebody asks.
 6. **Durability tier defaults.** R1 everywhere on a one-node cluster and said
    so on the environment; R3 and `sync_interval: always` for production where
    three nodes exist; what a preview's storage cap is. These are numbers to
@@ -528,13 +730,20 @@ work.
   the environment screen with topics, subscriptions, lag, retry depth and the
   dead-letter list; the two signals; `kitchen events` in the CLI or the
   decision that `kitchen api` carries it.
-- **Phase 2 — the library.** `kitchen-go` (`sdk/go` in this repository, so
-  one tag versions it with everything else): declarations, publisher,
-  subscriber, retry and poison middleware, CloudEvents, the OpenTelemetry
-  layer, `describe`. Then the TypeScript port.
-- **Phase 3 — durable steps.** Memoised steps and sleeps in the library over
-  a per-environment key-value bucket or the project's Postgres; or Hatchet as
-  an Addon, tenant per environment, if the library route proves too thin.
+- **Phase 2 — the dispatcher and the contract.** The delivery path: pull
+  from the consumer, `POST` through the interceptor, the status table, the
+  signature, the lease endpoints, the dead-letter stream, the spans and the
+  metrics into ClickHouse; the publish endpoint that stamps the creation
+  context; the contract as a document in `docs/` and a conformance test that
+  runs against any implementation. No per-language library. (Phases 1 and 2
+  are one shippable unit if the native credential is deferred.)
+- **Phase 3 — durable steps.** The one place a per-language helper becomes
+  real, because memoised steps are stateful on the application's side —
+  which is why Inngest's published protocol still needs SDKs. Either a
+  helper over a per-environment key-value bucket or the project's Postgres,
+  in the two or three languages the teams actually use; or Hatchet as an
+  Addon, tenant per environment, with its SDKs. Decided when the transport
+  is in use and the demand is known.
 - **Phase 4 — the edge.** Topics as offerings, exports and imports between
   accounts, the flow map across projects.
 
@@ -605,5 +814,44 @@ against.
   [Deno Deploy migration](https://docs.deno.com/deploy/migration_guide/).
 - Standards: [CloudEvents sdk-go](https://github.com/cloudevents/sdk-go),
   [OpenTelemetry messaging spans](https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/),
+  [OpenTelemetry CloudEvents spans](https://opentelemetry.io/docs/specs/semconv/cloudevents/cloudevents-spans/),
   [asyncapi-codegen](https://github.com/lerenn/asyncapi-codegen),
   [Kubernetes CronJob](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/).
+- Instrumentation coverage: [OTel Java supported libraries](https://github.com/open-telemetry/opentelemetry-java-instrumentation/blob/main/docs/supported-libraries.md),
+  [opentelemetry-js-contrib](https://github.com/open-telemetry/opentelemetry-js-contrib/tree/main/packages) and
+  [the NATS request open since 2021](https://github.com/open-telemetry/opentelemetry-js-contrib/issues/753),
+  [opentelemetry-python-contrib](https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation),
+  [opentelemetry-dotnet-contrib](https://github.com/open-telemetry/opentelemetry-dotnet-contrib/tree/main/src),
+  [NATS.Net OpenTelemetry](https://github.com/nats-io/nats.net/blob/main/tools/site_src/documentation/advanced/opentelemetry.md),
+  [opentelemetry-go-contrib](https://github.com/open-telemetry/opentelemetry-go-contrib/tree/main/instrumentation),
+  [opentelemetry-ruby-contrib](https://github.com/open-telemetry/opentelemetry-ruby-contrib/tree/main/instrumentation),
+  [opentelemetry-php-contrib](https://github.com/open-telemetry/opentelemetry-php-contrib/tree/main/src/Instrumentation),
+  [OpenTelemetry eBPF Instrumentation](https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation) and
+  [its propagation limits](https://opentelemetry.io/docs/zero-code/obi/distributed-traces/).
+- Server-side NATS: [monitoring endpoints](https://docs.nats.io/running-a-nats-service/nats_admin/monitoring),
+  [prometheus-nats-exporter](https://github.com/nats-io/prometheus-nats-exporter),
+  [nats-surveyor](https://github.com/nats-io/nats-surveyor),
+  [ADR-41 message tracing](https://github.com/nats-io/nats-architecture-and-design/blob/main/adr/ADR-41.md),
+  [otelcol-contrib receivers](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver),
+  [KIP-714 client metrics](https://cwiki.apache.org/confluence/display/KAFKA/KIP-714:+Client+metrics+and+observability),
+  [KIP-1191 share-group DLQ](https://cwiki.apache.org/confluence/display/KAFKA/KIP-1191:+Dead-Letter+Queues+for+Share+Groups),
+  [RabbitMQ Prometheus metrics](https://github.com/rabbitmq/rabbitmq-server/blob/main/deps/rabbitmq_prometheus/metrics.md).
+- HTTP delivery: [Pub/Sub push](https://docs.cloud.google.com/pubsub/docs/push),
+  [Pub/Sub subscriber guide](https://docs.cloud.google.com/pubsub/docs/subscriber),
+  [Pub/Sub push authentication](https://docs.cloud.google.com/pubsub/docs/authenticate-push-subscriptions),
+  [Knative event delivery](https://knative.dev/docs/eventing/event-delivery/),
+  [Knative data-plane contract](https://github.com/knative/specs/blob/main/specs/eventing/data-plane.md),
+  [Knative SinkBinding](https://knative.dev/docs/eventing/custom-event-source/sinkbinding/),
+  [Knative eventing metrics](https://knative.dev/docs/eventing/observability/metrics/eventing-metrics/),
+  [Vercel Queues SDK](https://vercel.com/docs/queues/sdk) and [API](https://vercel.com/docs/queues/api),
+  [Inngest SDK specification](https://github.com/inngest/inngest/blob/main/docs/SDK_SPEC.md),
+  [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md),
+  [CloudEvents HTTP binding](https://github.com/cloudevents/spec/blob/main/cloudevents/bindings/http-protocol-binding.md),
+  [CloudEvents WebHook](https://github.com/cloudevents/spec/blob/main/cloudevents/http-webhook.md),
+  [CloudEvents distributed tracing extension](https://github.com/cloudevents/spec/blob/main/cloudevents/extensions/distributed-tracing.md),
+  [Dapr SDKs](https://docs.dapr.io/developing-applications/sdks/),
+  [Dapr pub/sub API](https://docs.dapr.io/reference/api/pubsub_api/),
+  [EventBridge API destinations](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-api-destinations.html),
+  [KEDA HTTP add-on routing](https://keda.sh/http-add-on/0.16/concepts/routing/),
+  [timeouts](https://keda.sh/http-add-on/0.16/user-guide/configure-timeouts/) and
+  [cold start](https://keda.sh/http-add-on/0.16/user-guide/configure-cold-start/).
