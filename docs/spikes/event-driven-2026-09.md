@@ -60,12 +60,16 @@ The conclusion, before the working:
   and Dapr's own subscriber contract. The dispatcher is one Go implementation
   that emits every metric, every retry, every dead letter and every span, for
   every language at once; the trace crosses the queue through the header the
-  application's existing instrumentation already reads. What ships per
-  language is a published contract and a conformance test, and at most a
-  helper of a few hundred lines that anybody can write. A native NATS
-  credential stays available for the application that wants pull, batching
-  and ordering, and it gets the broker's server-side metrics and nothing
-  the platform cannot see.
+  application's existing instrumentation already reads. What ships is the
+  contract with a conformance test, and **first-party adapters over it for
+  the languages the teams write in** — Go and TypeScript — which is how
+  Vercel, Cloudflare, Knative and Inngest all ship theirs: a few hundred
+  lines that parse the envelope, check the signature, type the payload and
+  map an error to a status, with no broker client to track and no tracing to
+  write. That is a different maintenance load from a wrapper around every
+  broker client in every language, and it is the one the platform can carry.
+  A native NATS credential stays available for the application that wants
+  pull, batching and ordering.
 - **Observability comes in three tiers, and the first two need no client code
   in any language.** The broker reports lag, in-flight, redeliveries, failed
   deliveries and per-account traffic for any unmodified client. The
@@ -485,22 +489,48 @@ still six SDKs. The lesson to take from it is the contract, not the runtime.
 
 ### What this leaves as "the library"
 
-A **published contract** — the status table, the headers, the signature, the
-idempotency rule — written the way Knative's data-plane specification and
-Standard Webhooks are written, with a **conformance test** an implementation
-in any language can be run against. Per language, at most a helper that
-parses a binary-mode CloudEvent and registers a route, which is the size of
-thing a team, or a model, writes in an afternoon and the platform does not
-have to own. The Encore-style typed declarations that the first draft wanted
-at package level become the `events` block in `kitchen.json` — topics,
-subscriptions with their route, retry and concurrency — which the platform
-reads at the commit it builds, freezes into the Release, and provisions
-from; that is the same mechanism as `processes`, and it is language-neutral
-by construction. Inngest's own published SDK specification is the cautionary
-precedent: a contract stays library-free only while it is stateless, and it
-was step memoisation that forced a library back in. Durable steps, when they
-come, are the one place a per-language helper becomes real, which is a
-reason to keep them in phase three.
+Not nothing — the brief is developer experience first, and a contract alone
+is not an experience. It leaves three layers, each cheaper than the one the
+first draft proposed.
+
+**The floor is a published contract**: the status table, the headers, the
+signature, the idempotency rule, written the way Knative's data-plane
+specification and Standard Webhooks are written, with a **conformance test**
+any implementation can be run against. It is what makes an adapter in a
+language the platform does not ship an afternoon's work for a team rather
+than a request to the platform.
+
+**On it, first-party adapters for the languages the teams write in** — Go
+and TypeScript — of the kind every product surveyed ships: a `Publish` that
+reads the address and token from the environment and stamps the envelope; a
+`Subscribe` that wraps an ordinary handler, verifies the signature, parses a
+binary-mode CloudEvent into a typed payload, maps a returned error to a retry
+status and a returned nil to an acknowledgement, and does the `202`-and-lease
+exchange for a handler that runs long. A few hundred lines, with no broker
+client to track and no tracing to write, because the trace rides the HTTP
+instrumentation the application already has. That is why it stays a few
+hundred lines, and why it is not the wrapper this spike refuses.
+
+**And the part of the experience that is the platform's, which every
+language then shares**: `kitchen dev` running the dispatcher on the laptop
+and delivering to `localhost`, so a subscription works with no broker
+installed — Inngest's dev server is its best feature and this is the same
+thing; the `events` block in `kitchen.json`, so the subscription arrives in
+the pull request beside its handler and the preview runs it against its own
+account; the screen — lag, retry depth, the dead-letter list with replay, the
+trace into the handler, the flow map — identical for every language because
+one dispatcher produced the data; `kitchen events publish`, `tail` and
+`replay` in the CLI; and an event schema in the declaration, from which
+typed payloads and an AsyncAPI document are generated the way Encore
+generates API docs from its model. The Encore-style typed declarations the
+first draft wanted at package level live in that block: language-neutral by
+construction, frozen into the Release, the same mechanism as `processes`.
+
+Inngest's own published SDK specification is the cautionary precedent: a
+contract stays thin only while it is stateless, and it was step memoisation
+that forced a real library back in. Durable steps, when they come, are the
+one place the adapter stops being a few hundred lines, which is a reason to
+keep them in phase three.
 
 ## The options for Kitchen
 
@@ -555,13 +585,14 @@ instead is a `worker` process holding the native credential, scaled by a KEDA
 wake it, none idle it to zero. Both are per workload; neither holds a socket
 the interceptor cannot see through.
 
-**The "library" is a contract.** `KITCHEN_EVENTS_URL` and a token to
-publish; a route per subscription that the platform calls; a status table,
-a signature and an idempotency rule written down and tested for conformance
-— the previous section is the whole of it. No client library is shipped or
-maintained per language; a helper of a few hundred lines is what a team adds
-if it wants one, and the native NATS credential is there for the application
-that wants pull, batching and ordering.
+**The library is a contract with thin adapters on it.** `KITCHEN_EVENTS_URL`
+and a token to publish; a route per subscription that the platform calls; a
+status table, a signature and an idempotency rule written down and tested
+for conformance; and first-party adapters for Go and TypeScript that turn
+that into `Publish` and a typed `Subscribe` around an ordinary handler — the
+previous section is the whole of it. What is not shipped is a wrapper around
+a broker client in any language; the native NATS credential is there for the
+application that wants pull, batching and ordering.
 
 **Where the declaration lives.** In `kitchen.json`: an `events` block of
 topics and subscriptions, each subscription naming its route, its retry and
@@ -659,8 +690,8 @@ does not have to be re-opened from scratch.
 | Preview cost | JWT + streams | a tenant row | a Postgres | a namespace + shards |
 | Cross-project events | account export/import — fits #489 | no | no | no |
 | Durable steps | phase three, helper or engine | **built in** | library (DBOS/River) | built in |
-| What the app needs | an HTTP server and client; a contract, no library | Hatchet's SDK (Go, Python, TS) | River/DBOS-shaped, one language each | Temporal's SDK (Go, Java, TS, Python, .NET, PHP, Ruby) |
-| Languages covered | all, by HTTP | three | one per library | seven |
+| What the app needs | an HTTP server and client; a thin adapter over the contract (Go, TS first-party; any other from the spec) | Hatchet's SDK (Go, Python, TS) | River/DBOS-shaped, one language each | Temporal's SDK (Go, Java, TS, Python, .NET, PHP, Ruby) |
+| Languages covered | all, by HTTP; two with first-party adapters | three | one per library | seven |
 | Monitoring source | JetStream API per account + the dispatcher, for every language | tenant REST + Prometheus | tables | gRPC per namespace |
 | Footprint | one small StatefulSet | engine + API + Postgres | 0.1–0.25 GiB × envs | 8+ pods + Postgres |
 | Licence | Apache-2.0 | MIT | MPL / PostgreSQL | MIT |
@@ -730,13 +761,15 @@ work.
   the environment screen with topics, subscriptions, lag, retry depth and the
   dead-letter list; the two signals; `kitchen events` in the CLI or the
   decision that `kitchen api` carries it.
-- **Phase 2 — the dispatcher and the contract.** The delivery path: pull
-  from the consumer, `POST` through the interceptor, the status table, the
-  signature, the lease endpoints, the dead-letter stream, the spans and the
-  metrics into ClickHouse; the publish endpoint that stamps the creation
-  context; the contract as a document in `docs/` and a conformance test that
-  runs against any implementation. No per-language library. (Phases 1 and 2
-  are one shippable unit if the native credential is deferred.)
+- **Phase 2 — the dispatcher, the contract and the adapters.** The delivery
+  path: pull from the consumer, `POST` through the interceptor, the status
+  table, the signature, the lease endpoints, the dead-letter stream, the
+  spans and the metrics into ClickHouse; the publish endpoint that stamps the
+  creation context; the contract as a document in `docs/` and a conformance
+  test that runs against any implementation; the Go and TypeScript adapters
+  in this repository, so one tag versions them with everything else; and
+  `kitchen dev` delivering to `localhost`. (Phases 1 and 2 are one shippable
+  unit if the native credential is deferred.)
 - **Phase 3 — durable steps.** The one place a per-language helper becomes
   real, because memoised steps are stateful on the application's side —
   which is why Inngest's published protocol still needs SDKs. Either a
