@@ -348,6 +348,8 @@ name against `internal/api/policy.go`, so a route that moves fails them too.
 | GET | `/policy/bundles` | The policy bundles available to require: digest, source, rule ids | `operator` |
 | GET | `/metrics/overview` | The dashboard's numbers, pre-aggregated. `?project=` narrows | any account — filtered |
 | GET | `/traffic` | The service map: aggregated flow edges. `?project=`, `?since=`, `?until=` | any account — filtered |
+| GET | `/topology` | The architecture: environments, resources, offerings, domains and connections, and the declared edges between them. `?project=` narrows to one project and its neighbours | any account — filtered |
+| GET | `/topology/traffic` | The observed traffic laid onto the same graph, each pair declared, undeclared, platform or external. `?project=`, `?since=`, `?until=` | any account — filtered |
 | GET | `/traces` | Traces in a window. `?project=`, `?environment=`, `?service=`, `?errors=1`, `?minDuration=` | any account — filtered |
 | GET | `/traces/{traceId}` | One trace's spans, oldest first — the waterfall | any account — filtered |
 | GET | `/me` | Who the caller is: subject, address, name and platform role | any account |
@@ -479,6 +481,7 @@ such changes two changes to two different files.
 - [Custom domains](api/domains.md) — putting an environment on an address of its own
 - [Logs and queries](api/logs.md) — reading them, following them live, querying them, and saving a query
 - [Metrics, traffic and traces](api/telemetry.md) — the golden signals, the request rows behind them, and the spans
+- [The architecture](api/topology.md) — what the projects are made of and depend on, declared and observed
 - [Alerts](api/alerts.md) — what the catalogue found, at the tier each audience reads it at, and the acknowledgements, silences and claims about it
 - [The activity feed and the audit log](api/audit.md) — what the platform did, best-effort and tamper-evident
 - [Notifications](api/notifications.md) — subscribing an address to what the platform does, the signed payload it is sent, and the dead letters when it was not taken

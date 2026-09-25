@@ -746,6 +746,14 @@ func (s *Server) routes() []route {
 			operatorOr(access.ScopeComplianceRead, "verifying the audit log's chain")},
 		{"GET /api/v1/metrics/overview", s.metricsOverview, acrossProjects()},
 		{"GET /api/v1/traffic", s.traffic, acrossProjects()},
+		// The architecture overview: the declared graph read off the
+		// objects that already point at each other, and the flow
+		// collector's edges laid over it. Both narrow to the caller's own
+		// projects, and name a project they hold no role on only where one
+		// of theirs already does — an offering they bind, a consumer of one
+		// they make — which the offering catalogue answers anyway.
+		{"GET /api/v1/topology", s.topology, acrossProjects()},
+		{"GET /api/v1/topology/traffic", s.topologyTrafficRead, acrossProjects()},
 
 		{"GET /api/v1/traces", s.listTraces, acrossProjects()},
 		{"GET /api/v1/traces/{traceId}", s.getTrace, acrossProjects()},
