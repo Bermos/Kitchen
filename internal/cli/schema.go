@@ -409,6 +409,12 @@ var publishedShapes = map[string]struct {
 		"`undesignated` counts the projects nobody has designated, and `depth` says how far " +
 		"the traversal follows — a third party the application calls from its own code is not " +
 		"a Connection and is not in it", criticalityMap{}},
+	"topology": {"The architecture: every node of the projects the caller can see — environments, " +
+		"resources, offerings, domains, connections, the internet — and the declared edges between " +
+		"them, each pointing from what would break to what it would break on. `foreign` marks a " +
+		"project or offering the caller holds no role on and sees by name only. `traffic` is present " +
+		"with --traffic: the observed pairs over the window, `status` declared, undeclared, platform " +
+		"or external, and `along` the declared edges a declared pair runs over", topology{}},
 	"dependents": {"What breaks if one connection, or one third party, is unavailable: every " +
 		"affected environment worst-designation-first, how each depends on it, and the " +
 		"tightest recovery objective among them", dependents{}},

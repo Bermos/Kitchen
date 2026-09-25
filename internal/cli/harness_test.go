@@ -121,6 +121,9 @@ type platform struct {
 	criticality *criticalityMap
 	dependents  *dependents
 	replay      *decisionReplay
+	// The architecture, declared and observed.
+	topology *topology
+	traffic  *topologyTraffic
 
 	// The pipeline: what the project's promotions list answers, and — when
 	// set — the promotion an environment move becomes (the 202 an
@@ -259,6 +262,8 @@ func (p *platform) serve(w http.ResponseWriter, req *http.Request) {
 		writeAnswer(w, http.StatusOK, p.criticality)
 	case path == "/compliance/dependents":
 		writeAnswer(w, http.StatusOK, p.dependents)
+	case strings.HasPrefix(path, "/topology"):
+		p.answerTopology(w, path)
 	default:
 		writeAnswer(w, http.StatusNotFound, errorBody{Error: "no such endpoint: " + path})
 	}
@@ -1002,4 +1007,13 @@ func (h *harness) failure() *failure {
 		h.t.Fatalf("no error envelope on stdout:\n%s", h.stdout.String())
 	}
 	return envelope.Error
+}
+
+// answerTopology is the architecture, declared and observed.
+func (p *platform) answerTopology(w http.ResponseWriter, path string) {
+	if path == "/topology/traffic" {
+		writeAnswer(w, http.StatusOK, p.traffic)
+		return
+	}
+	writeAnswer(w, http.StatusOK, p.topology)
 }
