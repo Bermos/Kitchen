@@ -251,6 +251,12 @@ export const routes: RouteRecordRaw[] = [
   // It carries no `requires` for the same reason.
   screen({ path: "/alerts", name: "alerts", view: "AlertsView.vue", scope: "fleet" }),
   screen({ path: "/deploys", name: "deploys", view: "BuildsView.vue", scope: "fleet" }),
+  // The architecture overview: what every project the reader can see is made
+  // of and what it depends on, with the observed traffic along it. It is the
+  // Fleet's because a binding has two ends and "who depends on this" is never
+  // answered from inside one project; `?project=` narrows it to one and its
+  // neighbours without leaving the scope (docs/spikes/service-topology).
+  screen({ path: "/topology", name: "topology", view: "TopologyView.vue", scope: "fleet" }),
   screen({
     // Every signed-in account's own screen, and so one with no `requires`:
     // it asks the identity provider about the account behind the session

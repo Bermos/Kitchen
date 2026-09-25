@@ -465,6 +465,7 @@ give.
 | `kitchen decisions list/show/replay` | The stored policy decisions, and re-running one from its stored inputs | `GET /decisions`, `GET /decisions/{id}`, `POST /decisions/{id}/replay` |
 | `kitchen drift` | What is deployed right now that no longer meets its environment's bar | `GET /compliance/drift` |
 | `kitchen criticality` | What supports each designated function, and (`dependents`) what breaks without one third party | `GET /compliance/criticality`, `GET /compliance/dependents` |
+| `kitchen topology` | What the projects are made of and depend on, and (`--traffic`) the calls observed along it | `GET /topology`, `GET /topology/traffic` |
 | `kitchen access identities` † | Who holds what on the platform, and which grants look like they belong to nobody | `GET /access/identities` |
 | `kitchen access reviews/show` † | The recertification cycles and what each one decided | `GET /access/reviews`, `GET /access/reviews/{name}` |
 | `kitchen retention` † | How long the platform keeps each class, and how far back each one goes | `GET /platform/retention` |
@@ -1536,6 +1537,28 @@ The exit code stays zero on a non-empty answer. Drift is a finding, not a
 failure of the command — a command that failed on a finding gets turned off the
 first week it finds something — so a nightly `kitchen drift --json` that opens a
 ticket on a non-empty `items` is the shape this is for.
+
+### The architecture
+
+```sh
+kitchen topology --json
+kitchen topology -p shop --traffic 15m
+```
+
+The declared graph the dashboard's Architecture screen draws: every
+environment, resource, offering, domain and connection of the projects the
+account can see, and an edge list between them, each edge pointing from what
+would break to what it would break on. `--traffic` reads the observed half over
+that window beside it — each talking pair attributed onto the same nodes, with
+`status` saying whether a declared edge explains it. An `undeclared` pair is
+one project calling another with no binding, which is the one worth a `jq`:
+
+```sh
+kitchen topology --traffic 1h --json | jq '.traffic.edges[] | select(.status == "undeclared")'
+```
+
+Nothing here writes. The graph is read off the objects it is made of, so it
+changes when they do.
 
 ### Criticality, and what depends on what
 
