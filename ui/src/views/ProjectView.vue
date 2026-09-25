@@ -339,6 +339,18 @@ async function acquire() {
           >
             Check for a new digest
           </UButton>
+          <!-- What this project depends on and what depends on it is a
+               question with two ends, so it is answered on the Fleet's
+               architecture screen, narrowed to this project. -->
+          <UButton
+            :to="{ name: 'topology', query: { project: name } }"
+            color="neutral"
+            variant="subtle"
+            size="sm"
+            icon="i-lucide-network"
+          >
+            Architecture
+          </UButton>
           <UButton
             v-if="production?.url"
             :href="production.url"

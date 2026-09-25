@@ -242,6 +242,12 @@ const nav = computed<NavItem[]>(() => {
           name: "deploys",
           count: inventory.data.value?.builds.length,
         },
+        {
+          label: "Architecture",
+          icon: "i-lucide-network",
+          to: "/topology",
+          name: "topology",
+        },
       ];
     case "project":
       if (!project) return [];
