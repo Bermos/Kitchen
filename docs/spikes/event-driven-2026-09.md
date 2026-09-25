@@ -7,12 +7,14 @@ infrastructure behind it for every project and every environment that asks —
 and to record what the survey of the field turned up, so the decision is made
 on evidence rather than on which product's landing page was read last.*
 
-> **Read [the findings](event-driven-findings-2026-09.md) first.** Four
-> applications answered the questionnaire this spike led to, and their
-> answers overturn three of the conclusions below: nobody needs a bus,
-> everybody doing asynchronous work depends on memoised steps, and the
-> languages are TypeScript and Go. The survey material here stands; the
-> recommendation is superseded.
+> **Read this with [the findings](event-driven-findings-2026-09.md) and
+> [the capability map](event-driven-capabilities-2026-09.md).** Four
+> applications of one author answered the questionnaire this spike led to;
+> for that persona, none needs a bus, all depend on memoised steps, and the
+> languages are TypeScript and Go. That is one persona, not the market. The
+> survey material here stands, the recommendation of a single substrate with
+> a Kitchen library does not, and the general-audience shape is in the
+> capability map.
 
 The brief, as given: first-class, developer-experience-focused event-driven
 architecture and infrastructure. A library the teams build against; the

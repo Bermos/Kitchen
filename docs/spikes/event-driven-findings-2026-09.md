@@ -3,14 +3,22 @@
 *September 2026. Four applications answered
 [the questionnaire](event-driven-questionnaire-2026-09.md): Velostand
 (`publibike`), Werkverzeichnis, zäme and Enterprise. This reads the answers
-against the key written into the questionnaire before they arrived, and says
-what they decide. It supersedes the recommendation in
-[the event-driven spike](event-driven-2026-09.md) where the two disagree,
-and it disagrees on three points.*
+against the key written into the questionnaire before they arrived.*
 
-## The three findings that change the plan
+> **What this can and cannot decide.** All four applications have one
+> author, and they share a style: small, TypeScript-and-Go, tiny volume,
+> three of them on the same product. They are **one persona**, and a useful
+> one — it is the persona the platform was built by. They are not the market
+> Kitchen is for, and nothing below is a product decision. What they decide
+> is (a) what *this* persona needs, which the platform should serve well
+> because it is the one it can verify against, and (b) that the questionnaire
+> works as an instrument and should be put in front of teams the author does
+> not run before the engine question is settled for anyone else. The section
+> "What this decides" is written for this persona and says so.
 
-**1. Nobody needs a bus.** No application has an event with two consumers
+## The three findings, for this persona
+
+**1. Nobody here needs a bus.** No application has an event with two consumers
 today. Two of them emit events that go nowhere (`events/party.opened`,
 `training/*`). Cross-team events are a daily webhook in one case and "not
 applicable" in the rest. The one Go-only application is clock-driven and
@@ -33,7 +41,7 @@ and both said so: zäme's answer to "would you use the bus" was *only if it
 has delayed delivery you can cancel or replace by key*, and Enterprise's was
 *no, the durable workflow*.
 
-**3. The languages are TypeScript and Go, and that is the whole list.**
+**3. The languages here are TypeScript and Go, and that is the whole list.**
 Three applications are TypeScript on Nuxt; three have Go (one entirely, two
 as a worker). Nothing else appears. Every team that uses an SDK uses the
 vendor's, in both languages, and the recurring ask is *one schema generating
@@ -140,9 +148,9 @@ model, as the spike already said.
 | zäme | (a) **if** delayed delivery can be cancelled or replaced by key; else stays on Inngest; (c) second | losing a future-dated delivery on a redeploy; an endpoint that is open when unconfigured |
 | Enterprise | (b) durable workflows | losing memoisation, idempotency keys or throttles; losing the Go SDK; requiring a cloud service |
 
-## What this decides
+## What this decides, for this persona
 
-**Stop designing an eventing product.** The three applications that do
+**For these applications, the work is not a new eventing product.** The three that do
 asynchronous work converged on one programming model without being asked,
 they are in two languages that every candidate engine already has SDKs for,
 and their volume is three orders of magnitude below anything a broker
@@ -185,8 +193,10 @@ independent of which engine sits underneath:
   unless asked. The self-hosted claim gives each preview its own server for
   exactly this reason.
 
-**What is left to decide is the engine, and it is a two-way choice**, not
-the four-way one in the spike:
+**What is left to decide for this persona is the engine, and it is a
+two-way choice**, not the four-way one in the spike. For the wider product
+the spike's four options stand, and the general-audience shape is in
+[the capability map](event-driven-capabilities-2026-09.md):
 
 | | Keep Inngest, run properly | Hatchet |
 |---|---|---|
