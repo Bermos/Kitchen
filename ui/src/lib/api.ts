@@ -3738,6 +3738,66 @@ export interface TrafficEdge {
   p95Ms: number;
 }
 
+/** One box of the architecture overview (`GET /topology`). */
+export interface TopologyNode {
+  id: string;
+  kind: "project" | "environment" | "offering" | "resource" | "provider" | "domain" | "internet" | "platform" | "external";
+  name: string;
+  project?: string;
+  /** A project or offering the reader holds no role on, drawn by name only
+   * because something of theirs names it. */
+  foreign?: boolean;
+  /** An environment's type, a resource's claim type, an offering's protocol,
+   * a connection's provider. */
+  type?: string;
+  phase?: string;
+  url?: string;
+  idle?: boolean;
+  processes?: { name: string; type?: string }[];
+  detail?: string;
+}
+
+/** One declared dependency, pointing from what would break to what it would
+ * break on. */
+export interface TopologyEdge {
+  id: string;
+  kind: "routes" | "consumes" | "serves" | "uses" | "providedBy";
+  from: string;
+  to: string;
+  /** Empty when the edge is in effect; otherwise why it is not. */
+  state?: string;
+  reason?: string;
+}
+
+export interface TopologyGraph {
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+}
+
+/** One talking pair the platform observed, attributed onto the graph. */
+export interface ObservedEdge {
+  from: string;
+  to: string;
+  protocol: string;
+  flows: number;
+  rps: number;
+  errors: number;
+  drops: number;
+  p95Ms: number;
+  status: "declared" | "undeclared" | "platform" | "external";
+  /** The declared edges this traffic runs over, in order. */
+  along?: string[];
+}
+
+/** `GET /topology/traffic`: the observed pairs, the boxes only they reach,
+ * and the window the rates are averaged over. */
+export interface TopologyTraffic {
+  nodes: TopologyNode[];
+  edges: ObservedEdge[];
+  since: string;
+  until: string;
+}
+
 /**
  * How much of a hurry the reader is in. `unknown` is a rule that could not be
  * evaluated because an input was unreadable — deliberately neither `info` nor
@@ -5672,6 +5732,16 @@ export const api = {
     if (query.since) params.since = query.since;
     if (query.until) params.until = query.until;
     return list<TrafficEdge>("/traffic")(params);
+  },
+
+  topology: (project?: string) =>
+    request<TopologyGraph>("GET", project ? `/topology?project=${encodeURIComponent(project)}` : "/topology"),
+  topologyTraffic: (query: { project?: string; since?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (query.project) params.set("project", query.project);
+    if (query.since) params.set("since", query.since);
+    const suffix = params.toString();
+    return request<TopologyTraffic>("GET", suffix ? `/topology/traffic?${suffix}` : "/topology/traffic");
   },
 
   connections: list<Connection>("/connections"),

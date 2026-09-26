@@ -2097,3 +2097,77 @@ func (c *client) followLogs(ctx context.Context, path string, query url.Values, 
 		return onLine(line)
 	})
 }
+
+// topologyNode is one box of `GET /topology`.
+type topologyNode struct {
+	ID        string            `json:"id"`
+	Kind      string            `json:"kind"`
+	Name      string            `json:"name"`
+	Project   string            `json:"project,omitempty"`
+	Foreign   bool              `json:"foreign,omitempty"`
+	Type      string            `json:"type,omitempty"`
+	Phase     string            `json:"phase,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Idle      bool              `json:"idle,omitempty"`
+	Processes []topologyProcess `json:"processes,omitempty"`
+	Detail    string            `json:"detail,omitempty"`
+}
+
+// topologyProcess is one process an environment runs.
+type topologyProcess struct {
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
+}
+
+// topologyEdge is one declared dependency.
+type topologyEdge struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	State  string `json:"state,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// topologyObserved is one talking pair of `GET /topology/traffic`.
+type topologyObserved struct {
+	From     string   `json:"from"`
+	To       string   `json:"to"`
+	Protocol string   `json:"protocol"`
+	Flows    uint64   `json:"flows"`
+	RPS      float64  `json:"rps"`
+	Errors   uint64   `json:"errors"`
+	Drops    uint64   `json:"drops"`
+	P95Ms    float64  `json:"p95Ms"`
+	Status   string   `json:"status"`
+	Along    []string `json:"along,omitempty"`
+}
+
+// topologyTraffic is `GET /topology/traffic`.
+type topologyTraffic struct {
+	Nodes []topologyNode     `json:"nodes"`
+	Edges []topologyObserved `json:"edges"`
+	Since time.Time          `json:"since"`
+	Until time.Time          `json:"until"`
+}
+
+// topology is `GET /topology`, and what `kitchen topology` answers: the
+// declared graph, with the observed half beside it when it was asked for.
+type topology struct {
+	Nodes   []topologyNode   `json:"nodes"`
+	Edges   []topologyEdge   `json:"edges"`
+	Traffic *topologyTraffic `json:"traffic,omitempty"`
+}
+
+// topology asks for the declared graph.
+func (c *client) topology(ctx context.Context, query url.Values) (*topology, error) {
+	answer := &topology{}
+	return answer, c.do(ctx, "reading the architecture", http.MethodGet, "/topology", query, nil, answer)
+}
+
+// topologyTraffic asks for the observed half over a window.
+func (c *client) topologyTraffic(ctx context.Context, query url.Values) (*topologyTraffic, error) {
+	answer := &topologyTraffic{}
+	return answer, c.do(ctx, "reading the observed traffic",
+		http.MethodGet, "/topology/traffic", query, nil, answer)
+}

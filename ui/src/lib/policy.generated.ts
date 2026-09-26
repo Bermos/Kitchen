@@ -177,6 +177,8 @@ export type Route =
   | "GET /api/v1/audit/verify"
   | "GET /api/v1/metrics/overview"
   | "GET /api/v1/traffic"
+  | "GET /api/v1/topology"
+  | "GET /api/v1/topology/traffic"
   | "GET /api/v1/traces"
   | "GET /api/v1/traces/{traceId}"
   | "GET /api/v1/status"
@@ -356,6 +358,8 @@ export const POLICY: Readonly<Record<Route, Requirement>> = {
   "GET /api/v1/audit/verify": { kind: "operator", doing: "verifying the audit log's chain", scope: "compliance.read" },
   "GET /api/v1/metrics/overview": { kind: "visibleProjects" },
   "GET /api/v1/traffic": { kind: "visibleProjects" },
+  "GET /api/v1/topology": { kind: "visibleProjects" },
+  "GET /api/v1/topology/traffic": { kind: "visibleProjects" },
   "GET /api/v1/traces": { kind: "visibleProjects" },
   "GET /api/v1/traces/{traceId}": { kind: "visibleProjects" },
   "GET /api/v1/status": { kind: "roleShapedBody", doing: "reading the platform's status" },
