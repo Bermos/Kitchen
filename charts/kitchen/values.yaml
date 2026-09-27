@@ -1597,7 +1597,16 @@ objectStore:
   image:
     # -- MinIO, as a single server on one volume. The operator is not needed
     # for that shape, and a distributed deployment is not where this starts.
-    repository: quay.io/minio/minio
+    #
+    # The image is Coolify's rebuild, not MinIO's own: MinIO stopped
+    # publishing images publicly, and `quay.io/minio/minio` and
+    # `docker.io/minio/minio` both refuse an anonymous pull, the pinned tag
+    # included. This one is built from MinIO's own Dockerfile at the same
+    # release (`org.opencontainers.image.revision` da2e68be8d27, the commit
+    # behind RELEASE.2025-04-22T22-12-26Z) with the same entrypoint, for amd64
+    # and arm64. The tag's index digest when it was chosen was
+    # sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68.
+    repository: docker.io/coollabsio/minio
     tag: RELEASE.2025-04-22T22-12-26Z
     pullPolicy: IfNotPresent
   auth:

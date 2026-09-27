@@ -2441,7 +2441,7 @@ kubectl delete namespace kitchen-system
 | `registry.resources` | 50m/128Mi → 1Gi | |
 | `registry.logLevel` | `info` | |
 | `objectStore.enabled` | `false` | Run the bundled object store and seed the `s3` Connection pointing at it. See [The bundled object store](#the-bundled-object-store). |
-| `objectStore.image.repository` / `.tag` | `quay.io/minio/minio` / `RELEASE.2025-04-22T22-12-26Z` | A single MinIO server on one volume. |
+| `objectStore.image.repository` / `.tag` | `docker.io/coollabsio/minio` / `RELEASE.2025-04-22T22-12-26Z` | A single MinIO server on one volume. A community rebuild of MinIO's own release, since MinIO no longer publishes images anonymously. |
 | `objectStore.auth.accessKeyId` | `kitchen` | The root user; mints every bucket's own credential and is never handed to an application. |
 | `objectStore.auth.secretAccessKey` | `""` | Generated on install, preserved on upgrade. |
 | `objectStore.region` | `us-east-1` | What every bucket reports, and what the seeded Connection is told. |
