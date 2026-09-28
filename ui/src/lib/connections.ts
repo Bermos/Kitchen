@@ -10,12 +10,12 @@ import type { Connection, ConnectionRepositories } from "./api";
  * the one place that reads both, so that a project's git source and registry
  * are chosen the same way whichever of the two arrived.
  *
- * **An entry that cannot be picked says why.** Omitting it leaves somebody
- * looking for a connection they were told exists, and the two reasons are
- * different problems with different owners: a connection that provides the
- * wrong capability is the wrong connection, and one the platform has not got
- * working is the operator's to fix. Neither is anything a member can do from
- * here, which is exactly why the sentence has to name what happened.
+ * **A connection of the wrong kind is not offered at all.** A git forge in
+ * the registry field, or an object store in the database field, is not a
+ * choice anybody is looking for — listing it, even disabled, only buries the
+ * two or three that are. What *is* the right kind but may not work — never
+ * assessed, or a credential the platform could not verify — stays offered
+ * and says why, because the API takes it and that problem is the operator's.
  */
 
 /** One entry of a connection picker, as `USelect` takes it. */
@@ -23,8 +23,6 @@ export interface ConnectionChoice {
   /** The name, what it is, and — when there is one — the caveat. */
   label: string;
   value: string;
-  /** Set only for an entry the API would refuse. */
-  disabled?: boolean;
   /** The caveat on its own, for a line under the field. Empty when there is
    * nothing to say. */
   note: string;
@@ -57,37 +55,28 @@ export function connectionProvides(connection: Connection, capability: string): 
 /**
  * The picker's entries for one capability, in the order the API answered.
  *
- * Nothing is filtered out. What the API would refuse is disabled — that is
- * the capability check, and it is a 400 from `requireConnection` rather than
- * an opinion held here. Everything else is selectable with a caveat, because
- * neither an unassessed connection nor one whose credential has not been
- * verified is refused: the project is created, and its own conditions say
- * whether it works.
+ * A connection that reports other capabilities only is left out — it is what
+ * the API would refuse (`requireConnection`), so it is not a choice. The rest
+ * are selectable, with a caveat where there is one, because neither an
+ * unassessed connection nor one whose credential has not been verified is
+ * refused: the project is created, and its own conditions say whether it
+ * works. An empty result is the empty state — "no gitSource connection yet".
  */
 export function connectionChoices(connections: Connection[], capability: string): ConnectionChoice[] {
-  return connections.map((connection) => {
-    const what = connection.provider ? `${connection.name} · ${connection.provider}` : connection.name;
-    if (!connectionProvides(connection, capability)) {
-      const note = `does not provide ${capability}`;
-      return { label: `${what} — ${note}`, value: connection.name, disabled: true, note };
-    }
-    if (!connection.capabilities?.length) {
-      const note = "the platform has not assessed what it can back yet";
-      return { label: `${what} — not assessed yet`, value: connection.name, note };
-    }
-    if (connectionReady(connection) === false) {
-      const note = "the platform has not got this connection working — an operator has to fix it";
-      return { label: `${what} — not working`, value: connection.name, note };
-    }
-    return { label: what, value: connection.name, note: "" };
-  });
-}
-
-/** The entries a project could actually be created with. Zero of them is the
- * empty state — "no gitSource connection yet" — and it is a different message
- * from a list with entries that all carry caveats. */
-export function selectableChoices(choices: ConnectionChoice[]): ConnectionChoice[] {
-  return choices.filter((choice) => !choice.disabled);
+  return connections
+    .filter((connection) => connectionProvides(connection, capability))
+    .map((connection) => {
+      const what = connection.provider ? `${connection.name} · ${connection.provider}` : connection.name;
+      if (!connection.capabilities?.length) {
+        const note = "the platform has not assessed what it can back yet";
+        return { label: `${what} — not assessed yet`, value: connection.name, note };
+      }
+      if (connectionReady(connection) === false) {
+        const note = "the platform has not got this connection working — an operator has to fix it";
+        return { label: `${what} — not working`, value: connection.name, note };
+      }
+      return { label: what, value: connection.name, note: "" };
+    });
 }
 
 /** The caveat on the entry currently chosen, for the line under the field. */

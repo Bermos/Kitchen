@@ -12,7 +12,7 @@ import {
   type Offering,
 } from "../lib/api";
 import { DESTRUCTIVE_POLICY, destroysDataRefusal, mayDestroyData } from "../lib/claims";
-import { connectionChoices, noteFor, selectableChoices, type ConnectionChoice } from "../lib/connections";
+import { connectionChoices, noteFor, type ConnectionChoice } from "../lib/connections";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
 
@@ -600,8 +600,8 @@ watch([declaration, previewOptions], () => {
   if (!offered.includes(previewMode.value)) previewMode.value = defaultMode;
 });
 
-// Every connection is listed and the ones that cannot provision the chosen
-// type say so, on the same terms as the project's own two pickers — and read
+// Only the connections that can provision the chosen type are listed, on the
+// same terms as the project's own two pickers — and read
 // out of the same shape, which is the thinned one for anybody who is not an
 // operator: a name, what it can back, and whether the platform has it
 // working. A connection nothing has assessed yet is offered with the caveat
@@ -629,10 +629,10 @@ async function loadConnections() {
 }
 // The choices are re-read against the capability whenever the type moves —
 // a connection that provisions databases is the wrong one for an Inngest app,
-// and says so — and a connection that has just become the wrong one is let
+// and drops out — and a connection that has just become the wrong one is let
 // go rather than submitted and refused.
 watch(connections, (choices) => {
-  if (connection.value && choices.find((entry) => entry.value === connection.value)?.disabled) {
+  if (connection.value && !choices.some((entry) => entry.value === connection.value)) {
     connection.value = "";
   }
 });
@@ -644,7 +644,6 @@ watch(type, () => {
 });
 
 const connectionNote = computed(() => noteFor(connections.value, connection.value));
-const available = computed(() => selectableChoices(connections.value));
 const managesConnections = computed(() => may("POST /api/v1/connections", callerFor()));
 
 watch(open, (value) => {
@@ -1064,12 +1063,12 @@ async function save() {
             <USelect
               v-model="connection"
               :items="connections"
-              :placeholder="connectionsLoaded && !available.length ? `No ${capability}-capable connections` : 'Select a connection'"
-              :disabled="connectionsLoaded && !available.length"
+              :placeholder="connectionsLoaded && !connections.length ? `No ${capability}-capable connections` : 'Select a connection'"
+              :disabled="connectionsLoaded && !connections.length"
               class="w-full"
             />
           </UFormField>
-          <p v-if="connectionsLoaded && !available.length && isInngest" class="text-xs text-muted">
+          <p v-if="connectionsLoaded && !connections.length && isInngest" class="text-xs text-muted">
             No connection can reach an Inngest account —
             <template v-if="managesConnections">
               create an Inngest Cloud connection first on the Connections page, with an API key from the Inngest
@@ -1077,7 +1076,7 @@ async function save() {
             </template>
             <template v-else>ask an operator to add an Inngest Cloud connection.</template>
           </p>
-          <p v-else-if="connectionsLoaded && !available.length && isPostgres" class="text-xs text-muted">
+          <p v-else-if="connectionsLoaded && !connections.length && isPostgres" class="text-xs text-muted">
             No connection can provision databases —
             <template v-if="managesConnections">
               create one first on the Connections page — CloudNativePG for a database the platform runs itself and
@@ -1088,7 +1087,7 @@ async function save() {
               hosted one.
             </template>
           </p>
-          <p v-if="connectionsLoaded && !available.length && isObjectStore" class="text-xs text-muted">
+          <p v-if="connectionsLoaded && !connections.length && isObjectStore" class="text-xs text-muted">
             No connection can provision buckets —
             <template v-if="managesConnections">
               create an S3-compatible connection first on the Connections page, or switch the bundled store on in
