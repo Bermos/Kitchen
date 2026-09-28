@@ -375,8 +375,46 @@ export function authOptions(config: Config, database: Pool, box: AuthBox = {}): 
 			// who may do what. Kitchen records that on its own objects
 			// instead — docs/AUTH.md, "Where membership lives".
 			organization(),
-			passkey({ rpID, rpName: "Kitchen", origin: config.baseURL }),
-			twoFactor({ issuer: "Kitchen" }),
+			// Passkeys, bound to the issuer's own hostname. That binding is why
+			// a passkey is *registered* on a page this service serves
+			// (`/passkeys/new`, src/pages.ts) rather than on the dashboard's
+			// account screen: WebAuthn refuses a ceremony whose page is not on
+			// the relying party's domain, and widening the relying party to the
+			// base domain would offer every passkey to every application
+			// deployed under it. Listing, renaming and removing one need no
+			// ceremony, and stay on the dashboard.
+			//
+			// A passkey sign-in skips the second factor — the twoFactor hook
+			// below guards password sign-in alone — so it has to be two factors
+			// by itself: something held, and the PIN or biometric that unlocks
+			// it. The plugin asks for user verification as `preferred` and
+			// accepts an assertion without it, so both halves are tightened
+			// here: required when the credential is made, and an assertion that
+			// does not carry it is refused at sign-in.
+			passkey({
+				rpID,
+				rpName: "Kitchen",
+				origin: config.baseURL,
+				authenticatorSelection: { residentKey: "required", userVerification: "required" },
+				authentication: {
+					afterVerification: ({ verification }) => {
+						if (!verification.authenticationInfo.userVerified) {
+							throw new APIError("UNAUTHORIZED", {
+								code: "USER_VERIFICATION_REQUIRED",
+								message: "this passkey signed in without its PIN or biometric, which a passkey sign-in needs",
+							});
+						}
+					},
+				},
+			}),
+			// An authenticator app, as a second step after the password. It is
+			// asked on `/sign-in/email` only: an account arriving through GitHub
+			// or an SSO provider proved itself there, and that provider's second
+			// factor is the one that applies. Enabling it needs the password for
+			// the same reason — an account with none has no step for a code to
+			// follow. The installation's hostname rides along in the issuer so
+			// that an app holding codes for two Kitchens can tell them apart.
+			twoFactor({ issuer: `Kitchen (${rpID})` }),
 			// CI credentials and the operator's own service credential. Keys
 			// stand in for a session so that a machine has an identity at all:
 			// what `GET /token` mints is a token for the account the key

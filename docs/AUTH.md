@@ -1420,7 +1420,11 @@ and is not asked to.
 The screen is `ui/src/views/AccountView.vue`, its client is
 `ui/src/lib/account.ts`, and the endpoints are better-auth's own:
 `/get-session`, `/list-accounts`, `/list-sessions`, `/update-user`,
-`/change-password` and `/revoke-session`.
+`/change-password` and `/revoke-session` — and, for the second factor and
+passkeys below, `/two-factor/enable`, `/two-factor/verify-totp`,
+`/two-factor/disable`, `/two-factor/generate-backup-codes`,
+`/passkey/list-user-passkeys`, `/passkey/update-passkey` and
+`/passkey/delete-passkey`.
 
 **The credential is the issuer's session cookie**, which is a different thing
 from the bearer token every other screen uses and has a different lifetime.
@@ -1454,7 +1458,8 @@ Changing a password — the one operation here that is genuinely sensitive —
 proves the current password instead, which is the check that actually
 re-authenticates.
 
-**No command carries this, deliberately.** The CLI holds an API key, exchanges
+**No command carries this, deliberately** — the second factor and passkeys
+included. The CLI holds an API key, exchanges
 it at the issuer for a token, and never holds a session cookie — so the
 endpoints above are not reachable from it at all, and a `kitchen account`
 command would have nothing to authenticate with. That is a property of how the
@@ -1462,6 +1467,75 @@ CLI signs in (below), not an omission: the credential a CLI actually holds is
 a key, and rotating one is `DELETE /projects/{name}/keys/{key}` followed by
 `POST /projects/{name}/keys` — both on the operator API, both reachable with
 `kitchen api`, and both already on a screen.
+
+### Passkeys and two-factor authentication (settled)
+
+Both plugins were mounted from the first release and neither could be reached:
+the sign-in page posted an address and a password and nothing else, and no
+screen could enrol either. Now there are two ways to sign in that are more than
+a password, and the account screen turns them on.
+
+**An authenticator app is a second step after the password.** The account
+screen proves the password (`/two-factor/enable`), shows a QR code and ten
+backup codes once, and switches the factor on only when the first code from the
+app comes back (`/two-factor/verify-totp`) — a secret nobody proved they hold
+is stored but is not a factor, so a QR code nobody scanned cannot lock anybody
+out. From then on `/sign-in/email` answers `twoFactorRedirect` instead of a
+session, and the sign-in page asks for a code or a backup code, with an
+optional thirty days of not being asked again on that browser. The QR code is
+drawn in the dashboard (`uqr`): the secret is in it, so fetching it from a QR
+service would publish the second factor, and the dashboard's policy admits
+images from itself and `data:` alone. The issuer in the app's entry names the
+installation — `Kitchen (auth.example.com)` — so that one app holding codes for
+two installations can tell them apart.
+
+**It guards the password and only the password.** better-auth asks for a code
+on `/sign-in/email` and on no other sign-in: an account that arrives through
+GitHub or an SSO provider was vouched for there, and that provider's own second
+factor is the one that applies. Enabling it needs the password for the same
+reason — an account with none has no step for a code to follow — and the
+account screen says so rather than offering a switch that would do nothing.
+
+**A passkey is the other way, and it replaces both steps.** A passkey sign-in
+never asks for a code, so it has to be two factors by itself: the device, and
+the PIN or biometric that unlocks it. The plugin's defaults ask for user
+verification as `preferred` and accept an assertion without it; Kitchen
+tightens both halves — `userVerification: "required"` (and a discoverable
+credential, so that no address has to be typed) when one is made, and an
+`afterVerification` hook that refuses an assertion without the UV flag as
+`401 USER_VERIFICATION_REQUIRED`. The sign-in page offers passkeys in the
+browser's autofill on the address field and behind a button.
+
+**A passkey is made on the issuer's page, not the dashboard's.** WebAuthn binds
+a credential to a relying party, which is the issuer's hostname
+(`auth.<baseDomain>`), and a browser refuses to run the ceremony from a page on
+any other — the dashboard's included. Widening the relying party to the base
+domain would make it work, and would also offer every passkey on the
+installation to every application deployed under that domain. So the account
+screen lists, renames and removes passkeys (none of which is a ceremony), and
+**Add a passkey** sends the browser to `<issuer>/passkeys/new`, which runs the
+ceremony and sends it back. The return address is honoured only on an origin
+the issuer already trusts (`allowedOrigins`), and dropped otherwise, so the
+parameter cannot make the issuer's hostname a redirector. A browser with no
+session there is sent through `/login?next=…` first; `next` is followed only as
+a path on the issuer's own origin.
+
+Two consequences worth knowing:
+
+- **Moving `auth.host` strands every passkey.** The relying party is that
+  hostname, so a passkey made for the old one is never offered on the new one.
+  Nothing breaks — the password, and its code, still work — but every person
+  has to make their passkeys again.
+- **An API key is none of this.** A key is confined to `/token` and
+  `/get-session` (`guardKeySession`), so a CI key cannot enrol a factor for the
+  machine account it belongs to, and a person's second factor does not stand
+  between a key and its token: a key is a credential of its own, issued by a
+  signed-in person and revocable on its own.
+
+Requiring a second factor — for everybody, or for operators — is not built. It
+is a policy on top of this rather than part of it, and the place to hold it
+would be the Kitchen singleton, with the sign-in page refusing a password-only
+session for an account that falls under it.
 
 ### What account management still is not
 
@@ -1539,6 +1613,29 @@ DELETE FROM "session"
 An account with no `credential` row signs in through an upstream provider and
 has no password here to reset; the row to add in that case is a new one, which
 is the operator-created-account feature that does not exist.
+
+#### Turning off a lost second factor by hand
+
+An account that has lost both its authenticator app and its backup codes is
+recovered the same way, at the same database: turn the factor off and end the
+sessions. Its passkeys are untouched — if it still has one, it can sign in with
+that and needs none of this.
+
+```sql
+UPDATE "user" SET "twoFactorEnabled" = false, "updatedAt" = now()
+ WHERE lower(email) = lower('anna@example.com');
+
+DELETE FROM "twoFactor"
+ WHERE "userId" = (SELECT id FROM "user" WHERE lower(email) = lower('anna@example.com'));
+
+DELETE FROM "session"
+ WHERE "userId" = (SELECT id FROM "user" WHERE lower(email) = lower('anna@example.com'));
+```
+
+The person signs in with the password alone afterwards, and sets a new app up
+from the account screen. A lost passkey needs nothing from an operator: it is
+removed from the account screen, or it is simply never offered again once the
+device holding it is gone.
 
 ### How the CLI signs in (settled, for now)
 

@@ -3,17 +3,30 @@ import { computed, ref, watch } from "vue";
 import {
   changeName,
   changePassword,
+  confirmTOTP,
   currentSession,
+  deletePasskey,
+  disableTwoFactor,
+  enableTOTP,
   expiresIn,
   hasPassword,
   listAccounts,
+  listPasskeys,
   listSessions,
+  passkeyEnrollmentURL,
+  passkeyLabel,
+  regenerateBackupCodes,
+  renamePasskey,
   revokeSession,
   sessionRows,
+  totpQRCode,
+  totpSecret,
   upstreamProviders,
   IssuerError,
   MAX_PASSWORD_LENGTH,
   MIN_PASSWORD_LENGTH,
+  type Passkey,
+  type TOTPEnrollment,
 } from "../lib/account";
 import { api, type IssuedPersonalKey, type PersonalKey } from "../lib/api";
 import { credentialNameProblem, LIFETIME_OPTIONS } from "../lib/credentials";
@@ -55,8 +68,24 @@ const password = computed(() => hasPassword(accounts.value));
 const upstream = computed(() => upstreamProviders(accounts.value));
 const rows = computed(() => sessionRows(sessionList.value ?? [], identity.value?.token ?? null));
 
+const {
+  data: passkeyList,
+  error: passkeysError,
+  loading: passkeysLoading,
+  refresh: refreshPasskeys,
+} = useAsync(() => listPasskeys());
+const passkeys = computed(() => passkeyList.value ?? []);
+
 /** How this account can sign in, in words: what the profile card reports. */
-const methods = computed(() => [...(password.value ? ["a password"] : []), ...upstream.value].join(", ") || "—");
+const methods = computed(() => {
+  const ways = [
+    ...(password.value ? [twoFactorOn.value ? "a password and a code" : "a password"] : []),
+    ...(passkeys.value.length ? ["a passkey"] : []),
+    ...upstream.value,
+  ];
+  if (ways.length < 2) return ways[0] ?? "—";
+  return `${ways.slice(0, -1).join(", ")} or ${ways[ways.length - 1]}`;
+});
 
 const toast = useToast();
 
@@ -155,6 +184,187 @@ async function submitPassword() {
     passwordError.value = err instanceof IssuerError ? err.message : String(err);
   } finally {
     changingPassword.value = false;
+  }
+}
+
+// --- two-factor authentication ---------------------------------------------
+
+// An authenticator app, asked for after the password. Every change proves the
+// password again: a session cookie says a browser was signed in, not that the
+// person at it is the one who owns the account, and turning the second factor
+// off is the one thing somebody who walked up to an unlocked laptop would want.
+
+const twoFactorOn = computed(() => Boolean(account.value?.twoFactorEnabled));
+const twoFactorError = ref("");
+
+const setupPassword = ref("");
+const startingTOTP = ref(false);
+/** The secret and the backup codes, held while the set-up panel is open and
+ * forgotten when it closes: the issuer never shows either again. */
+const enrollment = ref<TOTPEnrollment | null>(null);
+const setupCode = ref("");
+const confirmingTOTP = ref(false);
+const qrCode = computed(() => (enrollment.value ? totpQRCode(enrollment.value.totpURI) : ""));
+const manualSecret = computed(() => (enrollment.value ? totpSecret(enrollment.value.totpURI) : ""));
+
+async function startTOTP() {
+  if (!setupPassword.value || startingTOTP.value) return;
+  startingTOTP.value = true;
+  twoFactorError.value = "";
+  try {
+    enrollment.value = await enableTOTP(setupPassword.value);
+    setupPassword.value = "";
+    setupCode.value = "";
+    codesCopied.value = false;
+  } catch (err) {
+    twoFactorError.value = err instanceof IssuerError ? err.message : String(err);
+  } finally {
+    startingTOTP.value = false;
+  }
+}
+
+async function finishTOTP() {
+  if (!setupCode.value.trim() || confirmingTOTP.value) return;
+  confirmingTOTP.value = true;
+  twoFactorError.value = "";
+  try {
+    await confirmTOTP(setupCode.value);
+    enrollment.value = null;
+    setupCode.value = "";
+    toast.add({
+      title: "Two-factor authentication is on",
+      description: "Signing in with the password now asks for a code from the app as well.",
+      color: "success",
+      icon: "i-lucide-shield-check",
+    });
+    // The issuer replaces this browser's session as part of switching it on.
+    await Promise.all([refreshIdentity(), refreshSessions()]);
+  } catch (err) {
+    twoFactorError.value = err instanceof IssuerError ? err.message : String(err);
+  } finally {
+    confirmingTOTP.value = false;
+  }
+}
+
+/** Walk away from a set-up half done. The unconfirmed secret stays at the
+ * issuer but is not a factor, and the next set-up replaces it. */
+function cancelTOTP() {
+  enrollment.value = null;
+  setupCode.value = "";
+  twoFactorError.value = "";
+}
+
+// Turning it off and replacing the backup codes are the two changes to a
+// factor that is already on; both ask for the password in the same dialogue.
+const passwordAction = ref<"disable" | "codes" | null>(null);
+const actionPassword = ref("");
+const acting = ref(false);
+const actionError = ref("");
+/** Backup codes just made, shown once — the same rule as a personal key. */
+const freshCodes = ref<string[] | null>(null);
+const codesCopied = ref(false);
+
+function askPassword(action: "disable" | "codes") {
+  actionPassword.value = "";
+  actionError.value = "";
+  passwordAction.value = action;
+}
+
+async function runPasswordAction() {
+  const action = passwordAction.value;
+  if (!action || !actionPassword.value || acting.value) return;
+  acting.value = true;
+  actionError.value = "";
+  try {
+    if (action === "disable") {
+      await disableTwoFactor(actionPassword.value);
+      toast.add({ title: "Two-factor authentication is off", color: "success", icon: "i-lucide-shield-off" });
+      await refreshIdentity();
+    } else {
+      const answer = await regenerateBackupCodes(actionPassword.value);
+      codesCopied.value = false;
+      freshCodes.value = answer.backupCodes;
+    }
+    passwordAction.value = null;
+    actionPassword.value = "";
+  } catch (err) {
+    actionError.value = err instanceof IssuerError ? err.message : String(err);
+  } finally {
+    acting.value = false;
+  }
+}
+
+async function copyCodes(codes: string[]) {
+  try {
+    await navigator.clipboard.writeText(codes.join("\n"));
+    codesCopied.value = true;
+  } catch {
+    codesCopied.value = false;
+  }
+}
+
+// --- passkeys ---------------------------------------------------------------
+
+const passkeyError = ref("");
+const leaving = ref(false);
+
+/** Off to the issuer's page to make one, which sends the browser back here. */
+async function addPasskey() {
+  leaving.value = true;
+  passkeyError.value = "";
+  try {
+    window.location.assign(await passkeyEnrollmentURL(window.location.href));
+  } catch (err) {
+    passkeyError.value = err instanceof IssuerError ? err.message : String(err);
+    leaving.value = false;
+  }
+}
+
+const renaming = ref<Passkey | null>(null);
+const passkeyName = ref("");
+const savingPasskey = ref(false);
+
+function openRename(passkey: Passkey) {
+  passkeyName.value = passkey.name ?? "";
+  renaming.value = passkey;
+}
+
+async function saveRename() {
+  const passkey = renaming.value;
+  const wanted = passkeyName.value.trim();
+  if (!passkey || !wanted || savingPasskey.value) return;
+  savingPasskey.value = true;
+  passkeyError.value = "";
+  try {
+    await renamePasskey(passkey.id, wanted);
+    renaming.value = null;
+    await refreshPasskeys();
+  } catch (err) {
+    passkeyError.value = err instanceof IssuerError ? err.message : String(err);
+    renaming.value = null;
+  } finally {
+    savingPasskey.value = false;
+  }
+}
+
+const removing = ref<Passkey | null>(null);
+const removingPasskey = ref(false);
+
+async function removePasskey() {
+  const passkey = removing.value;
+  if (!passkey || removingPasskey.value) return;
+  removingPasskey.value = true;
+  passkeyError.value = "";
+  try {
+    await deletePasskey(passkey.id);
+    toast.add({ title: `Passkey ${passkeyLabel(passkey)} removed`, color: "success", icon: "i-lucide-fingerprint" });
+    removing.value = null;
+    await refreshPasskeys();
+  } catch (err) {
+    passkeyError.value = err instanceof IssuerError ? err.message : String(err);
+    removing.value = null;
+  } finally {
+    removingPasskey.value = false;
   }
 }
 
@@ -463,6 +673,232 @@ async function revoke(token: string) {
         </template>
       </section>
 
+      <!-- Two-factor authentication -->
+      <section class="rounded-md border border-default p-4 space-y-4">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2 class="text-sm font-medium text-highlighted">Two-factor authentication</h2>
+            <p class="text-xs text-muted mt-1">
+              A code from an authenticator app, asked for after the password — so a password that leaks is not enough
+              on its own to sign in as you.
+            </p>
+          </div>
+          <UBadge v-if="password" :color="twoFactorOn ? 'success' : 'neutral'" variant="subtle" size="sm">
+            {{ twoFactorOn ? "On" : "Off" }}
+          </UBadge>
+        </div>
+
+        <UAlert
+          v-if="!password"
+          color="neutral"
+          variant="soft"
+          icon="i-lucide-shield"
+          title="Nothing to add a code to"
+          :description="`This account signs in through ${upstream.join(', ') || 'an upstream provider'}, with no password here, so the second factor is the one that provider asks for. A passkey below works as well.`"
+        />
+
+        <template v-else>
+          <UAlert
+            v-if="twoFactorError"
+            color="error"
+            variant="soft"
+            icon="i-lucide-triangle-alert"
+            :title="twoFactorError"
+            close
+            @update:open="twoFactorError = ''"
+          />
+
+          <!-- On: what can be changed about it. -->
+          <template v-if="twoFactorOn">
+            <p class="text-sm text-toned">
+              Signing in with the password asks for a code from your authenticator app. If the app is lost, one of
+              your backup codes signs you in instead, once each.
+            </p>
+            <div class="flex items-center gap-2 flex-wrap">
+              <UButton size="sm" color="neutral" variant="subtle" icon="i-lucide-list-restart" @click="askPassword('codes')">
+                New backup codes
+              </UButton>
+              <UButton size="sm" color="error" variant="subtle" icon="i-lucide-shield-off" @click="askPassword('disable')">
+                Turn off
+              </UButton>
+            </div>
+          </template>
+
+          <!-- Off, and part way through turning it on: the QR code, the codes,
+               and the first code from the app, which is what switches it on. -->
+          <template v-else-if="enrollment">
+            <div class="grid gap-4 sm:grid-cols-[auto_1fr] items-start">
+              <img
+                :src="qrCode"
+                alt="QR code to scan with an authenticator app"
+                class="size-44 rounded-md border border-default bg-white"
+              />
+              <div class="space-y-3 min-w-0">
+                <p class="text-sm text-toned">
+                  Scan this with an authenticator app — 1Password, Google Authenticator, Aegis, anything that speaks
+                  TOTP. Or type the key into it by hand:
+                </p>
+                <p class="font-mono text-sm text-highlighted break-all select-all">{{ manualSecret }}</p>
+                <UFormField label="Code from the app" required>
+                  <UInput
+                    v-model="setupCode"
+                    class="w-full sm:max-w-40 font-mono"
+                    inputmode="numeric"
+                    autocomplete="one-time-code"
+                    placeholder="123456"
+                    @keyup.enter="finishTOTP"
+                  />
+                </UFormField>
+              </div>
+            </div>
+
+            <div class="rounded-md border border-default bg-muted p-3 space-y-2">
+              <p class="text-xs text-muted">
+                Backup codes — each signs in once without the app. Keep them somewhere other than the device with the
+                app on it; they are not shown again.
+              </p>
+              <ul class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 font-mono text-sm text-highlighted select-all">
+                <li v-for="code in enrollment.backupCodes" :key="code">{{ code }}</li>
+              </ul>
+              <UButton
+                size="xs"
+                color="neutral"
+                variant="subtle"
+                icon="i-lucide-copy"
+                @click="copyCodes(enrollment.backupCodes)"
+              >
+                {{ codesCopied ? "Copied" : "Copy" }}
+              </UButton>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <UButton
+                size="sm"
+                color="primary"
+                icon="i-lucide-shield-check"
+                :loading="confirmingTOTP"
+                :disabled="!setupCode.trim()"
+                @click="finishTOTP"
+              >
+                Turn on
+              </UButton>
+              <UButton size="sm" color="neutral" variant="ghost" @click="cancelTOTP">Cancel</UButton>
+            </div>
+          </template>
+
+          <!-- Off. -->
+          <template v-else>
+            <UFormField label="Current password" required help="Setting it up proves the password first." class="sm:max-w-xs">
+              <UInput
+                v-model="setupPassword"
+                type="password"
+                class="w-full"
+                autocomplete="current-password"
+                @keyup.enter="startTOTP"
+              />
+            </UFormField>
+            <UButton
+              size="sm"
+              color="primary"
+              icon="i-lucide-smartphone"
+              :loading="startingTOTP"
+              :disabled="!setupPassword"
+              @click="startTOTP"
+            >
+              Set up an authenticator app
+            </UButton>
+          </template>
+        </template>
+
+        <p class="text-xs text-dimmed border-t border-muted pt-3">
+          The code guards the password and nothing else. Signing in through GitHub or single sign-on is vouched for by
+          that provider, and a passkey is two factors by itself — the device, and the PIN or biometric that unlocks
+          it. An account locked out of both the app and its backup codes is recovered by an operator at the identity
+          provider; docs/AUTH.md says how.
+        </p>
+      </section>
+
+      <!-- Passkeys -->
+      <section class="rounded-md border border-default p-4 space-y-4">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <h2 class="text-sm font-medium text-highlighted">Passkeys</h2>
+            <p class="text-xs text-muted mt-1">
+              Sign in with a fingerprint, a face or a security key instead of a password and a code. A passkey is made
+              on the identity provider's own page — it belongs to that address, not to this dashboard's — which brings
+              you back here when it is done.
+            </p>
+          </div>
+          <UButton
+            size="xs"
+            color="neutral"
+            variant="subtle"
+            icon="i-lucide-plus"
+            class="shrink-0"
+            :loading="leaving"
+            @click="addPasskey"
+          >
+            Add a passkey
+          </UButton>
+        </div>
+
+        <UAlert v-if="passkeysError" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="passkeysError" />
+        <UAlert
+          v-if="passkeyError"
+          color="error"
+          variant="soft"
+          icon="i-lucide-triangle-alert"
+          :title="passkeyError"
+          close
+          @update:open="passkeyError = ''"
+        />
+
+        <div class="rounded-md border border-default overflow-x-auto">
+          <table class="w-full min-w-[34rem] text-sm">
+            <thead>
+              <tr class="text-left text-xs text-muted border-b border-default">
+                <th class="px-3 py-2 font-medium">Passkey</th>
+                <th class="px-3 py-2 font-medium">Kind</th>
+                <th class="px-3 py-2 font-medium">Added</th>
+                <th class="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!passkeys.length">
+                <td colspan="4" class="px-3 py-8 text-center text-muted">
+                  {{ passkeysLoading ? "Loading…" : "No passkeys." }}
+                </td>
+              </tr>
+              <tr v-for="passkey in passkeys" :key="passkey.id" class="border-b border-muted last:border-0">
+                <td class="px-3 py-2 text-highlighted">{{ passkeyLabel(passkey) }}</td>
+                <td class="px-3 py-2 text-xs text-toned">
+                  {{ passkey.deviceType === "multiDevice" ? "synced between devices" : "this one device" }}
+                </td>
+                <td class="px-3 py-2 text-xs text-toned">{{ timeAgo(passkey.createdAt) }}</td>
+                <td class="px-3 py-2 text-right whitespace-nowrap">
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    icon="i-lucide-pencil"
+                    :aria-label="`Rename ${passkeyLabel(passkey)}`"
+                    @click="openRename(passkey)"
+                  />
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    icon="i-lucide-trash-2"
+                    :aria-label="`Remove ${passkeyLabel(passkey)}`"
+                    @click="removing = passkey"
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- Personal keys -->
       <section class="rounded-md border border-default p-4 space-y-4">
         <div class="flex items-start justify-between gap-4">
@@ -764,6 +1200,107 @@ async function revoke(token: string) {
         <div class="flex justify-end gap-2 w-full">
           <UButton color="neutral" variant="subtle" @click="revokingKey = null">Cancel</UButton>
           <UButton color="error" :loading="revokedKey" icon="i-lucide-trash-2" @click="revokeKey">Revoke key</UButton>
+        </div>
+      </template>
+    </UModal>
+    <!-- The password, again, for changing a factor that is already on. -->
+    <UModal
+      :open="passwordAction !== null"
+      :title="passwordAction === 'disable' ? 'Turn off two-factor authentication?' : 'Make new backup codes?'"
+      :description="
+        passwordAction === 'disable'
+          ? 'Signing in will take the password alone again. The app and the backup codes stop working, and so does every browser that was trusted to skip the code.'
+          : 'Every earlier backup code stops working, used or not. The new ones are shown once.'
+      "
+      @update:open="(open: boolean) => { if (!open) passwordAction = null; }"
+    >
+      <template #body>
+        <form class="space-y-4" @submit.prevent="runPasswordAction">
+          <UAlert v-if="actionError" color="error" variant="soft" icon="i-lucide-triangle-alert" :title="actionError" />
+          <UFormField label="Current password" required>
+            <UInput v-model="actionPassword" type="password" class="w-full" autocomplete="current-password" />
+          </UFormField>
+        </form>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton color="neutral" variant="subtle" @click="passwordAction = null">Cancel</UButton>
+          <UButton
+            :color="passwordAction === 'disable' ? 'error' : 'primary'"
+            :loading="acting"
+            :disabled="!actionPassword"
+            @click="runPasswordAction"
+          >
+            {{ passwordAction === "disable" ? "Turn off" : "Make new codes" }}
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <!-- New backup codes: shown once, forgotten when the dialogue closes. -->
+    <UModal
+      :open="freshCodes !== null"
+      title="New backup codes"
+      :dismissible="false"
+      @update:open="(open: boolean) => { if (!open) freshCodes = null; }"
+    >
+      <template #body>
+        <div class="space-y-4">
+          <UAlert
+            color="warning"
+            variant="soft"
+            icon="i-lucide-eye-off"
+            title="This is the only time these are shown"
+            description="Each signs in once without the authenticator app. Every earlier code has stopped working."
+          />
+          <ul class="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-sm text-highlighted select-all">
+            <li v-for="code in freshCodes ?? []" :key="code">{{ code }}</li>
+          </ul>
+          <UButton size="xs" color="neutral" variant="subtle" icon="i-lucide-copy" @click="copyCodes(freshCodes ?? [])">
+            {{ codesCopied ? "Copied" : "Copy" }}
+          </UButton>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end w-full">
+          <UButton icon="i-lucide-check" @click="freshCodes = null">I have saved them</UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      :open="renaming !== null"
+      title="Rename passkey"
+      description="The name is only for telling your passkeys apart on this screen."
+      @update:open="(open: boolean) => { if (!open) renaming = null; }"
+    >
+      <template #body>
+        <form @submit.prevent="saveRename">
+          <UFormField label="Name">
+            <UInput v-model="passkeyName" class="w-full" maxlength="64" placeholder="Work laptop" autocomplete="off" />
+          </UFormField>
+        </form>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton color="neutral" variant="subtle" @click="renaming = null">Cancel</UButton>
+          <UButton :loading="savingPasskey" :disabled="!passkeyName.trim()" @click="saveRename">Save</UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      :open="removing !== null"
+      :title="`Remove ${removing ? passkeyLabel(removing) : ''}?`"
+      description="It stops signing you in immediately. The device may still offer it until you delete it there too; choosing it will then be refused."
+      @update:open="(open: boolean) => { if (!open) removing = null; }"
+    >
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton color="neutral" variant="subtle" @click="removing = null">Cancel</UButton>
+          <UButton color="error" :loading="removingPasskey" icon="i-lucide-trash-2" @click="removePasskey">
+            Remove passkey
+          </UButton>
         </div>
       </template>
     </UModal>
