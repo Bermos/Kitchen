@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.43.0](https://github.com/Bermos/Kitchen/compare/v0.42.0...v0.43.0) (2026-09-28)
+
+
+### Features
+
+* **api:** serve the architecture as a graph, declared and observed ([64243d0](https://github.com/Bermos/Kitchen/commit/64243d05b999960fe0cbc6c61eaae0d52670258f))
+* **auth:** sign in with a passkey, or a password and a code ([#631](https://github.com/Bermos/Kitchen/issues/631)) ([a8263ad](https://github.com/Bermos/Kitchen/commit/a8263ad2bfe7bfc5094642ac68c11d970d86a37e))
+* **cli:** add kitchen topology ([9ee5f70](https://github.com/Bermos/Kitchen/commit/9ee5f700a07ca0cdb2f9aea389abeb406116b168))
+* **ui:** draw the architecture with live traffic flowing along it ([388e7c4](https://github.com/Bermos/Kitchen/commit/388e7c491d9a0045174dff28d085e28fd82de102))
+
+
+### Bug fixes
+
+* **chart:** run the bundled object store from a MinIO image that still pulls ([b980b32](https://github.com/Bermos/Kitchen/commit/b980b327aa1b81d5386132d924aad3a178280c23))
+* **deps:** bump grpc to v1.83.1 for GO-2026-6348 ([d8a2ce1](https://github.com/Bermos/Kitchen/commit/d8a2ce1bbacd96be18938d28ae329415c32b26c5)), closes [#613](https://github.com/Bermos/Kitchen/issues/613)
+* **ui:** offer only connections of the right capability in pickers ([#630](https://github.com/Bermos/Kitchen/issues/630)) ([1c4346c](https://github.com/Bermos/Kitchen/commit/1c4346c23214e0e9cdbaada8eb1ec6fd1e07346c))
+
 ## [0.42.0](https://github.com/Bermos/Kitchen/compare/v0.41.0...v0.42.0) (2026-09-15)
 
 
