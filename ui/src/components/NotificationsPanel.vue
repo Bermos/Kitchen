@@ -232,6 +232,7 @@ async function retry(delivery: NotificationDelivery) {
       <h2 class="text-sm font-medium text-highlighted">Notifications</h2>
       <UButton
         v-if="maySubscribe"
+        class="shrink-0"
         color="neutral"
         variant="subtle"
         size="xs"

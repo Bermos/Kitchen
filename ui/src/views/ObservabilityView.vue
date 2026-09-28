@@ -1034,7 +1034,7 @@ const placeholder = `level:error service:shop`;
         </div>
       </template>
       <template #footer>
-        <div class="flex justify-between gap-2 w-full">
+        <div class="flex justify-between gap-2 w-full flex-wrap">
           <UButton
             v-if="alerting?.alert"
             color="error"
@@ -1045,7 +1045,7 @@ const placeholder = `level:error service:shop`;
           >
             Stop watching
           </UButton>
-          <div class="flex justify-end gap-2 ml-auto">
+          <div class="flex justify-end gap-2 ml-auto flex-wrap">
             <UButton color="neutral" variant="subtle" @click="alerting = null">Cancel</UButton>
             <UButton icon="i-lucide-bell" :loading="savingAlert" @click="saveAlert()">Save</UButton>
           </div>

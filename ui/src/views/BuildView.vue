@@ -738,6 +738,7 @@ const logRunLabels = computed<Record<string, string>>(() => {
             </p>
           </div>
           <UButton
+            class="shrink-0"
             size="xs"
             color="neutral"
             variant="subtle"

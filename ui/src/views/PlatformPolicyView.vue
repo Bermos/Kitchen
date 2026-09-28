@@ -253,7 +253,7 @@ const ladder = [
                 installation.
               </p>
             </div>
-            <USwitch v-model="form.paging" :disabled="!mayWrite || saving" aria-label="Page for the top tier" />
+            <USwitch v-model="form.paging" :disabled="!mayWrite || saving" aria-label="Page for the top tier" class="shrink-0" />
           </div>
         </div>
 
@@ -264,6 +264,7 @@ const ladder = [
             >.
           </p>
           <UButton
+            class="shrink-0"
             size="sm"
             :disabled="!mayWrite || !moved.length"
             :loading="saving"

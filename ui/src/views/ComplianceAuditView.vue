@@ -272,7 +272,7 @@ const note = computed(() => anchorNote(verification.value));
             <span class="text-muted"> {{ compliance.data.value.policy.message }}</span>
           </p>
         </div>
-        <UButton v-if="mayVerify" size="xs" color="neutral" variant="subtle" :loading="verifying" @click="verify">
+        <UButton v-if="mayVerify" class="shrink-0" size="xs" color="neutral" variant="subtle" :loading="verifying" @click="verify">
           Verify the chain
         </UButton>
       </div>
@@ -513,6 +513,7 @@ const note = computed(() => anchorNote(verification.value));
           </p>
         </div>
         <UButton
+          class="shrink-0"
           size="xs"
           color="neutral"
           variant="subtle"
