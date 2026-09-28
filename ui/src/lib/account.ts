@@ -1,3 +1,4 @@
+import { renderSVG } from "uqr";
 import { loadConfig } from "./config";
 
 /**
@@ -61,6 +62,29 @@ export interface IssuerAccount {
   name: string;
   email: string;
   emailVerified: boolean;
+  /** Whether signing in with the password asks for a code too. Absent from an
+   * issuer that never mounted two-factor, which reads the same as off. */
+  twoFactorEnabled?: boolean | null;
+}
+
+/** A passkey this account can sign in with, as the issuer lists it. Nothing
+ * here is a secret: the private half never left the device that made it. */
+export interface Passkey {
+  id: string;
+  name?: string | null;
+  /** `singleDevice` for a hardware key; `multiDevice` for one a password
+   * manager or a phone's keychain syncs between devices. */
+  deviceType: string;
+  backedUp: boolean;
+  createdAt: string;
+  aaguid?: string | null;
+}
+
+/** What turning the authenticator app on hands back, once. */
+export interface TOTPEnrollment {
+  /** `otpauth://totp/…` — what the QR code carries. */
+  totpURI: string;
+  backupCodes: string[];
 }
 
 /** What the identity provider refused, and why, in a sentence somebody can act
@@ -92,7 +116,7 @@ export const MAX_PASSWORD_LENGTH = 128;
 /**
  * What went wrong, said in terms of this platform rather than of better-auth.
  *
- * Three of these are worth translating because the raw answer sends people
+ * A few of these are worth translating because the raw answer sends people
  * looking in the wrong place:
  *
  * - **401** is not "your dashboard session expired" — the dashboard's session
@@ -110,6 +134,12 @@ export const MAX_PASSWORD_LENGTH = 128;
  * "something went wrong" is not a thing to report to an operator.
  */
 export function issuerMessage(status: number, code: string, message: string): string {
+  // Ahead of the 401 below, because the issuer answers a wrong code with one:
+  // read as a session that expired, it would send somebody off to sign in
+  // again over a typo.
+  if (code === "INVALID_CODE") {
+    return "that code is not the one the authenticator app is showing now — check the device's clock if it keeps happening";
+  }
   if (status === 401) {
     return (
       "the identity provider does not recognise this browser — its sign-in is separate from the dashboard's " +
@@ -126,6 +156,9 @@ export function issuerMessage(status: number, code: string, message: string): st
   }
   if (code === "INVALID_PASSWORD") {
     return "that is not the current password";
+  }
+  if (code === "TOTP_ALREADY_ENABLED") {
+    return "an authenticator app is already set up for this account — turn two-factor off first to replace it";
   }
   if (code === "CREDENTIAL_ACCOUNT_NOT_FOUND") {
     return "this account has no password to change: it signs in through an upstream provider";
@@ -337,4 +370,99 @@ export function changePassword(
 /** End one of this account's sessions at the issuer. */
 export function revokeSession(token: string): Promise<{ status: boolean }> {
   return post("/revoke-session", { token });
+}
+
+// --- a second factor --------------------------------------------------------
+//
+// An authenticator app, asked for after the password on the issuer's sign-in
+// page. It guards the password and only the password: an account that signs
+// in through GitHub or an SSO provider was vouched for there, and a passkey is
+// two factors by itself (the device, and the PIN or biometric that unlocks it
+// — the issuer refuses one that skipped the second). Every write below proves
+// the password, because the question it answers is "is it really you turning
+// this off", which a session cookie cannot answer.
+
+/**
+ * Start setting up an authenticator app. The secret is stored but is not a
+ * factor yet: `confirmTOTP` with the first code is what switches it on, so a
+ * QR code nobody scanned cannot lock anybody out.
+ */
+export function enableTOTP(password: string): Promise<TOTPEnrollment> {
+  return post("/two-factor/enable", { password });
+}
+
+/** Finish setting it up, proving the app holds the secret. The issuer answers
+ * by replacing this browser's session with one that knows two-factor is on. */
+export function confirmTOTP(code: string): Promise<unknown> {
+  return post("/two-factor/verify-totp", { code: code.replace(/\s+/g, "") });
+}
+
+/** Turn it off. Backup codes and any browser trusted to skip it go with it. */
+export function disableTwoFactor(password: string): Promise<unknown> {
+  return post("/two-factor/disable", { password });
+}
+
+/** A fresh set of backup codes, replacing every earlier one. */
+export function regenerateBackupCodes(password: string): Promise<{ backupCodes: string[] }> {
+  return post("/two-factor/generate-backup-codes", { password });
+}
+
+/**
+ * The secret out of an `otpauth://` URI, grouped in fours for typing into an
+ * app by hand — what somebody does when the camera is on the device showing
+ * the QR code. Empty for anything that is not such a URI.
+ */
+export function totpSecret(uri: string): string {
+  try {
+    const secret = new URL(uri).searchParams.get("secret") ?? "";
+    return secret.replace(/(.{4})(?=.)/g, "$1 ");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The QR code for an `otpauth://` URI, as an image address.
+ *
+ * Drawn here rather than fetched: the secret is in the URI, so sending it to
+ * a QR service would publish the second factor, and the dashboard's policy
+ * lets images come from itself and `data:` alone.
+ */
+export function totpQRCode(uri: string): string {
+  const svg = renderSVG(uri, { ecc: "M", border: 2, pixelSize: 6 });
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+// --- passkeys ---------------------------------------------------------------
+//
+// Listed, renamed and removed from here; *made* on a page the issuer serves.
+// A passkey belongs to a relying party — the issuer's hostname — and the
+// browser refuses to run the ceremony that creates one from a page on any
+// other, so the dashboard links there and the issuer links back.
+
+export function listPasskeys(): Promise<Passkey[]> {
+  return request<Passkey[]>("/passkey/list-user-passkeys");
+}
+
+export function renamePasskey(id: string, name: string): Promise<unknown> {
+  return post("/passkey/update-passkey", { id, name });
+}
+
+export function deletePasskey(id: string): Promise<unknown> {
+  return post("/passkey/delete-passkey", { id });
+}
+
+/** Where to send the browser to make a passkey, and how it gets back here.
+ * The issuer honours the return address only on an origin it trusts. */
+export async function passkeyEnrollmentURL(returnTo: string): Promise<string> {
+  const issuer = await issuerURL();
+  return `${issuer}/passkeys/new?return_to=${encodeURIComponent(returnTo)}`;
+}
+
+/** What a passkey row is called: its name, or failing that what kind of thing
+ * holds it — which is the only other thing the issuer knows about it. */
+export function passkeyLabel(passkey: Passkey): string {
+  const name = passkey.name?.trim();
+  if (name) return name;
+  return passkey.deviceType === "multiDevice" ? "A synced passkey" : "A security key";
 }

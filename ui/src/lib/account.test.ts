@@ -4,10 +4,14 @@ import {
   expiresIn,
   hasPassword,
   issuerMessage,
+  passkeyLabel,
   sessionRows,
+  totpQRCode,
+  totpSecret,
   upstreamProviders,
   type IssuerSession,
   type LinkedAccount,
+  type Passkey,
 } from "./account";
 
 // The account screen renders what the identity provider answers, and the
@@ -166,5 +170,48 @@ describe("how long a session has left", () => {
   it("says nothing rather than NaN when there is no timestamp", () => {
     expect(expiresIn(undefined, now)).toBe("—");
     expect(expiresIn("not a date", now)).toBe("—");
+  });
+});
+
+describe("setting up an authenticator app", () => {
+  const uri = "otpauth://totp/Kitchen%20(auth.example.com):anna%40example.com?secret=JBSWY3DPEHPK3PXPJBSWY3DP&issuer=Kitchen";
+
+  it("offers the key in fours, for typing into an app by hand", () => {
+    expect(totpSecret(uri)).toBe("JBSW Y3DP EHPK 3PXP JBSW Y3DP");
+  });
+
+  it("offers nothing rather than garbage for anything else", () => {
+    expect(totpSecret("not a uri")).toBe("");
+    expect(totpSecret("otpauth://totp/x")).toBe("");
+  });
+
+  it("draws the QR code here, as an image the dashboard's policy allows", () => {
+    const image = totpQRCode(uri);
+    expect(image.startsWith("data:image/svg+xml")).toBe(true);
+    // The secret is in the code; it must not be in anything fetched.
+    expect(image).not.toMatch(/https?:/);
+  });
+
+  it("says a wrong code is the app's clock before it says anything else", () => {
+    expect(issuerMessage(401, "INVALID_CODE", "Invalid code")).toMatch(/clock/);
+  });
+});
+
+describe("a passkey row", () => {
+  const passkey = (over: Partial<Passkey> = {}): Passkey => ({
+    id: "p1",
+    deviceType: "singleDevice",
+    backedUp: false,
+    createdAt: "2026-08-01T10:00:00Z",
+    ...over,
+  });
+
+  it("is called what its owner called it", () => {
+    expect(passkeyLabel(passkey({ name: "  laptop " }))).toBe("laptop");
+  });
+
+  it("is called what holds it when nobody named it", () => {
+    expect(passkeyLabel(passkey())).toBe("A security key");
+    expect(passkeyLabel(passkey({ name: "", deviceType: "multiDevice" }))).toBe("A synced passkey");
   });
 });

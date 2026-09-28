@@ -33,6 +33,14 @@ serves the operator's `/kitchen` prefix and nothing else — see
 Plugins: OAuth/OIDC provider, SSO (upstream OIDC and SAML providers), social
 login (GitHub), organizations, passkeys, two-factor and API keys.
 
+The pages it serves itself are in `src/pages.ts`: sign-in (a password and, when
+the account has turned it on, a code from an authenticator app — or a passkey
+instead of both), consent, the first-run bootstrap, and `/passkeys/new`, where a
+signed-in browser makes a passkey. That last one is here rather than on the
+dashboard because a passkey belongs to this service's hostname and WebAuthn
+will not make one from a page on another; docs/AUTH.md, "Passkeys and
+two-factor authentication", says the rest.
+
 ## Accounts
 
 Public sign-up is off, and an account comes from one of exactly two places:

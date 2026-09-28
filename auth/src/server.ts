@@ -8,10 +8,12 @@ import { bootstrapFirstUser, isBootstrapped, tokenMatches } from "./bootstrap.js
 import { allowedOrigins, type Config } from "./config.js";
 import { handleKitchenRequest, isKitchenPath } from "./directory.js";
 import { log } from "./log.js";
-import { bootstrapPage, consentPage, loginPage, messagePage } from "./pages.js";
+import { bootstrapPage, consentPage, loginPage, messagePage, passkeyPage } from "./pages.js";
 import { rateLimiter } from "./ratelimit.js";
 
 const BOOTSTRAP_PATH = "/bootstrap";
+/** Where a signed-in browser registers a passkey — src/pages.ts says why here. */
+export const PASSKEY_PATH = "/passkeys/new";
 /**
  * The header a proxy records the original caller in. It is read for the log
  * line on a refusal only — never to decide anything — because on the public
@@ -98,6 +100,31 @@ async function readBody(req: IncomingMessage): Promise<Record<string, string>> {
 		throw new Error("request body must be a JSON object");
 	}
 	return parsed as Record<string, string>;
+}
+
+/**
+ * Where the passkey page may send the browser back to, or `null`.
+ *
+ * Only an http(s) address on an origin this service already trusts — the
+ * dashboard's, in practice — is honoured. Anything else is dropped rather than
+ * refused: the page works without it, and a parameter that could name any
+ * address would make the issuer's own hostname a redirector for whoever built
+ * the link.
+ */
+export function returnTarget(value: string | null, allowed: ReadonlySet<string>): string | null {
+	if (!value) {
+		return null;
+	}
+	let target: URL;
+	try {
+		target = new URL(value);
+	} catch {
+		return null;
+	}
+	if ((target.protocol !== "https:" && target.protocol !== "http:") || !allowed.has(target.origin)) {
+		return null;
+	}
+	return target.toString();
 }
 
 /**
@@ -224,6 +251,11 @@ export function createServer(
 			const scopes = (url.searchParams.get("scope") ?? "").split(" ").filter(Boolean);
 			const name = await clientName(auth, url.searchParams.get("client_id") ?? "");
 			sendHTML(res, 200, consentPage({ clientName: name, scopes }));
+			return;
+		}
+
+		if (path === PASSKEY_PATH && req.method === "GET") {
+			sendHTML(res, 200, passkeyPage({ returnTo: returnTarget(url.searchParams.get("return_to"), allowed) }));
 			return;
 		}
 
