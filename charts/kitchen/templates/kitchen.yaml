@@ -159,12 +159,17 @@ spec:
       name: {{ include "kitchen.registrySecretName" . }}
     {{- end }}
   objectStore:
-    # The object store the chart runs, seeded by the operator: the Connection
-    # is the operator's because a credential the API never reads back has to
-    # be written by something inside the cluster. No route — the store is
-    # reached at its Service address, inside the cluster.
+    # The object store the chart runs, seeded and published by the operator:
+    # the Connection is the operator's because a credential the API never
+    # reads back has to be written by something inside the cluster, and the
+    # route is the operator's because the shared Gateway is. Applications
+    # reach the store at its Service address; the published name is what a
+    # URL presigned for somebody else's browser is signed against (#601).
     enabled: {{ .Values.objectStore.enabled }}
     {{- if .Values.objectStore.enabled }}
+    {{- with include "kitchen.objectStorePublicHost" . }}
+    host: {{ . | quote }}
+    {{- end }}
     service: {{ include "kitchen.objectStoreFullname" . | quote }}
     port: {{ int .Values.objectStore.service.port }}
     region: {{ .Values.objectStore.region | quote }}

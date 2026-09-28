@@ -165,6 +165,7 @@ type KitchenReconciler struct {
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kitchen.bermos.dev,resources=kitchens/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=backendtlspolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets;daemonsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create

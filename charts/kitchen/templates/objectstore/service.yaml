@@ -1,10 +1,12 @@
 {{- include "kitchen.validate" . -}}
 {{- if .Values.objectStore.enabled }}
-# The address every bucket is reached at, inside the cluster and nowhere
-# else. The store is deliberately not published on the Gateway: an
-# application runs in the cluster, and the node's container runtime — the
-# reason the registry needs a publicly trusted certificate — is not in the
-# path of an application's own requests.
+# The address every bucket is reached at, and what every application read and
+# write uses: an application runs in the cluster, and its own traffic has no
+# business leaving it. It is not the only address the store has — the operator
+# publishes a second one on the shared Gateway, because a presigned URL signs
+# the host it is made for and a `.svc` name resolves in no browser (#601) —
+# but nothing is published here: this Service is the backend that route points
+# at.
 apiVersion: v1
 kind: Service
 metadata:

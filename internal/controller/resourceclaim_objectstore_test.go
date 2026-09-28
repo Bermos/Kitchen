@@ -282,7 +282,8 @@ var _ = Describe("An objectStore claim", func() {
 		Expect(claim.Status.InstanceID).To(BeEmpty(), "nothing was provisioned")
 		ready := meta.FindStatusCondition(claim.Status.Conditions, condReady)
 		Expect(ready.Reason).To(Equal("RequirementsUnsatisfiable"))
-		Expect(ready.Message).To(ContainSubstring("inside the cluster"))
+		Expect(ready.Message).To(ContainSubstring("admits nobody anonymously"),
+			"the platform publishes an address for the bundled store, not its objects (#601)")
 		Expect(store.Buckets).To(BeEmpty())
 	})
 

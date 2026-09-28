@@ -632,6 +632,31 @@ async function askAgain(claim: Claim) {
 // than said twice.
 const cautions = computed(() => claimCautions(claims.value.filter((claim) => claim.phase !== "Failed")));
 
+// A bucket has two addresses now (#601) and getting them the wrong way round
+// fails in somebody's browser rather than here, so the claim that has them
+// says which is which where it is read. The sentence is a statement of fact:
+// whether the platform publishes its store is not this reader's to change.
+//
+// Three cases, not two, and the third is the one this whole issue is about.
+// A binding with no `publicEndpoint` is either a store of somebody else's
+// whose one address is already public — presign against it — or the bundled
+// store with nothing published in front of it, where presigning against the
+// in-cluster address produces exactly the URL that opened #601: one no
+// browser can resolve. `inCluster` is what tells them apart, and one wording
+// for both would hand half the readers the bug.
+const bucketAddresses = computed(() =>
+  claims.value
+    .filter((claim) => claim.type === "objectStore" && claim.objectStore?.endpoint)
+    .map((claim) => ({
+      claim: claim.name,
+      endpoint: claim.objectStore!.endpoint!,
+      publicEndpoint: claim.objectStore?.publicEndpoint ?? "",
+      // Without this, "no publicEndpoint" has two opposite meanings and the
+      // row can only pick one of them.
+      inCluster: claim.objectStore?.inCluster === true,
+    })),
+);
+
 // Destroying the data is the admin's, not the developer's (#320): the API
 // refuses a Delete-policy claim's deletion below admin, so the row does not
 // offer a button the refusal is waiting behind — it says why instead, in the
@@ -1164,6 +1189,43 @@ async function deleteProject() {
                   <tr v-for="caution in cautions" :key="caution.key" class="border-b border-muted last:border-0">
                     <td colspan="8" class="px-3 py-2 text-xs text-warning">
                       <span class="font-mono">{{ caution.claim }}</span> — {{ caution.message }}
+                    </td>
+                  </tr>
+                  <!-- And where a bucket is, which for an objectStore claim is
+                       two answers and not one. A link presigned against the
+                       first address does not open anywhere but here, which is
+                       a mistake that shows up in somebody else's browser
+                       rather than on this screen (#601). -->
+                  <tr
+                    v-for="bucket in bucketAddresses"
+                    :key="`${bucket.claim}-where`"
+                    class="border-b border-muted last:border-0"
+                  >
+                    <td colspan="8" class="px-3 py-2 text-xs text-muted">
+                      <span class="font-mono">{{ bucket.claim }}</span> — this project's own reads and writes go to
+                      <span class="font-mono text-toned">{{ bucket.endpoint }}</span>, the binding's
+                      <span class="font-mono">endpoint</span>.
+                      <template v-if="bucket.publicEndpoint">
+                        A link handed to somebody else is presigned against
+                        <span class="font-mono text-toned">{{ bucket.publicEndpoint }}</span>, the binding's
+                        <span class="font-mono">publicEndpoint</span> — a link signed for the first address opens
+                        nowhere else.
+                      </template>
+                      <!-- The bundled store with nothing published in front
+                           of it. Presigning against the address above is the
+                           mistake #601 was filed from, so the row says so
+                           instead of recommending it. -->
+                      <template v-else-if="bucket.inCluster">
+                        That address is reachable from inside the platform only, and this binding carries no
+                        <span class="font-mono">publicEndpoint</span>: the platform is publishing this store nowhere,
+                        so a link presigned here cannot be opened from a browser. Serving the objects through this
+                        project's own application is the way to hand one out.
+                      </template>
+                      <template v-else>
+                        This binding carries no separate
+                        <span class="font-mono">publicEndpoint</span> because that address is already reachable from
+                        outside — a link handed to somebody else is presigned against it.
+                      </template>
                     </td>
                   </tr>
                 </tbody>

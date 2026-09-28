@@ -107,7 +107,15 @@ Five things, none of which the chart installs:
   per-node event buffer that decides whether traffic numbers are complete.
 - **Gateway API CRDs**, at the version your Cilium requires — this moves faster
   than you would expect, so check Cilium's docs rather than guessing. CI does
-  the same, resolving the version from the Cilium release it targets.
+  the same, resolving the version from the Cilium release it targets. **The
+  standard channel from v1.4 or newer**, because the bundled object store's
+  published address needs the `BackendTLSPolicy` kind, which arrived there
+  then: the store serves HTTPS on its own Service name and the Gateway has to
+  be told to speak TLS to it. An older set of CRDs is not a failed install —
+  everything else works and the store keeps serving applications inside the
+  cluster — but it is published nowhere, no URL presigned against it opens in
+  a browser, and the only notice is `status.objectStore.unpublished` on the
+  Kitchen singleton saying so.
 - **A default StorageClass.** ClickHouse and the identity provider's Postgres
   are StatefulSets with `volumeClaimTemplates` and no `storageClass` set, so
   they take the cluster default. Without one they sit `Pending` forever, and

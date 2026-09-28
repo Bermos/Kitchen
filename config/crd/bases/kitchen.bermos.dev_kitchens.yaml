@@ -1517,6 +1517,13 @@ spec:
                       store, which is an s3 Connection someone creates. The chart renders
                       the store itself only when its own objectStore.enabled is set.
                     type: boolean
+                  host:
+                    description: |-
+                      Host the store is published on outside the cluster, and therefore the
+                      name a presigned URL is signed against. Defaults to
+                      objectstore.<baseDomain>; it is never what the platform's own clients use,
+                      which stays the Service address.
+                    type: string
                   port:
                     default: 9000
                     description: Port the store's Service publishes.
@@ -2722,7 +2729,22 @@ spec:
                       while the store stays enabled.
                     type: string
                   endpoint:
-                    description: Endpoint the store is reached at inside the cluster.
+                    description: |-
+                      Endpoint the store is reached at inside the cluster, which is what
+                      every application's own reads and writes use.
+                    type: string
+                  publicEndpoint:
+                    description: |-
+                      PublicEndpoint is where the store is published outside the cluster,
+                      and the address a presigned URL has to be signed against. Empty for an
+                      installation that publishes it nowhere, with Unpublished below saying
+                      why.
+                    type: string
+                  unpublished:
+                    description: |-
+                      Unpublished says, when PublicEndpoint is empty, why the store has no
+                      address outside the cluster — tls.mode none, or nowhere to publish it.
+                      Empty whenever it does have one.
                     type: string
                 type: object
               registry:

@@ -248,12 +248,21 @@ type ImageRegistrySpec struct {
 // that a file an application did not build into its image has somewhere to
 // go without anyone opening an account at a cloud.
 //
-// Unlike the registry it is not published on the Gateway. An application
-// runs in the cluster, and a Service address is all it needs; the node's
-// container runtime is not in the path, so nothing here has to be trusted by
-// anything outside. It follows that a bucket in it cannot be publicly
-// readable — there is no public to read it — and a claim asking for that is
-// refused rather than granted a policy that publishes nothing.
+// An application runs in the cluster and reaches the store at its Service
+// address, which is what every binding's `endpoint` carries and what every
+// server-side read and write uses. But an AWS SigV4 presigned URL signs the
+// host it is made for, and a URL signed for a `.svc.cluster.local` name is
+// unusable in the browser it was made for — so the store is *also* published
+// on the shared Gateway at objectstore.<baseDomain>, under the platform's own
+// wildcard certificate, and bindings carry that address as a second key
+// (#601).
+//
+// Publishing an address publishes no object: the store admits nobody
+// anonymously, an unsigned request is refused there exactly as it is inside
+// the cluster, and a claim asking for a publicly readable bucket is still
+// refused. As with the registry the published half needs TLS to exist, so in
+// tls.mode none the store runs and is not published, and the platform says so
+// rather than serving presigned URLs in the clear.
 type ObjectStoreSpec struct {
 	// Enabled seeds the Connection that points at the bundled store. Off —
 	// the default — means an installation brings its own S3-compatible
@@ -261,6 +270,13 @@ type ObjectStoreSpec struct {
 	// the store itself only when its own objectStore.enabled is set.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// Host the store is published on outside the cluster, and therefore the
+	// name a presigned URL is signed against. Defaults to
+	// objectstore.<baseDomain>; it is never what the platform's own clients use,
+	// which stays the Service address.
+	// +optional
+	Host string `json:"host,omitempty"`
 
 	// Service in the platform namespace the store answers on. The chart
 	// writes it as <release>-objectstore.
@@ -1368,9 +1384,23 @@ type ImageRegistryStatus struct {
 // written when the operator seeds it and read forever after as "this has
 // been seeded", so a Connection someone deletes stays deleted.
 type ObjectStoreStatus struct {
-	// Endpoint the store is reached at inside the cluster.
+	// Endpoint the store is reached at inside the cluster, which is what
+	// every application's own reads and writes use.
 	// +optional
 	Endpoint string `json:"endpoint,omitempty"`
+
+	// PublicEndpoint is where the store is published outside the cluster,
+	// and the address a presigned URL has to be signed against. Empty for an
+	// installation that publishes it nowhere, with Unpublished below saying
+	// why.
+	// +optional
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// Unpublished says, when PublicEndpoint is empty, why the store has no
+	// address outside the cluster — tls.mode none, or nowhere to publish it.
+	// Empty whenever it does have one.
+	// +optional
+	Unpublished string `json:"unpublished,omitempty"`
 
 	// Connection the operator seeded, by name. Set once and never cleared
 	// while the store stays enabled.

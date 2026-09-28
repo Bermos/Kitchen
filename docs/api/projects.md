@@ -253,8 +253,9 @@ hostname rather than left to collide on the shared Gateway:
 
 - The labels the platform publishes under the base domain — `kitchen` (this
   API and the dashboard), `auth` (the identity provider), `previews` (the gate
-  protected previews are signed in at) and `registry` (the bundled container
-  registry). A project of one of those names would write a second HTTPRoute
+  protected previews are signed in at), `registry` (the bundled container
+  registry) and `objectstore` (the bundled object store, where a presigned URL
+  points). A project of one of those names would write a second HTTPRoute
   for an address the platform already answers on, on the same Gateway and
   under the same wildcard certificate.
 - Anything of the form `<name>-pr-<number>`. That is the shape of a generated

@@ -283,12 +283,33 @@ spec:
 {{- end }}
 {{- if .Values.objectStore.enabled }}
 ---
-# The bundled object store. Unlike the registry it is not published on the
-# Gateway, and unlike ClickHouse it is something applications legitimately
-# open connections to: an objectStore claim hands a pod this address. So the
-# rule is the narrowest one that still works — the platform namespace, and the
-# namespaces the operator created for projects, which carry the project label.
-# Nothing else on the cluster gets to knock.
+# The bundled object store. Unlike ClickHouse it is something applications
+# legitimately open connections to: an objectStore claim hands a pod this
+# address. So the first rule is the narrowest one that can serve them — the
+# platform namespace, and the namespaces the operator created for projects,
+# which carry the project label.
+#
+# **That narrowing is the whole policy only while the store is unpublished.**
+# The second rule below opens the same port to everything, and it renders
+# whenever the store has a published address — which is the default. Read the
+# two together: on a published store this policy admits the world to port
+# 9000 and the narrow rule adds nothing, and what stands between a stranger
+# and an object is the store's own refusal of an unsigned request, not this
+# file. On an installation in `tls.mode: none`, or one with no base domain,
+# the second rule is not rendered and the narrowing is real.
+#
+# The second rule is the published address, and it takes no `from` at all.
+# That is the trap at the top of this file, and it is why: traffic arriving
+# through the shared Gateway has been proxied by Cilium's Envoy and carries
+# the reserved `ingress` identity, which no `networking.k8s.io/v1` peer can
+# name. A rule with a `from` — any `from` — drops it, the route reads as
+# Accepted, and every presigned URL answers 503 with nothing saying why. The
+# day a default deny landed, exactly this took out every custom domain's
+# certificate (#573).
+#
+# Nothing is given away by opening the port: the store admits nobody
+# anonymously, so an unsigned request is refused at the store exactly as it is
+# today. Publishing an address is not publishing a bucket.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -316,5 +337,13 @@ spec:
       ports:
         - protocol: TCP
           port: {{ int .Values.objectStore.service.port }}
+    {{- if eq (include "kitchen.objectStorePublished" .) "true" }}
+    # Through the Gateway, from wherever the browser holding the presigned
+    # URL is. No `from`: see above — and note this supersedes the narrowing
+    # of the rule above rather than adding to it.
+    - ports:
+        - protocol: TCP
+          port: {{ int .Values.objectStore.service.port }}
+    {{- end }}
 {{- end }}
 {{- end }}
