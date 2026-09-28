@@ -9,7 +9,6 @@ import {
   repositoryChoices,
   repositoryNote,
   repositoryURLFor,
-  selectableChoices,
 } from "./connections";
 
 // The picker reads two shapes: the operator's connection, and the thinned one
@@ -80,24 +79,19 @@ describe("the picker's entries", () => {
     expect(connectionChoices([pickerShape()], "imageStore")[0]!.label).toBe("ghcr");
   });
 
-  it("disables the wrong capability and says which one it wanted", () => {
-    const [choice] = connectionChoices([pickerShape({ name: "github", capabilities: ["gitSource"] })], "imageStore");
-    expect(choice!.disabled).toBe(true);
-    expect(choice!.note).toContain("imageStore");
-    expect(choice!.label).toContain("imageStore");
+  it("leaves out a connection of the wrong capability", () => {
+    expect(connectionChoices([pickerShape({ name: "github", capabilities: ["gitSource"] })], "imageStore")).toEqual([]);
   });
 
   it("keeps an unassessed connection selectable, with the caveat", () => {
     // A fresh install's seeded registry connection is exactly this between
     // being created and being validated, and a project has to be creatable.
     const [choice] = connectionChoices([pickerShape({ capabilities: [] })], "imageStore");
-    expect(choice!.disabled).toBeUndefined();
     expect(choice!.note).toBeTruthy();
   });
 
   it("keeps one the platform cannot get working selectable, and says whose problem it is", () => {
     const [choice] = connectionChoices([pickerShape({ ready: false })], "imageStore");
-    expect(choice!.disabled).toBeUndefined();
     expect(choice!.note).toContain("operator");
   });
 
@@ -105,13 +99,16 @@ describe("the picker's entries", () => {
     expect(connectionChoices([pickerShape()], "imageStore")[0]!.note).toBe("");
   });
 
-  it("lists every connection rather than dropping the ones that do not fit", () => {
+  it("lists only the connections that fit, in the order the API answered", () => {
     const choices = connectionChoices(
-      [pickerShape({ name: "github", capabilities: ["gitSource"] }), pickerShape({ name: "ghcr" })],
+      [
+        pickerShape({ name: "fresh", capabilities: [] }),
+        pickerShape({ name: "github", capabilities: ["gitSource"] }),
+        pickerShape({ name: "ghcr" }),
+      ],
       "imageStore",
     );
-    expect(choices.map((c) => c.value)).toEqual(["github", "ghcr"]);
-    expect(selectableChoices(choices).map((c) => c.value)).toEqual(["ghcr"]);
+    expect(choices.map((c) => c.value)).toEqual(["fresh", "ghcr"]);
   });
 });
 

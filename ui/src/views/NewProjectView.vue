@@ -11,7 +11,6 @@ import {
   repositoryChoices,
   repositoryNote,
   repositoryURLFor,
-  selectableChoices,
 } from "../lib/connections";
 import { callerFor } from "../lib/me";
 import { may } from "../lib/policy";
@@ -86,17 +85,13 @@ const previews = ref(true);
 // minute between creating it and remembering to change it.
 const internal = ref(false);
 
-// Every connection is listed, and the ones that cannot back this field say
-// why: a connection providing the wrong capability is refused by the API
-// (`requireConnection`) so it is disabled, and one the platform has not got
-// working — or has not assessed at all — is offered with the caveat, because
-// the API takes it and the project's own conditions are what say whether it
-// worked. Omitting either would leave somebody hunting for a connection they
-// have been told exists.
+// Each field offers only the connections that can back it: one providing the
+// wrong capability is refused by the API (`requireConnection`) and is not
+// listed. One the platform has not got working — or has not assessed at all —
+// is offered with the caveat, because the API takes it and the project's own
+// conditions are what say whether it worked.
 const sourceOptions = computed(() => connectionChoices(connections.data.value ?? [], "gitSource"));
 const registryOptions = computed(() => connectionChoices(connections.data.value ?? [], "imageStore"));
-const sourcesAvailable = computed(() => selectableChoices(sourceOptions.value));
-const registriesAvailable = computed(() => selectableChoices(registryOptions.value));
 const sourceNote = computed(() => noteFor(sourceOptions.value, connection.value));
 const registryNote = computed(() => noteFor(registryOptions.value, registry.value));
 
@@ -113,10 +108,10 @@ const managesConnections = computed(() => may("POST /api/v1/connections", caller
 // It is deliberately not what the compliance section does. A single obvious
 // answer is a question not worth asking; a classification has no obvious
 // answer, and filling one in would be the platform deciding.
-watch(registriesAvailable, (options) => {
+watch(registryOptions, (options) => {
   if (!registry.value && options.length === 1) registry.value = options[0]!.value;
 });
-watch(sourcesAvailable, (options) => {
+watch(sourceOptions, (options) => {
   if (!connection.value && options.length === 1) connection.value = options[0]!.value;
 });
 
@@ -529,10 +524,10 @@ async function create() {
               </UFormField>
             </div>
             <p
-              v-if="connections.data.value && (!sourcesAvailable.length || !registriesAvailable.length)"
+              v-if="connections.data.value && (!sourceOptions.length || !registryOptions.length)"
               class="text-xs text-warning"
             >
-              {{ !sourcesAvailable.length ? "No gitSource connection yet" : "No imageStore connection yet" }} —
+              {{ !sourceOptions.length ? "No gitSource connection yet" : "No imageStore connection yet" }} —
               <template v-if="managesConnections">
                 create one on the <RouterLink to="/platform/connections" class="underline">Connections</RouterLink>
                 page first.
