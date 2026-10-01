@@ -2972,6 +2972,65 @@ PersistentVolumeClaim the platform created — and not even that where the claim
 named a PersistentVolumeClaim that was already in the namespace. The
 PersistentVolume, and every byte on it, stays.
 
+### `type: redis` — a cache, or a queue that must not lose work
+
+A Redis-speaking cache or queue from a `cache`-capable Connection: a Valkey
+instance the cluster runs one of per claim, or a logical database at a server
+somebody else runs. What it is *for* — a cache that may evict, or a queue that
+must not — is the claim's own requirement, and it is the one field expensive
+to get wrong: a Sidekiq or BullMQ queue served by an evicting instance drops
+jobs under memory pressure and reports nothing. See
+[docs/api/claims.md](api/claims.md) for the full surface.
+
+```yaml
+apiVersion: kitchen.bermos.dev/v1alpha1
+kind: ResourceClaim
+metadata:
+  name: shop-jobs
+spec:
+  projectRef: { name: my-shop }
+  connectionRef: { name: valkey }       # the bundled Valkey, or a redis Connection
+  type: redis
+  deletionPolicy: Retain                # Retain (default) | Delete — the instance and its volume
+  config:
+    redis:
+      usage: queue                      # cache (the default) or queue; applied at creation, never after
+      maxMemory: 512Mi                  # a Kubernetes quantity the instance may not grow past
+      version: "8"                      # the Valkey major, as a number
+status:
+  phase: Bound
+  secretName: shop-jobs-binding         # binding keys: url, host, port, password, database, tls
+  instanceID: kitchen-my-shop/shop-jobs # the provider's identifier, which deprovisioning and branches address
+  dataProvenance: production
+  previewMode: fresh                    # a preview of its own: an empty instance, or a logical database
+  branches:
+    - environment: my-shop-pr-41
+      id: kitchen-my-shop/shop-jobs-my-shop-pr-41
+      secretName: shop-jobs-binding-my-shop-pr-41
+      provenance: synthetic             # it never held production's keys
+```
+
+Reconcile: create the instance and configure it when the provider is `valkey`
+— one instance per claim, so `maxmemory-policy` can be the one the usage
+needs — or check the Connection's stated configuration when the provider is
+`redis`, refusing a claim that asks for something the server is not configured
+for rather than binding one that will lose work. Write the binding Secret with
+the logical database number in it, because a client handed only host, port and
+password lands on database 0.
+
+**A `redis` Connection hands out logical databases from a finite pool**, and
+`Connection.status.cache.databases` is the allocation itself, not a report of
+one: a claim's database is read back from there on every reconcile, which is
+what keeps it the same one, and a claim finding every database held is refused
+rather than put in one somebody else is using. Database 0 is never allocated —
+bindings that predate allocation keep it — and a preview's database is handed
+back when the preview closes. `usage` and `maxMemory` are promises only a
+per-claim instance can keep; at a server the platform does not run, the
+operator declares on the Connection what the server is configured for, and the
+claim is refused where the two disagree. A preview's own resource differs by
+provider the same way: an empty Valkey instance beside the production one, or
+a logical database of its own at the shared server, synthetic either way.
+
 ### `type: service` — an address for something another project offers
 
 The one whose provider is neither a Connection nor the platform: it is
