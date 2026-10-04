@@ -1137,6 +1137,13 @@ manifests. Tune it, or turn it off and watch the volume yourself:
 --set registry.persistence.size=100Gi
 ```
 
+Either way the platform watches the volume too: the `platform.volume-filling`
+signal puts it on the problems list as a warning from 76.5% used and as
+critical from 85% — earlier than other volumes are judged, because a push
+needs room for every layer at once and pushes have been seen failing with
+`ENOSPC` at a reading of 85% — and the volume can be grown from Platform →
+Storage without a `helm upgrade`.
+
 ### Why it is told to accept Docker media types
 
 zot is OCI-native, and answers `415 Unsupported Media Type` to a manifest media

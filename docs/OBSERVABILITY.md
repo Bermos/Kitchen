@@ -866,6 +866,7 @@ means it also surfaces on the environment's diagnostics strip.
 | `pvc.filling` | volume ≥ 85% used | `kubelet_stats` volume group (new) |
 | `volume.attach-failed` | FailedAttachVolume / FailedMount warnings | `k8s_events` — the CSI-misbehaving detector |
 | `store.disk` | the store's data volume past threshold, as the kubelet measures it (`system.parts` is the share of it that is telemetry, not the fill) | volume stats + `system.parts` |
+| `platform.volume-filling` | one of the platform's own volumes other than the store's — the registry's, the accounts database's, the object store's — ≥ 76.5% used (warning) or ≥ 85% (critical), naming what stops when it is full and how to grow it. It warns earlier than `pvc.filling` because these volumes are written in bursts: the bundled registry refused pushes with ENOSPC at a reading of 85% | volume stats + `status.storage.volumes` on the Kitchen singleton |
 | `store.ingest-stalled` | newest row in `otel_logs` older than N minutes while pods run | store |
 | `ingest.flows-lost` | Relay reported lost events / follower reconnects with gaps | follower's own accounting (§3.2) |
 
@@ -1094,6 +1095,7 @@ additive rather than a rewrite.
 | `platform.component-unhealthy` | — | page |
 | `platform.error-correlated` | — | page |
 | `platform.latency-correlated` | — | page |
+| `platform.volume-filling` | — | ticket |
 | `pvc.filling` | ticket | ticket |
 | `pvc.pending` | — | ticket |
 | `route.rejected` | page | ticket |

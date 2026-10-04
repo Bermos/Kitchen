@@ -200,6 +200,12 @@ type PlatformFacts struct {
 	// it. platform.component-unhealthy folds it into the same feed rather than
 	// re-deriving it.
 	Components []kitchenv1alpha1.ComponentStatus
+	// Volumes are the platform's own volumes — every StatefulSet in the
+	// platform namespace whose size the operator keeps, with the claims it
+	// made — as `status.storage.volumes` records them. They are exactly the
+	// rows the Storage screen draws a `resize` block on, which is what makes
+	// them the volumes platform.volume-filling may tell somebody to grow.
+	Volumes []kitchenv1alpha1.PlatformVolumeStatus
 	// AuditLog is whether this installation keeps one at all
 	// (`spec.compliance.audit.enabled`). It decides whether the correlation
 	// ladder's fourth leg is a read that failed or a question that does not
