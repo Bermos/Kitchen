@@ -654,7 +654,8 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// deleted with the job and the Build is not.
 		build.Status.Failure = r.diagnoseJobFailure(ctx, failure.Job, failure.Message)
 		build.Status.Workloads = workloadStatuses(outcomes, nil)
-		reason, message := restateFailure(project, build, *failure, builds.Resources.Memory)
+		reason, message := restateFailure(project, build, *failure, builds.Resources.Memory,
+			r.pushTargetOf(ctx, registryConn, registry.Server))
 		return r.fail(ctx, build, project, reason, gitCreds.explain(message))
 	}
 	if !allComplete(outcomes) {
@@ -670,7 +671,7 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 // restateFailure is what a failed Job becomes on the Build: the reason the
 // platform files it under, and the sentence a person reads.
 //
-// Three failures are restated rather than reported as the exit status they
+// Four failures are restated rather than reported as the exit status they
 // are, because in none of them is the exit status the answer:
 //
 //   - A build killed for its memory hit the platform's own ceiling, and the
@@ -685,6 +686,13 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 //     reason of a build that failed — it ran, and no image came out — and
 //     gains a message naming the sysctl, because that is the fix and nothing
 //     the builder printed mentions it.
+//   - A build whose push the registry abandoned halfway — the upload it had
+//     accepted is gone, or what arrived does not match its digest — says so
+//     in the registry's protocol vocabulary, which reads as a flaky registry.
+//     It most often means the registry's storage is full, and the message
+//     says that, and where the platform's own registry's room is shown. It
+//     keeps the reason of a build that failed for the same reason the
+//     user-namespace case does: it ran, and no image came out.
 //
 // The diagnosis is already on build.Status.Failure, written from the pod by
 // the caller; this refines its message and names which image of the commit
@@ -695,6 +703,7 @@ func restateFailure(
 	build *kitchenv1alpha1.Build,
 	failure planOutcome,
 	memoryCeiling string,
+	target pushTarget,
 ) (string, string) {
 	reason := reasonBuildFailed
 	switch {
@@ -706,6 +715,8 @@ func restateFailure(
 		build.Status.Failure.Message = targetNotFoundMessage(project, build, failure.Plan)
 	case userNamespacesDenied(build.Status.Failure):
 		build.Status.Failure.Message = userNamespacesDeniedMessage(build.Status.Failure)
+	case registryRejectedUpload(build.Status.Failure):
+		build.Status.Failure.Message = registryRejectedUploadMessage(build.Status.Failure, target)
 	}
 	message := failureMessage(build.Status.Failure, failure.Message)
 	if !failure.Plan.isWeb() {

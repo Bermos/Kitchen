@@ -1862,6 +1862,51 @@ var _ = Describe("Build Controller", func() {
 			Expect(cond.Message).NotTo(ContainSubstring("backoff limit"))
 		})
 
+		// A registry that ran out of room mid-push throws the upload away and
+		// the builder hears about an upload that does not exist, which reads
+		// as a flaky registry. The build says what it most often means; this
+		// project pushes to a registry the platform does not run, so it names
+		// the host and no screen of the platform's.
+		It("explains a push the registry abandoned", func() {
+			reconciler.PodLogs = func(context.Context, string, string, string, int64) (string, error) {
+				return "Saving " + wantTag + "...\n" +
+					"ERROR: failed to export: saving image: failed to write image to the following tags: [" +
+					wantTag + ": BLOB_UPLOAD_UNKNOWN: blob upload unknown to registry]\n", nil
+			}
+
+			reconcileOnce()
+			createFailedBuildPod(1, "Error")
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			now := metav1.Now()
+			job.Status.StartTime = &now
+			job.Status.Failed = 1
+			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+					Message: "Job has reached the specified backoff limit"},
+			}
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			reconcileOnce()
+
+			build := &kitchenv1alpha1.Build{}
+			Expect(k8sClient.Get(ctx, buildKey, build)).To(Succeed())
+			Expect(build.Status.Phase).To(Equal(kitchenv1alpha1.BuildFailed))
+			Expect(build.Status.Failure).NotTo(BeNil())
+			Expect(build.Status.Failure.Message).To(ContainSubstring("discarded an upload it had already accepted"))
+			Expect(build.Status.Failure.Message).To(ContainSubstring("storage is full"))
+			Expect(build.Status.Failure.Message).To(ContainSubstring("harbor.example.com"))
+			Expect(build.Status.Failure.Message).NotTo(ContainSubstring("Storage screen"),
+				"only the platform's own registry is grown from the platform's Storage screen")
+
+			cond := meta.FindStatusCondition(build.Status.Conditions, condReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal(reasonBuildFailed))
+			Expect(cond.Message).To(ContainSubstring("storage is full"))
+		})
+
 		// The ceiling is the operator's decision and it reaches the pod, as the
 		// request and the limit at once: the limit alone bounds one build and
 		// tells the scheduler nothing, which is how two builds come to be

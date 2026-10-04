@@ -619,6 +619,44 @@ A change reaches builds started after it. The deadline belongs to the Job, and a
 Job's is immutable once it exists, so the build in flight keeps the number it
 was created with.
 
+### A build whose push the registry abandoned
+
+A registry that runs out of room partway through a push throws away the upload
+it had accepted, and the builder then hears one of two things in the registry's
+protocol vocabulary: that the upload it is still writing does not exist
+(`blob upload unknown to registry`), or that the blob it finished does not match
+its digest (`provided digest did not match uploaded content`). Neither says
+anything about space, and on their own both read as a flaky registry. A build
+whose log ends in either has its message restated:
+
+```json
+{
+  "container": "buildkit",
+  "exitCode": 1,
+  "reason": "Error",
+  "message": "buildkit could not push the image: the registry at registry.example.com discarded an upload it had already accepted (\"blob upload unknown to registry\"). A registry does that most often when its storage is full, and the same push fails the same way until there is room. This build pushes to the platform's own registry: the platform's Storage screen shows how full the registry's storage is, and can grow it",
+  "log": [
+    "error: failed to solve: failed to push registry.example.com/shop:59a47e2ac570: unknown: blob upload unknown to registry"
+  ]
+}
+```
+
+Both are the OCI distribution spec's own messages, so they are recognised the
+same way whichever builder relayed them — BuildKit's `unknown: …` and the
+buildpacks exporter's `BLOB_UPLOAD_UNKNOWN: …` alike. A builder that filled its
+*own* disk says `no space left on device` about a path inside the build, which
+is the repository's failure and is left as it is.
+
+The last sentence is there only when the project pushes to the platform's own
+registry, through the Connection the platform seeded for it. That registry's
+volume is one of the platform's own: [`GET /platform/storage`](./platform.md#storage)
+shows how full it is, and `POST /platform/storage/claims/{name}/resize` grows
+it. For any other registry the message names the host and stops: where that
+registry keeps its images is not something the platform knows. The `Ready` condition's reason stays
+`BuildFailed`; the build ran, and the image it made had nowhere to go. The log
+copy keeps the builder's own line, so the registry's exact words are still
+there to search for.
+
 ## A build that says Running and is not moving
 
 A build whose Job has never created a pod carries a `Stalled` condition:
