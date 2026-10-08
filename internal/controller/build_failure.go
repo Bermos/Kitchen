@@ -24,6 +24,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -321,6 +322,118 @@ func userNamespacesDeniedMessage(failure *kitchenv1alpha1.BuildFailureStatus) st
 			"Talos ships it at 0. Builds using the buildpacks strategy create no user "+
 			"namespace and are unaffected",
 		container)
+}
+
+// registryUploadLost lists what a registry answers a push with when it has
+// thrown away an upload it had accepted. Both are the OCI distribution spec's
+// own messages — BLOB_UPLOAD_UNKNOWN and DIGEST_INVALID — so they are the
+// registry's words rather than the client's, and every client relays them:
+// BuildKit as "unknown: blob upload unknown to registry", the buildpacks
+// lifecycle's exporter (go-containerregistry) as "BLOB_UPLOAD_UNKNOWN: blob
+// upload unknown to registry".
+var registryUploadLost = []string{
+	"blob upload unknown to registry",
+	"provided digest did not match uploaded content",
+}
+
+// registryRejectedUpload reports whether a failed build is a push the registry
+// gave up on halfway through.
+//
+// A registry that runs out of room mid-upload removes what it had received —
+// zot logs "no space left on device" and deletes the upload — and the client
+// then hears that the upload it is still writing does not exist, or that the
+// blob it finished does not match its digest. Neither sentence says anything
+// about space, and both read like a flaky registry, which is why they are
+// recognised here: the build ran, and the image it made had nowhere to go.
+//
+// It matches the registry's messages and nothing broader. A builder that
+// filled its *own* disk says "no space left on device" about a path in the
+// build, which is the repository's failure and not this one.
+func registryRejectedUpload(failure *kitchenv1alpha1.BuildFailureStatus) bool {
+	return registryUploadLostPhrase(failure) != ""
+}
+
+// registryUploadLostPhrase is which of the registry's sentences the failure
+// carries, or "" when it carries neither.
+func registryUploadLostPhrase(failure *kitchenv1alpha1.BuildFailureStatus) string {
+	if failure == nil {
+		return ""
+	}
+	said := strings.ToLower(failure.Message + "\n" + strings.Join(failure.Log, "\n"))
+	for _, phrase := range registryUploadLost {
+		if strings.Contains(said, phrase) {
+			return phrase
+		}
+	}
+	return ""
+}
+
+// pushTarget is where a build pushes, as far as a failure message needs to
+// know it: the registry's host, and whether it is the one the platform runs.
+type pushTarget struct {
+	// Host is the registry's host, as the build authenticated against it.
+	Host string
+	// Bundled is true when the Connection is the one the operator seeded for
+	// the platform's own registry, whose storage the platform can show and
+	// grow. It is false for any other registry, and for one that cannot be
+	// told apart — a sentence about the wrong registry's storage is worse
+	// than one that names no remedy.
+	Bundled bool
+}
+
+// pushTargetOf is the push target behind a registry Connection.
+//
+// The bundled registry is recognised by the record the operator keeps of the
+// Connection it seeded — `status.registry.connection` on the Kitchen object —
+// together with the platform's own label on it, because a Connection of that
+// name somebody created by hand is left alone by the seed and is not the
+// platform's registry. Nothing here fails: an unreadable Kitchen object makes
+// the target an ordinary registry.
+func (r *BuildReconciler) pushTargetOf(
+	ctx context.Context, conn *kitchenv1alpha1.Connection, server string,
+) pushTarget {
+	target := pushTarget{Host: server}
+	if conn == nil || conn.Namespace != PlatformNamespace ||
+		conn.Labels[labelManagedByKey] != labelManagedByValue {
+		return target
+	}
+	kitchen := &kitchenv1alpha1.Kitchen{}
+	if err := r.Get(ctx, types.NamespacedName{Name: KitchenSingletonName}, kitchen); err != nil {
+		return target
+	}
+	target.Bundled = kitchen.Status.Registry != nil && kitchen.Status.Registry.Connection == conn.Name
+	return target
+}
+
+// registryRejectedUploadMessage is what such a build says on the Build, on the
+// commit and in the dashboard.
+//
+// It is read by every member of the project, so it states facts rather than
+// handing out an operator's chores: what happened, what it most often means,
+// and — only for the platform's own registry, where it is true — that the
+// platform's Storage screen is where the registry's room is shown and grown.
+// For any other registry, or one that could not be told apart, it names the
+// host and stops there: where that registry's storage lives is not something
+// the platform knows.
+func registryRejectedUploadMessage(failure *kitchenv1alpha1.BuildFailureStatus, target pushTarget) string {
+	container := "the builder"
+	if failure != nil && failure.Container != "" {
+		container = failure.Container
+	}
+	registry := "the registry"
+	if target.Host != "" {
+		registry = "the registry at " + target.Host
+	}
+	message := fmt.Sprintf(
+		"%s could not push the image: %s discarded an upload it had already accepted (%q). "+
+			"A registry does that most often when its storage is full, and the same push fails "+
+			"the same way until there is room",
+		container, registry, registryUploadLostPhrase(failure))
+	if !target.Bundled {
+		return message
+	}
+	return message + ". This build pushes to the platform's own registry: the platform's " +
+		"Storage screen shows how full the registry's storage is, and can grow it"
 }
 
 // failureMessage is what the Build's condition and the commit's status check
