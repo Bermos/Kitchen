@@ -241,8 +241,18 @@ func gatherKitchen(ctx context.Context, reader client.Client, snapshot *Snapshot
 		CloudflaredEnabled: kitchen.Spec.Ingress.Cloudflared.Enabled,
 		AuditLog:           kitchen.Spec.Compliance.Audit.Enabled,
 		Components:         kitchen.Status.Components,
+		Volumes:            platformVolumes(kitchen),
 		RetentionDays:      retention.Resolve(kitchen).LongestTelemetry(),
 	}
+}
+
+// platformVolumes is the operator's own record of the volumes it keeps, which
+// is absent on an installation where no platform StatefulSet declares a size.
+func platformVolumes(kitchen *kitchenv1alpha1.Kitchen) []kitchenv1alpha1.PlatformVolumeStatus {
+	if kitchen.Status.Storage == nil {
+		return nil
+	}
+	return kitchen.Status.Storage.Volumes
 }
 
 // gatherPlatformChanges joins the two kinds that record what the platform did

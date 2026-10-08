@@ -37,8 +37,9 @@ import (
 
 // Growing one of the platform's own volumes.
 //
-// This is the operation an operator reaches for the moment `pvc.filling` fires
-// on a platform volume, and until #533 the only route to it was four kubectl
+// This is the operation an operator reaches for the moment
+// `platform.volume-filling` (or `store.disk`) fires on a platform volume — the
+// finding names this route — and until #533 the only route to it was four kubectl
 // invocations against the cluster this platform exists to abstract away — a
 // StatefulSet's claim template is immutable, so `helm upgrade --set
 // clickhouse.persistence.size=40Gi` fails on it and the volume has to be

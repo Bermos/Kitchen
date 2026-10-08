@@ -267,6 +267,18 @@ const (
 	// to explain.
 	StoreDiskFraction = 0.85
 
+	// PlatformVolumeWarnFraction is where one of the platform's own volumes
+	// counts as nearly full, and VolumeFullFraction is where it turns
+	// critical. The warning has to come before the number every other volume
+	// is judged at, because these volumes are written in bursts the size of
+	// the thing being written: an image push stages every layer before it
+	// commits, and the bundled registry has been seen refusing pushes with
+	// ENOSPC at a reading of 85% on a 20Gi volume — the kubelet samples
+	// between bursts, not at their peak. Nine tenths of the full threshold is
+	// also where the Storage screen's bar turns amber, so the bar and the
+	// finding change colour together.
+	PlatformVolumeWarnFraction = 0.9 * VolumeFullFraction
+
 	// IngestStalledAfter is how old the newest row may be while pods are
 	// running before ingest counts as stalled. Ten minutes matches
 	// NodeSilentAfter, because the two rules describe the same silence from

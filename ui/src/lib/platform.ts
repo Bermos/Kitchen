@@ -30,6 +30,9 @@ import type { Tone } from "./status";
  * paints amber and a finding that fires cannot disagree about the number.
  * They are the catalogue's constants (`internal/signals/thresholds.go`). */
 export const VOLUME_FULL_FRACTION = 0.85;
+/** Where a fill bar turns amber, and where `platform.volume-filling` starts
+ * warning about one of the platform's own volumes (`PlatformVolumeWarnFraction`). */
+export const VOLUME_WARN_FRACTION = VOLUME_FULL_FRACTION * 0.9;
 export const NODE_SATURATION_FRACTION = 0.9;
 export const CERT_EXPIRY_DAYS = 21;
 export const FLOWS_LOST_FIRING = 100;
@@ -169,12 +172,13 @@ export function formatFraction(fraction: number | undefined | null): string {
   return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
 }
 
-/** The tone a fill bar takes, against the same threshold `pvc.filling` and
- * `store.disk` fire on. Nothing measured is neutral, never green. */
+/** The tone a fill bar takes: red at the threshold `pvc.filling` and
+ * `store.disk` fire on, amber where `platform.volume-filling` starts warning
+ * about the platform's own volumes. Nothing measured is neutral, never green. */
 export function fillTone(fraction: number | undefined | null): Tone {
   if (fraction === undefined || fraction === null || Number.isNaN(fraction)) return "neutral";
   if (fraction >= VOLUME_FULL_FRACTION) return "error";
-  if (fraction >= VOLUME_FULL_FRACTION * 0.9) return "warning";
+  if (fraction >= VOLUME_WARN_FRACTION) return "warning";
   return "success";
 }
 

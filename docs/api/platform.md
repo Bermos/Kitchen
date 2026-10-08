@@ -429,6 +429,28 @@ from, which is the horizon past which the store deliberately holds nothing.
 `/platform/ingest` because losing rows before they are written and running out
 of disk to write them to are the same problem seen from two ends.
 
+**The platform's own volumes have a signal of their own**, beside the store's.
+Every row carrying a `resize` block other than the store's — the bundled
+registry's, the accounts database's Postgres, the object store's — is judged by
+`platform.volume-filling` on the same `usage` reading the row draws: a
+**warning** from 76.5% used, which is where the row's bar turns amber, and
+**critical** from 85%, where it turns red and where `pvc.filling` and
+`store.disk` fire. It warns earlier than every other volume is judged because
+these are written in bursts the size of the thing being written — an image
+push stages every layer before it commits, and the kubelet samples between
+pushes — and the registry has been seen refusing pushes with `ENOSPC` at a
+reading of 85% on a 20Gi volume. The finding is scoped to the claim, lands on
+this screen's row, and says what stops when the volume is full (for the
+registry, builds fail to push their images) and what to do about it: grow it
+here, which is the route below, or — for the registry — keep fewer images with
+the chart's `registry.retention` values (`keepTags`, `keepPushedWithin`). A
+volume whose storage class admits no expansion is not offered the resize. A
+volume with no `usage` is not judged at all: an unmeasured disk is not a full
+one. The store's volume is left to `store.disk`, which knows the retention
+lever and how much of the disk is telemetry, so one disk never carries two
+platform findings. The thresholds are compiled in, like every storage
+threshold; [the signal policy](#signal-policy) moves clocks, not fill levels.
+
 ### Events
 
 `GET /platform/events` is the cluster's Warning history — `FailedScheduling`,

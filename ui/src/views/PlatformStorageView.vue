@@ -4,7 +4,7 @@ import { useRoute } from "vue-router";
 import { api, type PlatformVolume } from "../lib/api";
 import { compactCount, formatBytes, formatDurationSeconds, timeAgo } from "../lib/format";
 import { useFreshness } from "../lib/freshness";
-import { FLOWS_LOST_FIRING, flowsUnderReporting, formatFraction } from "../lib/platform";
+import { FLOWS_LOST_FIRING, flowsUnderReporting, formatFraction, VOLUME_FULL_FRACTION } from "../lib/platform";
 import { useAsync, usePoll } from "../lib/useAsync";
 import FillBar from "../components/FillBar.vue";
 import GrowVolumeModal from "../components/GrowVolumeModal.vue";
@@ -393,10 +393,13 @@ function highlighted(volume: { namespace: string; name: string }): boolean {
 
       <p class="text-[11px] text-dimmed leading-relaxed">
         An unbound volume names its own suspect: a claim Pending with no storage class is waiting for the cluster's
-        default, and a cluster without one is the first-install hang the prerequisites warn about. Fill is measured at
-        {{ formatFraction(0.85) }} — the same threshold the <span class="font-mono">pvc.filling</span> and
-        <span class="font-mono">store.disk</span> rules fire on, so a bar that has just turned amber and a finding on
-        the problems list are the same number. Growing one of the platform's own volumes expands it and rewrites the
+        default, and a cluster without one is the first-install hang the prerequisites warn about. A volume counts as
+        full at {{ formatFraction(VOLUME_FULL_FRACTION) }}, where its bar turns red — the threshold the
+        <span class="font-mono">pvc.filling</span> and <span class="font-mono">store.disk</span> rules fire on. The
+        platform's own volumes are warned about from where the bar turns amber, by
+        <span class="font-mono">platform.volume-filling</span>, because they fill in bursts the size of what is being
+        written — an image push stages every layer at once — so a bar that has just changed colour and a finding on the
+        problems list are the same number. Growing one of the platform's own volumes expands it and rewrites the
         declaration behind it, which is why the platform does it rather than the chart; a volume whose storage allows no
         expansion is fixed at the size it was made, and says so.
       </p>

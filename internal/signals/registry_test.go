@@ -37,7 +37,7 @@ var catalogueV1 = []ID{
 	SignalNodeSilent, SignalOvercommitted,
 	// Storage.
 	SignalPVCPending, SignalPVCFilling, SignalAttachFailed, SignalStoreDisk,
-	SignalIngestStalled, SignalFlowsLost,
+	SignalPlatformVolumeFilling, SignalIngestStalled, SignalFlowsLost,
 	// Edge and certificates.
 	SignalGatewayUnprogrammed, SignalRouteRejected, SignalDNSMismatch, SignalCertExpiring,
 	SignalTunnelDown, SignalUnroutedHosts,

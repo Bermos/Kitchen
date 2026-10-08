@@ -18,6 +18,7 @@ import {
   nodePressure,
   nodesTile,
   storeTile,
+  VOLUME_WARN_FRACTION,
 } from "./platform";
 
 const status = (over: Partial<PlatformStatus> = {}): PlatformStatus => ({
@@ -159,6 +160,14 @@ describe("fillTone", () => {
     expect(fillTone(0.1)).toBe("success");
     expect(fillTone(0.8)).toBe("warning");
     expect(fillTone(0.86)).toBe("error");
+  });
+
+  it("turns amber where platform.volume-filling starts warning", () => {
+    // The registry read 85% on this screen and refused pushes; the bar and the
+    // finding have to change colour together below that.
+    expect(VOLUME_WARN_FRACTION).toBeCloseTo(0.765);
+    expect(fillTone(0.76)).toBe("success");
+    expect(fillTone(0.846)).toBe("warning");
   });
 
   it("is neutral where nothing measured the fill, never green", () => {
