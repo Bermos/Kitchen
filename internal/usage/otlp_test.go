@@ -54,58 +54,64 @@ func (e *stubExporter) Shutdown(context.Context) error {
 }
 
 // The endpoint on the Kitchen object is a base URL — the same string
-// applications are handed — and OTLP's own path is the exporter's to append.
+// applications are handed — and OTLP's own path is newExporter's to append.
 // Getting this wrong is silent: the collector answers 404 and the samples are
 // simply never there.
 func TestTheEndpointIsABaseURLTheExporterCompletes(t *testing.T) {
-	requests := make(chan *http.Request, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		select {
-		case requests <- request:
-		default:
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
+	// With and without the trailing slash an operator might write.
+	for name, suffix := range map[string]string{"bare": "", "trailing slash": "/"} {
+		t.Run(name, func(t *testing.T) {
+			requests := make(chan *http.Request, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				select {
+				case requests <- request:
+				default:
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+			endpoint := server.URL + suffix
 
-	exporter, err := newExporter(context.Background(), server.URL)
-	if err != nil {
-		t.Fatalf("newExporter: %v", err)
-	}
-	defer func() {
-		if err := exporter.Shutdown(context.Background()); err != nil {
-			t.Fatalf("Shutdown: %v", err)
-		}
-	}()
+			exporter, err := newExporter(context.Background(), endpoint)
+			if err != nil {
+				t.Fatalf("newExporter: %v", err)
+			}
+			defer func() {
+				if err := exporter.Shutdown(context.Background()); err != nil {
+					t.Fatalf("Shutdown: %v", err)
+				}
+			}()
 
-	sweep := Sweep{
-		At:    sampledAt,
-		Since: sampledAt,
-		Containers: []ContainerSample{{
-			Project:     appProject,
-			Environment: appEnvironment,
-			Namespace:   appNamespace,
-			Pod:         appPodName,
-			Container:   appContainer,
-			Node:        appNode,
-			Started:     sampledAt,
-		}},
-	}
-	for _, batch := range sweep.ResourceMetrics() {
-		if err := exporter.Export(context.Background(), batch); err != nil {
-			t.Fatalf("Export: %v", err)
-		}
-	}
+			sweep := Sweep{
+				At:    sampledAt,
+				Since: sampledAt,
+				Containers: []ContainerSample{{
+					Project:     appProject,
+					Environment: appEnvironment,
+					Namespace:   appNamespace,
+					Pod:         appPodName,
+					Container:   appContainer,
+					Node:        appNode,
+					Started:     sampledAt,
+				}},
+			}
+			for _, batch := range sweep.ResourceMetrics() {
+				if err := exporter.Export(context.Background(), batch); err != nil {
+					t.Fatalf("Export: %v", err)
+				}
+			}
 
-	request := <-requests
-	if request.Method != http.MethodPost {
-		t.Fatalf("OTLP is a POST, got %s", request.Method)
-	}
-	if request.URL.Path != "/v1/metrics" {
-		t.Fatalf("want OTLP's own metrics path appended to the endpoint, got %q", request.URL.Path)
-	}
-	if got := request.Header.Get("Content-Type"); got != "application/x-protobuf" {
-		t.Fatalf("want the protobuf encoding every collector accepts, got %q", got)
+			request := <-requests
+			if request.Method != http.MethodPost {
+				t.Fatalf("OTLP is a POST, got %s", request.Method)
+			}
+			if request.URL.Path != "/v1/metrics" {
+				t.Fatalf("want OTLP's own metrics path appended to the endpoint, got %q", request.URL.Path)
+			}
+			if got := request.Header.Get("Content-Type"); got != "application/x-protobuf" {
+				t.Fatalf("want the protobuf encoding every collector accepts, got %q", got)
+			}
+		})
 	}
 }
 

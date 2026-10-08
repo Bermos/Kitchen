@@ -18,6 +18,8 @@ package usage
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -112,12 +114,18 @@ type Exporter interface {
 // written on the Kitchen object.
 //
 // That endpoint is a base URL — the same string applications are handed in
-// OTEL_EXPORTER_OTLP_ENDPOINT — and the exporter appends OTLP's own
-// /v1/metrics path to it, exactly as an SDK inside an application would. Its
-// scheme decides whether the connection is plaintext, which for an in-cluster
-// Service name it is.
+// OTEL_EXPORTER_OTLP_ENDPOINT — and OTLP's own v1/metrics path is appended to
+// it, exactly as an SDK inside an application would. It is appended here
+// rather than left to the exporter: WithEndpointURL takes a signal's full URL,
+// and from otlpmetrichttp v1.45.0 a URL with no path is posted to "/" as
+// written, where the collector answers 404. Its scheme decides whether the
+// connection is plaintext, which for an in-cluster Service name it is.
 func newExporter(ctx context.Context, endpoint string) (Exporter, error) {
-	return otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpointURL(endpoint))
+	metricsURL, err := url.JoinPath(endpoint, "v1", "metrics")
+	if err != nil {
+		return nil, fmt.Errorf("OTLP endpoint %q: %w", endpoint, err)
+	}
+	return otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpointURL(metricsURL))
 }
 
 // ResourceMetrics shapes a sweep into what the exporter sends: one batch per
