@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.44.0](https://github.com/Bermos/Kitchen/compare/v0.43.0...v0.44.0) (2026-10-08)
+
+
+### Features
+
+* **signals:** warn before the platform's own volumes fill up ([#634](https://github.com/Bermos/Kitchen/issues/634)) ([90407cd](https://github.com/Bermos/Kitchen/commit/90407cdc833ceb418c9e095d960ce0f4d227ad53))
+
+
+### Bug fixes
+
+* **api:** read a body's project the way the handler reads it ([252c96e](https://github.com/Bermos/Kitchen/commit/252c96eb4ef8f7086351fdfbfd38ad7506edeae0))
+* **auth:** reserve upstream identity provider management to the platform ([bcf2f10](https://github.com/Bermos/Kitchen/commit/bcf2f1077a0982dd84b71cd8afda7d78b35a2793))
+* **deps:** bump OpenTelemetry, x/text and Cilium for reachable advisories ([#635](https://github.com/Bermos/Kitchen/issues/635)) ([8e8f78d](https://github.com/Bermos/Kitchen/commit/8e8f78d5bdca664c3d3bf9ba30f3ef1783c1e23c))
+* **operator:** explain a build push the registry abandoned mid-upload ([#633](https://github.com/Bermos/Kitchen/issues/633)) ([6feb623](https://github.com/Bermos/Kitchen/commit/6feb6236291bf03648011cc85780d449b4461b6c))
+* **operator:** never hand a project a namespace that is not its own ([0a2e83d](https://github.com/Bermos/Kitchen/commit/0a2e83dba6627cdf455be0551aef414f3f3f88a4))
+
 ## [0.43.0](https://github.com/Bermos/Kitchen/compare/v0.42.0...v0.43.0) (2026-09-28)
 
 
