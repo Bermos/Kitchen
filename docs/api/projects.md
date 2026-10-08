@@ -82,6 +82,17 @@ would be legal everywhere and unreachable in the one place every project is
 reached from. It is refused at the name for the reason a name matching the
 platform's own hostnames is, and the refusal says which address is taken.
 
+### Names that spell a platform namespace are reserved
+
+A project's workloads run in the namespace `kitchen-<name>`, so four names
+would spell a namespace the platform already runs in: `system` (the platform's
+own), `databases`, `caches` and `inngest` (where every project's Postgres,
+Valkey and Inngest servers run). They are refused with a `400` naming the
+namespace. The operator repeats the rule as a backstop for a Project written
+straight to the cluster: it adopts an existing namespace only when it carries
+the project's `kitchen.bermos.dev/project` label, and a project's deletion
+removes only a namespace labelled as that project's.
+
 A project reads back with `repositoryUrl` beside `repo`: where that repository
 is on the provider's own site, composed by the API from the connection because
 the host is the connection's — see

@@ -288,9 +288,23 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: appNamespace(project.Name)}}
-	if err := r.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
+	// Only a namespace that is this project's goes with it. One that merely
+	// has the right name — the platform's own, or a shared provider's, which
+	// a project named "system" or "databases" spells — is somebody else's,
+	// and deleting it would take the platform or every tenant's databases
+	// with this one project.
+	ns := &corev1.Namespace{}
+	switch err := r.Get(ctx, types.NamespacedName{Name: appNamespace(project.Name)}, ns); {
+	case apierrors.IsNotFound(err):
+	case err != nil:
 		return ctrl.Result{}, err
+	case !namespaceBelongsTo(ns, project.Name):
+		logf.FromContext(ctx).Info("leaving a namespace that is not this project's",
+			"namespace", ns.Name, "project", project.Name, "owner", ns.Labels[labelProject])
+	default:
+		if err := r.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// The application namespace took the mirrored copy of the project's

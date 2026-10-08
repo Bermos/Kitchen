@@ -132,4 +132,34 @@ var _ = Describe("Application namespaces", func() {
 		Expect(ensureNamespace(ctx, k8sClient, name, "pssrelabelled")).To(Succeed())
 		Expect(labelsOf(name)).To(HaveKeyWithValue(enforce, "privileged"))
 	})
+
+	// The name of an application namespace is "kitchen-" plus the project's,
+	// so the name proves nothing about whose it is: a project called "system"
+	// spells the platform's own namespace. Adopting one that is not labelled
+	// as the project's would hand it over — and the project's finalizer would
+	// then delete it.
+	It("refuses a namespace of the right name that is not the project's", func() {
+		setLevel("")
+
+		const name = "kitchen-psstaken"
+		existing := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"app.kubernetes.io/part-of": "kitchen"},
+		}}
+		Expect(k8sClient.Create(ctx, existing)).To(Succeed())
+
+		err := ensureNamespace(ctx, k8sClient, name, "psstaken")
+		Expect(err).To(MatchError(ErrNamespaceNotProjects))
+		Expect(labelsOf(name)).NotTo(HaveKey(labelProject))
+		Expect(labelsOf(name)).NotTo(HaveKey(enforce))
+
+		By("and one that is labelled as another project's")
+		other := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name:   "kitchen-pssother",
+			Labels: map[string]string{labelProject: "someone-else"},
+		}}
+		Expect(k8sClient.Create(ctx, other)).To(Succeed())
+		Expect(ensureNamespace(ctx, k8sClient, other.Name, "pssother")).To(MatchError(ErrNamespaceNotProjects))
+		Expect(labelsOf(other.Name)).To(HaveKeyWithValue(labelProject, "someone-else"))
+	})
 })

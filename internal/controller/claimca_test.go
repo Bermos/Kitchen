@@ -225,7 +225,9 @@ var _ = Describe("A claim's certificate authority", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: PlatformNamespace},
 		}))).To(Succeed())
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: appNS},
+			// Labelled as the project's, the way the operator creates it: a
+			// namespace of the right name that is not is somebody else's.
+			ObjectMeta: metav1.ObjectMeta{Name: appNS, Labels: map[string]string{labelProject: projectName}},
 		}))).To(Succeed())
 		ensureSingleton(ctx, &kitchenv1alpha1.Kitchen{
 			ObjectMeta: metav1.ObjectMeta{Name: KitchenSingletonName},

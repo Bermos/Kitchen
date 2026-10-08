@@ -41,6 +41,9 @@ import (
 	"github.com/Bermos/Kitchen/internal/clickhouse"
 	"github.com/Bermos/Kitchen/internal/controller"
 	"github.com/Bermos/Kitchen/internal/platformhost"
+	"github.com/Bermos/Kitchen/internal/provider/cache"
+	"github.com/Bermos/Kitchen/internal/provider/database"
+	"github.com/Bermos/Kitchen/internal/provider/inngest"
 )
 
 // get reads one object out of the platform namespace.
@@ -212,7 +215,32 @@ func validateProjectName(name, baseDomain string) error {
 			"name %q is reserved: %s, so a project of that name could not be opened. Choose another name",
 			name, purpose)
 	}
+	if purpose, reserved := namespaceReservedNames()[strings.ToLower(strings.TrimSpace(name))]; reserved {
+		return fmt.Errorf(
+			"name %q is reserved: a project's workloads run in %s, which is %s. Choose another name",
+			name, controller.AppNamespace(strings.ToLower(strings.TrimSpace(name))), purpose)
+	}
 	return platformhost.CheckProjectName(name, baseDomain)
+}
+
+// namespaceReservedNames are the project names whose application namespace —
+// "kitchen-" plus the name — is one the platform already runs in. The
+// operator refuses to adopt or delete a namespace that is not labelled as the
+// project's, which is what keeps the platform safe; this is the refusal at
+// the name, so that the project is never created to sit there failing.
+func namespaceReservedNames() map[string]string {
+	reserved := map[string]string{}
+	for namespace, purpose := range map[string]string{
+		controller.PlatformNamespace:      "the platform's own namespace",
+		database.DefaultDatabaseNamespace: "where every project's databases run",
+		cache.DefaultCacheNamespace:       "where every project's caches run",
+		inngest.DefaultServerNamespace:    "where every project's Inngest servers run",
+	} {
+		if name, ok := strings.CutPrefix(namespace, controller.AppNamespace("")); ok {
+			reserved[name] = purpose
+		}
+	}
+	return reserved
 }
 
 // platformBaseDomain reads the base domain off the Kitchen singleton, for the

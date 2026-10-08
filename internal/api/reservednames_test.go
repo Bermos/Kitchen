@@ -99,6 +99,32 @@ func TestCreatingAProjectRefusesANameTheDashboardAddresses(t *testing.T) {
 	}
 }
 
+// An application namespace is "kitchen-" plus the project's name, so a name
+// can spell a namespace the platform already runs in: "system" is the
+// platform's own, "databases" is where every tenant's databases are. A
+// project of that name would be handed that namespace, and deleting it would
+// delete the namespace. Refused at the name, and refused again by the operator,
+// which will not adopt a namespace that is not labelled as the project's.
+func TestCreatingAProjectRefusesANameThatSpellsAPlatformNamespace(t *testing.T) {
+	for _, name := range []string{"system", "databases", "caches", "inngest"} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, nil, fixtures()...)
+			body := fmt.Sprintf(
+				`{"name":%q,"repo":"acme/thing","connection":"gh","registry":"registry"}`, name)
+			recorder := h.do(t, http.MethodPost, "/api/v1/projects", body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("want 400, got %d: %s", recorder.Code, recorder.Body.String())
+			}
+			if want := "kitchen-" + name; !strings.Contains(recorder.Body.String(), want) {
+				t.Errorf("the refusal does not name %s: %s", want, recorder.Body.String())
+			}
+			if err := h.server.get(context.Background(), name, &kitchenv1alpha1.Project{}); err == nil {
+				t.Fatal("the project was created anyway")
+			}
+		})
+	}
+}
+
 // And the rule is narrow: a name that only looks like one of the above is
 // still an ordinary name.
 func TestCreatingAProjectStillAcceptsAnOrdinaryName(t *testing.T) {
