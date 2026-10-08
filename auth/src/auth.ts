@@ -10,6 +10,7 @@ import type { Pool } from "pg";
 import { allowedOrigins, platformClients, platformResources, type Config } from "./config.js";
 import { isServiceAccount } from "./identity.js";
 import { guardKeyIssuance, guardKeySession } from "./keyscope.js";
+import { guardProviderManagement } from "./upstream.js";
 import { PERSONAL_KEY_CLAIM, personalKeyOfSession } from "./personalkeys.js";
 import { log } from "./log.js";
 
@@ -100,21 +101,24 @@ function guardResourceIndicator(config: Config) {
  * Everything that runs in front of every endpoint, in one hook because
  * better-auth's options take one.
  *
- * They are three questions asked in the order they can be answered. *May this
+ * They are four questions asked in the order they can be answered. *May this
  * credential be here at all* comes first and is settled from the request
  * alone (src/keyscope.ts); *may anyone mint a key here* is the same file's
- * answer for every caller, a person's browser session included; *may this
- * client ask for this audience* is about one endpoint's body. A guard added
+ * answer for every caller, a person's browser session included; *may anyone
+ * register an upstream identity provider* is src/upstream.ts's, in the same
+ * shape; *may this client ask for this audience* is about one endpoint's body. A guard added
  * later belongs in this list rather than inside one of them.
  */
 function guards(config: Config): BetterAuthOptions["hooks"] {
 	const keySession = guardKeySession(config);
 	const keyIssuance = guardKeyIssuance(config);
 	const resourceIndicator = guardResourceIndicator(config);
+	const providerManagement = guardProviderManagement(config);
 	return {
 		before: createAuthMiddleware(async (ctx) => {
 			await keySession(ctx);
 			await keyIssuance(ctx);
+			await providerManagement(ctx);
 			await resourceIndicator(ctx);
 		}),
 	};

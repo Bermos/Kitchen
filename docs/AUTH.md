@@ -44,7 +44,11 @@ Connections.
   pattern as the webhook receiver). Plugins: OIDC Provider (the piece that
   makes it an IdP), SSO/social login upstream — logging into Kitchen with the
   same GitHub account you push from — organizations (future teams/RBAC),
-  passkeys, 2FA, API keys.
+  passkeys, 2FA, API keys. Registering an upstream identity provider
+  (`/sso/register` and the plugin's other management endpoints) is refused to
+  everyone but the operator's service credential (`src/upstream.ts`): a
+  provider decides who an account is, so one a signed-in person registered
+  would let them sign in as any address.
 - **Storage**: Postgres. Platform-critical OLTP — ClickHouse and CRDs are both
   wrong for it. The chart ships a single-node Postgres StatefulSet (same
   pattern and secret conventions as ClickHouse) with an `external.host`
