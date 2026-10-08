@@ -109,6 +109,18 @@ spec:
                 items:
                   type: string
                 type: array
+              policyEnvironmentRef:
+                description: |-
+                  PolicyEnvironmentRef binds this runtime environment to an instance-wide
+                  policy environment. When unset, this environment's own governance fields
+                  remain authoritative for backward compatibility.
+                properties:
+                  name:
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               preview:
                 description: Required when Type is preview.
                 properties:

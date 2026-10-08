@@ -81,10 +81,11 @@ type createEnvironmentRequest struct {
 	// The owners' declaration, from here down. Each is exactly the field the
 	// requirements endpoint writes, and setting any of them at creation asks
 	// the same of the caller.
-	Owners       []string                                 `json:"owners,omitempty"`
-	Requirements *kitchenv1alpha1.EnvironmentRequirements `json:"requirements,omitempty"`
-	DataClass    *string                                  `json:"dataClass,omitempty"`
-	Residency    *string                                  `json:"residency,omitempty"`
+	Owners            []string                                 `json:"owners,omitempty"`
+	Requirements      *kitchenv1alpha1.EnvironmentRequirements `json:"requirements,omitempty"`
+	PolicyEnvironment string                                   `json:"policyEnvironment,omitempty"`
+	DataClass         *string                                  `json:"dataClass,omitempty"`
+	Residency         *string                                  `json:"residency,omitempty"`
 	// Serves is who this environment will answer: the classes of another
 	// project's environments that may bind to an offering served from here
 	// (#494). Absent serves nobody, which is the state an environment
@@ -114,6 +115,8 @@ const declarationRefusal = "an environment that does not exist yet names no owne
 
 // createProjectEnvironment declares an environment of a project before
 // anything deploys into it.
+//
+//nolint:gocyclo // The declaration path validates naming, ownership, governance and audit in one handler.
 func (s *Server) createProjectEnvironment(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -139,6 +142,29 @@ func (s *Server) createProjectEnvironment(w http.ResponseWriter, req *http.Reque
 	if problem != "" {
 		badRequest(w, "%s", problem)
 		return
+	}
+	var policyEnv *kitchenv1alpha1.PlatformEnvironment
+	policyEnvironmentName := strings.TrimSpace(body.PolicyEnvironment)
+	if policyEnvironmentName == "" {
+		policyEnvironmentName = controller.DefaultPlatformEnvironmentName(envType)
+	}
+	if policyEnvironmentName != "" {
+		policyEnv = &kitchenv1alpha1.PlatformEnvironment{}
+		if err := s.get(ctx, policyEnvironmentName, policyEnv); err != nil {
+			if body.PolicyEnvironment != "" {
+				if apierrors.IsNotFound(err) {
+					badRequest(w, "platform environment %q does not exist", policyEnvironmentName)
+					return
+				}
+				s.writeError(w, err)
+				return
+			}
+			if !apierrors.IsNotFound(err) {
+				s.writeError(w, err)
+				return
+			}
+			policyEnv = nil
+		}
 	}
 
 	// The environments of every project share one namespace, so a name taken
@@ -199,7 +225,13 @@ func (s *Server) createProjectEnvironment(w http.ResponseWriter, req *http.Reque
 		},
 		Spec: kitchenv1alpha1.EnvironmentSpec{
 			ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-			Type:       envType,
+			PolicyEnvironmentRef: func() *kitchenv1alpha1.LocalObjectReference {
+				if policyEnv == nil {
+					return nil
+				}
+				return &kitchenv1alpha1.LocalObjectReference{Name: policyEnv.Name}
+			}(),
+			Type: envType,
 			// No release: that is what declaring an environment means, and
 			// the environment reports AwaitingDeployment until a build puts
 			// one here.
@@ -212,6 +244,13 @@ func (s *Server) createProjectEnvironment(w http.ResponseWriter, req *http.Reque
 			// construction rather than by somebody remembering.
 			DataClass: dataClass,
 		},
+	}
+	if policyEnv != nil {
+		if body.declares() {
+			badRequest(w, "governance fields move with a platform environment binding: set them on PATCH /api/v1/platform/environments/{name}")
+			return
+		}
+		controller.ApplyPolicyEnvironment(env, policyEnv)
 	}
 	if body.Residency != nil {
 		env.Spec.Residency = strings.TrimSpace(*body.Residency)

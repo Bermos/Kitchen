@@ -43,6 +43,14 @@ const headline = computed(() => firstClause(props.finding.detail));
  * that these belong together" is not a question a rule about one container is
  * answering, and a grey badge saying so would be an answer. */
 const rung = computed(() => props.finding.confidence);
+const scopePath = computed(() => {
+  const scope = props.finding.scope;
+  if (!scope) return "";
+  const parts = [scope.project, scope.environment];
+  if (!scope.environment) parts.push(scope.namespace);
+  parts.push(scope.node, scope.name);
+  return parts.filter(Boolean).join("/");
+});
 </script>
 
 <template>
@@ -89,7 +97,7 @@ const rung = computed(() => props.finding.confidence);
       <p v-if="!dense" class="text-toned mt-0.5 break-words">{{ finding.detail }}</p>
       <p v-if="!dense && finding.scope" class="text-[11px] text-dimmed mt-0.5 font-mono truncate">
         {{ finding.scope.kind }}<template v-if="finding.scope.name || finding.scope.node"> · </template>
-        {{ [finding.scope.project, finding.scope.environment, finding.scope.namespace, finding.scope.node, finding.scope.name].filter(Boolean).join("/") }}
+        {{ scopePath }}
       </p>
     </div>
 

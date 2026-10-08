@@ -2084,7 +2084,10 @@ func (r *BuildReconciler) ensureEnvironment(
 			},
 			Spec: kitchenv1alpha1.EnvironmentSpec{
 				ProjectRef: kitchenv1alpha1.LocalObjectReference{Name: project.Name},
-				Type:       envType,
+				PolicyEnvironmentRef: &kitchenv1alpha1.LocalObjectReference{
+					Name: DefaultPlatformEnvironmentName(envType),
+				},
+				Type: envType,
 				// Issue #137's inheritance: an environment the platform
 				// creates takes the project's class at creation, so a
 				// classified project's own environments can hold its data by
@@ -2094,6 +2097,11 @@ func (r *BuildReconciler) ensureEnvironment(
 				Preview:    preview,
 				ReleaseRef: kitchenv1alpha1.ReleaseReference{Name: releaseName},
 			},
+		}
+		if policyEnv, err := PolicyEnvironmentFor(ctx, r.Client, namespace, env); err != nil {
+			return err
+		} else if policyEnv != nil {
+			ApplyPolicyEnvironment(env, policyEnv)
 		}
 		details := map[string]any{"type": string(envType), "release": releaseName, "build": buildName}
 		if project.Spec.DataClass.Classified() {
