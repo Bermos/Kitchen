@@ -1217,11 +1217,10 @@ func fromBody(
 			}
 			req.Body = io.NopCloser(bytes.NewReader(raw))
 
-			values := map[string]any{}
-			if err := json.Unmarshal(raw, &values); err != nil {
+			name, ok := bodyField(raw, field)
+			if !ok {
 				return "", "", nil
 			}
-			name, _ := values[field].(string)
 			if name = strings.TrimSpace(name); name == "" {
 				return "", "", nil
 			}
@@ -1232,6 +1231,32 @@ func fromBody(
 			return resolved, name, err
 		},
 	}
+}
+
+// bodyField reads one string field out of a JSON body exactly the way the
+// handler behind the guard will: encoding/json decoding the first value of the
+// body into a struct. That is not a nicety. The guard authorizes against the
+// project it reads and the handler writes to the project it reads, so the two
+// must never disagree — and a struct decode disagrees with a map lookup in
+// ways a caller chooses: keys match case-insensitively (`"Project"` fills
+// `project`), a repeated key in another case wins over the one the map would
+// have kept, and whatever follows the first value is ignored where
+// json.Unmarshal refuses the body outright, which the guard used to read as
+// "names no project" and admit. Decoding into a struct built for the one field
+// inherits every one of those rules from the same code the handler runs.
+//
+// It reports false for a body the handler would refuse too: not JSON, or the
+// field present with something other than a string.
+func bodyField(raw []byte, field string) (string, bool) {
+	holder := reflect.New(reflect.StructOf([]reflect.StructField{{
+		Name: "Value",
+		Type: reflect.TypeFor[string](),
+		Tag:  reflect.StructTag(`json:"` + field + `"`),
+	}}))
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(holder.Interface()); err != nil {
+		return "", false
+	}
+	return holder.Elem().Field(0).String(), true
 }
 
 // guard wraps a handler in its requirement. It runs inside the mux, where

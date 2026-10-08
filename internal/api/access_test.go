@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -623,6 +624,59 @@ func TestAWriteNamingSomebodyElsesProjectIsNotFound(t *testing.T) {
 	if domain.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d: %s", domain.Code, domain.Body.String())
 	}
+}
+
+// The guard reads the project out of a body and the handler reads it again,
+// so the two readings must agree whatever the caller sends. encoding/json
+// decoding into a struct — which every handler does — matches keys without
+// regard to case, lets the last of two spellings of one key win, and ignores
+// whatever follows the first value. A guard reading the body any other way
+// can be shown one project while the handler writes to another, or shown none
+// at all and admit the request outright. The caller here is admin on its own
+// project and nothing on the other one.
+func TestABodyCannotShowTheGuardOneProjectAndTheHandlerAnother(t *testing.T) {
+	disguises := map[string]func(field, theirs, rest string) string{
+		"a key in another case": func(field, theirs, rest string) string {
+			return fmt.Sprintf(`{%q: %q, %s}`, strings.ToUpper(field[:1])+field[1:], theirs, rest)
+		},
+		"the key twice, the second in another case": func(field, theirs, rest string) string {
+			return fmt.Sprintf(`{%q: %q, %q: %q, %s}`,
+				field, ourOwn(field), strings.ToUpper(field[:1])+field[1:], theirs, rest)
+		},
+		"a second value after the body": func(field, theirs, rest string) string {
+			return fmt.Sprintf(`{%q: %q, %s} {}`, field, theirs, rest)
+		},
+	}
+	routes := []struct {
+		path, field, theirs, rest string
+	}{
+		{"/api/v1/claims", "project", otherProject,
+			`"name": "orders-db", "connection": "neon", "type": "postgres"`},
+		{"/api/v1/domains", "environment", "blog-production",
+			`"hostname": "store.example.net"`},
+		{"/api/v1/notifications/subscriptions", "project", otherProject,
+			`"name": "relay", "url": "https://relay.example.com/kitchen", "events": ["build.failed"], "secret": "a-signing-key-nobody-else-has"`},
+	}
+	for name, disguise := range disguises {
+		for _, route := range routes {
+			t.Run(name+" "+route.path, func(t *testing.T) {
+				h := asMember(t, kitchenv1alpha1.AccessRoleAdmin, append(blogFixtures(), neonConnection())...)
+				recorder := h.do(t, http.MethodPost, route.path, disguise(route.field, route.theirs, route.rest))
+				if recorder.Code == http.StatusCreated {
+					t.Fatalf("a write landed in a project the caller has no role on: %s", recorder.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// ourOwn is the caller's own object for a field, the one a disguised body
+// shows the guard.
+func ourOwn(field string) string {
+	if field == "environment" {
+		return testEnvironment
+	}
+	return feedProject
 }
 
 // A body naming no project at all is the handler's to refuse, and it does so
