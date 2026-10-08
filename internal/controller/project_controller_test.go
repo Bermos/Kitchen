@@ -371,3 +371,51 @@ var _ = Describe("Project Controller", func() {
 		})
 	})
 })
+
+// A project's finalizer deletes its application namespace, and that
+// namespace is found by name — "kitchen-" plus the project's. A name that
+// spells somebody else's namespace (the platform's own is kitchen-system)
+// must not take it with the project: only a namespace labelled as the
+// project's goes.
+var _ = Describe("Project deletion and a namespace that is not the project's", func() {
+	ctx := context.Background()
+
+	It("leaves the namespace alone", func() {
+		const projectName = "nsbystander"
+		taken := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name:   appNamespace(projectName),
+			Labels: map[string]string{"app.kubernetes.io/part-of": "kitchen"},
+		}}
+		Expect(k8sClient.Create(ctx, taken)).To(Succeed())
+
+		project := &kitchenv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       projectName,
+				Namespace:  "default",
+				Finalizers: []string{projectFinalizer},
+			},
+			Spec: kitchenv1alpha1.ProjectSpec{
+				Source: kitchenv1alpha1.ProjectSourceSpec{Git: &kitchenv1alpha1.GitSourceSpec{
+					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "gh"},
+					Repo:          "acme/bystander",
+				}},
+				Registry: &kitchenv1alpha1.RegistrySpec{
+					ConnectionRef: kitchenv1alpha1.LocalObjectReference{Name: "registry"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, project)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, project)).To(Succeed())
+
+		reconciler := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		key := types.NamespacedName{Name: projectName, Namespace: "default"}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(errors.IsNotFound(k8sClient.Get(ctx, key, &kitchenv1alpha1.Project{}))).To(BeTrue(),
+			"the project still goes")
+
+		survivor := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: taken.Name}, survivor)).To(Succeed())
+		Expect(survivor.DeletionTimestamp).To(BeNil(), "a namespace that is not the project's must not be deleted with it")
+	})
+})

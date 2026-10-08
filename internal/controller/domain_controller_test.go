@@ -412,7 +412,7 @@ var _ = Describe("Domain Controller", func() {
 
 		By("noticing a route that does not carry the hostname yet")
 		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: routeKey.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: routeKey.Namespace, Labels: map[string]string{labelProject: projectName}},
 		}))).To(Succeed())
 		route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: routeKey.Name, Namespace: routeKey.Namespace}}
 		route.Spec.ParentRefs = []gatewayv1.ParentReference{{Name: SharedGatewayName}}

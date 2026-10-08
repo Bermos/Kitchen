@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -712,6 +713,17 @@ func appNamespaceLabels(projectName string, level kitchenv1alpha1.PodSecurityLev
 	}
 }
 
+// ErrNamespaceNotProjects is what ensureNamespace answers for a namespace of
+// the right name that some other project, or the platform, already holds.
+var ErrNamespaceNotProjects = errors.New("application namespace belongs to something else")
+
+// namespaceBelongsTo reports whether ns is the application namespace of the
+// named project: it carries that project's label, which ensureNamespace
+// writes on every namespace it creates.
+func namespaceBelongsTo(ns *corev1.Namespace, projectName string) bool {
+	return projectName != "" && ns.Labels[labelProject] == projectName
+}
+
 func ensureNamespace(ctx context.Context, c client.Client, name, projectName string) error {
 	level, err := appNamespacePodSecurity(ctx, c)
 	if err != nil {
@@ -722,6 +734,19 @@ func ensureNamespace(ctx context.Context, c client.Client, name, projectName str
 	ns := &corev1.Namespace{}
 	err = c.Get(ctx, types.NamespacedName{Name: name}, ns)
 	if err == nil {
+		// A namespace that is already there is this project's only if it
+		// says so. The name alone proves nothing: it is "kitchen-" plus
+		// whatever the project was called, so a project named "system" or
+		// "databases" spells the platform's own namespace or the one every
+		// tenant's databases live in, and adopting it would hand the project
+		// that namespace — its pods beside the platform's, its secrets in
+		// reach, and the namespace deleted with the project. Every namespace
+		// this function ever created carries the label, so nothing it made
+		// is refused.
+		if !namespaceBelongsTo(ns, projectName) {
+			return fmt.Errorf("%w: namespace %s exists and is not project %s's (its %s label is %q)",
+				ErrNamespaceNotProjects, name, projectName, labelProject, ns.Labels[labelProject])
+		}
 		// An existing namespace is relabelled rather than left alone. A
 		// namespace is created once and every reconcile after that finds it,
 		// so a level that were only written at creation would never reach an
