@@ -669,6 +669,21 @@ both need the shared Gateway it creates.
 {{- printf "%s-registry" (include "kitchen.fullname" .) }}
 {{- end }}
 
+{{- define "kitchen.registryTokenFullname" -}}
+{{- printf "%s-registry-token" (include "kitchen.fullname" .) }}
+{{- end }}
+
+{{/*
+The token service's realm: on the registry's own host, so that anything that
+can reach the registry — a node's container runtime above all — can reach
+where it is sent to authenticate. The path is `RegistryTokenPath` in
+internal/controller/registry.go, which is what the operator's route sends to
+the token service.
+*/}}
+{{- define "kitchen.registryTokenRealm" -}}
+{{- printf "https://%s/kitchen/token" (include "kitchen.registryHost" .) }}
+{{- end }}
+
 {{- define "kitchen.registrySelectorLabels" -}}
 app.kubernetes.io/name: {{ include "kitchen.name" . }}-registry
 app.kubernetes.io/instance: {{ .Release.Name }}
@@ -801,54 +816,6 @@ around: with no explicit value and nothing to look up it ends in
 {{- else }}
 {{- randAlphaNum 32 }}
 {{- end }}
-{{- end }}
-{{- end }}
-
-{{/*
-The htpasswd file zot authenticates against — bcrypt, which is the only hash
-it reads, one line per account. Hashing is salted, so a fresh hash every
-render would roll the Secret and restart the registry on every upgrade; each
-account's stored line is reused whenever it still describes the same username
-and password.
-
-Takes each password in the dict (`ctx`, `password`, `readPassword`) rather
-than deriving them. A second call to `kitchen.registryPassword` would hash a
-*different* password than the one the Secret publishes, leaving the registry
-to reject the only credential the platform has. That fails on a first install
-alone — on upgrade the lookup makes both calls agree, which is what hid it in
-0.8.0.
-*/}}
-{{- define "kitchen.registryHtpasswd" -}}
-{{- $ctx := .ctx }}
-{{- $lines := list }}
-{{- $lines = append $lines (include "kitchen.registryHtpasswdLine" (dict "ctx" $ctx "username" $ctx.Values.registry.auth.username "password" .password "storedKey" "password")) }}
-{{- $lines = append $lines (include "kitchen.registryHtpasswdLine" (dict "ctx" $ctx "username" $ctx.Values.registry.auth.readUsername "password" .readPassword "storedKey" "readPassword")) }}
-{{- join "\n" $lines }}
-{{- end }}
-
-{{/*
-One account's line, reused from the stored file when the account is unchanged.
-The stored file is searched by username rather than by position, so an
-installation upgrading from a file with only the pushing account's line in it
-keeps that line and gains the read-only one.
-*/}}
-{{- define "kitchen.registryHtpasswdLine" -}}
-{{- $ctx := .ctx }}
-{{- $username := .username }}
-{{- $password := .password }}
-{{- $existing := lookup "v1" "Secret" $ctx.Release.Namespace (include "kitchen.registrySecretName" $ctx) }}
-{{- $data := default dict (default dict $existing).data }}
-{{- $stored := "" }}
-{{- if index $data "htpasswd" }}
-{{- range splitList "\n" (index $data "htpasswd" | b64dec) }}
-{{- if hasPrefix (printf "%s:" $username) . }}{{- $stored = . }}{{- end }}
-{{- end }}
-{{- end }}
-{{- $samePassword := and (index $data .storedKey) (eq (index $data .storedKey | b64dec) $password) }}
-{{- if and $stored $samePassword }}
-{{- $stored }}
-{{- else }}
-{{- htpasswd $username $password }}
 {{- end }}
 {{- end }}
 

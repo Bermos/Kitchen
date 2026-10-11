@@ -193,7 +193,6 @@ func TestBuildpacksPodGivesTheAnalyzerTheCredentialItValidatesTheTagWith(t *test
 		// and nothing below can tell the two apart.
 		secret(readCredentialSecretName(platformCredential)),
 	).Build()
-	reconciler := &BuildReconciler{Client: client, Scheme: scheme}
 
 	connection := &kitchenv1alpha1.Connection{
 		ObjectMeta: metav1.ObjectMeta{Name: connectionName, Namespace: PlatformNamespace},
@@ -204,13 +203,9 @@ func TestBuildpacksPodGivesTheAnalyzerTheCredentialItValidatesTheTagWith(t *test
 	}
 	appNS := appNamespace(project.Name)
 	ctx := context.Background()
-	push, err := reconciler.syncRegistrySecret(ctx, connection, PlatformNamespace, appNS)
+	push, read, err := writeRegistryCredentials(ctx, client, connection, project, appNS)
 	if err != nil {
-		t.Fatalf("syncing the registry credential: %v", err)
-	}
-	read, err := reconciler.syncRegistryReadSecret(ctx, connection, PlatformNamespace, appNS)
-	if err != nil {
-		t.Fatalf("syncing the read-only credential: %v", err)
+		t.Fatalf("syncing the registry credentials: %v", err)
 	}
 	credentials := credentialsWithRead(push, read)
 	if credentials.Push != appPush || credentials.Read != appRead {

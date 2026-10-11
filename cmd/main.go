@@ -56,6 +56,7 @@ import (
 	"github.com/Bermos/Kitchen/internal/k8sevents"
 	"github.com/Bermos/Kitchen/internal/notify"
 	"github.com/Bermos/Kitchen/internal/receiver"
+	"github.com/Bermos/Kitchen/internal/registrytoken"
 	"github.com/Bermos/Kitchen/internal/ui"
 	"github.com/Bermos/Kitchen/internal/usage"
 	"github.com/Bermos/Kitchen/internal/version"
@@ -86,6 +87,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var gitWebhookAddr string
+	var registryTokenAddr string
 	var previewGateImage string
 	var qualityGateImage string
 	var previewGateServiceAccount string
@@ -109,6 +111,8 @@ func main() {
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&gitWebhookAddr, "git-webhook-bind-address", ":8090",
 		"The address the git webhook receiver binds to.")
+	flag.StringVar(&registryTokenAddr, "registry-token-bind-address", ":8093",
+		"The address the bundled registry's token service binds to.")
 	flag.StringVar(&qualityGateImage, "quality-gate-image", "",
 		"Image the publisher that carries a quality gate's findings out of its pod runs, the image the "+
 			"continuous re-evaluation pass runs its two halves from, and the image the init container "+
@@ -602,6 +606,19 @@ func main() {
 		Activity:  recorder,
 	}); err != nil {
 		setupLog.Error(err, "unable to add git webhook receiver to manager")
+		os.Exit(1)
+	}
+
+	// The token service the bundled registry trusts: where a project's own
+	// registry account is checked and scoped to that project's repositories.
+	// It runs on every replica and idles harmlessly on an installation with
+	// no registry, so it is added unconditionally.
+	if err := mgr.Add(&registrytoken.Server{
+		Accounts: &registrytoken.ClusterAccounts{Client: mgr.GetClient(), Namespace: operatorNamespace},
+		BindAddr: registryTokenAddr,
+		Path:     controller.RegistryTokenPath,
+	}); err != nil {
+		setupLog.Error(err, "unable to add the registry token service to manager")
 		os.Exit(1)
 	}
 

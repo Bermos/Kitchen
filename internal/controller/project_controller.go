@@ -175,6 +175,13 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	// The project's own registry accounts, on a registry that issues them,
+	// written over whatever an older platform left in the namespace — which
+	// was a copy of the platform's own credential.
+	if err := r.syncRegistryAccounts(ctx, project); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	setCond := func(condType string, status metav1.ConditionStatus, reason, message string) {
 		meta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
 			Type:               condType,
@@ -311,6 +318,9 @@ func (r *ProjectReconciler) finalize(ctx context.Context, project *kitchenv1alph
 	// secrets with it; the source the API wrote is in the platform namespace,
 	// and goes here.
 	if err := r.deleteProjectSecrets(ctx, project); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.deleteRegistryAccount(ctx, project); err != nil {
 		return ctrl.Result{}, err
 	}
 

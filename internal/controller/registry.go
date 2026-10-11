@@ -70,16 +70,29 @@ const (
 	// than waiting for someone to fill three fields in — and an installation
 	// under another release name gets a "secret not found" that names exactly
 	// what it is looking for.
-	defaultRegistryService = "kitchen-registry"
-	defaultRegistryPort    = int32(5000)
-	defaultRegistrySecret  = "kitchen-registry"
+	defaultRegistryService      = "kitchen-registry"
+	defaultRegistryPort         = int32(5000)
+	defaultRegistrySecret       = "kitchen-registry"
+	defaultRegistryTokenService = "kitchen-registry-token"
+	defaultRegistryTokenPort    = int32(8093)
+
+	// RegistryTokenPath is where on the registry's own host the token
+	// service is published, and so the realm the registry's challenge names.
+	// The chart spells it in zot's configuration; a path zot itself never
+	// serves, so the route can send it elsewhere without shadowing anything.
+	RegistryTokenPath = "/kitchen/token"
 
 	// Keys the chart writes the registry's two accounts under: the one that
 	// pushes, and the one that only reads.
-	registrySecretKeyUsername     = "username"
-	registrySecretKeyPassword     = "password"
-	registrySecretKeyReadUsername = "readUsername"
-	registrySecretKeyReadPassword = "readPassword"
+	RegistrySecretKeyUsername     = "username"
+	RegistrySecretKeyPassword     = "password"
+	RegistrySecretKeyReadUsername = "readUsername"
+	RegistrySecretKeyReadPassword = "readPassword"
+	// RegistrySecretKeyTokenKey is the private key the token service signs
+	// with. Its certificate is the one other key in the same Secret, and the
+	// only one the registry is given.
+	RegistrySecretKeyTokenKey  = "tokenKey"
+	RegistrySecretKeyTokenCert = "tokenCert"
 
 	condRegistryReady = "RegistryReady"
 )
@@ -94,6 +107,9 @@ type platformRegistry struct {
 	Port    int32
 	// SecretName holds the registry's own username and password.
 	SecretName string
+	// TokenService and TokenPort front the operator's registry token service.
+	TokenService string
+	TokenPort    int32
 }
 
 // registryURL is the prefix builds push under: <host>/<project>:<sha>. It
@@ -120,9 +136,11 @@ func resolveRegistry(kitchen *kitchenv1alpha1.Kitchen) *platformRegistry {
 		return nil
 	}
 	registry := &platformRegistry{
-		Host:    host,
-		Service: spec.Service,
-		Port:    spec.Port,
+		Host:         host,
+		Service:      spec.Service,
+		Port:         spec.Port,
+		TokenService: spec.TokenService,
+		TokenPort:    spec.TokenPort,
 	}
 	if spec.SecretRef != nil {
 		registry.SecretName = spec.SecretRef.Name
@@ -136,7 +154,25 @@ func resolveRegistry(kitchen *kitchenv1alpha1.Kitchen) *platformRegistry {
 	if registry.SecretName == "" {
 		registry.SecretName = defaultRegistrySecret
 	}
+	if registry.TokenService == "" {
+		registry.TokenService = defaultRegistryTokenService
+	}
+	if registry.TokenPort == 0 {
+		registry.TokenPort = defaultRegistryTokenPort
+	}
 	return registry
+}
+
+// PlatformRegistry is the bundled registry as the token service needs it:
+// the host it is published on, which is what an image reference names, and
+// the Secret holding the platform's own two accounts. ok is false when the
+// platform runs no registry.
+func PlatformRegistry(kitchen *kitchenv1alpha1.Kitchen) (host, secretName string, ok bool) {
+	registry := resolveRegistry(kitchen)
+	if registry == nil {
+		return "", "", false
+	}
+	return registry.Host, registry.SecretName, true
 }
 
 // registryHost is the name the registry is published under.

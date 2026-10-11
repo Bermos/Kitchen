@@ -130,9 +130,9 @@ type registryCredentials struct {
 	ReadPassword string
 }
 
-// registryCredential reads the credential the chart generated. It is the one
-// account the registry has: builds push with it, and every application
-// namespace pulls with a copy of it.
+// registryCredential reads the platform's own accounts, as the chart generated
+// them. The seeded Connection carries them; no project is given either, since
+// every project has accounts of its own (registryaccounts.go).
 func (r *KitchenReconciler) registryCredential(
 	ctx context.Context,
 	registry *platformRegistry,
@@ -143,20 +143,24 @@ func (r *KitchenReconciler) registryCredential(
 		return nil, err
 	}
 	credential := &registryCredentials{
-		Username:     string(secret.Data[registrySecretKeyUsername]),
-		Password:     string(secret.Data[registrySecretKeyPassword]),
-		ReadUsername: string(secret.Data[registrySecretKeyReadUsername]),
-		ReadPassword: string(secret.Data[registrySecretKeyReadPassword]),
+		Username:     string(secret.Data[RegistrySecretKeyUsername]),
+		Password:     string(secret.Data[RegistrySecretKeyPassword]),
+		ReadUsername: string(secret.Data[RegistrySecretKeyReadUsername]),
+		ReadPassword: string(secret.Data[RegistrySecretKeyReadPassword]),
 	}
 	if credential.Username == "" || credential.Password == "" {
 		return nil, fmt.Errorf("secret %q needs both %q and %q: the registry admits no anonymous access",
-			registry.SecretName, registrySecretKeyUsername, registrySecretKeyPassword)
+			registry.SecretName, RegistrySecretKeyUsername, RegistrySecretKeyPassword)
 	}
 	return credential, nil
 }
 
 // applyRegistryRoute publishes the registry on the shared Gateway. Every path
-// goes to it — a registry's API is the whole of /v2/, and the host is its own.
+// goes to it — a registry's API is the whole of /v2/, and the host is its own
+// — but one: the token service the registry's challenge names, which is the
+// operator's and is what checks a project's account. It is on the registry's
+// host rather than the API's so that the realm is reachable from anything
+// that can reach the registry, which is the kubelet of every node.
 func (r *KitchenReconciler) applyRegistryRoute(
 	ctx context.Context,
 	registry *platformRegistry,
@@ -175,16 +179,36 @@ func (r *KitchenReconciler) applyRegistryRoute(
 			}},
 		}
 		route.Spec.Hostnames = []gatewayv1.Hostname{gatewayv1.Hostname(registry.Host)}
-		route.Spec.Rules = []gatewayv1.HTTPRouteRule{{
-			BackendRefs: []gatewayv1.HTTPBackendRef{{
-				BackendRef: gatewayv1.BackendRef{
-					BackendObjectReference: gatewayv1.BackendObjectReference{
-						Name: gatewayv1.ObjectName(registry.Service),
-						Port: ptr.To(gatewayv1.PortNumber(registry.Port)),
+		route.Spec.Rules = []gatewayv1.HTTPRouteRule{
+			{
+				// The more specific prefix wins by Gateway API precedence,
+				// whatever order the rules are listed in.
+				Matches: []gatewayv1.HTTPRouteMatch{{
+					Path: &gatewayv1.HTTPPathMatch{
+						Type:  ptr.To(gatewayv1.PathMatchExact),
+						Value: ptr.To(RegistryTokenPath),
 					},
-				},
-			}},
-		}}
+				}},
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: gatewayv1.ObjectName(registry.TokenService),
+							Port: ptr.To(gatewayv1.PortNumber(registry.TokenPort)),
+						},
+					},
+				}},
+			},
+			{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: gatewayv1.ObjectName(registry.Service),
+							Port: ptr.To(gatewayv1.PortNumber(registry.Port)),
+						},
+					},
+				}},
+			},
+		}
 		return nil
 	})
 	return err
@@ -245,6 +269,14 @@ func (r *KitchenReconciler) seedRegistryConnection(
 			conn.Labels = map[string]string{}
 		}
 		conn.Labels[labelManagedByKey] = labelManagedByValue
+		// The bundled registry checks its passwords at the operator's token
+		// service, which is what lets it give every project an account of
+		// its own; this is what tells everything that hands a project a
+		// credential to hand it that one instead of this Connection's.
+		if conn.Annotations == nil {
+			conn.Annotations = map[string]string{}
+		}
+		conn.Annotations[RegistryAccountsAnnotation] = RegistryAccountsPerProject
 		conn.Spec.Provider = registryProviderName
 		conn.Spec.CredentialsSecretRef = kitchenv1alpha1.CredentialsReference{
 			Name: RegistryCredentialsSecretName,

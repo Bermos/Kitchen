@@ -447,17 +447,15 @@ func (r *BuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := ensureNamespace(ctx, r.Client, appNS, project.Name); err != nil {
 		return ctrl.Result{}, err
 	}
-	credsSecret, err := r.syncRegistrySecret(ctx, registryConn, build.Namespace, appNS)
-	if err != nil {
-		return r.pending(ctx, build, "RegistryCredentialsMissing", err)
-	}
-	// And the credential that cannot push, where the registry issues one. It
-	// is what the phases of a build that run the repository's own code are
-	// given, and what a gate or a scan over the artifact reads with later
-	// (#424). A registry that issues none is not a failed build: the
-	// Connection's status is where that is reported, and the build carries
-	// the credential it always did.
-	readSecret, err := r.syncRegistryReadSecret(ctx, registryConn, build.Namespace, appNS)
+	// The credential that pushes, and beside it the one that cannot where
+	// the registry issues one. The second is what the phases of a build that
+	// run the repository's own code are given, and what a gate or a scan
+	// over the artifact reads with later (#424). A registry that issues none
+	// is not a failed build: the Connection's status is where that is
+	// reported, and the build carries the credential it always did. On the
+	// bundled registry both are the project's own accounts, which reach this
+	// project's repositories and no other's.
+	credsSecret, readSecret, err := writeRegistryCredentials(ctx, r.Client, registryConn, project, appNS)
 	if err != nil {
 		return r.pending(ctx, build, "RegistryCredentialsMissing", err)
 	}
@@ -2225,69 +2223,6 @@ func digestFromTerminationMessage(message string) string {
 		return match[1]
 	}
 	return ""
-}
-
-// syncRegistrySecret copies the registry Connection's credentials into the
-// application namespace so build pods can mount them.
-func (r *BuildReconciler) syncRegistrySecret(
-	ctx context.Context,
-	conn *kitchenv1alpha1.Connection,
-	srcNS, appNS string,
-) (string, error) {
-	src := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: srcNS, Name: conn.Spec.CredentialsSecretRef.Name}, src); err != nil {
-		return "", err
-	}
-	name := registrySecretName(conn.Name)
-	dst := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
-		if dst.CreationTimestamp.IsZero() {
-			dst.Type = src.Type
-		}
-		dst.Labels = map[string]string{labelManagedByKey: labelManagedByValue}
-		dst.Data = src.Data
-		return nil
-	})
-	return name, err
-}
-
-// syncRegistryReadSecret copies the read-only credential beside the registry
-// Connection's own into the application namespace, so a container running
-// third-party code can mount a credential that cannot push (#424).
-//
-// It returns "" when the registry issues no such credential, which is the
-// common case for a registry the platform does not run. That is not an error
-// — the Connection's status is where it is reported — but a stale copy is:
-// a credential the platform stopped writing must stop being handed out, so
-// the copy is removed when the source is gone.
-func (r *BuildReconciler) syncRegistryReadSecret(
-	ctx context.Context,
-	conn *kitchenv1alpha1.Connection,
-	srcNS, appNS string,
-) (string, error) {
-	name := readCredentialSecretName(registrySecretName(conn.Name))
-	src := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: srcNS, Name: readCredentialSecretName(conn.Spec.CredentialsSecretRef.Name)}
-	if err := r.Get(ctx, key, src); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return "", err
-		}
-		stale := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
-		if err := r.Delete(ctx, stale); err != nil && !apierrors.IsNotFound(err) {
-			return "", err
-		}
-		return "", nil
-	}
-	dst := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: appNS}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
-		if dst.CreationTimestamp.IsZero() {
-			dst.Type = src.Type
-		}
-		dst.Labels = map[string]string{labelManagedByKey: labelManagedByValue}
-		dst.Data = src.Data
-		return nil
-	})
-	return name, err
 }
 
 // registrySecretName is the docker config a project's application namespace

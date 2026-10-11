@@ -159,7 +159,7 @@ func (r *BuildReconciler) attestAcquired(
 	// It is the fact the Release is refused on where `runAsNonRoot` cannot be
 	// verified against it (#393) — a vendored `USER nonroot` is the case that
 	// cost the most to diagnose.
-	if _, dockerConfig, err := pullCredential(ctx, r.Client, build.Namespace, subject.Source); err == nil {
+	if _, dockerConfig, err := pullCredential(ctx, r.Client, project, subject.Source); err == nil {
 		status.User = r.imageUser(ctx, dockerConfig, registryServerOf(subject.Source.Repository),
 			attestation.ArtifactRef(repository, digest))
 	} else {

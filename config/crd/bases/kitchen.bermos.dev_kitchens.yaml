@@ -1930,6 +1930,22 @@ spec:
                       Service in the platform namespace the route sends traffic to. The
                       chart writes it as <release>-registry.
                     type: string
+                  tokenPort:
+                    default: 8093
+                    description: TokenPort is the port that Service publishes.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  tokenService:
+                    description: |-
+                      TokenService is the Service in the platform namespace fronting the
+                      operator's registry token service: where the registry sends a client
+                      to exchange a username and password for a token, and where a project's
+                      own account is checked and scoped to that project's repositories. The
+                      route publishes it on the registry's host, under /kitchen/token. The
+                      chart writes it as <release>-registry-token.
+                    type: string
                 type: object
               residency:
                 description: |-

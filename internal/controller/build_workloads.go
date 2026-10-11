@@ -163,7 +163,7 @@ func buildPlansFor(
 		if workload.Build == nil {
 			continue
 		}
-		repository := workloadRepository(registry.Prefix, project.Name, workload.Name)
+		repository := workloadRepository(registry, project.Name, workload.Name)
 		strategy := workload.Build.EffectiveStrategy()
 		// What `auto` turned out to be. It is settled before the stage is
 		// resolved below, because a workload that turned out to be a
@@ -232,16 +232,26 @@ func webPlan(
 }
 
 // workloadRepository is where one workload's image is pushed: a repository
-// beside the project's own, named after the workload.
+// named after the workload, beside the project's own or under it.
 //
-// Beside rather than under — `shop-api`, not `shop/api` — because a registry
-// path segment is where a great many registries put the account, and the
-// bundled one is not the only registry a project can push to. The project's
-// own name is the prefix, so everything a project pushes still sorts together
-// and is covered by the one credential, the one retention rule and the one
-// quota.
-func workloadRepository(prefix, projectName, workload string) string {
-	return fmt.Sprintf("%s/%s-%s", prefix, projectName, workload)
+// Beside — `shop-api` — on a registry the platform does not run, because a
+// registry path segment is where a great many registries put the account,
+// and the bundled one is not the only registry a project can push to. The
+// project's own name is the prefix, so everything a project pushes still
+// sorts together and is covered by the one credential, the one retention
+// rule and the one quota.
+//
+// Under — `shop/api` — on a registry with per-project accounts, because
+// there the project *is* the account, and the account is drawn on the
+// repository name. A project name holds no slash, so `shop/` is a boundary no
+// other project's name crosses; `shop-api` is not, since it is also the image
+// of a project called shop-api, and the account of either would have reached
+// the other's.
+func workloadRepository(registry provider.RegistryTarget, projectName, workload string) string {
+	if registry.PerProjectAccounts {
+		return fmt.Sprintf("%s/%s/%s", registry.Prefix, projectName, workload)
+	}
+	return fmt.Sprintf("%s/%s-%s", registry.Prefix, projectName, workload)
 }
 
 // workloadJobName is the Job one workload's build runs as.

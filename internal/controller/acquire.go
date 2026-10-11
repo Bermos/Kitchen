@@ -193,7 +193,7 @@ func (r *BuildReconciler) acquire(
 	// The web process first, then every workload that names an image of its
 	// own — the same order the build path plans in, so that the web process's
 	// answer is `spec.image` on the Release and the rest are rows beside it.
-	web, err := r.acquireImage(ctx, build, appNS, wanted)
+	web, err := r.acquireImage(ctx, project, appNS, wanted)
 	if err != nil {
 		return r.fail(ctx, build, project, reasonImageUnresolved,
 			fmt.Sprintf("the web process's image could not be resolved: %v", err))
@@ -345,25 +345,22 @@ func (r *BuildReconciler) acquire(
 // resolve is an image the environment can start.
 func (r *BuildReconciler) acquireImage(
 	ctx context.Context,
-	build *kitchenv1alpha1.Build,
+	project *kitchenv1alpha1.Project,
 	appNS string,
 	image kitchenv1alpha1.ImageSourceSpec,
 ) (string, error) {
-	conn, dockerConfig, err := pullCredential(ctx, r.Client, build.Namespace, image)
+	conn, dockerConfig, err := pullCredential(ctx, r.Client, project, image)
 	if err != nil {
 		return "", err
 	}
 	if conn != nil {
 		// The pods pull with this, so it has to be in the application
-		// namespace under the name pullcredentials.go spells.
-		if _, err := r.syncRegistrySecret(ctx, conn, build.Namespace, appNS); err != nil {
-			return "", fmt.Errorf("the pull credential could not be put in %s: %w", appNS, err)
-		}
-		// And the read-only credential beside it where this registry issues
-		// one, which is what a gate or a scan over this artifact reads with
+		// namespace under the name pullcredentials.go spells — and the
+		// read-only credential beside it where this registry issues one,
+		// which is what a gate or a scan over this artifact reads with
 		// (#424). Most vendored images come from a registry that issues
 		// none, and that is not a failure: it syncs nothing.
-		if _, err := r.syncRegistryReadSecret(ctx, conn, build.Namespace, appNS); err != nil {
+		if _, _, err := writeRegistryCredentials(ctx, r.Client, conn, project, appNS); err != nil {
 			return "", fmt.Errorf("the pull credential could not be put in %s: %w", appNS, err)
 		}
 	}
@@ -379,10 +376,16 @@ func (r *BuildReconciler) acquireImage(
 // a pass that wrote a Secret into every application namespace every ten
 // minutes would be a poll with side effects, and the acquisition it produces
 // syncs the credential a moment later anyway.
+//
+// On a registry with per-project accounts it is the project's own pull
+// account rather than the Connection's: the digest is read with what the
+// kubelet will pull with, so an image the project's account cannot read —
+// another project's, on the bundled registry — is refused here rather than
+// resolved by the platform's account and refused at the pod.
 func pullCredential(
 	ctx context.Context,
 	c client.Client,
-	namespace string,
+	project *kitchenv1alpha1.Project,
 	image kitchenv1alpha1.ImageSourceSpec,
 ) (*kitchenv1alpha1.Connection, []byte, error) {
 	if image.Repository == "" {
@@ -393,12 +396,19 @@ func pullCredential(
 		return nil, nil, nil
 	}
 	conn := &kitchenv1alpha1.Connection{}
-	key := types.NamespacedName{Namespace: namespace, Name: connection}
+	key := types.NamespacedName{Namespace: project.Namespace, Name: connection}
 	if err := c.Get(ctx, key, conn); err != nil {
 		return nil, nil, fmt.Errorf("the pull connection %q could not be read: %w", connection, err)
 	}
+	if perProjectAccounts(conn) {
+		_, pull, err := registryAccountDockerConfigs(ctx, c, conn, project)
+		if err != nil {
+			return nil, nil, err
+		}
+		return conn, pull, nil
+	}
 	secret := &corev1.Secret{}
-	key = types.NamespacedName{Namespace: namespace, Name: conn.Spec.CredentialsSecretRef.Name}
+	key = types.NamespacedName{Namespace: project.Namespace, Name: conn.Spec.CredentialsSecretRef.Name}
 	if err := c.Get(ctx, key, secret); err != nil {
 		return nil, nil, fmt.Errorf("the credentials of pull connection %q could not be read: %w", connection, err)
 	}
@@ -525,7 +535,7 @@ func (r *BuildReconciler) vendoredWorkloads(
 		if workload.Image == nil {
 			continue
 		}
-		image, err := r.acquireImage(ctx, build, appNS, *workload.Image)
+		image, err := r.acquireImage(ctx, project, appNS, *workload.Image)
 		if err != nil {
 			return nil, nil, fmt.Errorf("workload %s: its image could not be resolved: %w", workload.Name, err)
 		}

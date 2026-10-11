@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Push an image at a running registry, once in Docker media types and once in
-OCI's, and fail loudly if either is refused.
+OCI's, and fail loudly if either is refused — then, given two projects'
+accounts, check that each reaches its own repositories and no other's.
 
 Docker manifest schema 2 is what both of Kitchen's build strategies push by
 default, so a registry that rejects it fails every build at its last step —
@@ -15,8 +16,10 @@ Only the standard library, so this runs wherever python3 does.
 import base64
 import hashlib
 import json
+import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
@@ -28,15 +31,20 @@ OCI_LAYER = "application/vnd.oci.image.layer.v1.tar+gzip"
 
 
 class Registry:
+    """A registry client that speaks the Docker token flow, which is the only
+    way the bundled registry admits anybody: a 401 names the token service, the
+    client asks it for the scope the request needs with its username and
+    password, and retries with the token it got back."""
+
     def __init__(self, base, username, password):
         self.base = base.rstrip("/")
-        token = base64.b64encode(f"{username}:{password}".encode()).decode()
-        self.auth = f"Basic {token}"
+        self.basic = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+        self.tokens = {}
 
-    def request(self, method, path, body=None, content_type=None, accept=None):
-        url = path if path.startswith("http") else self.base + path
+    def _send(self, method, url, body, content_type, accept, authorization):
         request = urllib.request.Request(url, data=body, method=method)
-        request.add_header("Authorization", self.auth)
+        if authorization:
+            request.add_header("Authorization", authorization)
         if content_type:
             request.add_header("Content-Type", content_type)
         if accept:
@@ -46,6 +54,31 @@ class Registry:
                 return response.status, dict(response.headers), response.read()
         except urllib.error.HTTPError as err:
             return err.code, dict(err.headers), err.read()
+
+    def token(self, challenge):
+        params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+        query = {"service": params.get("service", "")}
+        if params.get("scope"):
+            query["scope"] = params["scope"]
+        key = query.get("scope", "")
+        if key not in self.tokens:
+            url = params["realm"] + "?" + urllib.parse.urlencode(query)
+            status, _, body = self._send("GET", url, None, None, None, self.basic)
+            if status != 200:
+                return None, status
+            self.tokens[key] = json.loads(body)["token"]
+        return self.tokens[key], 200
+
+    def request(self, method, path, body=None, content_type=None, accept=None):
+        url = path if path.startswith("http") else self.base + path
+        status, headers, answer = self._send(method, url, body, content_type, accept, None)
+        challenge = headers.get("Www-Authenticate") or headers.get("WWW-Authenticate") or ""
+        if status != 401 or not challenge.lower().startswith("bearer "):
+            return status, headers, answer
+        token, token_status = self.token(challenge)
+        if token is None:
+            return token_status, {}, b"the token service refused the credential"
+        return self._send(method, url, body, content_type, accept, f"Bearer {token}")
 
     def push_blob(self, repository, payload):
         digest = "sha256:" + hashlib.sha256(payload).hexdigest()
@@ -133,9 +166,52 @@ def push_image(registry, repository, tag, manifest_type, config_type, layer_type
     print(f"pushed and read back a {manifest_type} image")
 
 
+def can_push(registry, repository):
+    status, _, _ = registry.request("POST", f"/v2/{repository}/blobs/uploads/")
+    return status == 202
+
+
+def can_pull(registry, repository, tag):
+    status, _, _ = registry.request(
+        "GET", f"/v2/{repository}/manifests/{tag}", accept=DOCKER_MANIFEST
+    )
+    return status == 200
+
+
+def check_isolation(base, platform, alpha, alpha_pull, beta):
+    """Each project's accounts reach its own repositories and no other's —
+    which is the whole point of having one per project."""
+    # Something to read in each project, pushed by the platform's account.
+    for repository in ("alpha", "alpha/worker", "beta"):
+        push_image(platform, repository, "seed", DOCKER_MANIFEST, DOCKER_CONFIG, DOCKER_LAYER)
+
+    alpha_push = Registry(base, *alpha)
+    alpha_read = Registry(base, *alpha_pull)
+    beta_push = Registry(base, *beta)
+    expectations = [
+        ("alpha's account pushes to alpha", can_push(alpha_push, "alpha"), True),
+        ("alpha's account pushes to alpha/worker", can_push(alpha_push, "alpha/worker"), True),
+        ("alpha's account pulls alpha", can_pull(alpha_push, "alpha", "seed"), True),
+        ("alpha's account pushes to beta", can_push(alpha_push, "beta"), False),
+        ("alpha's account pulls beta", can_pull(alpha_push, "beta", "seed"), False),
+        ("alpha's account pushes to alpha-worker", can_push(alpha_push, "alpha-worker"), False),
+        ("alpha's read account pulls alpha/worker", can_pull(alpha_read, "alpha/worker", "seed"), True),
+        ("alpha's read account pushes to alpha", can_push(alpha_read, "alpha"), False),
+        ("beta's account pulls alpha", can_pull(beta_push, "alpha", "seed"), False),
+        ("beta's account pulls beta", can_pull(beta_push, "beta", "seed"), True),
+    ]
+    wrong = [what for what, got, want in expectations if got != want]
+    for what, got, want in expectations:
+        print(f"{'ok  ' if got == want else 'FAIL'} {what}: {'yes' if got else 'no'}")
+    if wrong:
+        fail("a project's registry account reached past its own repositories, or not as "
+             "far as them: " + "; ".join(wrong))
+
+
 def main():
-    if len(sys.argv) != 4:
-        sys.exit("usage: registry-push-check.py BASE_URL USERNAME PASSWORD")
+    if len(sys.argv) not in (4, 10):
+        sys.exit("usage: registry-push-check.py BASE_URL USERNAME PASSWORD "
+                 "[ALPHA_USER ALPHA_PASSWORD ALPHA_PULL_USER ALPHA_PULL_PASSWORD BETA_USER BETA_PASSWORD]")
     registry = Registry(sys.argv[1], sys.argv[2], sys.argv[3])
 
     status, _, _ = registry.request("GET", "/v2/")
@@ -150,6 +226,10 @@ def main():
         registry, "kitchen-demo", "oci",
         OCI_MANIFEST, OCI_CONFIG, OCI_LAYER,
     )
+
+    if len(sys.argv) == 10:
+        args = sys.argv[4:]
+        check_isolation(sys.argv[1], registry, (args[0], args[1]), (args[2], args[3]), (args[4], args[5]))
 
 
 if __name__ == "__main__":

@@ -42,7 +42,25 @@ type RegistryTarget struct {
 	// BaseURL is Server with the scheme it is reached over — https unless the
 	// configured URL asked for plaintext.
 	BaseURL string
+	// PerProjectAccounts says the registry gives every project an account of
+	// its own, scoped to the repositories under the project's name — which
+	// is the bundled registry, and is said by RegistryAccountsAnnotation on
+	// the Connection. It decides where a workload's image goes: under the
+	// project rather than beside it, because the project is the boundary the
+	// account is drawn on.
+	PerProjectAccounts bool
 }
+
+const (
+	// RegistryAccountsAnnotation marks a dockerRegistry Connection whose
+	// registry issues every project an account of its own. The operator puts
+	// it on the Connection it seeds for the bundled registry; everything that
+	// hands a project a registry credential asks it before copying the
+	// Connection's.
+	RegistryAccountsAnnotation = "kitchen.bermos.dev/registry-accounts"
+	// RegistryAccountsPerProject is that annotation's one value.
+	RegistryAccountsPerProject = "per-project"
+)
 
 // Registry resolves where a Project's builds push. Naming a Connection of any
 // other provider is an error rather than an empty target: the capability
@@ -64,7 +82,12 @@ func Registry(conn *kitchenv1alpha1.Connection) (RegistryTarget, error) {
 	if strings.TrimSpace(cfg.URL) == "" {
 		return RegistryTarget{}, fmt.Errorf("dockerRegistry connection %q has no config.url", conn.Name)
 	}
-	return parseRegistryURL(cfg.URL)
+	target, err := parseRegistryURL(cfg.URL)
+	if err != nil {
+		return RegistryTarget{}, err
+	}
+	target.PerProjectAccounts = conn.Annotations[RegistryAccountsAnnotation] == RegistryAccountsPerProject
+	return target, nil
 }
 
 // registryProvider is the one provider that stores images today.

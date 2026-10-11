@@ -142,8 +142,8 @@ spec:
     - {}
 ---
 # The operator: the REST API and the dashboard it serves, the git webhook
-# receiver, and the metrics endpoint. The first two are published on the
-# shared Gateway; the third is scraped by a Prometheus that is somewhere else
+# receiver, the registry token service, and the metrics endpoint. The first
+# three are published on the shared Gateway; the third is scraped by a Prometheus that is somewhere else
 # by definition, and is protected by TokenReview when `metrics.secure` is on.
 # Everything else the manager listens on — the health probes — stays inside
 # the namespace and the kubelet, which is the node and not a peer.
@@ -167,6 +167,13 @@ spec:
           port: {{ int .Values.api.port }}
         - protocol: TCP
           port: {{ int .Values.webhookReceiver.port }}
+        {{- if eq (include "kitchen.registryEnabled" .) "true" }}
+        # The registry token service, reached through the Gateway by every
+        # client of the registry — a node's kubelet, a build — on the
+        # registry's own host.
+        - protocol: TCP
+          port: {{ int .Values.registry.token.port }}
+        {{- end }}
         {{- if .Values.metrics.enabled }}
         - protocol: TCP
           port: {{ int .Values.metrics.port }}

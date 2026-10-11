@@ -239,10 +239,18 @@ func (r *ConnectionReconciler) setRegistryCredentialScope(
 			status.ReadCredentialSecret = read
 		}
 	}
-	if status.ScopedCredentials {
+	switch {
+	case perProjectAccounts(conn):
+		// The two credentials this Connection holds are the platform's own,
+		// and no project is handed either.
+		status.ScopedCredentials = true
+		status.Message = "every project pushes and pulls with registry accounts of its own, which reach " +
+			"that project's repositories and no other's; a build's third-party code, a quality gate and a " +
+			"vulnerability scanner hold the one that cannot push"
+	case status.ScopedCredentials:
 		status.Message = "a build's third-party code, a quality gate and a vulnerability scanner read " +
 			"this registry with a credential that cannot push"
-	} else {
+	default:
 		status.Message = "this registry issues no credential narrower than the connection's own, so a " +
 			"quality gate and a vulnerability scanner read an artifact with the credential builds push " +
 			"with. Store a read-only credential for this registry as the Secret " + read +

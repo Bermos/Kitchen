@@ -1161,24 +1161,36 @@ It is not a value, because there is no installation that wants it off: the
 setting admits Docker's media types **in addition to** OCI's, and the registry
 exists to be pushed to by these two builders.
 
-### Its two accounts
+### Its accounts
 
-zot authenticates against an htpasswd file with two lines in it, because a
-build pod runs code the platform did not write.
+zot checks no password itself. It is configured for the Docker token flow: a
+client it does not recognise is sent to `https://<host>/kitchen/token`, which
+the operator's route delivers to the operator's registry token service, and
+zot accepts the token that service signs with a key this chart generated
+(`tokenKey` and `tokenCert` in the registry Secret). The token names the
+repositories the account may touch and the actions it may take on them, and
+nothing else. That is what lets accounts come and go with projects without a
+registry restart, which an htpasswd file and a static access control list
+would need.
 
-- `registry.auth.username` (`kitchen`) may push. It is the account the seeded
-  Connection carries, and the one the build's export phase and the kubelet use.
+- `registry.auth.username` (`kitchen`) may push and delete anywhere. It is the
+  platform's own: the seeded Connection carries it, and the operator reads and
+  attaches evidence to every project's artifacts with it. No project is given
+  it.
 - `registry.auth.readUsername` (`kitchen-read`) may read every repository and
-  write none. It is what a buildpack running the repository's own build, a
-  quality gate and a vulnerability scanner are given, so that a credential
-  such a container can read off its own filesystem cannot push over another
-  project's tags (#424).
+  write none. It is the platform's too, and stays in the platform namespace.
+- **Every project has two accounts of its own**, `<project>.push` and
+  `<project>.pull`, created with the project and deleted with it. Both reach
+  `<project>` and `<project>/…` and nothing else; the second may only pull.
+  The build pushes with the first, the kubelet and everything that runs code
+  the platform did not write (a buildpack's restorer, a quality gate, a
+  scanner) read with the second (#424). A project's pull secret is therefore
+  not a key to another project's images, and a credential a Dockerfile `RUN`
+  step manages to reach cannot push over another project's tags.
 
-The access control is what makes the second one real: `read` is the default
-policy for an authenticated account, and writing is granted to the first
-account by name. Both passwords are generated on install and read back from
-the existing Secret on upgrade — rotating either would lock builds or scans
-out of a registry that has not changed.
+The passwords and the signing key are generated on install and read back from
+the existing Secret on upgrade — rotating any of them would lock builds, pulls
+or scans out of a registry that has not changed.
 
 ### The seeded connection
 
@@ -2432,10 +2444,11 @@ kubectl delete namespace kitchen-system
 | `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
 | `registry.enabled` | `true` | Run the bundled image registry. See [The bundled registry](#the-bundled-registry). |
 | `registry.image.repository` / `.tag` | `ghcr.io/project-zot/zot` / `v2.1.20` | |
-| `registry.auth.username` | `kitchen` | The account that may push. The platform's own, and nothing a build's third-party code is given. |
+| `registry.auth.username` | `kitchen` | The platform's own account, which may push anywhere. No project is given it: every project has accounts of its own. |
 | `registry.auth.password` | `""` | Generated on install, preserved on upgrade. |
-| `registry.auth.readUsername` | `kitchen-read` | The account that may only read: what a buildpack script, a quality gate or a scanner is given. |
+| `registry.auth.readUsername` | `kitchen-read` | The platform's own read-only account, which may read every repository. |
 | `registry.auth.readPassword` | `""` | Generated on install, preserved on upgrade. |
+| `registry.token.port` | `8093` | Port of the operator's registry token service, which signs the tokens zot accepts. See [Its accounts](#its-accounts). |
 | `registry.host` | `""` | Defaults to `registry.<baseDomain>`. Also the prefix images are pushed under. |
 | `registry.service.type` / `.port` | `ClusterIP` / `5000` | |
 | `registry.persistence.enabled` | `true` | PVC for the image store. Every image dies with the pod without it. |
