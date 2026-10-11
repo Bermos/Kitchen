@@ -271,12 +271,21 @@ jobs:
           print("the registry config parses, and every tag pattern is a valid regex")
           CHECK
 
+      # The registry authenticates nobody itself: the check runs the
+      # operator's token service beside it, built from this checkout.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       # zot is OCI-native and refuses a manifest media type it was not told to
       # accept, so the rendered config above says nothing about whether a build
       # can publish. The script runs the zot image values.yaml pins on the
       # config the chart renders and pushes a real image at it, in Docker
       # manifest schema 2 — what both build strategies emit by default — and in
       # OCI's, since BuildKit emits those whenever an attestation is asked for.
+      # And then that a project's own account reaches its own repositories and
+      # no other project's, which is what the token service is for.
       - name: Check the registry accepts the manifests builds push
         run: hack/check-registry-accepts-docker-manifests.sh
 

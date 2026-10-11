@@ -137,13 +137,23 @@ var _ = Describe("The bundled registry", func() {
 		Expect(route.Spec.Hostnames).To(ConsistOf(gatewayv1.Hostname("registry.apps.example.com")))
 		Expect(string(*route.Spec.ParentRefs[0].SectionName)).To(Equal(gatewayListenerHTTPS),
 			"in acme mode port 80 carries only the redirect, so a route bound to both would answer over cleartext")
-		backend := route.Spec.Rules[0].BackendRefs[0]
+		Expect(route.Spec.Rules).To(HaveLen(2))
+		backend := route.Spec.Rules[1].BackendRefs[0]
 		Expect(string(backend.Name)).To(Equal("kitchen-registry"))
 		Expect(int32(*backend.Port)).To(Equal(int32(5000)))
 		// The rule names no match, and the API server defaults that to the
 		// catch-all: a registry's API is the whole of its host.
-		Expect(route.Spec.Rules[0].Matches).To(HaveLen(1))
-		Expect(*route.Spec.Rules[0].Matches[0].Path.Value).To(Equal("/"))
+		Expect(route.Spec.Rules[1].Matches).To(HaveLen(1))
+		Expect(*route.Spec.Rules[1].Matches[0].Path.Value).To(Equal("/"))
+
+		By("sending the realm the registry's challenge names to the operator's token service")
+		token := route.Spec.Rules[0]
+		Expect(token.Matches).To(HaveLen(1))
+		Expect(*token.Matches[0].Path.Type).To(Equal(gatewayv1.PathMatchExact))
+		Expect(*token.Matches[0].Path.Value).To(Equal(RegistryTokenPath))
+		Expect(string(token.BackendRefs[0].Name)).To(Equal("kitchen-registry-token"),
+			"an upgraded Kitchen object names no token service, and the chart's conventional name is the default")
+		Expect(int32(*token.BackendRefs[0].Port)).To(Equal(int32(8093)))
 
 		By("seeding a dockerRegistry connection a project can pick")
 		conn := &kitchenv1alpha1.Connection{}
@@ -151,6 +161,8 @@ var _ = Describe("The bundled registry", func() {
 		Expect(conn.Spec.Provider).To(Equal("dockerRegistry"))
 		Expect(connectionURL(conn)).To(Equal("registry.apps.example.com"))
 		Expect(conn.Labels).To(HaveKeyWithValue(labelManagedByKey, labelManagedByValue))
+		Expect(conn.Annotations).To(HaveKeyWithValue(RegistryAccountsAnnotation, RegistryAccountsPerProject),
+			"projects on the bundled registry are handed accounts of their own, never this connection's")
 
 		By("writing the credential in the shape every registry consumer reads")
 		secret := &corev1.Secret{}

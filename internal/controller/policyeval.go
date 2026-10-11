@@ -355,7 +355,10 @@ func (e *PolicyEvaluator) evidenceReader(
 		if err != nil {
 			return nil, err
 		}
-		dockerConfig, err := e.pullCredential(ctx, source)
+		// The credential the pods pull it with, which on the bundled
+		// registry is the project's own: evidence on an image the project
+		// cannot pull is not this project's evidence.
+		_, dockerConfig, err := pullCredential(ctx, e.Client, project, source)
 		if err != nil {
 			return nil, err
 		}
@@ -377,27 +380,4 @@ func (e *PolicyEvaluator) evidenceReader(
 		return nil, fmt.Errorf("the registry credential could not be read: %w", err)
 	}
 	return factory(secret.Data[corev1.DockerConfigJsonKey], registry.Server)
-}
-
-// pullCredential is the docker config a vendored image is pulled with, empty
-// for the anonymous pull a public image wants.
-func (e *PolicyEvaluator) pullCredential(
-	ctx context.Context, source kitchenv1alpha1.ImageSourceSpec,
-) ([]byte, error) {
-	name := source.PullConnection()
-	if name == "" {
-		return nil, nil
-	}
-	connection := &kitchenv1alpha1.Connection{}
-	if err := e.Client.Get(ctx, types.NamespacedName{
-		Namespace: PlatformNamespace, Name: name,
-	}, connection); err != nil {
-		return nil, err
-	}
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: PlatformNamespace, Name: connection.Spec.CredentialsSecretRef.Name}
-	if err := e.Client.Get(ctx, key, secret); err != nil {
-		return nil, fmt.Errorf("the pull credential could not be read: %w", err)
-	}
-	return secret.Data[corev1.DockerConfigJsonKey], nil
 }

@@ -157,6 +157,8 @@ spec:
     port: {{ int .Values.registry.service.port }}
     secretRef:
       name: {{ include "kitchen.registrySecretName" . }}
+    tokenService: {{ include "kitchen.registryTokenFullname" . | quote }}
+    tokenPort: {{ int .Values.registry.token.port }}
     {{- end }}
   objectStore:
     # The object store the chart runs, seeded by the operator: the Connection

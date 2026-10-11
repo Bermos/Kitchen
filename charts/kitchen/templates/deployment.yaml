@@ -50,6 +50,7 @@ spec:
             {{- end }}
             - --health-probe-bind-address=:{{ .Values.healthProbe.port }}
             - --git-webhook-bind-address=:{{ .Values.webhookReceiver.port }}
+            - --registry-token-bind-address=:{{ .Values.registry.token.port }}
             - --api-bind-address=:{{ .Values.api.port }}
             {{- with .Values.api.extraAudiences }}
             - --api-audiences={{ join "," . }}
@@ -162,6 +163,9 @@ spec:
               protocol: TCP
             - name: git-webhook
               containerPort: {{ .Values.webhookReceiver.port }}
+              protocol: TCP
+            - name: registry-token
+              containerPort: {{ .Values.registry.token.port }}
               protocol: TCP
             - name: api
               containerPort: {{ .Values.api.port }}

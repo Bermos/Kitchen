@@ -340,7 +340,7 @@ func (s *ImagePollSweeper) resolve(
 ) (map[string]string, string) {
 	resolved := map[string]string{}
 	for _, watched := range watchedReferences(project) {
-		_, dockerConfig, err := pullCredential(ctx, s.Client, project.Namespace, watched.Image)
+		_, dockerConfig, err := pullCredential(ctx, s.Client, project, watched.Image)
 		if err != nil {
 			return nil, fmt.Sprintf("%s could not be asked about: %v", watched.Image.Reference(), err)
 		}

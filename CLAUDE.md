@@ -619,6 +619,16 @@ through its Go types, to avoid tying the build to its release cadence.
   Harbor or GHCR has to be able to end up with only its own. It is still kept
   in step — URL and credential — for as long as it exists and carries
   `app.kubernetes.io/managed-by: kitchen`.
+- **On the bundled registry every project is an account of its own, and zot
+  checks no password.** zot trusts tokens signed with the chart's key, and the
+  operator's token service (`internal/registrytoken`, routed at
+  `/kitchen/token` on the registry host) is what checks a password and decides
+  the scope: `<project>.push` and `<project>.pull` reach `<project>` and
+  `<project>/…` alone, which is why a workload's image is nested there rather
+  than `<project>-<workload>` beside it. The platform's own two accounts reach
+  everything and are never copied into an application namespace — anything
+  new that hands a pod a registry credential goes through
+  `writeRegistryCredentials` or `pullCredential`, not the Connection's Secret.
 - **`PORT` is the platform's, and every environment gets it.** A
   buildpacks-built image starts whatever process the buildpack chose, and every
   buildpack's answer to which port that process listens on is `$PORT` — so an

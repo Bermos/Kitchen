@@ -1,0 +1,24 @@
+{{- include "kitchen.validate" . -}}
+{{- if eq (include "kitchen.registryEnabled" .) "true" }}
+# The operator's registry token service, which the bundled registry sends
+# every client to (see registry/configmap.yaml). It is published on the
+# registry's own host, at /kitchen/token, by the route the operator writes —
+# so this Service is named on the Kitchen object rather than routed here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kitchen.registryTokenFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kitchen.labels" . | nindent 4 }}
+    app.kubernetes.io/component: registry-token
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "kitchen.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ int .Values.registry.token.port }}
+      targetPort: registry-token
+      protocol: TCP
+{{- end }}

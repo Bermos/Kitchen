@@ -241,6 +241,22 @@ type ImageRegistrySpec struct {
 	// object is not re-applied and so names none of these fields.
 	// +optional
 	SecretRef *LocalObjectReference `json:"secretRef,omitempty"`
+
+	// TokenService is the Service in the platform namespace fronting the
+	// operator's registry token service: where the registry sends a client
+	// to exchange a username and password for a token, and where a project's
+	// own account is checked and scoped to that project's repositories. The
+	// route publishes it on the registry's host, under /kitchen/token. The
+	// chart writes it as <release>-registry-token.
+	// +optional
+	TokenService string `json:"tokenService,omitempty"`
+
+	// TokenPort is the port that Service publishes.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default=8093
+	// +optional
+	TokenPort int32 `json:"tokenPort,omitempty"`
 }
 
 // ObjectStoreSpec configures the object store the platform runs for itself:

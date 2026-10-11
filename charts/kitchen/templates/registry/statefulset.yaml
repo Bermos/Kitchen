@@ -33,8 +33,10 @@ spec:
         {{- include "kitchen.registrySelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: registry
       annotations:
-        # zot re-reads the htpasswd file by itself but not its configuration,
-        # so a changed config.json has to roll the pod.
+        # zot reads its configuration at startup alone, so a changed
+        # config.json has to roll the pod. The certificate it names is read
+        # then too, and is generated once and kept, so it needs no checksum
+        # of its own.
         checksum/config: {{ include (print $.Template.BasePath "/registry/configmap.yaml") . | sha256sum }}
         {{- with .Values.registry.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -95,10 +97,11 @@ spec:
             - name: config
               mountPath: /etc/zot/config
               readOnly: true
-            # A directory rather than a subPath: zot watches the htpasswd file
-            # and reloads it, and a subPath mount never sees the update.
-            - name: auth
-              mountPath: /etc/zot/auth
+            # The certificate the token service's signatures are checked
+            # against, and nothing else from the registry's Secret: the
+            # registry checks no password itself, so it holds none.
+            - name: token
+              mountPath: /etc/zot/token
               readOnly: true
             # The root filesystem is read-only; blob uploads land here first.
             - name: tmp
@@ -107,12 +110,12 @@ spec:
         - name: config
           configMap:
             name: {{ include "kitchen.registryFullname" . }}
-        - name: auth
+        - name: token
           secret:
             secretName: {{ include "kitchen.registrySecretName" . }}
             items:
-              - key: htpasswd
-                path: htpasswd
+              - key: tokenCert
+                path: token.crt
         - name: tmp
           emptyDir: {}
         {{- if not .Values.registry.persistence.enabled }}
