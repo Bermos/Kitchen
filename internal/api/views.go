@@ -1380,10 +1380,12 @@ type environmentView struct {
 	// yet, and the difference is not a fault on one side and is on the
 	// other. It is always one of the two words, for the reason the project's
 	// is.
-	Exposure     string            `json:"exposure"`
-	Preview      *previewView      `json:"preview,omitempty"`
-	Owners       []string          `json:"owners,omitempty"`
-	Requirements *requirementsView `json:"requirements,omitempty"`
+	Exposure          string            `json:"exposure"`
+	Preview           *previewView      `json:"preview,omitempty"`
+	PolicyEnvironment string            `json:"policyEnvironment,omitempty"`
+	PolicySource      string            `json:"policySource,omitempty"`
+	Owners            []string          `json:"owners,omitempty"`
+	Requirements      *requirementsView `json:"requirements,omitempty"`
 	// Serves is the classes of consumer environment that may bind to an
 	// offering this environment serves, declared by its owners on the same
 	// endpoint as the bar. It is always present and an empty list is the
@@ -1456,6 +1458,7 @@ func newEnvironmentView(
 		Phase:           string(env.Status.Phase),
 		URL:             env.Status.URL,
 		Exposure:        string(exposure.Normalized()),
+		PolicySource:    "environment",
 		Owners:          env.Spec.Owners,
 		Requirements:    newRequirementsView(env.Spec.Requirements),
 		Serves:          servedConsumerNames(env),
@@ -1466,6 +1469,10 @@ func newEnvironmentView(
 		RPO:             string(env.Spec.RPO),
 		CreatedAt:       env.CreationTimestamp.Time,
 		Conditions:      conditionViews(env.Status.Conditions),
+	}
+	if ref := env.Spec.PolicyEnvironmentRef; ref != nil && ref.Name != "" {
+		view.PolicyEnvironment = ref.Name
+		view.PolicySource = "platformEnvironment"
 	}
 	if preview := env.Spec.Preview; preview != nil {
 		view.Preview = &previewView{

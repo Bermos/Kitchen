@@ -1696,11 +1696,17 @@ func (c *client) projectEnvironments(ctx context.Context, name string) ([]enviro
 // project's promotion pipeline — and refused rather than corrected where a
 // client disagrees with it — and what the environment demands is its owners'
 // declaration, which an environment that does not exist yet has nobody for.
-func (c *client) declareEnvironment(ctx context.Context, project, name string) (*environment, error) {
+func (c *client) declareEnvironment(
+	ctx context.Context, project, name, policyEnvironment string,
+) (*environment, error) {
+	body := map[string]string{"name": name}
+	if policyEnvironment != "" {
+		body["policyEnvironment"] = policyEnvironment
+	}
 	answer := &environment{}
 	err := c.do(ctx, "declaring environment "+name,
 		http.MethodPost, "/projects/"+project+"/environments", nil,
-		map[string]string{"name": name}, answer)
+		body, answer)
 	return answer, err
 }
 

@@ -91,6 +91,8 @@ rules:
       - builds/status
       - releases
       - releases/status
+      - platformenvironments
+      - platformenvironments/status
       - environments
       - environments/status
       - domains
