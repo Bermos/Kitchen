@@ -182,7 +182,7 @@ function toggleOutput(name: string) {
   <div class="rounded-md border border-default px-5 py-4 space-y-4">
     <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
       <h2 class="text-sm font-medium text-highlighted">Platform updates</h2>
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 flex-wrap">
         <p v-if="updates.data.value?.checkedAt" class="text-xs text-muted">
           checked {{ timeAgo(updates.data.value.checkedAt) }}
         </p>

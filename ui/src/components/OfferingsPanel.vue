@@ -229,7 +229,7 @@ watch(
 <template>
   <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="min-w-0">
         <h2 class="text-sm font-medium text-highlighted">Offerings</h2>
         <p class="text-xs text-muted mt-1">
           What <span class="font-mono">{{ project }}</span> offers the other projects on this platform. A consumer
@@ -241,7 +241,7 @@ watch(
           grant, and it is set here.
         </p>
       </div>
-      <UButton v-if="mayEdit" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openEditor()">
+      <UButton v-if="mayEdit" class="shrink-0" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openEditor()">
         Offer something
       </UButton>
     </div>

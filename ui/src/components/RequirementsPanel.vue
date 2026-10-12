@@ -156,7 +156,7 @@ async function save() {
   <div>
     <div class="flex items-center justify-between gap-3 mb-2">
       <h2 class="text-sm font-medium text-highlighted">Requirements</h2>
-      <UButton v-if="editable" color="neutral" variant="subtle" size="xs" icon="i-lucide-pencil" @click="openEditor">
+      <UButton v-if="editable" class="shrink-0" color="neutral" variant="subtle" size="xs" icon="i-lucide-pencil" @click="openEditor">
         Edit
       </UButton>
     </div>

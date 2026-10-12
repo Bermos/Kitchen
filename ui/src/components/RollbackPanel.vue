@@ -308,7 +308,7 @@ function commitLabel(build: Build): string {
             <span class="font-mono text-highlighted">{{ props.environment.name }}</span>
             <UBadge color="success" variant="subtle" size="sm">{{ props.environment.phase || "Live" }}</UBadge>
           </div>
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-3 shrink-0">
             <span class="text-xs text-muted">{{ stepLabel }}</span>
             <UButton
               color="neutral"
@@ -621,7 +621,7 @@ function commitLabel(build: Build): string {
             <span class="font-mono">{{ props.environment.name }}</span
             >. No rebuild — the image and its variable snapshot already exist, so the swap is exact and reversible.
           </p>
-          <div class="flex flex-col items-end gap-3">
+          <div class="flex flex-col items-end gap-3 shrink-0">
             <!-- Typed confirmation is not a house style applied everywhere: it
                  is asked for exactly when "exact and reversible" stops being
                  the whole story. See gatedByName. -->
