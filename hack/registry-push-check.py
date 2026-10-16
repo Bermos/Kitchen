@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import re
+import secrets
 import sys
 import urllib.error
 import urllib.parse
@@ -178,6 +179,21 @@ def can_pull(registry, repository, tag):
     return status == 200
 
 
+def can_read_blob(registry, repository, digest):
+    status, _, _ = registry.request("HEAD", f"/v2/{repository}/blobs/{digest}")
+    if status == 200:
+        return True
+    status, _, _ = registry.request("GET", f"/v2/{repository}/blobs/{digest}")
+    return status == 200
+
+
+def can_mount(registry, repository, source, digest):
+    status, _, _ = registry.request(
+        "POST", f"/v2/{repository}/blobs/uploads/?mount={digest}&from={source}"
+    )
+    return status == 201
+
+
 def check_isolation(base, platform, alpha, alpha_pull, beta):
     """Each project's accounts reach its own repositories and no other's —
     which is the whole point of having one per project."""
@@ -199,6 +215,18 @@ def check_isolation(base, platform, alpha, alpha_pull, beta):
         ("alpha's read account pushes to alpha", can_push(alpha_read, "alpha"), False),
         ("beta's account pulls alpha", can_pull(beta_push, "alpha", "seed"), False),
         ("beta's account pulls beta", can_pull(beta_push, "beta", "seed"), True),
+    ]
+    # A layer only beta holds. zot deduplicates blobs across repositories, and
+    # until 2.1.21 an account that could push its own repository could mount
+    # any digest that existed anywhere into it — and then read it — whatever
+    # it was allowed to see. The digest is in every manifest that uses the
+    # layer, so it is not a secret.
+    private = f"beta's own layer {secrets.token_hex(8)}".encode()
+    digest, _ = platform.push_blob("beta", private)
+    expectations += [
+        ("alpha's account reads beta's layer through alpha", can_read_blob(alpha_push, "alpha", digest), False),
+        ("alpha's account mounts beta's layer into alpha", can_mount(alpha_push, "alpha", "beta", digest), False),
+        ("alpha's account reads beta's layer after trying", can_read_blob(alpha_push, "alpha", digest), False),
     ]
     wrong = [what for what, got, want in expectations if got != want]
     for what, got, want in expectations:

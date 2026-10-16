@@ -2443,7 +2443,7 @@ kubectl delete namespace kitchen-system
 | `previewGate.replicas` | `2` | The gate is in the request path of every protected preview. |
 | `previewGate.sessionTTL` | `8h` | How long a visitor stays signed in to a preview. |
 | `registry.enabled` | `true` | Run the bundled image registry. See [The bundled registry](#the-bundled-registry). |
-| `registry.image.repository` / `.tag` | `ghcr.io/project-zot/zot` / `v2.1.20` | |
+| `registry.image.repository` / `.tag` | `ghcr.io/project-zot/zot` / `v2.1.22` | |
 | `registry.auth.username` | `kitchen` | The platform's own account, which may push anywhere. No project is given it: every project has accounts of its own. |
 | `registry.auth.password` | `""` | Generated on install, preserved on upgrade. |
 | `registry.auth.readUsername` | `kitchen-read` | The platform's own read-only account, which may read every repository. |
