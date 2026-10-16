@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.44.0](https://github.com/Bermos/Kitchen/compare/v0.43.0...v0.44.0) (2026-10-16)
+
+
+### Features
+
+* **registry:** give every project registry accounts of its own ([#637](https://github.com/Bermos/Kitchen/issues/637)) ([6d3320f](https://github.com/Bermos/Kitchen/commit/6d3320f893d8db90274cd2512ff4c935ea246614))
+* **signals:** warn before the platform's own volumes fill up ([#634](https://github.com/Bermos/Kitchen/issues/634)) ([90407cd](https://github.com/Bermos/Kitchen/commit/90407cdc833ceb418c9e095d960ce0f4d227ad53))
+
+
+### Bug fixes
+
+* **api:** read a body's project the way the handler reads it ([252c96e](https://github.com/Bermos/Kitchen/commit/252c96eb4ef8f7086351fdfbfd38ad7506edeae0))
+* **auth:** reserve upstream identity provider management to the platform ([bcf2f10](https://github.com/Bermos/Kitchen/commit/bcf2f1077a0982dd84b71cd8afda7d78b35a2793))
+* **chart:** run zot 2.1.22, which keeps one project's layers from another ([#638](https://github.com/Bermos/Kitchen/issues/638)) ([669a826](https://github.com/Bermos/Kitchen/commit/669a8266fd6391aa2b65b3b566c02b681267733b))
+* **deps:** bump OpenTelemetry, x/text and Cilium for reachable advisories ([#635](https://github.com/Bermos/Kitchen/issues/635)) ([8e8f78d](https://github.com/Bermos/Kitchen/commit/8e8f78d5bdca664c3d3bf9ba30f3ef1783c1e23c))
+* **operator:** explain a build push the registry abandoned mid-upload ([#633](https://github.com/Bermos/Kitchen/issues/633)) ([6feb623](https://github.com/Bermos/Kitchen/commit/6feb6236291bf03648011cc85780d449b4461b6c))
+* **operator:** never hand a project a namespace that is not its own ([0a2e83d](https://github.com/Bermos/Kitchen/commit/0a2e83dba6627cdf455be0551aef414f3f3f88a4))
+
 ## [0.43.0](https://github.com/Bermos/Kitchen/compare/v0.42.0...v0.43.0) (2026-09-28)
 
 
