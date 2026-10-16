@@ -195,14 +195,15 @@ runs at `<project>-<workload>` stays pullable by that project's read account —
 read off the Releases that run it, never matched by pattern — until no Release
 names it.
 
-**What this does not close.** zot deduplicates blobs across repositories, and
-an account that may pull any repository can fetch a blob by digest, or mount
-one into its own repository, if that digest exists anywhere in the registry.
-Manifests and tags are not reachable this way, and a digest is not something
-one can guess, but a layer's digest is not a secret either: it is in every
-manifest that uses it. Treat the registry as separating who can push and who
-can enumerate, not as hiding content from a party that already knows a layer's
-digest.
+**A layer is the project's too, not only its tags.** zot deduplicates blobs
+across repositories, and before 2.1.21 that let an account read any layer
+whose digest existed anywhere in the registry — through a `HEAD` on its own
+repository, or by mounting it from another project's repository it had no
+right to read. A layer's digest is not a secret: it is in every manifest that
+uses it. 2.1.21 refuses both, and the chart's registry check
+(`hack/check-registry-accepts-docker-manifests.sh`, run by the Helm workflow)
+tries each against the image the chart pins, so a version that reopens it does
+not ship.
 
 ## GitHub Container Registry
 
