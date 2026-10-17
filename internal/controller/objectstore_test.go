@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,9 +36,18 @@ import (
 	"github.com/Bermos/Kitchen/internal/provider/objectstore"
 )
 
-// objectStoreChartSecretName mirrors what the chart writes for the release
-// named "kitchen".
-const objectStoreChartSecretName = "kitchen-objectstore"
+// What the chart writes for the release named "kitchen": the Secret holding
+// the store's root credential, the Service every bucket is reached at, and
+// the name that Service's certificate is issued for. Beside them, the address
+// the platform publishes the store at for a base domain of
+// apps.example.com — the one a presigned URL is signed against (#601).
+const (
+	objectStoreChartSecretName = "kitchen-objectstore"
+	objectStoreServiceName     = "kitchen-objectstore"
+	objectStoreServiceHost     = "kitchen-objectstore.kitchen-system.svc"
+	objectStorePublicHostname  = "objectstore.apps.example.com"
+	objectStorePublicEndpoint  = "https://" + objectStorePublicHostname
+)
 
 var _ = Describe("The bundled object store", func() {
 	ctx := context.Background()
@@ -57,6 +67,33 @@ var _ = Describe("The bundled object store", func() {
 		kitchen := &kitchenv1alpha1.Kitchen{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, singletonKey, kitchen)).To(Succeed())
 		return kitchen
+	}
+
+	routeKey := types.NamespacedName{Name: ObjectStoreRouteName, Namespace: PlatformNamespace}
+	adminRouteKey := types.NamespacedName{Name: ObjectStoreAdminRouteName, Namespace: PlatformNamespace}
+	backendTLSKey := types.NamespacedName{Name: ObjectStoreBackendTLSName, Namespace: PlatformNamespace}
+
+	backendTLSPolicy := func() *unstructured.Unstructured {
+		policy := &unstructured.Unstructured{}
+		policy.SetGroupVersionKind(backendTLSPolicyGVK)
+		ExpectWithOffset(1, k8sClient.Get(ctx, backendTLSKey, policy)).To(Succeed())
+		return policy
+	}
+
+	// serveTLS makes the chart's secret say what it says on an installation
+	// where the store was issued a certificate from the platform's own CA.
+	serveTLS := func() {
+		secret := &corev1.Secret{}
+		ExpectWithOffset(1, k8sClient.Get(ctx, types.NamespacedName{
+			Name: objectStoreChartSecretName, Namespace: PlatformNamespace,
+		}, secret)).To(Succeed())
+		secret.StringData = map[string]string{
+			objectstore.SecretKeyHost:              objectStoreServiceHost,
+			objectstore.SecretKeyScheme:            objectstore.SchemeHTTPS,
+			objectstore.SecretKeyCAFile:            "/etc/kitchen/internal-ca/ca.crt",
+			objectstore.SecretKeyCertificateSecret: "kitchen-objectstore-tls",
+		}
+		ExpectWithOffset(1, k8sClient.Update(ctx, secret)).To(Succeed())
 	}
 
 	connectionConfig := func(conn *kitchenv1alpha1.Connection) objectstore.Config {
@@ -88,7 +125,7 @@ var _ = Describe("The bundled object store", func() {
 				Registry:   kitchenv1alpha1.ImageRegistrySpec{Enabled: false},
 				ObjectStore: kitchenv1alpha1.ObjectStoreSpec{
 					Enabled:   true,
-					Service:   "kitchen-objectstore",
+					Service:   objectStoreServiceName,
 					Port:      9000,
 					SecretRef: &kitchenv1alpha1.LocalObjectReference{Name: objectStoreChartSecretName},
 				},
@@ -103,6 +140,9 @@ var _ = Describe("The bundled object store", func() {
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: ObjectStoreCredentialsSecretName, Namespace: PlatformNamespace}},
 			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: objectStoreChartSecretName, Namespace: PlatformNamespace}},
 			&gatewayv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: SharedGatewayName, Namespace: PlatformNamespace}},
+			&gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: ObjectStoreRouteName, Namespace: PlatformNamespace}},
+			&gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: ObjectStoreAdminRouteName, Namespace: PlatformNamespace}},
+			backendTLSPolicyObject(),
 			acmeIssuerObject(),
 			http01IssuerObject(),
 			wildcardCertificateObject(),
@@ -141,17 +181,7 @@ var _ = Describe("The bundled object store", func() {
 	})
 
 	It("seeds an https connection, with the CA, when the chart says the store serves TLS", func() {
-		secret := &corev1.Secret{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{
-			Name: objectStoreChartSecretName, Namespace: PlatformNamespace,
-		}, secret)).To(Succeed())
-		secret.StringData = map[string]string{
-			objectstore.SecretKeyHost:              "kitchen-objectstore.kitchen-system.svc",
-			objectstore.SecretKeyScheme:            objectstore.SchemeHTTPS,
-			objectstore.SecretKeyCAFile:            "/etc/kitchen/internal-ca/ca.crt",
-			objectstore.SecretKeyCertificateSecret: "kitchen-objectstore-tls",
-		}
-		Expect(k8sClient.Update(ctx, secret)).To(Succeed())
+		serveTLS()
 
 		reconcileOnce()
 
@@ -236,6 +266,185 @@ var _ = Describe("The bundled object store", func() {
 		Expect(meta.FindStatusCondition(kitchen.Status.Conditions, condObjectStoreReady)).To(BeNil())
 	})
 
+	It("publishes the store on the shared Gateway, and puts that address in the binding", func() {
+		reconcileOnce()
+
+		By("an HTTPRoute of the operator's, on the HTTPS listener, for the reserved label")
+		route := &gatewayv1.HTTPRoute{}
+		Expect(k8sClient.Get(ctx, routeKey, route)).To(Succeed())
+		Expect(route.Spec.Hostnames).To(Equal([]gatewayv1.Hostname{objectStorePublicHostname}))
+		Expect(route.Spec.ParentRefs).To(HaveLen(1))
+		Expect(route.Spec.ParentRefs[0].Name).To(Equal(gatewayv1.ObjectName(SharedGatewayName)))
+		Expect(route.Spec.ParentRefs[0].SectionName).NotTo(BeNil())
+		Expect(string(*route.Spec.ParentRefs[0].SectionName)).To(Equal(gatewayListenerHTTPS),
+			"the public address is https or it is not published at all")
+		Expect(route.Spec.Rules).To(HaveLen(1))
+		Expect(route.Spec.Rules[0].BackendRefs).To(HaveLen(1))
+		Expect(route.Spec.Rules[0].BackendRefs[0].Name).To(Equal(gatewayv1.ObjectName(objectStoreServiceName)))
+		Expect(*route.Spec.Rules[0].BackendRefs[0].Port).To(Equal(gatewayv1.PortNumber(9000)))
+
+		By("a second address on the seeded connection, beside the in-cluster one and not replacing it")
+		conn := &kitchenv1alpha1.Connection{}
+		Expect(k8sClient.Get(ctx, connectionKey, conn)).To(Succeed())
+		cfg := connectionConfig(conn)
+		Expect(cfg.Endpoint).To(Equal("http://kitchen-objectstore.kitchen-system.svc.cluster.local:9000"),
+			"the address the application's own reads and writes use does not move")
+		Expect(cfg.PublicEndpoint).To(Equal(objectStorePublicEndpoint),
+			"and this is the one a presigned URL is signed against")
+
+		By("and saying both on the singleton, where the platform reports itself")
+		kitchen := singleton()
+		Expect(kitchen.Status.ObjectStore.Endpoint).To(Equal(cfg.Endpoint))
+		Expect(kitchen.Status.ObjectStore.PublicEndpoint).To(Equal(objectStorePublicEndpoint))
+		Expect(kitchen.Status.ObjectStore.Unpublished).To(BeEmpty())
+		Expect(meta.FindStatusCondition(kitchen.Status.Conditions, condObjectStoreReady).Message).
+			To(ContainSubstring(objectStorePublicEndpoint))
+	})
+
+	// Publishing port 9000 publishes the S3 API and MinIO's admin API with
+	// it, because the S3 API is the whole URL space and the route in front
+	// of it can only match `/`. The admin API is carved back out by a more
+	// specific route, which is the only shape Gateway API has for it.
+	It("keeps the store's admin API off the published address", func() {
+		reconcileOnce()
+
+		admin := &gatewayv1.HTTPRoute{}
+		Expect(k8sClient.Get(ctx, adminRouteKey, admin)).To(Succeed())
+		Expect(admin.Spec.Hostnames).To(Equal([]gatewayv1.Hostname{objectStorePublicHostname}),
+			"the same hostname, or it out-precedences nothing")
+		Expect(admin.Spec.Rules).To(HaveLen(1))
+
+		By("matching a longer prefix than the store's route, which is what wins")
+		Expect(admin.Spec.Rules[0].Matches).To(HaveLen(1))
+		adminPath := admin.Spec.Rules[0].Matches[0].Path
+		Expect(adminPath).NotTo(BeNil())
+		Expect(*adminPath.Type).To(Equal(gatewayv1.PathMatchPathPrefix))
+		Expect(*adminPath.Value).To(Equal("/minio/admin/"))
+
+		store := &gatewayv1.HTTPRoute{}
+		Expect(k8sClient.Get(ctx, routeKey, store)).To(Succeed())
+		Expect(store.Spec.Rules[0].Matches).To(HaveLen(1))
+		storePath := store.Spec.Rules[0].Matches[0].Path
+		Expect(storePath).NotTo(BeNil())
+		Expect(*storePath.Type).To(Equal(gatewayv1.PathMatchPathPrefix))
+		Expect(*storePath.Value).To(Equal("/"))
+		Expect(len(*adminPath.Value)).To(BeNumerically(">", len(*storePath.Value)),
+			"path specificity is the whole of the precedence argument here, since the "+
+				"hostnames are equal and hostname is weighed first")
+
+		By("answering it itself rather than reaching the store")
+		Expect(admin.Spec.Rules[0].BackendRefs).To(BeEmpty(),
+			"a backend here would be the store, which is the thing being kept out of reach")
+		Expect(admin.Spec.Rules[0].Filters).To(HaveLen(1),
+			"and with no response-producing filter the rule answers 500, which would "+
+				"report a platform fault for a deliberate refusal")
+		Expect(admin.Spec.Rules[0].Filters[0].Type).To(Equal(gatewayv1.HTTPRouteFilterRequestRedirect))
+		Expect(admin.Spec.Rules[0].Filters[0].RequestRedirect).NotTo(BeNil())
+		Expect(*admin.Spec.Rules[0].Filters[0].RequestRedirect.Path.ReplaceFullPath).To(Equal("/"))
+	})
+
+	It("takes the admin carve-out down with the route it carves out of", func() {
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, adminRouteKey, &gatewayv1.HTTPRoute{})).To(Succeed())
+
+		kitchen := singleton()
+		kitchen.Spec.TLS = kitchenv1alpha1.TLSSpec{Mode: kitchenv1alpha1.TLSModeNone}
+		Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+		reconcileOnce()
+
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, adminRouteKey, &gatewayv1.HTTPRoute{}))).To(BeTrue(),
+			"left behind it redirects a hostname the platform no longer answers for")
+	})
+
+	It("tells the Gateway to reach the store over TLS, on the platform's own CA", func() {
+		serveTLS()
+
+		reconcileOnce()
+
+		// The two trust paths are different and must not be conflated: the
+		// public leg rides the platform's wildcard certificate, this one the
+		// internal CA, on the `.svc` name that certificate is issued for.
+		policy := backendTLSPolicy()
+		hostname, found, err := unstructured.NestedString(policy.Object, "spec", "validation", "hostname")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(hostname).To(Equal(objectStoreServiceHost),
+			"the name the store's certificate is issued for, not the one in front of the Gateway")
+		refs, found, err := unstructured.NestedSlice(policy.Object, "spec", "validation", "caCertificateRefs")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(refs).To(Equal([]any{map[string]any{
+			"group": "", "kind": "ConfigMap", "name": InternalCAConfigMapName,
+		}}))
+		targets, _, err := unstructured.NestedSlice(policy.Object, "spec", "targetRefs")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(targets).To(Equal([]any{map[string]any{
+			"group": "", "kind": "Service", "name": objectStoreServiceName,
+		}}))
+
+		By("and leaving the private CA off the public address, which no client outside has")
+		conn := &kitchenv1alpha1.Connection{}
+		Expect(k8sClient.Get(ctx, connectionKey, conn)).To(Succeed())
+		cfg := connectionConfig(conn)
+		Expect(cfg.PublicEndpoint).To(Equal(objectStorePublicEndpoint))
+		Expect(cfg.CAFile).To(Equal("/etc/kitchen/internal-ca/ca.crt"),
+			"which belongs to the in-cluster endpoint alone")
+	})
+
+	It("writes no backend TLS policy for a store left in the clear", func() {
+		reconcileOnce()
+
+		policy := &unstructured.Unstructured{}
+		policy.SetGroupVersionKind(backendTLSPolicyGVK)
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, backendTLSKey, policy))).To(BeTrue(),
+			"there is nothing to verify, and a policy saying otherwise would break the hop")
+	})
+
+	It("publishes nothing in tls mode none, and says why", func() {
+		kitchen := singleton()
+		kitchen.Spec.TLS = kitchenv1alpha1.TLSSpec{Mode: kitchenv1alpha1.TLSModeNone}
+		Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+		reconcileOnce()
+
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, routeKey, &gatewayv1.HTTPRoute{}))).To(BeTrue(),
+			"publishing the store there would carry every presigned request in the clear")
+
+		conn := &kitchenv1alpha1.Connection{}
+		Expect(k8sClient.Get(ctx, connectionKey, conn)).To(Succeed())
+		Expect(connectionConfig(conn).PublicEndpoint).To(BeEmpty())
+
+		kitchen = singleton()
+		Expect(kitchen.Status.ObjectStore.PublicEndpoint).To(BeEmpty())
+		Expect(kitchen.Status.ObjectStore.Unpublished).To(ContainSubstring("tls.mode none"))
+		// Still a running store, so the condition is True: not being
+		// published is a fact about it rather than a fault.
+		Expect(meta.IsStatusConditionTrue(kitchen.Status.Conditions, condObjectStoreReady)).To(BeTrue())
+		Expect(meta.FindStatusCondition(kitchen.Status.Conditions, condObjectStoreReady).Message).
+			To(ContainSubstring("tls.mode none"))
+	})
+
+	It("takes the published address down when the store is switched off", func() {
+		serveTLS()
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, routeKey, &gatewayv1.HTTPRoute{})).To(Succeed())
+		Expect(backendTLSPolicy()).NotTo(BeNil())
+
+		kitchen := singleton()
+		kitchen.Spec.ObjectStore.Enabled = false
+		Expect(k8sClient.Update(ctx, kitchen)).To(Succeed())
+
+		reconcileOnce()
+
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, routeKey, &gatewayv1.HTTPRoute{}))).To(BeTrue(),
+			"a route to a store the chart has stopped rendering answers 503 under the platform's own name")
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, adminRouteKey, &gatewayv1.HTTPRoute{}))).To(BeTrue())
+		policy := &unstructured.Unstructured{}
+		policy.SetGroupVersionKind(backendTLSPolicyGVK)
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, backendTLSKey, policy))).To(BeTrue())
+	})
+
 	It("waits for the credential the chart generates", func() {
 		Expect(k8sClient.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: objectStoreChartSecretName, Namespace: PlatformNamespace},
@@ -248,3 +457,12 @@ var _ = Describe("The bundled object store", func() {
 			To(Equal("CredentialUnavailable"))
 	})
 })
+
+// backendTLSPolicyObject is the policy as a bare object, for a cleanup list.
+func backendTLSPolicyObject() *unstructured.Unstructured {
+	policy := &unstructured.Unstructured{}
+	policy.SetGroupVersionKind(backendTLSPolicyGVK)
+	policy.SetName(ObjectStoreBackendTLSName)
+	policy.SetNamespace(PlatformNamespace)
+	return policy
+}

@@ -79,6 +79,15 @@ const DefaultRegion = "us-east-1"
 type Config struct {
 	// Endpoint is the store's URL with its scheme.
 	Endpoint string `json:"endpoint"`
+	// PublicEndpoint is where the same store answers from outside the
+	// cluster. The operator writes it on the Connection it seeds, for the
+	// bundled store it publishes on the shared Gateway; it is empty for
+	// every store whose Endpoint is already an address the internet
+	// resolves, and it is never what the platform's own clients talk to.
+	//
+	// It reaches an application through the binding's `publicEndpoint` key,
+	// which is what a presigned URL has to be signed against (#601).
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 	// Region the store's buckets are in; DefaultRegion when empty.
 	Region string `json:"region,omitempty"`
 	// ForcePathStyle addresses a bucket as a path rather than a host name.
@@ -92,9 +101,17 @@ type Config struct {
 	// Connection is handed the Connection's own credential. A size limit
 	// is a quota the same API sets, and is refused without it.
 	ScopedCredentials *bool `json:"scopedCredentials,omitempty"`
-	// InCluster marks the bundled store: reached at a Service address and
-	// nowhere else, so a publicly readable bucket is refused — there is no
-	// public to read it. The operator writes it on the Connection it seeds.
+	// InCluster marks the bundled store: its Endpoint is a Service address,
+	// which nothing outside the cluster resolves. The operator writes it on
+	// the Connection it seeds.
+	//
+	// It is what refuses a publicly readable bucket — the store admits
+	// nobody anonymously — and it is what tells the two reasons a binding
+	// can carry no PublicEndpoint apart. Without one, an in-cluster store
+	// is a store the platform is not publishing and no presigned URL it
+	// signs can be opened from a browser; an external store's Endpoint was
+	// already an address the internet resolves. Those are opposite advice
+	// and a screen that cannot tell them apart gives the wrong half (#601).
 	InCluster bool `json:"inCluster,omitempty"`
 	// CAFile is the PEM bundle the store's certificate must be signed by,
 	// at the path it is mounted in the pod reading this Connection — the
@@ -117,10 +134,14 @@ func (c Config) Scoped() bool { return c.ScopedCredentials == nil || *c.ScopedCr
 // Host is the endpoint without its scheme, as the S3 client takes it, and
 // whether the scheme was https.
 func (c Config) Host() (host string, secure bool, err error) {
-	u, err := url.Parse(c.Endpoint)
+	return splitEndpoint(c.Endpoint)
+}
+
+func splitEndpoint(endpoint string) (host string, secure bool, err error) {
+	u, err := url.Parse(endpoint)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", false, fmt.Errorf("endpoint must be an http(s) URL naming the store — "+
-			"\"https://s3.eu-central-1.amazonaws.com\" (got %q)", c.Endpoint)
+			"\"https://s3.eu-central-1.amazonaws.com\" (got %q)", endpoint)
 	}
 	return u.Host, u.Scheme == "https", nil
 }
@@ -175,6 +196,7 @@ func ParseConfig(raw []byte) (Config, error) {
 		}
 	}
 	cfg.Endpoint = strings.TrimSpace(cfg.Endpoint)
+	cfg.PublicEndpoint = strings.TrimSpace(cfg.PublicEndpoint)
 	cfg.Region = strings.TrimSpace(cfg.Region)
 	cfg.CAFile = strings.TrimSpace(cfg.CAFile)
 	if cfg.Endpoint == "" {
@@ -184,6 +206,14 @@ func ParseConfig(raw []byte) (Config, error) {
 	}
 	if _, _, err := cfg.Host(); err != nil {
 		return Config{}, fmt.Errorf("provider %s: %w", ProviderS3, err)
+	}
+	if cfg.PublicEndpoint != "" {
+		// It is signed against, so a malformed one is a claim whose every
+		// presigned URL is wrong. Refuse it here, where the message names
+		// the field, rather than in somebody's browser.
+		if _, _, err := splitEndpoint(cfg.PublicEndpoint); err != nil {
+			return Config{}, fmt.Errorf("provider %s, config.publicEndpoint: %w", ProviderS3, err)
+		}
 	}
 	if cfg.Region == "" {
 		cfg.Region = DefaultRegion
