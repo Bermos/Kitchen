@@ -226,6 +226,7 @@ rules:
   - kitchen.bermos.dev
   resources:
   - addonupgrades
+  - platformenvironments
   verbs:
   - create
   - get
