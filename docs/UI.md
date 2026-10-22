@@ -180,11 +180,24 @@ again.
 - **One root element**, and its rhythm is `space-y-6`. Sections are spaced by
   the page, not each by itself; a section that wants to sit closer to the one
   above it is one section, not two.
-- **One width.** The only cap a view may declare for itself is `max-w-3xl`, and
-  it means "this page is a form" — the account screen, a project's settings.
-  Everything else is a dashboard and takes the column. A form *inside* a
-  dashboard page (the members panel, the environment variables panel) takes the
-  same `max-w-3xl`, so there is one form width rather than one per panel.
+- **One width, and a pane takes the width of what it is *about*.** The only cap
+  a view or a pane may declare for itself is `max-w-3xl`, and it means "this is
+  a form": the cap exists because a 1400px-wide text input is worse, not
+  better. **A pane about something somebody fills in keeps that width, whatever
+  table it shows as evidence; a pane about a list takes the whole column,
+  whatever form it carries for adding to that list.** Attached resources is
+  about the declaration and its claims table is evidence for it, so it keeps
+  the form width; Members is about who is on the project and takes the column
+  although it has an "Add somebody" row and a role select on every line.
+  Secrets, Domains, Keys, Files and Offerings take it too, and edit through a
+  dialogue rather than on the pane. That is the scope rule's
+  reasoning one level down: what a screen is about decides what is on it, and
+  here it decides how wide it is. The list a pane is about is almost always
+  drawn as a table; where it is drawn as cards instead the pane says so beside
+  its `width`, because a card list gains nothing from the extra 600px (#599).
+  Everything that is neither is a dashboard and takes the column too. The width
+  is declared once — by the page, or by the pane — and never again by a panel
+  inside it, so there is one form width rather than one per panel.
 - **One header.** [`PageHeader`](../ui/src/components/PageHeader.vue) is the
   first thing on every page. It owns the `<h1>`, so no other file writes one.
 
@@ -348,6 +361,39 @@ The tone (`text-highlighted`, `text-muted`, `text-error`) is free — a danger
 zone's heading is red and still a section heading. The size and the weight are
 not.
 
+### A section's actions
+
+**The controls beside a heading are never squeezed below their own labels.** A
+header written by hand is a flex row — `flex justify-between`, the heading and
+its sentence on one side and the controls on the other, however the row aligns
+them — and in one of those a button is a flex item like any other: the
+prose on the left is wider than the row, both sides give way in proportion, and
+the button ends up narrower than the words on it. `Add a secret` was drawn as
+`+ Add a` over `secret`, in a control taller than everything beside it (#599).
+
+The frame already contains the two answers, and there is no third:
+
+- [`PageSection`](../ui/src/components/PageSection.vue) puts its `actions` slot
+  in a `shrink-0` wrapper, so the controls keep their own size and the heading
+  block gives way instead. A hand-written header takes the same class.
+- [`PageHeader`](../ui/src/components/PageHeader.vue) lets the row wrap, so the
+  controls drop to a line of their own rather than sharing a narrow one — which
+  only finishes the job if that line wraps too, since three buttons alone on a
+  phone-width line squeeze exactly as they would have beside the heading. Both
+  halves, or neither.
+
+`design.test.ts` reads every row of that shape whose far side holds a control
+and names the file that took neither answer, which is why the rule stays true
+rather than being re-decided per screen. It keys on `flex justify-between`
+alone and on nothing else about the row, because the first version of it also
+required `items-start` or `items-center` and so was an allowlist of the
+spellings that existed the day it was written: three live headers aligned
+`items-baseline`, `items-end` or not at all went unseen, and one of them was
+the reported defect on another screen. A row of two spans — a fact and its
+number — is not one of these: it has no label to break, and nor are the modal
+footers that are `justify-end` rather than `justify-between`. The cheapest way
+to keep the rule is to use `PageSection` and not write the row at all.
+
 ### A screen with more sections than a scroll can hold
 
 **Past about six sections, a screen gets a left rail and shows one pane at a
@@ -372,10 +418,12 @@ next screen to guess at:
   (`SETTINGS_SECTIONS` in `ui/src/lib/project.ts`), because the redirects that
   land old addresses on the right pane read the same ids. Two spellings of one
   vocabulary is how a redirect quietly stops landing.
-- **Each pane is `max-w-3xl`, declared once by the pane rather than by every
-  panel inside it.** This is the "one page, one form width" rule above, honoured
-  rather than asserted: the width is a property of the column, and a panel
-  dropped into it inherits it.
+- **Each pane declares its width, and the column applies it** — `width` on the
+  section in `SETTINGS_SECTIONS`, `"form"` for `max-w-3xl` and `"column"` for
+  the whole of it, decided by what the pane is about. This is the "one width"
+  rule above honoured rather than asserted: the width is a property of the
+  column, a panel dropped into it inherits it and declares none of its own, and
+  the panes that are about a list stop being drawn in half a wide screen.
 - **A pane nobody may open is not in the rail**, and an address naming one falls
   back to the first pane this account has — the same rule every affordance here
   follows, asked of the same table the route guard asks.

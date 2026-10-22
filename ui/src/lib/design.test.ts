@@ -22,6 +22,7 @@
 import { parse } from "@vue/compiler-sfc";
 import { describe, expect, it } from "vitest";
 import { routes, type Scope } from "../routes";
+import { SETTINGS_SECTIONS } from "./project";
 
 // The sources themselves, pulled in by the bundler rather than read off the
 // disk: it keeps this test to the same module graph as everything else here,
@@ -558,4 +559,157 @@ describe("the shell's frame", () => {
       "the shell's <main> is focusable programmatically, which is what makes it keyboard-scrollable",
     ).toBe("-1");
   });
+});
+
+describe("a section's actions", () => {
+  /**
+   * The two-part row, written by hand: a heading and its sentence on one side,
+   * the controls on the other. `PageSection` is that shape with a name and
+   * `PageHeader` is the page-level one, but the dashboard hand-rolls it in two
+   * dozen places, and in a hand-rolled one a button is a flex item like any
+   * other — the prose on the left wins the space, the button is squeezed below
+   * the width of its own label, and `Add a secret` is drawn as `+ Add a` over
+   * `secret` in a control taller than everything beside it (#599).
+   *
+   * It keys on `flex justify-between` and on nothing else about the row. The
+   * first version of this also required `items-start` or `items-center`, which
+   * made it an allowlist of the spellings that existed the day it was written
+   * rather than of the files: a new hand-rolled header in either of those was
+   * caught, and three live ones aligned `items-baseline`, `items-end` and not
+   * at all were not — one of them the reported defect, still unfixed, on a
+   * screen nobody had thought to look at. A rule about a shape names the least
+   * of the shape that identifies it.
+   */
+  function isHeaderRow(cls: string[]): boolean {
+    return cls.includes("flex") && cls.includes("justify-between");
+  }
+
+  /** What a label can break inside. A row of two spans is a fact and its
+   * number: it has nothing to squeeze and no label to break. */
+  const CONTROLS = /^(?:UButton|USelect|USelectMenu|USwitch|UInput|UTextarea|UCheckbox|URadioGroup|UDropdownMenu|UFileUpload|button)$/;
+
+  function holdsAControl(node: Node): boolean {
+    let found = false;
+    walk(node, (element) => {
+      if (element.tag && CONTROLS.test(element.tag)) found = true;
+    });
+    return found;
+  }
+
+  it.each(everything)("$name never squeezes a control below its own label", (file) => {
+    const offenders: string[] = [];
+    walk(templateOf(file), (node) => {
+      const row = classes(node);
+      if (!isHeaderRow(row)) return;
+
+      const children = elementChildren(node);
+      // A heading with nothing beside it is not two-part and cannot squeeze.
+      if (children.length < 2) return;
+
+      const controls = children[children.length - 1];
+      if (!holdsAControl(controls)) return;
+
+      const cls = classes(controls);
+      // The two answers the frame already contains, and there is no third.
+      // `PageSection` holds its actions at their own size; `PageHeader` lets
+      // the row wrap so they get a line to themselves, which only helps if
+      // that line wraps too — three buttons alone on a narrow line squeeze
+      // exactly as they would have beside the heading.
+      const holds = cls.includes("shrink-0");
+      const wraps = row.includes("flex-wrap") && cls.includes("flex-wrap");
+      if (!holds && !wraps) offenders.push(`<${controls.tag}>`);
+    });
+
+    expect(
+      offenders,
+      `${file.name}: the side of a header that holds the controls is shrink-0, or the row and that side both ` +
+        `flex-wrap — otherwise the button is narrower than its own label and the label breaks over two lines ` +
+        `(docs/UI.md, "A section's actions"). Use PageSection, or give its actions slot's behaviour to the header ` +
+        `you wrote`,
+    ).toEqual([]);
+  });
+});
+
+describe("a settings pane's width", () => {
+  const settings = views.find((view) => view.name === "ProjectSettingsView.vue")!;
+
+  /** What each pane of the Settings rail renders, found by the `v-if` chain
+   * that is the screen's one place a pane is chosen. */
+  const panes = new Map<string, Node>();
+  walk(templateOf(settings), (node) => {
+    for (const prop of node.props ?? []) {
+      if (prop.type !== DIRECTIVE || (prop.name !== "if" && prop.name !== "else-if")) continue;
+      const named = /^current\.id === '([a-z]+)'$/.exec((prop.exp?.content ?? "").trim());
+      if (named) panes.set(named[1], node);
+    }
+  });
+
+  /** The component a pane is, where the pane is a panel of its own rather than
+   * written out in the screen. A panel takes only props, so it is the one with
+   * no children of its own — `PageSection` wraps the panes written inline. */
+  function panelOf(node: Node): { name: string; source: string } | undefined {
+    if (elementChildren(node).length) return undefined;
+    return components.find((component) => component.name === `${node.tag}.vue`);
+  }
+
+  /** Whether the pane's own content is a table. What is inside a dialogue is
+   * not the pane's content — every table pane here is edited through one. */
+  function drawsATable(node: Node | undefined): boolean {
+    let found = false;
+    walk(node, (element, ancestors) => {
+      if (element.tag !== "table") return;
+      if (ancestors.some((a) => (a.tag ?? "").startsWith("UModal") || (a.tag ?? "").startsWith("USlideover"))) return;
+      found = true;
+    });
+    return found;
+  }
+
+  it("is the rail's decision, pane for pane", () => {
+    expect(
+      [...panes.keys()].sort(),
+      "every pane the screen renders is one the rail lists, and every pane the rail lists is rendered",
+    ).toEqual(SETTINGS_SECTIONS.map((section) => section.id).sort());
+  });
+
+  it("has panes on both sides of it", () => {
+    // A distinction with nothing on one side of it has stopped being one.
+    expect(SETTINGS_SECTIONS.some((section) => section.width === "form")).toBe(true);
+    expect(SETTINGS_SECTIONS.some((section) => section.width === "column")).toBe(true);
+  });
+
+  // One direction only, and deliberately. A pane that takes the whole column
+  // draws the list it is about, or the cap has been loosened for a form and
+  // the rule is an allowlist. The converse is neither asserted nor true, and
+  // the tie-break is not "which controls are on it": attached resources keeps
+  // the form width *with* a claims table on it, because the table is evidence
+  // for the declaration the pane is about; Members takes the column *with* an
+  // "Add somebody" row and a per-line role select on it, because the pane is
+  // about who is on the project and the form is how you add to that list. What
+  // a pane is about is what decides it, and no machine reads that — docs/UI.md
+  // holds that half, as it holds the scope rule's reasoning this borrows.
+  it.each(SETTINGS_SECTIONS.filter((section) => section.width === "column"))(
+    "$id takes the column, and draws the list it is about",
+    (section) => {
+      const pane = panes.get(section.id)!;
+      const panel = panelOf(pane);
+      expect(
+        drawsATable(panel ? templateOf(panel) : pane),
+        `${section.id}: a pane takes the whole column because it is about a list, and every such pane here ` +
+          `draws that list as a table — a pane about something somebody fills in keeps max-w-3xl, because a ` +
+          `1400px-wide text input is worse, not better (docs/UI.md, "The page")`,
+      ).toBe(true);
+    },
+  );
+
+  it.each([...panes.values()].map(panelOf).filter((panel) => panel !== undefined))(
+    "$name leaves the width to the pane",
+    (panel) => {
+      const root = elementChildren(templateOf(panel))[0];
+      expect(
+        classes(root).filter((token) => token.startsWith("max-w-")),
+        `${panel.name}: the width is the pane's, declared once in ProjectSettingsView from the rail's own list — ` +
+          `a panel that caps itself overrides that silently, and a table pane stays in half a wide screen`,
+      ).toEqual([]);
+    },
+  );
 });

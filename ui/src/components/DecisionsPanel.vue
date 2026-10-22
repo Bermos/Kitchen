@@ -86,7 +86,7 @@ function time(iso: string): string {
           bundle digest and input digest it can be reproduced from.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <USelect v-model="kind" :items="kinds" size="xs" class="w-32" @update:model-value="refine" />
         <USelect v-model="verdict" :items="verdicts" size="xs" class="w-44" @update:model-value="refine" />
         <UButton

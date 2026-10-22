@@ -208,7 +208,7 @@ function readableSize(size: number): string {
           <p class="text-[11px] text-dimmed font-mono break-all mt-0.5">{{ digest }}</p>
           <p class="text-[11px] text-dimmed">{{ readableSize(bytes) }}</p>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
           <UButton icon="i-lucide-download" color="primary" variant="subtle" size="xs" @click="savePack">
             Pack (JSON)
           </UButton>
