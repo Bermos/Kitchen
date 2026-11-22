@@ -17,6 +17,7 @@
  * claiming.
  */
 import type { Artifact, Build, Claim, Environment, Exception, Exposure, Process, Project, Promotion } from "./api";
+import { may, type Caller } from "./policy";
 
 /**
  * What the platform calls a project's own image, and its own web process.
@@ -371,15 +372,21 @@ export function claimPlan(claim: Claim): string {
 // ── The Settings sub-navigation ─────────────────────────────────────────────
 
 /**
- * Settings is a left rail and one pane at a time, the way `/platform` is a
- * scope and one screen at a time.
+ * Settings is one pane at a time, the way `/platform` is a scope and one
+ * screen at a time — and the list of panes is the sidebar's, nested under the
+ * Settings entry, rather than a second rail inside the page.
  *
- * Twelve panels behind a rail is a normal shape; twelve panels on one scroll is
+ * Twelve panels behind a list is a normal shape; twelve panels on one scroll is
  * the shape #470 objects to — and since the settings-bound panels are more
  * lines than the whole of the host page was, a single-scroll Settings would
- * re-create the problem one level down. Each pane is its own `max-w-3xl`
- * column, which is how "one page, one form width" is honoured rather than
- * asserted (docs/UI.md).
+ * re-create the problem one level down.
+ *
+ * The list used to be a rail of its own inside the content column, which spent
+ * a 13rem column of every pane on navigation the sidebar already had room for,
+ * and the pane beside it was capped at the form width — so the panes that are
+ * tables (variables, files, secrets, members) truncated the very names they
+ * exist to show. Now the sidebar carries the list, and a pane is as wide as
+ * what it holds: a form is `max-w-3xl`, a list takes the column (docs/UI.md).
  *
  * The id is in the address as `?section=`, so a pane is a link: "the fork
  * policy is here" is a thing somebody can send.
@@ -392,16 +399,23 @@ export interface SettingsSection {
   /** A pane that only exists for a project built from a repository — a project
    * running a vendored image has no branch, no previews and no build. */
   builtHereOnly?: boolean;
+  /** A pane that is a form — fields and a Save — and so the one width a form
+   * is (`max-w-3xl`). Every other pane is a list of things with names and
+   * values, and takes the whole column: a list capped at a form's width is
+   * one that truncates what it is a list of. */
+  form?: boolean;
 }
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "source",
+    form: true,
     label: "Source",
     description: "Where this project's software comes from, and what is done to it before it runs.",
   },
   {
     id: "processes",
+    form: true,
     label: "Processes",
     description: "What this project runs besides its web process: workers, services, scheduled jobs and deploy tasks.",
   },
@@ -428,21 +442,66 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "runtime",
+    form: true,
     label: "Runtime",
     description: "How much of this project runs, what it is started with, and what the platform asks it before sending anyone to it.",
   },
   {
     id: "security",
+    form: true,
     label: "Security",
     description: "What the containers are allowed to be, for every workload this project ships.",
   },
   {
     id: "continuity",
+    form: true,
     label: "Continuity",
     description: "What class of data this handles, and the tolerances the institution set for it.",
   },
-  { id: "danger", label: "Danger zone", description: "Removing the project and everything it is running." },
+  { id: "danger", label: "Danger zone", description: "Removing the project and everything it is running.", form: true },
 ];
+
+/**
+ * Which panes exist for this account on this project. A pane nobody may open is
+ * not offered, which is the same rule every affordance here follows — and it
+ * is one function because two places ask it: the sidebar, which lists the
+ * panes, and the screen, which renders one. Two copies of the rule is how a
+ * pane comes to be listed and then refuse to open.
+ */
+export function settingsSectionsFor(caller: Caller): SettingsSection[] {
+  const mayConfigure = may("PATCH /api/v1/projects/{name}", caller);
+  return SETTINGS_SECTIONS.filter((section) => {
+    switch (section.id) {
+      case "source":
+      case "runtime":
+      case "security":
+      case "continuity":
+        return mayConfigure;
+      case "danger":
+        return may("DELETE /api/v1/projects/{name}", caller);
+      // **The variables pane is keyed to reading the project, not to writing
+      // the variables.** `GET /projects/{name}` is a viewer's and already
+      // carries the list, so hiding the pane from a viewer would be the
+      // dashboard enforcing something the API does not.
+      case "variables":
+        return may("GET /api/v1/projects/{name}", caller);
+      case "members":
+      case "keys":
+        return may("GET /api/v1/projects/{name}/members", caller);
+      default:
+        return true;
+    }
+  });
+}
+
+/** The pane a `?section=` names among the ones this account has, or the first
+ * of them. A bookmarked pane a role no longer opens falls back rather than
+ * rendering nothing — and the sidebar marks the same pane the screen renders,
+ * because both ask this. */
+export function openSettingsSection(available: SettingsSection[], asked: unknown): SettingsSection {
+  const section = settingsSection(asked);
+  return available.some((candidate) => candidate.id === section.id) ? section : (available[0] ?? section);
+}
 
 /** The section a `?section=` names, or the first one for anything else. A
  * bookmark to a pane that has been renamed opens Settings rather than nothing. */

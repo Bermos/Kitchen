@@ -523,6 +523,27 @@ describe("the scope rule", () => {
   });
 });
 
+describe("navigation", () => {
+  it("is the shell's: no screen draws a navigation column of its own", () => {
+    // A project's Settings had a second rail inside the page — a 13rem column
+    // of every pane spent on a list the sidebar had room for, beside a pane
+    // capped at the form width, so the variables list truncated the names it
+    // exists to show. A screen's sub-navigation is nested under its entry in
+    // the sidebar, where it is a link like every other (docs/UI.md). The one
+    // other <nav> is the breadcrumb, which is a trail rather than a menu.
+    const navs: string[] = [];
+    for (const file of everything) {
+      walk(templateOf(file), (node) => {
+        if (node.tag === "nav") navs.push(file.name);
+      });
+    }
+    expect(
+      navs.filter((name) => name !== "AppShell.vue" && name !== "PageHeader.vue"),
+      "a screen's navigation belongs in the sidebar, under the entry that opens the screen",
+    ).toEqual([]);
+  });
+});
+
 describe("the shell's frame", () => {
   const shell = everything.find((file) => file.name === "AppShell.vue")!;
 

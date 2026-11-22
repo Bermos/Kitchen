@@ -78,6 +78,17 @@ const shown = ref(false);
 // arrived while somebody was typing would take the edit away from them.
 const loadedFor = ref("");
 const drafts = ref<EnvVarDraft[]>([]);
+
+// The name column is as wide as the longest name, so a name is never cut short.
+// It was a fixed 11rem, which fits fourteen characters of monospace and turned
+// every `NUXT_PUBLIC_…` into the same prefix and an ellipsis — the one thing a
+// list of variables is for is telling them apart. `ch` is the monospace advance,
+// so the number is the name's own length plus the input's padding; the ceiling
+// leaves the values at least three fifths of the row whatever somebody typed.
+const nameWidth = computed(() => {
+  const longest = Math.max(12, ...drafts.value.map((draft) => draft.name.length));
+  return `min(calc(${longest}ch + 2rem), 40%)`;
+});
 watch(
   () => [props.project, props.env] as const,
   ([name, env]) => {
@@ -173,9 +184,9 @@ async function save() {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
+  <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="max-w-3xl">
         <h2 class="text-sm font-medium text-highlighted">Environment variables</h2>
         <p class="text-xs text-muted mt-1">
           What <span class="font-mono">{{ project }}</span> runs with. A variable that has a value shows
@@ -217,14 +228,34 @@ async function save() {
     </div>
 
     <form class="space-y-4" @submit.prevent="save">
-      <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+      <div class="rounded-md border border-default bg-muted p-5 space-y-4" :style="{ '--name-width': nameWidth }">
         <p v-if="!drafts.length" class="text-xs text-muted">None yet.</p>
-        <div v-for="(envVar, index) in drafts" :key="index" class="flex items-start gap-2 flex-wrap sm:flex-nowrap">
-          <UInput v-if="maySave" v-model="envVar.name" placeholder="NAME" class="w-full sm:w-44 font-mono" />
-          <p v-else class="w-full sm:w-44 font-mono text-sm text-highlighted min-h-8 pt-1.5 truncate" :title="envVar.name">
+        <div
+          v-for="(envVar, index) in drafts"
+          :key="index"
+          class="flex items-start gap-2 flex-wrap sm:flex-nowrap"
+        >
+          <UInput
+            v-if="maySave"
+            v-model="envVar.name"
+            placeholder="NAME"
+            class="w-full sm:w-(--name-width) shrink-0 font-mono"
+          />
+          <p
+            v-else
+            class="w-full sm:w-(--name-width) shrink-0 font-mono text-sm text-highlighted min-h-8 pt-1.5 break-all"
+            :title="envVar.name"
+          >
             {{ envVar.name }}
           </p>
-          <div v-if="!envVar.fromSecret && !envVar.fromClaim" class="flex-1 min-w-40 grid gap-2 sm:grid-cols-2">
+          <!-- The value is the variable and the preview value an override of
+               it, so the value is given two thirds of what is left: a URL or a
+               connection string is read whole there rather than broken across
+               two lines beside an override column that is mostly empty. -->
+          <div
+            v-if="!envVar.fromSecret && !envVar.fromClaim"
+            class="flex-1 min-w-40 grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]"
+          >
             <!-- The value: shown as presence, replaced by typing. -->
             <div class="flex items-center gap-2 min-h-8">
               <UInput

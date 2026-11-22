@@ -148,8 +148,8 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
-    <div>
+  <div class="space-y-4">
+    <div class="max-w-3xl">
       <h2 class="text-sm font-medium text-highlighted">People</h2>
       <p class="text-xs text-muted mt-1">
         Who may do what on <span class="font-mono">{{ project }}</span
@@ -191,7 +191,7 @@ const readOnlyReason = computed(() => refusal("PATCH /api/v1/projects/{name}/mem
               </p>
               <p
                 v-if="memberDetail(member)"
-                class="text-xs text-dimmed font-mono truncate max-w-xs"
+                class="text-xs text-dimmed font-mono truncate max-w-xl"
                 :title="member.subject"
               >
                 {{ memberDetail(member) }}

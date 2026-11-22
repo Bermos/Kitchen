@@ -7,6 +7,7 @@ import { loadConfig, platformVersion } from "../lib/config";
 import { callerFor, forgetMe, meError } from "../lib/me";
 import { forget, placeOf, projectScopeDestination, remember, switched } from "../lib/navigation";
 import { may } from "../lib/policy";
+import { openSettingsSection, settingsSectionsFor } from "../lib/project";
 import { completedBy, SCOPES, type Scope } from "../routes";
 import { unhealthyConditions, type Tone } from "../lib/status";
 import { useAsync, usePoll } from "../lib/useAsync";
@@ -329,6 +330,30 @@ const nav = computed<NavItem[]>(() => {
   return [];
 });
 
+/**
+ * A project's Settings panes, nested under the Settings entry while it is the
+ * screen being read.
+ *
+ * They were a rail of their own inside the page — a second navigation column
+ * beside the sidebar's, which cost every pane 13rem of a column that the
+ * variables and secrets lists needed for their names. The sidebar is where
+ * this dashboard's navigation lives, and a pane is in the address
+ * (`?section=`), so it is a link like every other entry here.
+ *
+ * Which panes, and which one is open, are asked of the same two functions the
+ * screen asks, with the role the project list carries — so the entry marked
+ * here is the pane rendered there, and a pane this account may not open is in
+ * neither.
+ */
+const settingsPanes = computed(() => {
+  const project = activeProject.value;
+  if (scope.value !== "project" || route.name !== "project-settings" || !project) return [];
+  const listed = projects.value.find((candidate) => candidate.name === project);
+  if (!listed) return [];
+  return settingsSectionsFor(callerFor(listed.role, project));
+});
+const openPane = computed(() => openSettingsSection(settingsPanes.value, route.query.section));
+
 function navActive(item: NavItem): boolean {
   // A build opened from the deploy list is still the deploy list as far as
   // the sidebar is concerned; so is an environment opened from a project.
@@ -540,17 +565,37 @@ const userMenu = computed(() => [
       </div>
 
       <nav class="px-2 pb-2 space-y-0.5">
-        <RouterLink
-          v-for="item in nav"
-          :key="item.name"
-          :to="item.to"
-          class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
-          :class="navActive(item) ? 'bg-elevated text-highlighted' : 'text-toned'"
-        >
-          <UIcon :name="item.icon" class="size-4 shrink-0" />
-          {{ item.label }}
-          <span v-if="item.count !== undefined" class="ml-auto font-mono text-xs text-dimmed">{{ item.count }}</span>
-        </RouterLink>
+        <template v-for="item in nav" :key="item.name">
+          <RouterLink
+            :to="item.to"
+            class="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
+            :class="navActive(item) ? 'bg-elevated text-highlighted' : 'text-toned'"
+          >
+            <UIcon :name="item.icon" class="size-4 shrink-0" />
+            {{ item.label }}
+            <span v-if="item.count !== undefined" class="ml-auto font-mono text-xs text-dimmed">{{ item.count }}</span>
+          </RouterLink>
+          <!-- The open screen's panes, under the entry that opened it. Only
+               Settings has them; the line on the left says they belong to it
+               rather than being entries of their own. -->
+          <div
+            v-if="item.name === 'project-settings' && settingsPanes.length"
+            class="ml-[1.125rem] pl-2 border-l border-default space-y-0.5 py-0.5"
+            role="group"
+            aria-label="Settings"
+          >
+            <RouterLink
+              v-for="pane in settingsPanes"
+              :key="pane.id"
+              :to="{ name: 'project-settings', params: { name: activeProject! }, query: { section: pane.id } }"
+              class="block px-2.5 py-1 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
+              :class="openPane.id === pane.id ? 'bg-elevated text-highlighted' : 'text-muted'"
+              :aria-current="openPane.id === pane.id ? 'page' : undefined"
+            >
+              {{ pane.label }}
+            </RouterLink>
+          </div>
+        </template>
       </nav>
 
       <!-- The Project scope's own list: the environments of the project in

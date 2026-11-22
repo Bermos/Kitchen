@@ -33,8 +33,8 @@ import { environmentLink } from "../lib/links";
 import {
   EXPOSURE_OPTIONS,
   exposureNote,
-  SETTINGS_SECTIONS,
-  settingsSection,
+  openSettingsSection,
+  settingsSectionsFor,
   type SettingsSection,
 } from "../lib/project";
 import { useAsync } from "../lib/useAsync";
@@ -66,13 +66,14 @@ import VolumeInitEditor from "../components/VolumeInitEditor.vue";
 // this issue objects to, and a single-scroll Settings would have re-created the
 // problem one level down (#470, decision 2).
 //
-// So: one pane at a time, each `max-w-3xl`, each with its own address
-// (`?section=`), and **nothing on this screen polls**. It is read once and
+// So: one pane at a time, each with its own address (`?section=`), listed in
+// the sidebar under Settings rather than in a rail of its own here — and
+// **nothing on this screen polls**. It is read once and
 // re-read after a write, because a form that reloads under the cursor is worse
 // than one that is a few seconds stale.
 //
 // The pane list is `SETTINGS_SECTIONS` in `lib/project.ts` rather than markup,
-// because `routes.ts` maps the old page's section names onto the same ids and
+// because the sidebar lists it as well, and because `routes.ts` maps the old page's section names onto the same ids and
 // two spellings of one vocabulary is how a redirect quietly stops landing.
 
 const route = useRoute();
@@ -118,14 +119,6 @@ const bindings = computed(() => data.value?.bindings ?? []);
 // and find somebody who can press it, which is right for a shared enterprise
 // tool and wrong here.
 const caller = computed(() => callerFor(project.value?.role, name.value));
-const mayConfigure = computed(() => may("PATCH /api/v1/projects/{name}", caller.value));
-const mayDelete = computed(() => may("DELETE /api/v1/projects/{name}", caller.value));
-const mayReadMembers = computed(() => may("GET /api/v1/projects/{name}/members", caller.value));
-// **The variables pane is keyed to reading the project, not to writing the
-// variables.** `GET /projects/{name}` is a viewer's and already carries the
-// list, so hiding the pane from a viewer would be the dashboard enforcing
-// something the API does not.
-const mayReadProject = computed(() => may("GET /api/v1/projects/{name}", caller.value));
 const mayClaim = computed(() => may("POST /api/v1/claims", caller.value));
 const mayUnclaim = computed(() => may("DELETE /api/v1/claims/{name}", caller.value));
 const mayUnclaimData = computed(() => mayDestroyData(caller.value));
@@ -136,40 +129,26 @@ function offersRecovery(claim: Claim): boolean {
   return claim.type === "postgres";
 }
 
-// ── The rail ────────────────────────────────────────────────────────────────
+// ── The pane ────────────────────────────────────────────────────────────────
 
-/** Which panes exist for this account. A pane nobody may open is not offered,
- * which is the same rule every affordance here follows. */
-const sections = computed<SettingsSection[]>(() =>
-  SETTINGS_SECTIONS.filter((section) => {
-    switch (section.id) {
-      case "source":
-      case "runtime":
-      case "security":
-      case "continuity":
-        return mayConfigure.value;
-      case "danger":
-        return mayDelete.value;
-      case "variables":
-        return mayReadProject.value;
-      case "members":
-      case "keys":
-        return mayReadMembers.value;
-      default:
-        return true;
-    }
-  }),
+// Which panes this account has, and which one the address names. The sidebar
+// asks the same two functions with the same role, so the entry it marks is the
+// pane rendered here. Choosing one is a link there; nothing here navigates.
+const sections = computed<SettingsSection[]>(() => settingsSectionsFor(caller.value));
+const current = computed<SettingsSection>(() => openSettingsSection(sections.value, route.query.section));
+
+// A pane is chosen from the sidebar now, where it reads as a screen of its
+// own, so it opens at its top. The router keeps the place on a query change
+// because a filter is the same screen asked a different question, and only
+// this screen knows that `?section=` is not one (#609).
+watch(
+  () => current.value.id,
+  () => {
+    const main = document.querySelector<HTMLElement>("main");
+    if (main) main.scrollTop = 0;
+    window.scrollTo(0, 0);
+  },
 );
-
-/** The pane in the address, or the first one this account has. A bookmarked
- * pane a role no longer opens falls back rather than rendering nothing. */
-const current = computed<SettingsSection>(() => {
-  const asked = settingsSection(route.query.section);
-  return sections.value.some((section) => section.id === asked.id) ? asked : (sections.value[0] ?? asked);
-});
-function open(section: SettingsSection) {
-  void router.replace({ query: { ...route.query, section: section.id } });
-}
 
 // ── What the repository has taken over ──────────────────────────────────────
 
@@ -714,7 +693,12 @@ async function deleteProject() {
     <template v-else-if="project">
       <PageHeader
         title="Settings"
-        :breadcrumb="[{ label: 'Projects', to: '/projects' }, { label: project.name, mono: true }, { label: 'Settings' }]"
+        :breadcrumb="[
+          { label: 'Projects', to: '/projects' },
+          { label: project.name, mono: true },
+          { label: 'Settings', to: { name: 'project-settings', params: { name: project.name } } },
+          { label: current.label },
+        ]"
       >
         <template #description>
           Everything about this project somebody may change after creating it. Nothing here is measured, so nothing here
@@ -722,915 +706,901 @@ async function deleteProject() {
         </template>
       </PageHeader>
 
-      <div class="flex flex-col lg:flex-row gap-6 items-start">
-        <!-- The rail. Each pane is an address, so "the fork policy is here" is
-             a link somebody can send. -->
-        <nav class="w-full lg:w-52 shrink-0 flex lg:flex-col gap-0.5 overflow-x-auto" aria-label="Settings">
-          <button
-            v-for="section in sections"
-            :key="section.id"
-            class="text-left shrink-0 px-2.5 py-1.5 rounded-md text-sm hover:bg-elevated hover:text-highlighted"
-            :class="current.id === section.id ? 'bg-elevated text-highlighted' : 'text-toned'"
-            :aria-current="current.id === section.id ? 'page' : undefined"
-            @click="open(section)"
-          >
-            {{ section.label }}
-          </button>
-        </nav>
-
-        <!-- One pane, one form width. This is the `max-w-3xl` docs/UI.md means
-             by "this page is a form", declared once here rather than per
-             panel. -->
-        <div class="min-w-0 flex-1 max-w-3xl space-y-6">
-          <!-- Which of this pane's fields the repository has taken over.
-               Beside the pane rather than once at the top of everything: the
-               file wins for the settings it names, so a Save that silently does
-               nothing has to be said where the Save is (#310). -->
-          <div v-if="declaredHere.length && config" class="rounded-md border border-info/40 bg-info/5 px-5 py-4">
-            <div class="flex items-start gap-2">
-              <UIcon name="i-lucide-file-code" class="size-4 text-info mt-0.5 shrink-0" />
-              <div class="min-w-0 space-y-1">
-                <p class="text-sm font-medium text-highlighted">
-                  <span class="font-mono">{{ config.path }}</span> decides some of this
-                </p>
-                <p class="text-xs text-toned">
-                  The repository declares
-                  {{ declaredHere.length }} {{ declaredHere.length === 1 ? "setting" : "settings" }} on this pane, read
-                  at every commit. Changing one here holds until the next build, which sets it back to what the file
-                  says — change the file instead.
-                </p>
-                <p class="text-xs text-muted font-mono break-words">{{ declaredHere.join(", ") }}</p>
-              </div>
+      <!-- One pane. Its list is the sidebar's, under Settings, so the pane has
+           the whole column: a form is the one form width (`max-w-3xl`), and a
+           list of things with names and values — variables, files, secrets,
+           members — takes all of it, because a list capped at a form's width
+           truncates the names it exists to show. The width is the pane's,
+           declared once here rather than by every panel inside it. -->
+      <div class="space-y-6" :class="current.form ? 'max-w-3xl' : undefined">
+        <!-- Which of this pane's fields the repository has taken over.
+             Beside the pane rather than once at the top of everything: the
+             file wins for the settings it names, so a Save that silently does
+             nothing has to be said where the Save is (#310). -->
+        <div v-if="declaredHere.length && config" class="rounded-md border border-info/40 bg-info/5 px-5 py-4">
+          <div class="flex items-start gap-2">
+            <UIcon name="i-lucide-file-code" class="size-4 text-info mt-0.5 shrink-0" />
+            <div class="min-w-0 space-y-1">
+              <p class="text-sm font-medium text-highlighted">
+                <span class="font-mono">{{ config.path }}</span> decides some of this
+              </p>
+              <p class="text-xs text-toned">
+                The repository declares
+                {{ declaredHere.length }} {{ declaredHere.length === 1 ? "setting" : "settings" }} on this pane, read
+                at every commit. Changing one here holds until the next build, which sets it back to what the file
+                says — change the file instead.
+              </p>
+              <p class="text-xs text-muted font-mono break-words">{{ declaredHere.join(", ") }}</p>
             </div>
           </div>
-
-          <!-- ── Source ─────────────────────────────────────────────────── -->
-          <PageSection v-if="current.id === 'source'" :title="current.label" :description="current.description">
-            <form class="space-y-6" @submit.prevent="saveSettings">
-              <!-- What this project runs, when nothing here built it. It is
-                   read rather than edited: changing which image a project runs
-                   is a different question from changing a setting of it. -->
-              <div v-if="vendoredImage" class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <h3 class="text-xs font-medium text-highlighted">Image</h3>
-                <p class="text-xs text-toned">
-                  This project's web process runs an image this platform did not build. There is no repository, so there
-                  is nothing to build, nowhere to push and no pull request to preview — the processes below may still
-                  declare images of their own, and they deploy and roll back with this one as one unit.
-                </p>
-                <p class="text-xs text-toned">
-                  <template v-if="vendoredImage.digest">
-                    This image is pinned to a digest, so nothing moves it: the platform never asks the registry about
-                    it, and a new version arrives when somebody changes the digest here.
-                  </template>
-                  <template v-else>
-                    The platform asks the registry on an interval whether this tag still names the digest it acquired. A
-                    new one is a build with no builder — it resolves the digest, releases it and deploys it — and
-                    rolling it back is the ordinary rollback.
-                  </template>
-                </p>
-                <dl class="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 text-xs">
-                  <dt class="text-dimmed">Repository</dt>
-                  <dd class="font-mono text-toned break-all">{{ vendoredImage.repository }}</dd>
-                  <template v-if="vendoredImage.tag">
-                    <dt class="text-dimmed">Tag</dt>
-                    <dd class="font-mono text-toned break-all">{{ vendoredImage.tag }}</dd>
-                  </template>
-                  <template v-if="vendoredImage.digest">
-                    <dt class="text-dimmed">Digest</dt>
-                    <dd class="font-mono text-toned break-all">{{ vendoredImage.digest }}</dd>
-                  </template>
-                  <dt class="text-dimmed">Pulled with</dt>
-                  <dd class="text-toned break-all">
-                    {{
-                      vendoredImage.connection ? `the ${vendoredImage.connection} connection` : "nothing: a public image"
-                    }}
-                  </dd>
-                </dl>
-              </div>
-
-              <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <h3 class="text-xs font-medium text-highlighted">Git</h3>
-                <UFormField label="Production branch" help="Builds of this branch promote to production.">
-                  <UInput v-model="settings.productionBranch" class="w-full max-w-44 font-mono" />
-                </UFormField>
-                <USwitch
-                  v-model="settings.requirePullRequest"
-                  label="Require a reviewed pull request"
-                  description="Refuse to build a production-branch commit the git provider cannot say arrived through a pull request somebody other than its author approved. Preview builds are unaffected — they are what produces the thing being reviewed."
-                />
-                <USwitch
-                  v-model="settings.previews"
-                  label="Preview environments"
-                  description="Every pull request gets its own environment."
-                />
-                <USwitch
-                  v-model="settings.previewsProtected"
-                  :disabled="!settings.previews"
-                  label="Protect previews"
-                  description="Previews sit behind platform login instead of being public."
-                />
-                <!-- The ceiling on how many of them may be live at once. It is
-                     the platform's number unless this project says otherwise,
-                     which is why the switch comes before the field. -->
-                <USwitch
-                  v-model="previewsMaxOwn"
-                  :disabled="!settings.previews"
-                  label="Own preview ceiling"
-                  description="Set how many previews this project may have live at once, instead of taking the platform's."
-                />
-                <UFormField
-                  v-if="previewsMaxOwn"
-                  label="Live previews at once"
-                  help="A pull request past this gets a commit status and a comment instead of an environment, and its preview on the next push after a slot frees. 0 means no ceiling for this project."
-                >
-                  <UInputNumber v-model="settings.previewsMax" :min="0" :max="100" class="w-40" />
-                </UFormField>
-                <p v-if="settings.previews" class="text-xs text-muted">{{ previewCeilingLine }}</p>
-                <!-- What a fork's pull request gets. It sits with the preview
-                     settings because it is one of them, and after the ceiling
-                     because the ceiling is about how many and this is about
-                     whose. It is not gated on `previews`: `build` is a setting
-                     for a project that publishes no previews at all. -->
-                <UFormField
-                  label="Pull requests from forks"
-                  help="A fork is any repository that is not this project's own. The platform may cap this for every project."
-                >
-                  <USelect v-model="settings.previewsForks" :items="forkOptions" class="w-full" />
-                </UFormField>
-                <p class="text-xs text-muted">{{ forkLine }}</p>
-              </div>
-
-              <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <h3 class="text-xs font-medium text-highlighted">Build</h3>
-                <div class="grid gap-4 sm:grid-cols-3">
-                  <UFormField
-                    label="Strategy"
-                    :help="
-                      declaredInRepo('build.strategy')
-                        ? 'Set by the repository; this is overwritten at every build.'
-                        : undefined
-                    "
-                  >
-                    <USelect v-model="settings.buildStrategy" :items="strategyOptions" class="w-full" />
-                  </UFormField>
-                  <UFormField
-                    label="Dockerfile"
-                    :help="
-                      declaredInRepo('build.dockerfilePath')
-                        ? 'Set by the repository; this is overwritten at every build.'
-                        : 'Relative to the root directory.'
-                    "
-                  >
-                    <UInput v-model="settings.dockerfilePath" placeholder="Dockerfile" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField
-                    label="Dockerfile stage"
-                    :help="
-                      declaredInRepo('build.dockerfileTarget')
-                        ? 'Set by the repository; this is overwritten at every build.'
-                        : 'Which stage of a multi-stage Dockerfile to ship. Empty is its last stage.'
-                    "
-                  >
-                    <UInput v-model="settings.dockerfileTarget" placeholder="the last stage" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Root directory" help="For monorepos.">
-                    <UInput v-model="settings.rootDirectory" placeholder="." class="w-full font-mono" />
-                  </UFormField>
-                </div>
-                <!-- The other half of the monorepo answer, next to the
-                     directory it is about. The caveat is in the description
-                     rather than in a document nobody opens: this is the one
-                     setting whose wrong answer is a deploy that silently did
-                     not happen. -->
-                <USwitch
-                  v-model="settings.skipUnchanged"
-                  label="Skip a push that changed nothing here"
-                  description="Compare the git tree object at the root directory with the last build's. When they match, record a skipped build instead of rebuilding and redeploying the same source. Leave it off if this project uses code from outside its root directory — a change there would be skipped."
-                />
-              </div>
-
-              <div class="flex justify-end">
-                <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
-              </div>
-            </form>
-          </PageSection>
-
-          <!-- ── Processes ──────────────────────────────────────────────── -->
-          <!-- The kitchen.json precedence notice travels with this panel: it
-               is the difference between an edit that holds and one the next
-               build silently reverts (#310, and #470 decision 4). -->
-          <ProjectWorkloadsPanel
-            v-else-if="current.id === 'processes'"
-            :project="project.name"
-            :role="project.role"
-            :processes="project.processes"
-            :declared="declaredProcesses?.processes"
-            :declared-at="declaredProcesses?.commit"
-            :built-here="builtHere"
-            :declared-in="declaredProcesses?.path ?? (declaredInRepo('processes') ? config?.path : undefined)"
-            @saved="refresh"
-          />
-
-          <!-- ── Attached resources ─────────────────────────────────────── -->
-          <PageSection v-else-if="current.id === 'resources'" :title="current.label" :description="current.description">
-            <template #actions>
-              <ClaimModal
-                v-if="mayClaim"
-                :project="project.name"
-                :role="project.role"
-                :processes="workloadNames"
-                @saved="refresh"
-              >
-                <UButton icon="i-lucide-plus" size="xs">New claim</UButton>
-              </ClaimModal>
-            </template>
-            <div class="rounded-md border border-default overflow-x-auto">
-              <table class="w-full min-w-[42rem] text-sm">
-                <tbody>
-                  <tr v-if="!claims.length">
-                    <td colspan="8" class="px-3 py-8 text-center text-muted">
-                      Nothing attached — a claim asks for something the project needs (a database or a bucket from a
-                      connection, single sign-on from the platform's own identity provider, durable background work, or
-                      storage for one process) and binds it into the project's environments, through a secret its
-                      variables reference or as a mount.
-                    </td>
-                  </tr>
-                  <tr v-for="claim in claims" :key="claim.name" class="border-b border-muted last:border-0">
-                    <td class="px-3 py-2 text-highlighted font-medium">{{ claim.name }}</td>
-                    <td class="px-3 py-2">
-                      <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
-                      <!-- What a preview gets, in the provider's own words on
-                           hover: a preview writing to production is marked on
-                           rather than implied by the absence of a badge. -->
-                      <UBadge
-                        v-if="claim.previewMode"
-                        :color="claim.previewMode === 'shared' ? 'warning' : 'neutral'"
-                        variant="subtle"
-                        size="sm"
-                        class="ml-1"
-                        :title="claim.previewReason"
-                      >
-                        previews: {{ claim.previewMode }}
-                      </UBadge>
-                      <UBadge v-if="claim.keepsPodsRunning" color="warning" variant="subtle" size="sm" class="ml-1">
-                        no scale to zero
-                      </UBadge>
-                      <UBadge
-                        v-if="claim.idleReason && !claim.keepsPodsRunning"
-                        :color="claim.canIdle ? 'neutral' : 'warning'"
-                        variant="subtle"
-                        size="sm"
-                        class="ml-1"
-                        :title="claim.idleReason"
-                      >
-                        idle preview: {{ claim.canIdle ? "parks with it" : "keeps running" }}
-                      </UBadge>
-                      <UBadge v-if="claim.forcesRecreate" color="warning" variant="subtle" size="sm" class="ml-1">
-                        downtime on deploy
-                      </UBadge>
-                      <UBadge
-                        v-if="claimBackupBadge(claim)"
-                        :color="claimBackupBadge(claim)!.color"
-                        variant="subtle"
-                        size="sm"
-                        class="ml-1"
-                        :title="claimBackupBadge(claim)!.title"
-                      >
-                        {{ claimBackupBadge(claim)!.label }}
-                      </UBadge>
-                      <!-- Who signed the database this binds. Beside the
-                           backup badge because both are facts about the
-                           resource rather than about what was asked for, and
-                           both are read the same way: the label is the state,
-                           the title is the platform's sentence about it. -->
-                      <UBadge
-                        v-if="claimCertificateBadge(claim)"
-                        :color="claimCertificateBadge(claim)!.color"
-                        variant="subtle"
-                        size="sm"
-                        class="ml-1"
-                        :title="claimCertificateBadge(claim)!.title"
-                      >
-                        {{ claimCertificateBadge(claim)!.label }}
-                      </UBadge>
-                      <UBadge
-                        v-for="requirement in claimRequirements(claim)"
-                        :key="requirement"
-                        color="neutral"
-                        variant="subtle"
-                        size="sm"
-                        class="ml-1 font-mono"
-                      >
-                        {{ requirement }}
-                      </UBadge>
-                    </td>
-                    <td class="px-3 py-2 text-xs whitespace-nowrap">
-                      <!-- The two data facts, absences said out loud: the class
-                           the claim was filed under, and what the provider says
-                           the data derives from. -->
-                      <span :class="claim.dataClass ? 'text-toned' : 'text-dimmed'">
-                        {{ claim.dataClass || "unclassified" }}
-                      </span>
-                      <span class="text-dimmed"> · </span>
-                      <span
-                        :class="
-                          claim.dataProvenance === 'production'
-                            ? 'text-warning'
-                            : claim.dataProvenance
-                              ? 'text-toned'
-                              : 'text-dimmed'
-                        "
-                      >
-                        {{ claim.dataProvenance || "undeclared" }}
-                      </span>
-                      <span v-if="claimRecoveryPoint(claim)" class="block text-dimmed">
-                        {{ claimRecoveryPoint(claim) }}
-                      </span>
-                    </td>
-                    <td class="px-3 py-2 font-mono text-xs text-toned">
-                      <template v-if="claim.connection">via {{ claim.connection }}</template>
-                      <template v-else-if="claim.volume">
-                        <span :title="claim.volume.accessModeReason">
-                          {{ claim.volume.mountPath }} on {{ claim.volume.process }}
-                        </span>
-                        <!-- Two projects holding one filesystem is a fact that
-                             must not have to be discovered, so the claim says
-                             it where somebody is already looking at it. -->
-                        <span
-                          v-if="claim.volume.bound?.sharedWith?.length"
-                          class="block text-dimmed"
-                          :title="claim.volume.bound.sharedWith.join('\n')"
-                        >
-                          shared with {{ claim.volume.bound.sharedWith.join(", ") }}
-                        </span>
-                      </template>
-                      <template v-else-if="claim.redirectURIs?.length">
-                        <span :title="claim.redirectURIs.join('\n')">
-                          {{ claim.redirectURIs.length }} redirect URI{{ claim.redirectURIs.length === 1 ? "" : "s" }}
-                        </span>
-                      </template>
-                      <template v-else>—</template>
-                    </td>
-                    <td class="px-3 py-2"><PhaseBadge :phase="claim.phase" /></td>
-                    <!-- What the binding is: the secret the variables read, or
-                         for a volume the claim its process mounts. -->
-                    <td
-                      class="px-3 py-2 font-mono text-xs text-muted truncate max-w-48"
-                      :title="claim.secret || claim.volume?.claimName"
-                    >
-                      {{ claim.secret || claim.volume?.claimName || "not bound yet" }}
-                    </td>
-                    <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">
-                      <template v-if="claim.type === 'oidcClient'">on delete: deregister the client</template>
-                      <!-- A binding provisions nothing, so there is no policy
-                           and nothing for one to keep: the row says what
-                           deleting it actually does. -->
-                      <template v-else-if="claim.type === 'service'">on delete: the offering stays offered</template>
-                      <!-- An Inngest Cloud claim carries a policy the API
-                           refuses to set: the app and the keys are the
-                           account's, so the row says what actually happens. -->
-                      <template v-else-if="claim.type === 'inngest' && !claim.inngest?.selfHosted">
-                        on delete: the app stays at Inngest
-                      </template>
-                      <template v-else>
-                        on delete: {{ claim.deletionPolicy === "Delete" ? "delete data" : "retain data" }}
-                      </template>
-                    </td>
-                    <td class="px-3 py-2 text-right whitespace-nowrap">
-                      <ClaimRecoveryModal
-                        v-if="mayReadRecovery && offersRecovery(claim)"
-                        class="mr-1"
-                        :claim="claim.name"
-                        :project="project.name"
-                        :role="project.role"
-                        @changed="refresh"
-                      />
-                      <UButton
-                        v-if="mayUnclaim && (!destroysData(claim) || mayUnclaimData)"
-                        color="neutral"
-                        variant="subtle"
-                        size="xs"
-                        icon="i-lucide-trash-2"
-                        @click="claimToDelete = claim"
-                      >
-                        Delete
-                      </UButton>
-                      <span v-else-if="mayUnclaim" class="text-xs text-muted" :title="claimDeleteRefusal(claim)">
-                        admin only
-                      </span>
-                    </td>
-                  </tr>
-                  <!-- Why a claim was refused, in the provider's own words. -->
-                  <tr
-                    v-for="claim in refusedClaims"
-                    :key="`${claim.name}-why`"
-                    class="border-b border-muted last:border-0"
-                  >
-                    <td colspan="8" class="px-3 py-2 text-xs text-error">
-                      <span class="font-mono">{{ claim.name }}</span> — {{ claimRefusal(claim) }}
-                    </td>
-                  </tr>
-                  <!-- And a binding another project has not given this one.
-                       It is not this project's failure and there is nothing
-                       here to fix — the grant is the other project's admins'
-                       — so it says what is true and offers the one act this
-                       side has, which is asking again. -->
-                  <tr v-for="claim in askedFor" :key="`${claim.name}-asked`" class="border-b border-muted last:border-0">
-                    <td colspan="8" class="px-3 py-2 text-xs">
-                      <div class="flex items-start justify-between gap-4">
-                        <p class="text-muted">
-                          <span class="font-mono">{{ claim.name }}</span> — {{ bindingRequestSentence(claim) }}
-                        </p>
-                        <UButton
-                          v-if="mayAskAgain && claim.service?.grant?.state === 'denied'"
-                          color="neutral"
-                          variant="link"
-                          size="xs"
-                          class="px-0 shrink-0"
-                          :loading="asking === claim.name"
-                          @click="askAgain(claim)"
-                        >
-                          Ask again
-                        </UButton>
-                      </div>
-                    </td>
-                  </tr>
-                  <!-- And what a bound claim is quietly not doing. An inngest
-                       claim in serve mode registers the web process and nothing
-                       else, which every other surface reads as a healthy
-                       deploy; the claim counts what it synced against what the
-                       unit runs and the sentence is here, where the mode was
-                       chosen. -->
-                  <tr v-for="caution in cautions" :key="caution.key" class="border-b border-muted last:border-0">
-                    <td colspan="8" class="px-3 py-2 text-xs text-warning">
-                      <span class="font-mono">{{ caution.claim }}</span> — {{ caution.message }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </PageSection>
-
-          <!-- ── Variables, files, secrets ──────────────────────────────── -->
-          <EnvVarsPanel
-            v-else-if="current.id === 'variables'"
-            :project="project.name"
-            :role="project.role"
-            :env="project.env"
-            @saved="refresh"
-          />
-          <ProjectFilesPanel
-            v-else-if="current.id === 'files'"
-            :project="project.name"
-            :role="project.role"
-            :files="project.files"
-            :processes="project.processes"
-            :declared-in="config?.path"
-            :declared-names="repoFiles"
-            @saved="refresh"
-          />
-          <!-- ── Offerings ──────────────────────────────────────────────── -->
-          <OfferingsPanel
-            v-else-if="current.id === 'offerings'"
-            :project="project.name"
-            :role="project.role"
-            :offers="project.offers"
-            :processes="project.processes"
-            :claims="bindings"
-            :declared-in="config?.path"
-            :declared-names="repoOffers"
-            @saved="refresh"
-          />
-          <ProjectSecretsPanel
-            v-else-if="current.id === 'secrets'"
-            :project="project.name"
-            :role="project.role"
-            :env="project.env"
-            @saved="refresh"
-          />
-
-          <!-- ── Domains ────────────────────────────────────────────────── -->
-          <PageSection v-else-if="current.id === 'domains'" :title="current.label" :description="current.description">
-            <!-- A hostname on an internal project is refused by the API, so the
-                 pane says why here rather than letting somebody meet the
-                 refusal on the environment screen. -->
-            <UAlert
-              v-if="project?.exposure === 'internal'"
-              class="mb-4"
-              color="info"
-              variant="subtle"
-              icon="i-lucide-shield"
-              title="This project is internal"
-              description="No environment of it is published, so there is no route for a custom hostname to ride and a new domain is refused. Set the exposure to public on the Runtime pane first."
-            />
-            <div class="rounded-md border border-default overflow-x-auto">
-              <table class="w-full min-w-[42rem] text-sm">
-                <tbody>
-                  <tr v-if="!data?.domains.length">
-                    <td class="px-3 py-8 text-center text-muted">
-                      No custom domains — a hostname is attached to an environment, on that environment's own screen.
-                    </td>
-                  </tr>
-                  <tr v-for="domain in data?.domains" :key="domain.name" class="border-b border-muted last:border-0">
-                    <td class="px-3 py-2">
-                      <a
-                        :href="`https://${domain.hostname}`"
-                        target="_blank"
-                        rel="noopener"
-                        class="font-mono text-highlighted hover:underline"
-                        >{{ domain.hostname }}</a
-                      >
-                    </td>
-                    <td class="px-3 py-2">
-                      <RouterLink :to="environmentLink(domain.environment, name)" class="text-toned hover:underline">
-                        {{ domain.environment }}
-                      </RouterLink>
-                    </td>
-                    <td class="px-3 py-2">
-                      <UBadge v-if="domain.tls" color="neutral" variant="subtle" size="sm" class="font-mono">
-                        tls: {{ domain.tls }}
-                      </UBadge>
-                    </td>
-                    <td class="px-3 py-2">
-                      <UBadge :color="domain.verified ? 'success' : 'warning'" variant="soft" size="sm">
-                        {{ domain.verified ? "Verified" : "Awaiting DNS" }}
-                      </UBadge>
-                    </td>
-                    <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">
-                      {{ timeAgo(domain.createdAt) }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </PageSection>
-
-          <!-- ── People, keys, notifications ────────────────────────────── -->
-          <MembersPanel v-else-if="current.id === 'members'" :project="project.name" :role="project.role" />
-          <KeysPanel v-else-if="current.id === 'keys'" :project="project.name" :role="project.role" />
-          <NotificationsPanel
-            v-else-if="current.id === 'notifications'"
-            :project="project.name"
-            :role="project.role"
-          />
-
-          <!-- ── Runtime ────────────────────────────────────────────────── -->
-          <PageSection v-else-if="current.id === 'runtime'" :title="current.label" :description="current.description">
-            <form class="space-y-6" @submit.prevent="saveSettings">
-              <!-- Whether anyone outside the cluster is sent to it at all. It
-                   comes before how much of it runs because it decides what the
-                   rest of this pane is for: an internal project has no address,
-                   no gate and no idling. -->
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <h3 class="text-xs font-medium text-highlighted">Who can reach it</h3>
-                <UFormField
-                  label="Exposure"
-                  help="A project that exists to be called by other applications does not need a hostname on the internet."
-                >
-                  <USelect v-model="settings.exposure" :items="EXPOSURE_OPTIONS" class="w-full" />
-                </UFormField>
-                <p class="text-xs text-muted">{{ exposureLine }}</p>
-              </div>
-
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <h3 class="text-xs font-medium text-highlighted">How much of it runs</h3>
-                <div class="grid gap-4 sm:grid-cols-4">
-                  <UFormField label="Port" :help="portHelp">
-                    <UInput v-model="portField" type="number" min="0" placeholder="auto" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Replicas" :help="replicasHelp">
-                    <UInput
-                      v-model.number="settings.replicas"
-                      type="number"
-                      min="1"
-                      :max="settings.singleton ? 1 : undefined"
-                      :disabled="settings.singleton"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                  <UFormField label="CPU" help="Per replica, e.g. 250m.">
-                    <UInput v-model="settings.cpu" placeholder="unset" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Memory" help="Per replica, e.g. 512Mi.">
-                    <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
-                  </UFormField>
-                </div>
-                <!-- Two declarations about what the workload is rather than
-                     about how much of it there should be, and they sit under
-                     the replica count because both are that number's other
-                     half: one says it must stay at one, the other that it must
-                     never reach zero. -->
-                <USwitch
-                  v-model="settings.singleton"
-                  label="Never run two at once"
-                  description="For an application that polls, schedules or ingests in the same process as the web server: a
-                    rolling deploy would overlap the two for a few seconds, and that loop would run twice against one
-                    store. Deploys stop the old copy before starting the new one, so there is a gap in serving, and the
-                    replica count is fixed at 1."
-                />
-                <USwitch
-                  v-model="settings.notRequestDriven"
-                  label="Does work nobody asked for"
-                  description="An idle environment stops doing everything, not only serving — so an application with a
-                    background loop, a poller or an ingest job goes quiet with a gap in its data that looks exactly like
-                    the upstream having been down. Turning this on keeps every environment of this project awake,
-                    previews included."
-                />
-                <!-- A claim's provider can say the same thing about its
-                     binding, and then the switch above is not what decides:
-                     scale to zero is a project-level policy, so the one claim
-                     costs idling for every environment of the project. -->
-                <UAlert
-                  v-if="pinningClaims.length"
-                  color="warning"
-                  variant="subtle"
-                  icon="i-lucide-triangle-alert"
-                  title="This project is not offered scale to zero"
-                  :description="`${pinningClaims.map((claim) => claim.name).join(', ')} ${pinningClaims.length === 1 ? 'holds' : 'hold'} a worker whose outbound connection never crosses the interceptor, so nothing can tell when an environment is idle. Every environment of this project keeps running, previews included — release the claim to idle them.`"
-                />
-              </div>
-
-              <!-- What the web process needs done inside its volumes before it
-                   starts. It sits after the numbers because it depends on the
-                   posture: the steps run as the workload runs. -->
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <VolumeInitEditor v-model="settings.init" :may-edit="true" heading="h3" />
-                <p v-if="volumePreparationProblems.length" class="text-xs text-warning">
-                  {{ volumePreparationProblems.join(" ") }}
-                </p>
-              </div>
-
-              <!-- How it starts. Exec form is a list of words, so each field is
-                   a list of lines: an argument with a space in it is ordinary,
-                   and one box split on spaces would quietly break it. -->
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <div>
-                  <h3 class="text-xs font-medium text-highlighted">How it starts</h3>
-                  <p class="text-xs text-muted mt-1">
-                    What the image is started with, when its own entrypoint is not what this project wants.
-                    <span class="text-toned font-medium">One word per line</span> — this is never a shell line, so
-                    nothing is split, quoted or expanded. Preview arguments are the sibling of a variable's preview
-                    value: the same commit and the same artifact, pointed somewhere else. A release carries all three,
-                    so a rollback restores the arguments it ran with.
-                  </p>
-                </div>
-                <div class="grid gap-4 sm:grid-cols-3">
-                  <UFormField label="Command" help="Replaces the entrypoint. Empty keeps the image's own.">
-                    <UTextarea v-model="settings.command" :rows="3" placeholder="./server" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Arguments" help="Passed to it. Empty passes none.">
-                    <UTextarea
-                      v-model="settings.args"
-                      :rows="3"
-                      placeholder="--config=prod.toml"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                  <UFormField label="Preview arguments" help="Used instead, in previews. Empty runs the ones beside it.">
-                    <UTextarea
-                      v-model="settings.previewArgs"
-                      :rows="3"
-                      placeholder="--config=fake.toml"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                </div>
-              </div>
-
-              <!-- Health. The copy leads with what happens when the path is
-                   empty, because that is the state every project starts in and
-                   the one whose consequence is least obvious. -->
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <div>
-                  <h3 class="text-xs font-medium text-highlighted">Health</h3>
-                  <p class="text-xs text-muted mt-1">
-                    What the platform asks a new replica before it sends anyone to it — on every deploy and every
-                    rollback.
-                    <span class="text-toned font-medium"
-                      >With no path it opens a TCP connection to the port and no more</span
-                    >, which is a weaker claim than an answer and a much better one than assuming. A path is where the
-                    application says what working means for it, and it is also what buys a restart when a running
-                    container wedges. Previews inherit this, and a release carries it, so a rollback restores the check
-                    it ran with.
-                  </p>
-                </div>
-                <div class="grid gap-4 sm:grid-cols-3">
-                  <UFormField label="Path" help="An HTTP GET answering 2xx or 3xx. Empty is a TCP connect — never GET /.">
-                    <UInput v-model="settings.healthPath" placeholder="/healthz" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Port" help="Only when the check is not on the port above.">
-                    <UInput
-                      v-model.number="settings.healthPort"
-                      type="number"
-                      min="0"
-                      placeholder="the application's"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                  <UFormField label="Period" help="Seconds between checks. 0 takes the default.">
-                    <UInput v-model.number="settings.healthPeriod" type="number" min="0" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Timeout" help="Seconds one check may take. 0 takes the default.">
-                    <UInput v-model.number="settings.healthTimeout" type="number" min="0" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Failures" help="Checks in a row before a running replica is taken out.">
-                    <UInput v-model.number="settings.healthFailures" type="number" min="0" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField label="Startup failures" help="The generous one: how long it has to come up at all.">
-                    <UInput
-                      v-model.number="settings.healthStartupFailures"
-                      type="number"
-                      min="0"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                </div>
-              </div>
-
-              <div class="flex justify-end">
-                <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
-              </div>
-            </form>
-          </PageSection>
-
-          <!-- ── Security ───────────────────────────────────────────────── -->
-          <PageSection v-else-if="current.id === 'security'" :title="current.label" :description="current.description">
-            <form class="space-y-6" @submit.prevent="saveSettings">
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <p class="text-xs text-muted">
-                  Everything here off is the platform's default, which is deliberately not the tightest one available:
-                  the container runtime's own seccomp profile, and no privilege escalation. The rest is a tightening an
-                  application asks for, because an image that writes into its own filesystem or runs as root is ordinary
-                  and would break under a default that assumed otherwise. A workload that cannot start under what it
-                  asked for says so on its environment, naming the constraint. The volume group is the one that goes the
-                  other way: a workload running as anybody but root needs it to be able to write the volume it was
-                  given.
-                </p>
-                <USwitch
-                  v-model="settings.readOnlyRootFilesystem"
-                  label="Read-only root filesystem"
-                  description="The container cannot write to its own filesystem. An application that writes a cache, a
-                    socket or a temporary file into it needs a volume for that path first."
-                />
-                <USwitch
-                  v-model="settings.runAsNonRoot"
-                  label="Never run as root"
-                  description="A container whose image would run as uid 0 is refused before it starts, rather than
-                    running with the privilege and being noticed later."
-                />
-                <div class="grid gap-4 sm:grid-cols-2">
-                  <UFormField
-                    label="User ID"
-                    help="The uid the containers run as, overriding the image's. 0 is the image's own user left alone — which is not the same as asking to run as root."
-                  >
-                    <UInput
-                      v-model.number="settings.runAsUser"
-                      type="number"
-                      min="0"
-                      placeholder="the image's"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                  <UFormField label="Group ID" help="The gid, on the same reading.">
-                    <UInput
-                      v-model.number="settings.runAsGroup"
-                      type="number"
-                      min="0"
-                      placeholder="the image's"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                </div>
-                <div class="grid gap-4 sm:grid-cols-2">
-                  <UFormField
-                    label="Volume group ID"
-                    help="The gid that owns the volumes this project mounts. A new volume comes up owned by root, so a workload running as anybody else cannot write it — it starts, looks healthy, and fails on its first write. 0 leaves the volume's own ownership alone."
-                  >
-                    <UInput
-                      v-model.number="settings.fsGroup"
-                      type="number"
-                      min="0"
-                      placeholder="the volume's"
-                      class="w-full font-mono"
-                    />
-                  </UFormField>
-                  <UFormField
-                    label="Apply ownership"
-                    help="When that ownership is applied. Always walks the whole volume on every start, which on a large one is slow; OnRootMismatch skips the walk when the volume's own root already matches, at the price of a subtree left by a previous user staying unwritable. It needs a volume group ID."
-                  >
-                    <USelect
-                      v-model="settings.fsGroupChangePolicy"
-                      :items="fsGroupChangePolicyOptions"
-                      :disabled="!settings.fsGroup"
-                      class="w-full"
-                    />
-                  </UFormField>
-                </div>
-                <UFormField
-                  label="Drop capabilities"
-                  help="One per line, the way the kernel spells them and without the CAP_ prefix — NET_RAW, SYS_ADMIN — or the single entry ALL. There is no list to add one back: the platform drops none by default."
-                >
-                  <UTextarea v-model="settings.dropCapabilities" :rows="2" placeholder="ALL" class="w-full font-mono" />
-                </UFormField>
-                <USwitch
-                  v-model="settings.allowPrivilegeEscalation"
-                  label="Allow privilege escalation"
-                  description="The one default the platform tightens: left alone, nothing in the container can gain more
-                    privileges than the process that started it. Turn it on only for an image that genuinely needs a
-                    setuid binary."
-                />
-              </div>
-
-              <div class="flex justify-end">
-                <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
-              </div>
-            </form>
-          </PageSection>
-
-          <!-- ── Continuity ─────────────────────────────────────────────── -->
-          <PageSection v-else-if="current.id === 'continuity'" :title="current.label" :description="current.description">
-            <form class="space-y-6" @submit.prevent="saveSettings">
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <h3 class="text-xs font-medium text-highlighted">Data</h3>
-                <UFormField
-                  label="Data classification"
-                  help="What class of data this project handles. Claims narrow it and never exceed it; a promotion into an environment rated below it is refused by policy. Changes are audit-logged with the previous value."
-                >
-                  <USelect v-model="settings.dataClass" :items="dataClassOptions" class="w-full max-w-60" />
-                </UFormField>
-              </div>
-
-              <!-- The copy leads with what Kitchen does not do, because a form
-                   that asked "how critical is this?" without saying whose
-                   question it is would read as the platform having an opinion
-                   about the institution's functions. It does not. -->
-              <div class="rounded-md border border-default bg-muted p-5 space-y-4">
-                <div>
-                  <h3 class="text-xs font-medium text-highlighted">Tolerances</h3>
-                  <p class="text-xs text-muted mt-1">
-                    <span class="text-toned font-medium"
-                      >Kitchen does not decide what is critical, and does not set these tolerances.</span
-                    >
-                    They are the institution's — a board's judgement about its own functions — and this is where that
-                    judgement is recorded. What the platform does with it: map the function onto everything serving it,
-                    and alert against the tolerance. Nothing here refuses a deployment, and an absent designation is
-                    never defaulted to anything.
-                  </p>
-                </div>
-                <div class="grid gap-4 sm:grid-cols-3">
-                  <UFormField
-                    label="Criticality"
-                    help="How much it matters that this function keeps working. Production environments read this where they declare nothing of their own; previews never do."
-                  >
-                    <USelect v-model="settings.criticality" :items="criticalityOptions" class="w-full" />
-                  </UFormField>
-                  <UFormField
-                    label="RTO"
-                    help="How long it may be unavailable. Whole hours and minutes: 4h, 30m, 1h30m. It is the threshold the outage alert fires against."
-                  >
-                    <UInput v-model="settings.rto" placeholder="unset" class="w-full font-mono" />
-                  </UFormField>
-                  <UFormField
-                    label="RPO"
-                    help="How much data it may lose. Same spelling. Carried and mapped; nothing alerts on it yet, because the platform observes no recovery points."
-                  >
-                    <UInput v-model="settings.rpo" placeholder="unset" class="w-full font-mono" />
-                  </UFormField>
-                </div>
-              </div>
-
-              <div class="flex justify-end">
-                <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
-              </div>
-            </form>
-          </PageSection>
-
-          <!-- ── Danger zone ────────────────────────────────────────────── -->
-          <PageSection v-else-if="current.id === 'danger'" :title="current.label" :description="current.description">
-            <div class="rounded-md border border-error/40 p-5 space-y-3">
-              <p class="text-xs text-muted">
-                Deleting the project tears down its environments — production included — and removes its builds,
-                releases and domains. There is no undo.
-              </p>
-              <div class="flex items-center gap-2 flex-wrap">
-                <UInput
-                  v-model="deleteConfirmation"
-                  :placeholder="`Type ${project.name} to confirm`"
-                  class="w-64 font-mono"
-                />
-                <UButton
-                  color="error"
-                  :disabled="deleteConfirmation !== project.name"
-                  :loading="deleting"
-                  icon="i-lucide-trash-2"
-                  @click="deleteProject"
-                >
-                  Delete project
-                </UButton>
-              </div>
-            </div>
-          </PageSection>
         </div>
+
+        <!-- ── Source ─────────────────────────────────────────────────── -->
+        <PageSection v-if="current.id === 'source'" :title="current.label" :description="current.description">
+          <form class="space-y-6" @submit.prevent="saveSettings">
+            <!-- What this project runs, when nothing here built it. It is
+                 read rather than edited: changing which image a project runs
+                 is a different question from changing a setting of it. -->
+            <div v-if="vendoredImage" class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <h3 class="text-xs font-medium text-highlighted">Image</h3>
+              <p class="text-xs text-toned">
+                This project's web process runs an image this platform did not build. There is no repository, so there
+                is nothing to build, nowhere to push and no pull request to preview — the processes below may still
+                declare images of their own, and they deploy and roll back with this one as one unit.
+              </p>
+              <p class="text-xs text-toned">
+                <template v-if="vendoredImage.digest">
+                  This image is pinned to a digest, so nothing moves it: the platform never asks the registry about
+                  it, and a new version arrives when somebody changes the digest here.
+                </template>
+                <template v-else>
+                  The platform asks the registry on an interval whether this tag still names the digest it acquired. A
+                  new one is a build with no builder — it resolves the digest, releases it and deploys it — and
+                  rolling it back is the ordinary rollback.
+                </template>
+              </p>
+              <dl class="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 text-xs">
+                <dt class="text-dimmed">Repository</dt>
+                <dd class="font-mono text-toned break-all">{{ vendoredImage.repository }}</dd>
+                <template v-if="vendoredImage.tag">
+                  <dt class="text-dimmed">Tag</dt>
+                  <dd class="font-mono text-toned break-all">{{ vendoredImage.tag }}</dd>
+                </template>
+                <template v-if="vendoredImage.digest">
+                  <dt class="text-dimmed">Digest</dt>
+                  <dd class="font-mono text-toned break-all">{{ vendoredImage.digest }}</dd>
+                </template>
+                <dt class="text-dimmed">Pulled with</dt>
+                <dd class="text-toned break-all">
+                  {{
+                    vendoredImage.connection ? `the ${vendoredImage.connection} connection` : "nothing: a public image"
+                  }}
+                </dd>
+              </dl>
+            </div>
+
+            <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <h3 class="text-xs font-medium text-highlighted">Git</h3>
+              <UFormField label="Production branch" help="Builds of this branch promote to production.">
+                <UInput v-model="settings.productionBranch" class="w-full max-w-44 font-mono" />
+              </UFormField>
+              <USwitch
+                v-model="settings.requirePullRequest"
+                label="Require a reviewed pull request"
+                description="Refuse to build a production-branch commit the git provider cannot say arrived through a pull request somebody other than its author approved. Preview builds are unaffected — they are what produces the thing being reviewed."
+              />
+              <USwitch
+                v-model="settings.previews"
+                label="Preview environments"
+                description="Every pull request gets its own environment."
+              />
+              <USwitch
+                v-model="settings.previewsProtected"
+                :disabled="!settings.previews"
+                label="Protect previews"
+                description="Previews sit behind platform login instead of being public."
+              />
+              <!-- The ceiling on how many of them may be live at once. It is
+                   the platform's number unless this project says otherwise,
+                   which is why the switch comes before the field. -->
+              <USwitch
+                v-model="previewsMaxOwn"
+                :disabled="!settings.previews"
+                label="Own preview ceiling"
+                description="Set how many previews this project may have live at once, instead of taking the platform's."
+              />
+              <UFormField
+                v-if="previewsMaxOwn"
+                label="Live previews at once"
+                help="A pull request past this gets a commit status and a comment instead of an environment, and its preview on the next push after a slot frees. 0 means no ceiling for this project."
+              >
+                <UInputNumber v-model="settings.previewsMax" :min="0" :max="100" class="w-40" />
+              </UFormField>
+              <p v-if="settings.previews" class="text-xs text-muted">{{ previewCeilingLine }}</p>
+              <!-- What a fork's pull request gets. It sits with the preview
+                   settings because it is one of them, and after the ceiling
+                   because the ceiling is about how many and this is about
+                   whose. It is not gated on `previews`: `build` is a setting
+                   for a project that publishes no previews at all. -->
+              <UFormField
+                label="Pull requests from forks"
+                help="A fork is any repository that is not this project's own. The platform may cap this for every project."
+              >
+                <USelect v-model="settings.previewsForks" :items="forkOptions" class="w-full" />
+              </UFormField>
+              <p class="text-xs text-muted">{{ forkLine }}</p>
+            </div>
+
+            <div v-if="builtHere" class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <h3 class="text-xs font-medium text-highlighted">Build</h3>
+              <div class="grid gap-4 sm:grid-cols-3">
+                <UFormField
+                  label="Strategy"
+                  :help="
+                    declaredInRepo('build.strategy')
+                      ? 'Set by the repository; this is overwritten at every build.'
+                      : undefined
+                  "
+                >
+                  <USelect v-model="settings.buildStrategy" :items="strategyOptions" class="w-full" />
+                </UFormField>
+                <UFormField
+                  label="Dockerfile"
+                  :help="
+                    declaredInRepo('build.dockerfilePath')
+                      ? 'Set by the repository; this is overwritten at every build.'
+                      : 'Relative to the root directory.'
+                  "
+                >
+                  <UInput v-model="settings.dockerfilePath" placeholder="Dockerfile" class="w-full font-mono" />
+                </UFormField>
+                <UFormField
+                  label="Dockerfile stage"
+                  :help="
+                    declaredInRepo('build.dockerfileTarget')
+                      ? 'Set by the repository; this is overwritten at every build.'
+                      : 'Which stage of a multi-stage Dockerfile to ship. Empty is its last stage.'
+                  "
+                >
+                  <UInput v-model="settings.dockerfileTarget" placeholder="the last stage" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Root directory" help="For monorepos.">
+                  <UInput v-model="settings.rootDirectory" placeholder="." class="w-full font-mono" />
+                </UFormField>
+              </div>
+              <!-- The other half of the monorepo answer, next to the
+                   directory it is about. The caveat is in the description
+                   rather than in a document nobody opens: this is the one
+                   setting whose wrong answer is a deploy that silently did
+                   not happen. -->
+              <USwitch
+                v-model="settings.skipUnchanged"
+                label="Skip a push that changed nothing here"
+                description="Compare the git tree object at the root directory with the last build's. When they match, record a skipped build instead of rebuilding and redeploying the same source. Leave it off if this project uses code from outside its root directory — a change there would be skipped."
+              />
+            </div>
+
+            <div class="flex justify-end">
+              <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
+            </div>
+          </form>
+        </PageSection>
+
+        <!-- ── Processes ──────────────────────────────────────────────── -->
+        <!-- The kitchen.json precedence notice travels with this panel: it
+             is the difference between an edit that holds and one the next
+             build silently reverts (#310, and #470 decision 4). -->
+        <ProjectWorkloadsPanel
+          v-else-if="current.id === 'processes'"
+          :project="project.name"
+          :role="project.role"
+          :processes="project.processes"
+          :declared="declaredProcesses?.processes"
+          :declared-at="declaredProcesses?.commit"
+          :built-here="builtHere"
+          :declared-in="declaredProcesses?.path ?? (declaredInRepo('processes') ? config?.path : undefined)"
+          @saved="refresh"
+        />
+
+        <!-- ── Attached resources ─────────────────────────────────────── -->
+        <PageSection v-else-if="current.id === 'resources'" :title="current.label" :description="current.description">
+          <template #actions>
+            <ClaimModal
+              v-if="mayClaim"
+              :project="project.name"
+              :role="project.role"
+              :processes="workloadNames"
+              @saved="refresh"
+            >
+              <UButton icon="i-lucide-plus" size="xs">New claim</UButton>
+            </ClaimModal>
+          </template>
+          <div class="rounded-md border border-default overflow-x-auto">
+            <table class="w-full min-w-[42rem] text-sm">
+              <tbody>
+                <tr v-if="!claims.length">
+                  <td colspan="8" class="px-3 py-8 text-center text-muted">
+                    Nothing attached — a claim asks for something the project needs (a database or a bucket from a
+                    connection, single sign-on from the platform's own identity provider, durable background work, or
+                    storage for one process) and binds it into the project's environments, through a secret its
+                    variables reference or as a mount.
+                  </td>
+                </tr>
+                <tr v-for="claim in claims" :key="claim.name" class="border-b border-muted last:border-0">
+                  <td class="px-3 py-2 text-highlighted font-medium">{{ claim.name }}</td>
+                  <td class="px-3 py-2">
+                    <UBadge color="neutral" variant="subtle" size="sm" class="font-mono">{{ claim.type }}</UBadge>
+                    <!-- What a preview gets, in the provider's own words on
+                         hover: a preview writing to production is marked on
+                         rather than implied by the absence of a badge. -->
+                    <UBadge
+                      v-if="claim.previewMode"
+                      :color="claim.previewMode === 'shared' ? 'warning' : 'neutral'"
+                      variant="subtle"
+                      size="sm"
+                      class="ml-1"
+                      :title="claim.previewReason"
+                    >
+                      previews: {{ claim.previewMode }}
+                    </UBadge>
+                    <UBadge v-if="claim.keepsPodsRunning" color="warning" variant="subtle" size="sm" class="ml-1">
+                      no scale to zero
+                    </UBadge>
+                    <UBadge
+                      v-if="claim.idleReason && !claim.keepsPodsRunning"
+                      :color="claim.canIdle ? 'neutral' : 'warning'"
+                      variant="subtle"
+                      size="sm"
+                      class="ml-1"
+                      :title="claim.idleReason"
+                    >
+                      idle preview: {{ claim.canIdle ? "parks with it" : "keeps running" }}
+                    </UBadge>
+                    <UBadge v-if="claim.forcesRecreate" color="warning" variant="subtle" size="sm" class="ml-1">
+                      downtime on deploy
+                    </UBadge>
+                    <UBadge
+                      v-if="claimBackupBadge(claim)"
+                      :color="claimBackupBadge(claim)!.color"
+                      variant="subtle"
+                      size="sm"
+                      class="ml-1"
+                      :title="claimBackupBadge(claim)!.title"
+                    >
+                      {{ claimBackupBadge(claim)!.label }}
+                    </UBadge>
+                    <!-- Who signed the database this binds. Beside the
+                         backup badge because both are facts about the
+                         resource rather than about what was asked for, and
+                         both are read the same way: the label is the state,
+                         the title is the platform's sentence about it. -->
+                    <UBadge
+                      v-if="claimCertificateBadge(claim)"
+                      :color="claimCertificateBadge(claim)!.color"
+                      variant="subtle"
+                      size="sm"
+                      class="ml-1"
+                      :title="claimCertificateBadge(claim)!.title"
+                    >
+                      {{ claimCertificateBadge(claim)!.label }}
+                    </UBadge>
+                    <UBadge
+                      v-for="requirement in claimRequirements(claim)"
+                      :key="requirement"
+                      color="neutral"
+                      variant="subtle"
+                      size="sm"
+                      class="ml-1 font-mono"
+                    >
+                      {{ requirement }}
+                    </UBadge>
+                  </td>
+                  <td class="px-3 py-2 text-xs whitespace-nowrap">
+                    <!-- The two data facts, absences said out loud: the class
+                         the claim was filed under, and what the provider says
+                         the data derives from. -->
+                    <span :class="claim.dataClass ? 'text-toned' : 'text-dimmed'">
+                      {{ claim.dataClass || "unclassified" }}
+                    </span>
+                    <span class="text-dimmed"> · </span>
+                    <span
+                      :class="
+                        claim.dataProvenance === 'production'
+                          ? 'text-warning'
+                          : claim.dataProvenance
+                            ? 'text-toned'
+                            : 'text-dimmed'
+                      "
+                    >
+                      {{ claim.dataProvenance || "undeclared" }}
+                    </span>
+                    <span v-if="claimRecoveryPoint(claim)" class="block text-dimmed">
+                      {{ claimRecoveryPoint(claim) }}
+                    </span>
+                  </td>
+                  <td class="px-3 py-2 font-mono text-xs text-toned">
+                    <template v-if="claim.connection">via {{ claim.connection }}</template>
+                    <template v-else-if="claim.volume">
+                      <span :title="claim.volume.accessModeReason">
+                        {{ claim.volume.mountPath }} on {{ claim.volume.process }}
+                      </span>
+                      <!-- Two projects holding one filesystem is a fact that
+                           must not have to be discovered, so the claim says
+                           it where somebody is already looking at it. -->
+                      <span
+                        v-if="claim.volume.bound?.sharedWith?.length"
+                        class="block text-dimmed"
+                        :title="claim.volume.bound.sharedWith.join('\n')"
+                      >
+                        shared with {{ claim.volume.bound.sharedWith.join(", ") }}
+                      </span>
+                    </template>
+                    <template v-else-if="claim.redirectURIs?.length">
+                      <span :title="claim.redirectURIs.join('\n')">
+                        {{ claim.redirectURIs.length }} redirect URI{{ claim.redirectURIs.length === 1 ? "" : "s" }}
+                      </span>
+                    </template>
+                    <template v-else>—</template>
+                  </td>
+                  <td class="px-3 py-2"><PhaseBadge :phase="claim.phase" /></td>
+                  <!-- What the binding is: the secret the variables read, or
+                       for a volume the claim its process mounts. -->
+                  <td
+                    class="px-3 py-2 font-mono text-xs text-muted truncate max-w-96"
+                    :title="claim.secret || claim.volume?.claimName"
+                  >
+                    {{ claim.secret || claim.volume?.claimName || "not bound yet" }}
+                  </td>
+                  <td class="px-3 py-2 text-xs text-muted whitespace-nowrap">
+                    <template v-if="claim.type === 'oidcClient'">on delete: deregister the client</template>
+                    <!-- A binding provisions nothing, so there is no policy
+                         and nothing for one to keep: the row says what
+                         deleting it actually does. -->
+                    <template v-else-if="claim.type === 'service'">on delete: the offering stays offered</template>
+                    <!-- An Inngest Cloud claim carries a policy the API
+                         refuses to set: the app and the keys are the
+                         account's, so the row says what actually happens. -->
+                    <template v-else-if="claim.type === 'inngest' && !claim.inngest?.selfHosted">
+                      on delete: the app stays at Inngest
+                    </template>
+                    <template v-else>
+                      on delete: {{ claim.deletionPolicy === "Delete" ? "delete data" : "retain data" }}
+                    </template>
+                  </td>
+                  <td class="px-3 py-2 text-right whitespace-nowrap">
+                    <ClaimRecoveryModal
+                      v-if="mayReadRecovery && offersRecovery(claim)"
+                      class="mr-1"
+                      :claim="claim.name"
+                      :project="project.name"
+                      :role="project.role"
+                      @changed="refresh"
+                    />
+                    <UButton
+                      v-if="mayUnclaim && (!destroysData(claim) || mayUnclaimData)"
+                      color="neutral"
+                      variant="subtle"
+                      size="xs"
+                      icon="i-lucide-trash-2"
+                      @click="claimToDelete = claim"
+                    >
+                      Delete
+                    </UButton>
+                    <span v-else-if="mayUnclaim" class="text-xs text-muted" :title="claimDeleteRefusal(claim)">
+                      admin only
+                    </span>
+                  </td>
+                </tr>
+                <!-- Why a claim was refused, in the provider's own words. -->
+                <tr
+                  v-for="claim in refusedClaims"
+                  :key="`${claim.name}-why`"
+                  class="border-b border-muted last:border-0"
+                >
+                  <td colspan="8" class="px-3 py-2 text-xs text-error">
+                    <span class="font-mono">{{ claim.name }}</span> — {{ claimRefusal(claim) }}
+                  </td>
+                </tr>
+                <!-- And a binding another project has not given this one.
+                     It is not this project's failure and there is nothing
+                     here to fix — the grant is the other project's admins'
+                     — so it says what is true and offers the one act this
+                     side has, which is asking again. -->
+                <tr v-for="claim in askedFor" :key="`${claim.name}-asked`" class="border-b border-muted last:border-0">
+                  <td colspan="8" class="px-3 py-2 text-xs">
+                    <div class="flex items-start justify-between gap-4">
+                      <p class="text-muted">
+                        <span class="font-mono">{{ claim.name }}</span> — {{ bindingRequestSentence(claim) }}
+                      </p>
+                      <UButton
+                        v-if="mayAskAgain && claim.service?.grant?.state === 'denied'"
+                        color="neutral"
+                        variant="link"
+                        size="xs"
+                        class="px-0 shrink-0"
+                        :loading="asking === claim.name"
+                        @click="askAgain(claim)"
+                      >
+                        Ask again
+                      </UButton>
+                    </div>
+                  </td>
+                </tr>
+                <!-- And what a bound claim is quietly not doing. An inngest
+                     claim in serve mode registers the web process and nothing
+                     else, which every other surface reads as a healthy
+                     deploy; the claim counts what it synced against what the
+                     unit runs and the sentence is here, where the mode was
+                     chosen. -->
+                <tr v-for="caution in cautions" :key="caution.key" class="border-b border-muted last:border-0">
+                  <td colspan="8" class="px-3 py-2 text-xs text-warning">
+                    <span class="font-mono">{{ caution.claim }}</span> — {{ caution.message }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </PageSection>
+
+        <!-- ── Variables, files, secrets ──────────────────────────────── -->
+        <EnvVarsPanel
+          v-else-if="current.id === 'variables'"
+          :project="project.name"
+          :role="project.role"
+          :env="project.env"
+          @saved="refresh"
+        />
+        <ProjectFilesPanel
+          v-else-if="current.id === 'files'"
+          :project="project.name"
+          :role="project.role"
+          :files="project.files"
+          :processes="project.processes"
+          :declared-in="config?.path"
+          :declared-names="repoFiles"
+          @saved="refresh"
+        />
+        <!-- ── Offerings ──────────────────────────────────────────────── -->
+        <OfferingsPanel
+          v-else-if="current.id === 'offerings'"
+          :project="project.name"
+          :role="project.role"
+          :offers="project.offers"
+          :processes="project.processes"
+          :claims="bindings"
+          :declared-in="config?.path"
+          :declared-names="repoOffers"
+          @saved="refresh"
+        />
+        <ProjectSecretsPanel
+          v-else-if="current.id === 'secrets'"
+          :project="project.name"
+          :role="project.role"
+          :env="project.env"
+          @saved="refresh"
+        />
+
+        <!-- ── Domains ────────────────────────────────────────────────── -->
+        <PageSection v-else-if="current.id === 'domains'" :title="current.label" :description="current.description">
+          <!-- A hostname on an internal project is refused by the API, so the
+               pane says why here rather than letting somebody meet the
+               refusal on the environment screen. -->
+          <UAlert
+            v-if="project?.exposure === 'internal'"
+            class="mb-4"
+            color="info"
+            variant="subtle"
+            icon="i-lucide-shield"
+            title="This project is internal"
+            description="No environment of it is published, so there is no route for a custom hostname to ride and a new domain is refused. Set the exposure to public on the Runtime pane first."
+          />
+          <div class="rounded-md border border-default overflow-x-auto">
+            <table class="w-full min-w-[42rem] text-sm">
+              <tbody>
+                <tr v-if="!data?.domains.length">
+                  <td class="px-3 py-8 text-center text-muted">
+                    No custom domains — a hostname is attached to an environment, on that environment's own screen.
+                  </td>
+                </tr>
+                <tr v-for="domain in data?.domains" :key="domain.name" class="border-b border-muted last:border-0">
+                  <td class="px-3 py-2">
+                    <a
+                      :href="`https://${domain.hostname}`"
+                      target="_blank"
+                      rel="noopener"
+                      class="font-mono text-highlighted hover:underline"
+                      >{{ domain.hostname }}</a
+                    >
+                  </td>
+                  <td class="px-3 py-2">
+                    <RouterLink :to="environmentLink(domain.environment, name)" class="text-toned hover:underline">
+                      {{ domain.environment }}
+                    </RouterLink>
+                  </td>
+                  <td class="px-3 py-2">
+                    <UBadge v-if="domain.tls" color="neutral" variant="subtle" size="sm" class="font-mono">
+                      tls: {{ domain.tls }}
+                    </UBadge>
+                  </td>
+                  <td class="px-3 py-2">
+                    <UBadge :color="domain.verified ? 'success' : 'warning'" variant="soft" size="sm">
+                      {{ domain.verified ? "Verified" : "Awaiting DNS" }}
+                    </UBadge>
+                  </td>
+                  <td class="px-3 py-2 text-right text-xs text-muted whitespace-nowrap">
+                    {{ timeAgo(domain.createdAt) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </PageSection>
+
+        <!-- ── People, keys, notifications ────────────────────────────── -->
+        <MembersPanel v-else-if="current.id === 'members'" :project="project.name" :role="project.role" />
+        <KeysPanel v-else-if="current.id === 'keys'" :project="project.name" :role="project.role" />
+        <NotificationsPanel
+          v-else-if="current.id === 'notifications'"
+          :project="project.name"
+          :role="project.role"
+        />
+
+        <!-- ── Runtime ────────────────────────────────────────────────── -->
+        <PageSection v-else-if="current.id === 'runtime'" :title="current.label" :description="current.description">
+          <form class="space-y-6" @submit.prevent="saveSettings">
+            <!-- Whether anyone outside the cluster is sent to it at all. It
+                 comes before how much of it runs because it decides what the
+                 rest of this pane is for: an internal project has no address,
+                 no gate and no idling. -->
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <h3 class="text-xs font-medium text-highlighted">Who can reach it</h3>
+              <UFormField
+                label="Exposure"
+                help="A project that exists to be called by other applications does not need a hostname on the internet."
+              >
+                <USelect v-model="settings.exposure" :items="EXPOSURE_OPTIONS" class="w-full" />
+              </UFormField>
+              <p class="text-xs text-muted">{{ exposureLine }}</p>
+            </div>
+
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <h3 class="text-xs font-medium text-highlighted">How much of it runs</h3>
+              <div class="grid gap-4 sm:grid-cols-4">
+                <UFormField label="Port" :help="portHelp">
+                  <UInput v-model="portField" type="number" min="0" placeholder="auto" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Replicas" :help="replicasHelp">
+                  <UInput
+                    v-model.number="settings.replicas"
+                    type="number"
+                    min="1"
+                    :max="settings.singleton ? 1 : undefined"
+                    :disabled="settings.singleton"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+                <UFormField label="CPU" help="Per replica, e.g. 250m.">
+                  <UInput v-model="settings.cpu" placeholder="unset" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Memory" help="Per replica, e.g. 512Mi.">
+                  <UInput v-model="settings.memory" placeholder="unset" class="w-full font-mono" />
+                </UFormField>
+              </div>
+              <!-- Two declarations about what the workload is rather than
+                   about how much of it there should be, and they sit under
+                   the replica count because both are that number's other
+                   half: one says it must stay at one, the other that it must
+                   never reach zero. -->
+              <USwitch
+                v-model="settings.singleton"
+                label="Never run two at once"
+                description="For an application that polls, schedules or ingests in the same process as the web server: a
+                  rolling deploy would overlap the two for a few seconds, and that loop would run twice against one
+                  store. Deploys stop the old copy before starting the new one, so there is a gap in serving, and the
+                  replica count is fixed at 1."
+              />
+              <USwitch
+                v-model="settings.notRequestDriven"
+                label="Does work nobody asked for"
+                description="An idle environment stops doing everything, not only serving — so an application with a
+                  background loop, a poller or an ingest job goes quiet with a gap in its data that looks exactly like
+                  the upstream having been down. Turning this on keeps every environment of this project awake,
+                  previews included."
+              />
+              <!-- A claim's provider can say the same thing about its
+                   binding, and then the switch above is not what decides:
+                   scale to zero is a project-level policy, so the one claim
+                   costs idling for every environment of the project. -->
+              <UAlert
+                v-if="pinningClaims.length"
+                color="warning"
+                variant="subtle"
+                icon="i-lucide-triangle-alert"
+                title="This project is not offered scale to zero"
+                :description="`${pinningClaims.map((claim) => claim.name).join(', ')} ${pinningClaims.length === 1 ? 'holds' : 'hold'} a worker whose outbound connection never crosses the interceptor, so nothing can tell when an environment is idle. Every environment of this project keeps running, previews included — release the claim to idle them.`"
+              />
+            </div>
+
+            <!-- What the web process needs done inside its volumes before it
+                 starts. It sits after the numbers because it depends on the
+                 posture: the steps run as the workload runs. -->
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <VolumeInitEditor v-model="settings.init" :may-edit="true" heading="h3" />
+              <p v-if="volumePreparationProblems.length" class="text-xs text-warning">
+                {{ volumePreparationProblems.join(" ") }}
+              </p>
+            </div>
+
+            <!-- How it starts. Exec form is a list of words, so each field is
+                 a list of lines: an argument with a space in it is ordinary,
+                 and one box split on spaces would quietly break it. -->
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <div>
+                <h3 class="text-xs font-medium text-highlighted">How it starts</h3>
+                <p class="text-xs text-muted mt-1">
+                  What the image is started with, when its own entrypoint is not what this project wants.
+                  <span class="text-toned font-medium">One word per line</span> — this is never a shell line, so
+                  nothing is split, quoted or expanded. Preview arguments are the sibling of a variable's preview
+                  value: the same commit and the same artifact, pointed somewhere else. A release carries all three,
+                  so a rollback restores the arguments it ran with.
+                </p>
+              </div>
+              <div class="grid gap-4 sm:grid-cols-3">
+                <UFormField label="Command" help="Replaces the entrypoint. Empty keeps the image's own.">
+                  <UTextarea v-model="settings.command" :rows="3" placeholder="./server" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Arguments" help="Passed to it. Empty passes none.">
+                  <UTextarea
+                    v-model="settings.args"
+                    :rows="3"
+                    placeholder="--config=prod.toml"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+                <UFormField label="Preview arguments" help="Used instead, in previews. Empty runs the ones beside it.">
+                  <UTextarea
+                    v-model="settings.previewArgs"
+                    :rows="3"
+                    placeholder="--config=fake.toml"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+              </div>
+            </div>
+
+            <!-- Health. The copy leads with what happens when the path is
+                 empty, because that is the state every project starts in and
+                 the one whose consequence is least obvious. -->
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <div>
+                <h3 class="text-xs font-medium text-highlighted">Health</h3>
+                <p class="text-xs text-muted mt-1">
+                  What the platform asks a new replica before it sends anyone to it — on every deploy and every
+                  rollback.
+                  <span class="text-toned font-medium"
+                    >With no path it opens a TCP connection to the port and no more</span
+                  >, which is a weaker claim than an answer and a much better one than assuming. A path is where the
+                  application says what working means for it, and it is also what buys a restart when a running
+                  container wedges. Previews inherit this, and a release carries it, so a rollback restores the check
+                  it ran with.
+                </p>
+              </div>
+              <div class="grid gap-4 sm:grid-cols-3">
+                <UFormField label="Path" help="An HTTP GET answering 2xx or 3xx. Empty is a TCP connect — never GET /.">
+                  <UInput v-model="settings.healthPath" placeholder="/healthz" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Port" help="Only when the check is not on the port above.">
+                  <UInput
+                    v-model.number="settings.healthPort"
+                    type="number"
+                    min="0"
+                    placeholder="the application's"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+                <UFormField label="Period" help="Seconds between checks. 0 takes the default.">
+                  <UInput v-model.number="settings.healthPeriod" type="number" min="0" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Timeout" help="Seconds one check may take. 0 takes the default.">
+                  <UInput v-model.number="settings.healthTimeout" type="number" min="0" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Failures" help="Checks in a row before a running replica is taken out.">
+                  <UInput v-model.number="settings.healthFailures" type="number" min="0" class="w-full font-mono" />
+                </UFormField>
+                <UFormField label="Startup failures" help="The generous one: how long it has to come up at all.">
+                  <UInput
+                    v-model.number="settings.healthStartupFailures"
+                    type="number"
+                    min="0"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+              </div>
+            </div>
+
+            <div class="flex justify-end">
+              <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
+            </div>
+          </form>
+        </PageSection>
+
+        <!-- ── Security ───────────────────────────────────────────────── -->
+        <PageSection v-else-if="current.id === 'security'" :title="current.label" :description="current.description">
+          <form class="space-y-6" @submit.prevent="saveSettings">
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <p class="text-xs text-muted">
+                Everything here off is the platform's default, which is deliberately not the tightest one available:
+                the container runtime's own seccomp profile, and no privilege escalation. The rest is a tightening an
+                application asks for, because an image that writes into its own filesystem or runs as root is ordinary
+                and would break under a default that assumed otherwise. A workload that cannot start under what it
+                asked for says so on its environment, naming the constraint. The volume group is the one that goes the
+                other way: a workload running as anybody but root needs it to be able to write the volume it was
+                given.
+              </p>
+              <USwitch
+                v-model="settings.readOnlyRootFilesystem"
+                label="Read-only root filesystem"
+                description="The container cannot write to its own filesystem. An application that writes a cache, a
+                  socket or a temporary file into it needs a volume for that path first."
+              />
+              <USwitch
+                v-model="settings.runAsNonRoot"
+                label="Never run as root"
+                description="A container whose image would run as uid 0 is refused before it starts, rather than
+                  running with the privilege and being noticed later."
+              />
+              <div class="grid gap-4 sm:grid-cols-2">
+                <UFormField
+                  label="User ID"
+                  help="The uid the containers run as, overriding the image's. 0 is the image's own user left alone — which is not the same as asking to run as root."
+                >
+                  <UInput
+                    v-model.number="settings.runAsUser"
+                    type="number"
+                    min="0"
+                    placeholder="the image's"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+                <UFormField label="Group ID" help="The gid, on the same reading.">
+                  <UInput
+                    v-model.number="settings.runAsGroup"
+                    type="number"
+                    min="0"
+                    placeholder="the image's"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+              </div>
+              <div class="grid gap-4 sm:grid-cols-2">
+                <UFormField
+                  label="Volume group ID"
+                  help="The gid that owns the volumes this project mounts. A new volume comes up owned by root, so a workload running as anybody else cannot write it — it starts, looks healthy, and fails on its first write. 0 leaves the volume's own ownership alone."
+                >
+                  <UInput
+                    v-model.number="settings.fsGroup"
+                    type="number"
+                    min="0"
+                    placeholder="the volume's"
+                    class="w-full font-mono"
+                  />
+                </UFormField>
+                <UFormField
+                  label="Apply ownership"
+                  help="When that ownership is applied. Always walks the whole volume on every start, which on a large one is slow; OnRootMismatch skips the walk when the volume's own root already matches, at the price of a subtree left by a previous user staying unwritable. It needs a volume group ID."
+                >
+                  <USelect
+                    v-model="settings.fsGroupChangePolicy"
+                    :items="fsGroupChangePolicyOptions"
+                    :disabled="!settings.fsGroup"
+                    class="w-full"
+                  />
+                </UFormField>
+              </div>
+              <UFormField
+                label="Drop capabilities"
+                help="One per line, the way the kernel spells them and without the CAP_ prefix — NET_RAW, SYS_ADMIN — or the single entry ALL. There is no list to add one back: the platform drops none by default."
+              >
+                <UTextarea v-model="settings.dropCapabilities" :rows="2" placeholder="ALL" class="w-full font-mono" />
+              </UFormField>
+              <USwitch
+                v-model="settings.allowPrivilegeEscalation"
+                label="Allow privilege escalation"
+                description="The one default the platform tightens: left alone, nothing in the container can gain more
+                  privileges than the process that started it. Turn it on only for an image that genuinely needs a
+                  setuid binary."
+              />
+            </div>
+
+            <div class="flex justify-end">
+              <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
+            </div>
+          </form>
+        </PageSection>
+
+        <!-- ── Continuity ─────────────────────────────────────────────── -->
+        <PageSection v-else-if="current.id === 'continuity'" :title="current.label" :description="current.description">
+          <form class="space-y-6" @submit.prevent="saveSettings">
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <h3 class="text-xs font-medium text-highlighted">Data</h3>
+              <UFormField
+                label="Data classification"
+                help="What class of data this project handles. Claims narrow it and never exceed it; a promotion into an environment rated below it is refused by policy. Changes are audit-logged with the previous value."
+              >
+                <USelect v-model="settings.dataClass" :items="dataClassOptions" class="w-full max-w-60" />
+              </UFormField>
+            </div>
+
+            <!-- The copy leads with what Kitchen does not do, because a form
+                 that asked "how critical is this?" without saying whose
+                 question it is would read as the platform having an opinion
+                 about the institution's functions. It does not. -->
+            <div class="rounded-md border border-default bg-muted p-5 space-y-4">
+              <div>
+                <h3 class="text-xs font-medium text-highlighted">Tolerances</h3>
+                <p class="text-xs text-muted mt-1">
+                  <span class="text-toned font-medium"
+                    >Kitchen does not decide what is critical, and does not set these tolerances.</span
+                  >
+                  They are the institution's — a board's judgement about its own functions — and this is where that
+                  judgement is recorded. What the platform does with it: map the function onto everything serving it,
+                  and alert against the tolerance. Nothing here refuses a deployment, and an absent designation is
+                  never defaulted to anything.
+                </p>
+              </div>
+              <div class="grid gap-4 sm:grid-cols-3">
+                <UFormField
+                  label="Criticality"
+                  help="How much it matters that this function keeps working. Production environments read this where they declare nothing of their own; previews never do."
+                >
+                  <USelect v-model="settings.criticality" :items="criticalityOptions" class="w-full" />
+                </UFormField>
+                <UFormField
+                  label="RTO"
+                  help="How long it may be unavailable. Whole hours and minutes: 4h, 30m, 1h30m. It is the threshold the outage alert fires against."
+                >
+                  <UInput v-model="settings.rto" placeholder="unset" class="w-full font-mono" />
+                </UFormField>
+                <UFormField
+                  label="RPO"
+                  help="How much data it may lose. Same spelling. Carried and mapped; nothing alerts on it yet, because the platform observes no recovery points."
+                >
+                  <UInput v-model="settings.rpo" placeholder="unset" class="w-full font-mono" />
+                </UFormField>
+              </div>
+            </div>
+
+            <div class="flex justify-end">
+              <UButton type="submit" :loading="savingSettings" icon="i-lucide-check">Save settings</UButton>
+            </div>
+          </form>
+        </PageSection>
+
+        <!-- ── Danger zone ────────────────────────────────────────────── -->
+        <PageSection v-else-if="current.id === 'danger'" :title="current.label" :description="current.description">
+          <div class="rounded-md border border-error/40 p-5 space-y-3">
+            <p class="text-xs text-muted">
+              Deleting the project tears down its environments — production included — and removes its builds,
+              releases and domains. There is no undo.
+            </p>
+            <div class="flex items-center gap-2 flex-wrap">
+              <UInput
+                v-model="deleteConfirmation"
+                :placeholder="`Type ${project.name} to confirm`"
+                class="w-64 font-mono"
+              />
+              <UButton
+                color="error"
+                :disabled="deleteConfirmation !== project.name"
+                :loading="deleting"
+                icon="i-lucide-trash-2"
+                @click="deleteProject"
+              >
+                Delete project
+              </UButton>
+            </div>
+          </div>
+        </PageSection>
       </div>
     </template>
     <div v-else-if="loading" class="py-24 text-center text-muted text-sm">Loading…</div>
