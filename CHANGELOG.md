@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.45.0](https://github.com/Bermos/Kitchen/compare/v0.44.0...v0.45.0) (2026-11-22)
+
+
+### Features
+
+* **ui:** nest settings panes in the sidebar and widen list panes ([#641](https://github.com/Bermos/Kitchen/issues/641)) ([4d07af8](https://github.com/Bermos/Kitchen/commit/4d07af8bfccb6fa9b987153b39bb86a86439d190))
+
 ## [0.44.0](https://github.com/Bermos/Kitchen/compare/v0.43.0...v0.44.0) (2026-10-16)
 
 
