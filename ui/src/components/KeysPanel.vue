@@ -144,9 +144,9 @@ async function revoke() {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
+  <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="max-w-3xl">
         <h2 class="text-sm font-medium text-highlighted">CI keys</h2>
         <p class="text-xs text-muted mt-1">
           A key is a member of <span class="font-mono">{{ project }}</span> and nothing else — it holds a role on this

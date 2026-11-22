@@ -32,8 +32,10 @@ import {
   host,
   noRouteReason,
   NOTHING_DEPLOYED,
+  openSettingsSection,
   processRows,
   settingsSection,
+  settingsSectionsFor,
   SETTINGS_SECTIONS,
   WEB_PROCESS,
 } from "./project";
@@ -300,6 +302,37 @@ describe("the settings sub-navigation", () => {
     expect(settingsSection("nonsense").id).toBe(SETTINGS_SECTIONS[0].id);
     expect(settingsSection(undefined).id).toBe(SETTINGS_SECTIONS[0].id);
     expect(settingsSection("danger").id).toBe("danger");
+  });
+
+  it("lists every pane for an admin and the readable ones for a viewer", () => {
+    const admin = settingsSectionsFor({ platform: "member", project: "admin", projectName: "shop" });
+    expect(admin.map((section) => section.id)).toEqual(SETTINGS_SECTIONS.map((section) => section.id));
+
+    // A viewer reads the variables — the project's own payload carries them —
+    // but is offered no form and no danger zone.
+    const viewer = settingsSectionsFor({ platform: "member", project: "viewer", projectName: "shop" }).map(
+      (section) => section.id,
+    );
+    expect(viewer).toContain("variables");
+    for (const id of ["source", "runtime", "security", "continuity", "danger"]) {
+      expect(viewer, `${id} is an admin's`).not.toContain(id);
+    }
+  });
+
+  it("opens the pane the address names only if this account has it", () => {
+    const viewer = settingsSectionsFor({ platform: "member", project: "viewer", projectName: "shop" });
+    expect(openSettingsSection(viewer, "variables").id).toBe("variables");
+    // A bookmarked admin pane falls back to the first one this viewer has,
+    // which is what the sidebar marks and the screen renders alike.
+    expect(openSettingsSection(viewer, "danger").id).toBe(viewer[0].id);
+  });
+
+  it("caps the forms at the form width and lets the lists take the column", () => {
+    const forms = SETTINGS_SECTIONS.filter((section) => section.form).map((section) => section.id);
+    for (const id of ["variables", "files", "secrets", "members", "keys"]) {
+      expect(forms, `${id} is a list, and a list at a form's width truncates its names`).not.toContain(id);
+    }
+    expect(forms).toContain("source");
   });
 });
 

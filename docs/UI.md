@@ -181,10 +181,14 @@ again.
   the page, not each by itself; a section that wants to sit closer to the one
   above it is one section, not two.
 - **One width.** The only cap a view may declare for itself is `max-w-3xl`, and
-  it means "this page is a form" — the account screen, a project's settings.
-  Everything else is a dashboard and takes the column. A form *inside* a
-  dashboard page (the members panel, the environment variables panel) takes the
-  same `max-w-3xl`, so there is one form width rather than one per panel.
+  it means "this page is a form" — the account screen, a project's Source or
+  Runtime pane. Everything else is a dashboard and takes the column. A form
+  *inside* a dashboard page takes the same `max-w-3xl`, so there is one form
+  width rather than one per panel. **A list is not a form because it has a Save
+  button**: the variables, files, secrets, keys and members of a project are
+  lists of things with names and values, and a list capped at a form's width
+  truncates the names it exists to show. Those take the column; only their
+  prose keeps the `max-w-3xl` reading measure.
 - **One header.** [`PageHeader`](../ui/src/components/PageHeader.vue) is the
   first thing on every page. It owns the `<h1>`, so no other file writes one.
 
@@ -281,8 +285,8 @@ fix.
   into one of its rows opens that row's screen at its own beginning.
 - **The same screen asked a different question keeps its place** — a filter, a
   window, the `?denied=` the route guard adds. The reader has not gone
-  anywhere. A settings pane is the one case where that reads wrong, and it is
-  the screen's to fix rather than the router's (#609).
+  anywhere. A settings pane is the one case where that reads wrong, and the
+  screen fixes it rather than the router (#609).
 - **A back or a forward is aimed at where it was**, and lands there as far as
   the screen allows. The aim is taken one tick after the route is confirmed,
   when every view's data is still `null` and there is almost nothing to scroll,
@@ -350,8 +354,8 @@ not.
 
 ### A screen with more sections than a scroll can hold
 
-**Past about six sections, a screen gets a left rail and shows one pane at a
-time.** Below that, sections on one scroll are how a page is read; above it they
+**Past about six sections, a screen shows one pane at a time, and the sidebar
+lists the panes.** Below that, sections on one scroll are how a page is read; above it they
 are how a page becomes unreadable.
 
 A project's Settings is the case that established the shape: fourteen panes —
@@ -361,27 +365,41 @@ on one scroll were more lines of form than the whole of the page that held them
 (#470). The Platform scope answers the same problem one level up, with a scope
 and one screen at a time.
 
-Four rules, and each of them is why this is written down rather than left to the
+Five rules, and each of them is why this is written down rather than left to the
 next screen to guess at:
 
 - **The pane is in the address**, as `?section=`. A pane that is not addressable
   is a thing somebody has to describe over chat instead of linking to — and it
   is the same spelling a finding's evidence link already uses, so there is one
   vocabulary rather than two.
-- **The rail is data, not markup.** The list of panes lives beside the screen
-  (`SETTINGS_SECTIONS` in `ui/src/lib/project.ts`), because the redirects that
-  land old addresses on the right pane read the same ids. Two spellings of one
-  vocabulary is how a redirect quietly stops landing.
-- **Each pane is `max-w-3xl`, declared once by the pane rather than by every
-  panel inside it.** This is the "one page, one form width" rule above, honoured
-  rather than asserted: the width is a property of the column, and a panel
-  dropped into it inherits it.
-- **A pane nobody may open is not in the rail**, and an address naming one falls
+- **The list of panes is the sidebar's, nested under the screen's own entry**
+  while that screen is open — not a second rail inside the page. It was one: a
+  13rem column of every pane spent on navigation the sidebar had room for, so
+  the pane beside it was narrower than the screen by exactly that much. The
+  sidebar is where this dashboard's navigation lives, and a pane is an address,
+  so it is a link there like every other entry. `design.test.ts` refuses a
+  `<nav>` anywhere but the shell and the breadcrumb.
+- **The list is data, not markup.** The panes live beside the screen
+  (`SETTINGS_SECTIONS` in `ui/src/lib/project.ts`), and which of them an account
+  has and which one is open are two functions there (`settingsSectionsFor`,
+  `openSettingsSection`) that the sidebar and the screen both ask — so the
+  entry marked is the pane rendered, and the redirects that land old addresses
+  on the right pane read the same ids. Two spellings of one vocabulary is how a
+  redirect quietly stops landing.
+- **A pane's width is the pane's, declared once by the screen rather than by
+  every panel inside it.** A pane marked `form` is `max-w-3xl`; every other pane
+  takes the column, per "One width" above. A panel dropped into a pane inherits
+  whichever it is and caps nothing but its own prose.
+- **A pane nobody may open is not in the list**, and an address naming one falls
   back to the first pane this account has — the same rule every affordance here
   follows, asked of the same table the route guard asks.
 
-A screen with a rail still has exactly one `PageHeader`: the rail is navigation
-*within* a screen, not a second screen. `design.test.ts` checks that as it
+A screen with panes still has exactly one `PageHeader`, whose breadcrumb ends
+in the open pane: the panes are navigation *within* a screen, not a second
+screen. A pane does open at its top, though — chosen from the sidebar it reads
+as a screen of its own, which is the one case of a query change that the
+router's "same screen, same place" rule gets wrong, and the screen fixes it for
+itself (#609). `design.test.ts` checks that as it
 checks every other page.
 
 ## The attention band

@@ -189,9 +189,9 @@ async function save() {
 </script>
 
 <template>
-  <div class="space-y-4 max-w-3xl">
+  <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div>
+      <div class="max-w-3xl">
         <h2 class="text-sm font-medium text-highlighted">Workloads</h2>
         <p class="text-xs text-muted mt-1">
           What <span class="font-mono">{{ project }}</span> runs besides the web process: the queue workers, the
