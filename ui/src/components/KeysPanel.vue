@@ -146,7 +146,7 @@ async function revoke() {
 <template>
   <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div class="max-w-3xl">
+      <div class="min-w-0 max-w-3xl">
         <h2 class="text-sm font-medium text-highlighted">CI keys</h2>
         <p class="text-xs text-muted mt-1">
           A key is a member of <span class="font-mono">{{ project }}</span> and nothing else — it holds a role on this
@@ -154,7 +154,7 @@ async function revoke() {
           read back; a key is shown once, when it is issued.
         </p>
       </div>
-      <UButton v-if="mayIssue" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openIssue">
+      <UButton v-if="mayIssue" class="shrink-0" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openIssue">
         Issue a key
       </UButton>
     </div>

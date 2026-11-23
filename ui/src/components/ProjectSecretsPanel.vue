@@ -183,7 +183,7 @@ async function remove() {
 <template>
   <div class="space-y-4">
     <div class="flex items-start justify-between gap-4">
-      <div class="max-w-3xl">
+      <div class="min-w-0 max-w-3xl">
         <h2 class="text-sm font-medium text-highlighted">Secrets</h2>
         <p class="text-xs text-muted mt-1">
           Credentials <span class="font-mono">{{ project }}</span> needs that the platform did not create for it — a
@@ -196,7 +196,7 @@ async function remove() {
           lands in the next release.
         </p>
       </div>
-      <UButton v-if="maySet" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openSet()">
+      <UButton v-if="maySet" class="shrink-0" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openSet()">
         Add a secret
       </UButton>
     </div>

@@ -580,3 +580,72 @@ describe("the shell's frame", () => {
     ).toBe("-1");
   });
 });
+
+describe("a section's actions", () => {
+  /**
+   * The two-part row, written by hand: a heading and its sentence on one side,
+   * the controls on the other. `PageSection` is that shape with a name and
+   * `PageHeader` is the page-level one, but the dashboard hand-rolls it in two
+   * dozen places, and in a hand-rolled one a button is a flex item like any
+   * other — the prose on the left wins the space, the button is squeezed below
+   * the width of its own label, and `Add a secret` is drawn as `+ Add a` over
+   * `secret` in a control taller than everything beside it (#599).
+   *
+   * It keys on `flex justify-between` and on nothing else about the row. The
+   * first version of this also required `items-start` or `items-center`, which
+   * made it an allowlist of the spellings that existed the day it was written
+   * rather than of the files: a new hand-rolled header in either of those was
+   * caught, and three live ones aligned `items-baseline`, `items-end` and not
+   * at all were not — one of them the reported defect, still unfixed, on a
+   * screen nobody had thought to look at. A rule about a shape names the least
+   * of the shape that identifies it.
+   */
+  function isHeaderRow(cls: string[]): boolean {
+    return cls.includes("flex") && cls.includes("justify-between");
+  }
+
+  /** What a label can break inside. A row of two spans is a fact and its
+   * number: it has nothing to squeeze and no label to break. */
+  const CONTROLS = /^(?:UButton|USelect|USelectMenu|USwitch|UInput|UTextarea|UCheckbox|URadioGroup|UDropdownMenu|UFileUpload|button)$/;
+
+  function holdsAControl(node: Node): boolean {
+    let found = false;
+    walk(node, (element) => {
+      if (element.tag && CONTROLS.test(element.tag)) found = true;
+    });
+    return found;
+  }
+
+  it.each(everything)("$name never squeezes a control below its own label", (file) => {
+    const offenders: string[] = [];
+    walk(templateOf(file), (node) => {
+      const row = classes(node);
+      if (!isHeaderRow(row)) return;
+
+      const children = elementChildren(node);
+      // A heading with nothing beside it is not two-part and cannot squeeze.
+      if (children.length < 2) return;
+
+      const controls = children[children.length - 1];
+      if (!holdsAControl(controls)) return;
+
+      const cls = classes(controls);
+      // The two answers the frame already contains, and there is no third.
+      // `PageSection` holds its actions at their own size; `PageHeader` lets
+      // the row wrap so they get a line to themselves, which only helps if
+      // that line wraps too — three buttons alone on a narrow line squeeze
+      // exactly as they would have beside the heading.
+      const holds = cls.includes("shrink-0");
+      const wraps = row.includes("flex-wrap") && cls.includes("flex-wrap");
+      if (!holds && !wraps) offenders.push(`<${controls.tag}>`);
+    });
+
+    expect(
+      offenders,
+      `${file.name}: the side of a header that holds the controls is shrink-0, or the row and that side both ` +
+        `flex-wrap — otherwise the button is narrower than its own label and the label breaks over two lines ` +
+        `(docs/UI.md, "A section's actions"). Use PageSection, or give its actions slot's behaviour to the header ` +
+        `you wrote`,
+    ).toEqual([]);
+  });
+});

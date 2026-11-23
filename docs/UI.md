@@ -352,6 +352,39 @@ The tone (`text-highlighted`, `text-muted`, `text-error`) is free — a danger
 zone's heading is red and still a section heading. The size and the weight are
 not.
 
+### A section's actions
+
+**The controls beside a heading are never squeezed below their own labels.** A
+header written by hand is a flex row — `flex justify-between`, the heading and
+its sentence on one side and the controls on the other, however the row aligns
+them — and in one of those a button is a flex item like any other: the
+prose on the left is wider than the row, both sides give way in proportion, and
+the button ends up narrower than the words on it. `Add a secret` was drawn as
+`+ Add a` over `secret`, in a control taller than everything beside it (#599).
+
+The frame already contains the two answers, and there is no third:
+
+- [`PageSection`](../ui/src/components/PageSection.vue) puts its `actions` slot
+  in a `shrink-0` wrapper, so the controls keep their own size and the heading
+  block gives way instead. A hand-written header takes the same class.
+- [`PageHeader`](../ui/src/components/PageHeader.vue) lets the row wrap, so the
+  controls drop to a line of their own rather than sharing a narrow one — which
+  only finishes the job if that line wraps too, since three buttons alone on a
+  phone-width line squeeze exactly as they would have beside the heading. Both
+  halves, or neither.
+
+`design.test.ts` reads every row of that shape whose far side holds a control
+and names the file that took neither answer, which is why the rule stays true
+rather than being re-decided per screen. It keys on `flex justify-between`
+alone and on nothing else about the row, because the first version of it also
+required `items-start` or `items-center` and so was an allowlist of the
+spellings that existed the day it was written: three live headers aligned
+`items-baseline`, `items-end` or not at all went unseen, and one of them was
+the reported defect on another screen. A row of two spans — a fact and its
+number — is not one of these: it has no label to break, and nor are the modal
+footers that are `justify-end` rather than `justify-between`. The cheapest way
+to keep the rule is to use `PageSection` and not write the row at all.
+
 ### A screen with more sections than a scroll can hold
 
 **Past about six sections, a screen shows one pane at a time, and the sidebar

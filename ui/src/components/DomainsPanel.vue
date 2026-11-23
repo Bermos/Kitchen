@@ -163,7 +163,7 @@ async function detach() {
   <div>
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-sm font-medium text-highlighted">Custom domains</h2>
-      <UButton v-if="mayAttach" color="neutral" variant="subtle" size="xs" icon="i-lucide-plus" @click="adding = true">
+      <UButton v-if="mayAttach" class="shrink-0" color="neutral" variant="subtle" size="xs" icon="i-lucide-plus" @click="adding = true">
         Add domain
       </UButton>
     </div>

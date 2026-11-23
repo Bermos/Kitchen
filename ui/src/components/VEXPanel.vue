@@ -142,7 +142,7 @@ function caveat(statement: VEXStatement): string {
           finding is listed, with the assertion covering it and whoever made it.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <UButton
           v-if="mayAssert"
           size="xs"
