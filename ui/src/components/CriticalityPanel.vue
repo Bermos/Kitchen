@@ -109,7 +109,7 @@ const kindOptions = [
           platform's own graph on every request — there is nothing here anybody has to keep current.
         </p>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <USelect
           :model-value="minimum"
           :items="filterOptions"

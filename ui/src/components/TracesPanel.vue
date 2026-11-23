@@ -275,7 +275,7 @@ function barTone(span: Span): string {
             </p>
             <p class="font-mono text-[11px] text-dimmed truncate">{{ selected }}</p>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
             <UButton
               :to="logsLink(selected)"
               size="xs"

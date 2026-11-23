@@ -902,7 +902,7 @@ async function revoke(token: string) {
       <!-- Personal keys -->
       <section class="rounded-md border border-default p-4 space-y-4">
         <div class="flex items-start justify-between gap-4">
-          <div>
+          <div class="min-w-0">
             <h2 class="text-sm font-medium text-highlighted">Personal keys</h2>
             <p class="text-xs text-muted mt-1">
               A credential that acts as you — all of what you can do, or a slice of it: issued for the projects you
@@ -910,7 +910,7 @@ async function revoke(token: string) {
               make one: a credential cannot mint another.
             </p>
           </div>
-          <UButton size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openIssue">
+          <UButton class="shrink-0" size="xs" color="neutral" variant="subtle" icon="i-lucide-plus" @click="openIssue">
             Issue a key
           </UButton>
         </div>
@@ -982,7 +982,7 @@ async function revoke(token: string) {
       <!-- Sessions -->
       <section class="rounded-md border border-default p-4 space-y-4">
         <div class="flex items-start justify-between gap-4">
-          <div>
+          <div class="min-w-0">
             <h2 class="text-sm font-medium text-highlighted">Signed-in browsers</h2>
             <p class="text-xs text-muted mt-1">
               Every session the identity provider holds for this account. Signing one out ends it there, which is what
@@ -990,6 +990,7 @@ async function revoke(token: string) {
             </p>
           </div>
           <UButton
+            class="shrink-0"
             icon="i-lucide-refresh-cw"
             color="neutral"
             variant="ghost"

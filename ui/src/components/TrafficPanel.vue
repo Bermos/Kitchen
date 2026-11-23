@@ -149,7 +149,7 @@ function edgeLabel(edge: TrafficEdge): string {
       <p class="text-xs text-muted max-w-2xl">
         The service map, aggregated from Cilium's Hubble flows — one edge per talking pair in the window.
       </p>
-      <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44" />
+      <USelect v-model="rangeMinutes" :items="ranges" size="sm" class="w-36 sm:w-44 shrink-0" />
     </div>
 
     <div class="flex items-center gap-2 flex-wrap">
