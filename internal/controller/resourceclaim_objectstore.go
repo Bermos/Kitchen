@@ -277,7 +277,16 @@ func (r *ResourceClaimReconciler) refreshBindingAddresses(
 	if !ok {
 		return nil
 	}
-	address := bucketBindingData(claim.Name, addressable.Address().Data())
+	where := addressable.Address()
+	// The same two addresses as a fact on the claim, for the screen and for
+	// `kitchen api`: the binding is a Secret nothing reads back, and which
+	// address to presign against is the question this claim type asks.
+	claim.Status.ObjectStore = &kitchenv1alpha1.ClaimObjectStoreStatus{
+		Endpoint:       where.Endpoint,
+		PublicEndpoint: where.PublicEndpoint,
+		InCluster:      where.InCluster,
+	}
+	address := bucketBindingData(claim.Name, where.Data())
 
 	names := []string{claim.Status.SecretName}
 	for _, branch := range claim.Status.Branches {

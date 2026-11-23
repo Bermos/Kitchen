@@ -38,11 +38,13 @@ import (
 // object store, so a fresh installation can give a project a bucket without
 // anyone opening an account at a cloud.
 //
-// The chart runs the store, its Service and its volume; this owns the one
-// half the chart cannot, the Connection, because its credential is a Secret
-// the platform writes and never reads back. Unlike the registry there is no
-// route: an application runs in the cluster and reaches the store at its
-// Service address, and nothing outside the cluster needs to.
+// The chart runs the store, its Service and its volume; this owns the two
+// halves the chart cannot. The Connection belongs here because its credential
+// is a Secret the platform writes and never reads back. The route belongs
+// here because the shared Gateway is created here — and it exists because an
+// application that presigns a URL for somebody else's browser has to sign it
+// against a name that browser can resolve (#601). objectstore_route.go is the
+// whole of that argument.
 func (r *KitchenReconciler) reconcileObjectStore(
 	ctx context.Context,
 	kitchen *kitchenv1alpha1.Kitchen,
@@ -68,6 +70,11 @@ func (r *KitchenReconciler) reconcileObjectStore(
 		setCond(condObjectStoreReady, metav1.ConditionFalse, "CredentialUnavailable", err.Error())
 		return false
 	}
+	unpublished, err := r.publishObjectStore(ctx, kitchen, store)
+	if err != nil {
+		setCond(condObjectStoreReady, metav1.ConditionFalse, "RouteFailed", err.Error())
+		return false
+	}
 	seeded, err := r.seedObjectStoreConnection(ctx, kitchen, store, credential)
 	if err != nil {
 		setCond(condObjectStoreReady, metav1.ConditionFalse, "ConnectionFailed", err.Error())
@@ -75,8 +82,10 @@ func (r *KitchenReconciler) reconcileObjectStore(
 	}
 
 	kitchen.Status.ObjectStore = &kitchenv1alpha1.ObjectStoreStatus{
-		Endpoint:   store.endpoint(),
-		Connection: seeded,
+		Endpoint:       store.endpoint(),
+		PublicEndpoint: store.publicEndpoint(),
+		Unpublished:    unpublished,
+		Connection:     seeded,
 	}
 	message := fmt.Sprintf("buckets are provisioned at %s", store.endpoint())
 	if seeded != "" {
@@ -84,8 +93,64 @@ func (r *KitchenReconciler) reconcileObjectStore(
 	} else {
 		message += "; the connection that pointed at it was deleted and is not recreated"
 	}
+	// Where the store is published, and where it is not, said on the one
+	// condition somebody holding a claim already reads. A silent absence is
+	// the failure mode this sentence exists to prevent: an application that
+	// presigns a URL against an address the binding does not carry finds out
+	// in a browser console.
+	if public := store.publicEndpoint(); public != "" {
+		message += fmt.Sprintf(". A URL presigned for somebody outside the cluster is signed against %s", public)
+	} else {
+		message += ". " + unpublished
+	}
 	setCond(condObjectStoreReady, metav1.ConditionTrue, "ObjectStoreSeeded", message)
 	return true
+}
+
+// publishObjectStore puts the store's public address up, or takes it down, and
+// answers with why it is down when it is. It clears the store's PublicHost in
+// that case, so that nothing downstream — the seeded Connection, every
+// binding, the status — offers an address that is not being served.
+//
+// Both directions are one call because they are one decision: a store that
+// has stopped being publishable — `tls.mode` moved to none, the base domain
+// went, the cluster's Gateway API cannot express the TLS hop — must not keep
+// a route answering for a name the platform no longer serves.
+func (r *KitchenReconciler) publishObjectStore(
+	ctx context.Context,
+	kitchen *kitchenv1alpha1.Kitchen,
+	store *platformObjectStore,
+) (unpublished string, err error) {
+	unpublish := func(reason string) (string, error) {
+		store.PublicHost = ""
+		return reason, r.removeObjectStoreRoute(ctx)
+	}
+	if store.PublicHost == "" {
+		return unpublish(objectStoreUnpublishedReason(kitchen))
+	}
+	// The carve-out goes up before the route it carves out of, so there is
+	// no window in which the admin API is published and unprotected.
+	if err := r.applyObjectStoreAdminRoute(ctx, store, gatewaySection(kitchen)); err != nil {
+		return "", fmt.Errorf("keeping the store's admin API off the published address: %w", err)
+	}
+	if err := r.applyObjectStoreBackendTLS(ctx, store); err != nil {
+		if meta.IsNoMatchError(err) {
+			// The store serves TLS on its Service name, and without a
+			// BackendTLSPolicy the Gateway would open a plaintext
+			// connection to it: the published address would exist and
+			// answer nothing. Leaving the store unpublished, and saying
+			// why, is the honest half of that — and it keeps an
+			// installation on an older Gateway API working exactly as it
+			// did before, rather than turning a missing kind into an
+			// object store that will not seed.
+			return unpublish("the store is reached inside the cluster only: it serves TLS on its own " +
+				"Service name, and publishing it needs the Gateway API's BackendTLSPolicy to tell the " +
+				"shared Gateway to speak TLS to it. This cluster's Gateway API does not have that kind. " +
+				"Bindings carry no " + objectstore.BindingKeyPublicEndpoint)
+		}
+		return "", fmt.Errorf("telling the Gateway to reach the store over TLS: %w", err)
+	}
+	return "", r.applyObjectStoreRoute(ctx, store, gatewaySection(kitchen))
 }
 
 // objectStoreCredentials is the store's root access key pair, as the chart
@@ -165,7 +230,13 @@ func (r *KitchenReconciler) seedObjectStoreConnection(
 	}
 
 	config, err := json.Marshal(objectstore.Config{
-		Endpoint:       store.endpoint(),
+		Endpoint: store.endpoint(),
+		// The second address, and the only thing on this Connection that is
+		// not for the platform's own clients: it travels through every
+		// binding provisioned here and is what an application presigns a URL
+		// against. Empty for an installation that publishes the store
+		// nowhere, which takes the key back off the bindings that had it.
+		PublicEndpoint: store.publicEndpoint(),
 		Region:         store.Region,
 		ForcePathStyle: true,
 		InCluster:      true,
@@ -226,6 +297,9 @@ func (r *KitchenReconciler) writeObjectStoreCredentialSecret(
 // removeObjectStore takes the seeded Connection and its credential down —
 // only while it is still the one the platform seeded.
 func (r *KitchenReconciler) removeObjectStore(ctx context.Context, kitchen *kitchenv1alpha1.Kitchen) error {
+	if err := r.removeObjectStoreRoute(ctx); err != nil {
+		return err
+	}
 	status := kitchen.Status.ObjectStore
 	if status == nil || status.Connection == "" {
 		kitchen.Status.ObjectStore = nil

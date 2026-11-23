@@ -36,11 +36,11 @@ import (
 const chartTemplates = "../../charts/kitchen/templates"
 
 // operatorPublished are the labels the chart never publishes because the
-// operator does: the preview gate's route and the registry's are written by
-// KitchenReconciler, which needs the shared Gateway to exist first. They are
-// pinned against the operator's own constants by
+// operator does: the preview gate's route, the registry's and the object
+// store's are written by KitchenReconciler, which needs the shared Gateway to
+// exist first. They are pinned against the operator's own constants by
 // TestTheOperatorPublishesOnlyReservedHostnames in internal/controller.
-var operatorPublished = []string{PreviewGate, Registry}
+var operatorPublished = []string{PreviewGate, Registry, ObjectStore}
 
 func TestEveryHostnameTheChartPublishesIsReserved(t *testing.T) {
 	found := chartRouteLabels(t)

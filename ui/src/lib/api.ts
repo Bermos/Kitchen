@@ -2587,6 +2587,22 @@ export interface ClaimObjectStore {
   versioning?: boolean;
   publicRead?: boolean;
   size?: string;
+  /** Where the bucket is reached inside the cluster: the address the
+   * application's own reads and writes use, and what the binding's
+   * `endpoint` key carries. Absent until the claim has bound. */
+  endpoint?: string;
+  /** Where the same store answers from outside the cluster, and therefore
+   * the address a URL handed to somebody else has to be presigned against
+   * — the binding's `publicEndpoint` key. Absent for a store the platform
+   * publishes nowhere, and for every store whose `endpoint` is already an
+   * address the internet resolves. */
+  publicEndpoint?: string;
+  /** Whether `endpoint` is an address only the cluster resolves. It is what
+   * tells those two absences apart: without a `publicEndpoint`, an
+   * in-cluster store is one the platform is publishing nowhere and nothing
+   * presigned against it opens in a browser, while any other store's
+   * `endpoint` was already public. */
+  inCluster?: boolean;
 }
 
 /** What an inngest claim binds, as GET /claims answers it with the

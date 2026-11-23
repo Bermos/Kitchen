@@ -1174,6 +1174,39 @@ type ClaimBranch struct {
 	Idle bool `json:"idle,omitempty"`
 }
 
+// ClaimObjectStoreStatus is where an objectStore claim's bucket is reached,
+// as the two addresses the binding Secret carries.
+//
+// Both are in the binding already; they are repeated here because the binding
+// is a Secret nothing reads back, and "which address do I presign against"
+// is the question this claim type now makes somebody answer. Neither is a
+// credential: an address published on the internet is not a secret, and
+// having it grants nothing — the store admits nobody anonymously.
+type ClaimObjectStoreStatus struct {
+	// Endpoint is the store inside the cluster, which is what the
+	// application's own reads and writes go to.
+	// +optional
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// PublicEndpoint is the store from outside the cluster, which is what a
+	// URL handed to somebody else has to be presigned against. Empty for a
+	// store the platform publishes nowhere, and for every store whose
+	// Endpoint is already an address the internet resolves.
+	// +optional
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// InCluster is whether Endpoint is an address only this cluster
+	// resolves, which is what tells those two emptinesses apart. An empty
+	// PublicEndpoint on an in-cluster store means the platform is
+	// publishing it nowhere and no URL presigned here can be opened from a
+	// browser; on a store of somebody else's it means Endpoint was already
+	// public and needs no second address. Saying "no publicEndpoint" alone
+	// gives one of them the other's advice, which is the bug #601 was
+	// filed from.
+	// +optional
+	InCluster bool `json:"inCluster,omitempty"`
+}
+
 // ClaimVolumeStatus is what a volume claim materialized: the
 // PersistentVolumeClaim in the application namespace the named process
 // mounts, and one more per preview Environment under preview mode fresh.
@@ -1563,6 +1596,14 @@ type ResourceClaimStatus struct {
 	// reconciler reads what to mount.
 	// +optional
 	Volume *ClaimVolumeStatus `json:"volume,omitempty"`
+
+	// ObjectStore is where an objectStore claim's bucket is addressed, and
+	// empty for every other type. It is the store's half of the binding
+	// repeated as a fact anybody may read: no credential and no bucket
+	// policy, only the two addresses — because the whole difficulty of the
+	// binding is knowing which of them to use for what (#601).
+	// +optional
+	ObjectStore *ClaimObjectStoreStatus `json:"objectStore,omitempty"`
 
 	// Recovery is what the claim can be recovered to and what has been
 	// recovered: the window the provider reports, the siblings, and anything
